@@ -133,6 +133,35 @@ build\pixdit-env\Scripts\python.exe tools\PixDiTEnhance\export_and_test_onnx.py 
   --provider auto
 ```
 
+### Safely continuing a good pilot
+
+Continue into a new output directory, use the previous best checkpoint as
+`--init`, lower the learning rate, and advance `--epoch-offset` so deterministic
+training degradation does not replay the same augmentation sequence:
+
+```powershell
+build\pixdit-env\Scripts\python.exe tools\PixDiTEnhance\train_real_data.py `
+  --data-root "H:\sintel training data" `
+  --output build\pixdit-real-refine1 `
+  --init build\pixdit-real-pilot\student_1step_real.pt `
+  --resolution 256 `
+  --epochs 10 `
+  --epoch-offset 20 `
+  --learning-rate 0.00004 `
+  --batch-size 1 `
+  --gradient-accumulation 4 `
+  --max-samples 1800 `
+  --tartanair-stride 8 `
+  --device cuda `
+  --accept-external-dataset-terms
+```
+
+A resumed run validates and copies the incoming checkpoint before taking an
+optimizer step. Later epochs replace it only when they improve the same holdout
+loss, so a poor continuation cannot silently destroy the known-good model.
+`real_data_metrics.json` records both the best and final validation values; use
+the best checkpoint rather than assuming the last epoch is automatically best.
+
 ## Creating a real PIXL dataset
 
 ### Recommended capture pair

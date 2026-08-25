@@ -14,7 +14,7 @@ The release-preparation phase has been completed separately. This file is now fo
 ## Current Active Task
 
 - WindowLife `0.5.6` exact loose-mask integration is built, clean-Release validated, and deployed to live Data and beta for owner runtime validation as of 2026-08-25. Runtime comparison proved the external mask selected the correct pane but the mask-fit confidence gate suppressed the room, curtains, and occupants. Exact external masks now use appropriately relaxed world-size/aspect acceptance and retain a precisely pane-clipped procedural fallback if UV-to-world reconstruction is unavailable; noisy native glow maps keep the strict facade-safety gates.
-- Private source-control preparation is active. Generated build/staging/runtime trees, datasets, model weights, Python environments, downloaded DXC, and local automation state are ignored; internal ledgers and the independent `tools/PixDiTEnhance` research workspace are `export-ignore`. `tools/ExportPixlPublicSource.ps1` audits a committed public GPL source archive. GitHub CLI is installed, but no GitHub account is authenticated and no remote repository has been created or pushed.
+- Private source-control preparation is active. Generated build/staging/runtime trees, datasets, model weights, Python environments, downloaded DXC, and local automation state are ignored; internal ledgers and the independent `tools/PixDiTEnhance` research workspace are `export-ignore`. `tools/ExportPixlPublicSource.ps1` audits a committed public GPL source archive. GitHub CLI and the uploaded Ed25519 key authenticate as `pixlmusic`; `origin` is `git@github.com:pixlmusic/PIXL-Renderer.git` and passed a read-only SSH test. The repository is still empty and nothing has been pushed. Historical Community Shaders `upstream` remains comparison-only.
 - PixDiT Photo Mode Enhance engineering-validation foundation is complete as of 2026-08-25. The reproducible pixel-space teacher/distillation/export suite, cross-vendor DirectML validation, compositor shader, native bridge contract, model card, and measured build report are under `tools/PixDiTEnhance`.
 - The generated checkpoints are deliberately **not** live or release models. The original synthetic artifact proves architecture/distillation/export, while `train_real_data.py` now provides bounded restoration/geometry pretraining from the completed Sintel/TartanAir RGB-depth corpus. Neither has been copied into `Data`, connected to the Photo Mode UI, enabled at runtime, or synchronized to beta.
 - Production Photo Mode integration is a subsequent development task requiring licensed representative PIXL RGB/depth captures and reviewed targets, a compiled native DirectML bridge, real-image/temporal acceptance, and physical AMD hardware validation. Preserve the original Photo Finish capture and write neural output only to a separate sibling file.
@@ -100,6 +100,10 @@ DOF accumulation/history behavior has been an active system and should be consid
 - Full inventory at stride 8: 8,389 samples total / 6,291 train / 2,098 validation (6,261 TartanAir plus 1,064 each of Sintel clean/final). Both Dunmer screenshots are SHA-256-recorded holdout aesthetic references and are never training entries.
 - A 12-sample, 64-square CUDA smoke epoch passed in 3.0 seconds with finite loss/gradients and produced a compatible 7,689,731-parameter, one-forward-pass bounded-residual checkpoint. This is a plumbing test only: one epoch over a tiny subset does not establish visual quality.
 - The real-data smoke checkpoint exported successfully to opset-17 FP32/FP16/INT8 ONNX. CUDA executed FP32/FP16 with finite correct-shaped output; FP16 also executed through `DmlExecutionProvider` with finite `(1,3,64,64)` output. Export metadata now identifies real-data pretraining separately from synthetic validation. Physical AMD validation remains pending.
+- The capped real-data pilot trained for 20 epochs over 1,800 balanced auxiliary samples (1,282 train / 518 validation). Best loss was `0.044290`; validation PSNR improved from the degraded-input baseline `27.207 dB` to `27.985 dB`; gradients and outputs remained finite.
+- Added safe continuation semantics: `--epoch-offset` advances deterministic augmentations, a resumed checkpoint is validated/copied as the incumbent before optimization, later epochs replace it only on a real holdout improvement, and metrics now distinguish best from final validation. A CUDA resume smoke test passed.
+- Ten lower-rate continuation epochs produced the current best auxiliary checkpoint at absolute epoch 30: validation loss `0.043609`, PSNR `28.183 dB`, mean absolute residual `0.011967`, maximum pre-clip gradient norm `0.411967`, and no NaN/Inf. This is a useful restoration/geometry pretraining gain, not yet a production Skyrim enhancement model.
+- The epoch-30 model exported at fixed `(1,4,512,512) -> (1,3,512,512)` to opset-17 FP32/FP16/dynamic-INT8. Hashes: FP32 `0F925BAF4326A71645C5FBC9D88F77CFAE5E27550759CBBE507D80CF55F6B115`; FP16 `D3CFB58DAE7D15CBABA2F156AD0E56FCE9E38D568E50A56A39BD056D56069B44`; INT8 `FCAA577D1525044E32D6C669B7F89EA041407C3C0CF2D76859D5D2DF1A24B6E6`. CUDA and DirectML FP32/FP16 outputs were finite and correctly shaped. Timings from this export are invalid for performance comparison because Skyrim was concurrently compiling its shader cache; repeat after the game/compiler are idle.
 
 ### Eye rendering
 
@@ -466,8 +470,63 @@ Examples:
 - Replaced the root GitHub README with a first-person PIXL project page covering architecture, the 36 integrated modules and renderer services, installation, build/staging, Community Shaders v1.8.3 ancestry, GPL-3.0/source obligations, third-party notices, and PIXL music links.
 - Synchronized the clean Release DLL to live Data and beta. Final DLL SHA-256 is `3C615F0DADD8C5718E63C01B3CEB7722D01CA3393207B0F2A2ADABBE733C416B`; WindowLife 0.5.6 HLSL SHA-256 is `E7F6575B043C52FB65E924FD2990C54A480C2A77B306B0FCD5FFC0EAAEA04683` across source/live/beta. The audited beta contains 36 modules, the room atlas, no PixDiT/models, and no shader pipeline cache.
 - Re-ran the renderer/package audit successfully and reconciled all 243 canonical shaders against live Data: 243 matches, zero differences, zero source-only/live-only files, and zero overlay collisions.
-- Created local private-development checkpoints `c5ce2a0c` and `3bf6a6e2` without adding an external remote. The audited public-source export is `dist/PIXL-Renderer-v1.0-Source.zip` (75,827,696 bytes, 808 entries, SHA-256 `88727530520660A6255406FF6EC805433CDD10F6BCAEEEB259C1159DA3723060`); it excludes the independent private PixDiT workspace, internal ledgers, generated builds, runtime Data, model weights, and shader cache.
-- Final beta inventory is 287 files / 162,588,035 bytes, includes the WindowLife room atlas, and contains zero `.pixlbin`, model-weight, or PixDiT files. GitHub CLI is installed but unauthenticated, so no GitHub repository, remote, or push was created.
+- Created local private-development checkpoints `c5ce2a0c`, `3bf6a6e2`, and `61477e8d`. The audited public-source export is `dist/PIXL-Renderer-v1.0-Source.zip` (75,827,696 bytes, 808 entries, SHA-256 `88727530520660A6255406FF6EC805433CDD10F6BCAEEEB259C1159DA3723060`); it excludes the independent private PixDiT workspace, internal ledgers, generated builds, runtime Data, model weights, and shader cache.
+- Final beta inventory is 287 files / 162,588,035 bytes, includes the WindowLife room atlas, and contains zero `.pixlbin`, model-weight, or PixDiT files. Authenticated SSH read access to the new PIXL `origin` passes; no refs or source have been pushed.
+
+## Launch Candidate Test / Fix Checklist — 2026-08-25
+
+### 1. Cold-cache and runtime health
+
+- [ ] Let the current permutation build finish without deleting the library again. Record total, disk-cache, built-now, failed, and elapsed counts.
+- [ ] Inspect PIXLRenderer, game, and shader-compiler logs for compile failures, initialization errors, missing resources, repeated invalidation, and non-actionable spam.
+- [ ] Restart once against the completed cache and confirm a normal warm launch does not rebuild the library.
+
+### 2. Photo Mode state safety
+
+- [ ] Reproduce the Photo Mode button being active from World Map, Inventory, and other vanilla/modal UI menus.
+- [ ] Establish one shared gameplay-state eligibility function and use it both to disable the button and to reject activation at the runtime entry point. A UI-only disable is insufficient.
+- [ ] Block activation whenever World Map, Inventory/Magic/Favorites, Container/Barter/Crafting, Journal/Pause, loading/transition, or another incompatible vanilla menu owns input. Keep PIXL's own Photo Mode controls usable after a valid gameplay activation.
+- [ ] If an incompatible menu opens while Photo Mode is active, exit or suspend safely and restore camera, player visibility, HUD, input, time state, FOV and post-process state exactly once.
+- [ ] Verify first/third-person transitions and near-camera movement cannot expose the player body clipping through the Photo Mode camera.
+- [ ] Test mouse/keyboard and controller activation, cancellation, save capture, repeated entry/exit, fast travel/loading, death and save reload.
+
+### 3. Advanced-menu accessibility and layout
+
+- [ ] Reproduce the difficult `Radiance Weave -> Vanilla SSAO` toggle and determine whether the fault is hit-box size, overlapping widgets, disabled-state logic, scrolling, input capture, or insufficient padding.
+- [ ] Audit every module panel for minimum row height, full checkbox/button hit regions, consistent horizontal/vertical padding, readable labels/tooltips, unclipped controls, predictable disabled states, and scroll access.
+- [ ] Validate at 1080p, 1440p and 4K/UI scaling, including long translated labels, narrow menu widths, mouse and controller navigation.
+- [ ] Ensure dangerous/debug controls are visually separated from normal tuning and that defaults/reset actions are clear and recoverable.
+
+### 4. Main quality-menu wiring
+
+- [ ] Build an explicit mapping table from every main quality preset/tier to every affected module field and expected runtime cost/visual result.
+- [ ] Trace each mapping end-to-end: main UI -> profile application -> persisted JSON -> C++ runtime setting -> GPU constants/resources/dispatch -> visible shader behavior. Treat every no-op or shadowed value as a defect.
+- [ ] Verify Off/Low/Medium/High/Ultra (or the final exposed tier names) apply immediately, persist across restart, and report `Custom` when an Advanced-menu override diverges.
+- [ ] Confirm dependencies are coherent: a main preset must not silently enable unrelated material systems, overwrite user choices outside its scope, or select unsupported combinations.
+- [ ] A/B each tier at fixed benchmark scenes and record frame time, VRAM, cache impact and screenshots. Preserve the current default PIXL visual baseline; performance tiers must make intentional, documented trade-offs.
+- [ ] Make the main quality menu sufficient for ordinary users, leaving Advanced controls for deliberate per-module tuning rather than required setup.
+
+### 5. Contact Shadows distance/depth stability
+
+- [ ] Reproduce the owner-supplied distant-object shimmer/overlap in Whiterun and A/B Contact Shadows at the identical camera to distinguish shader self-intersection from genuine mesh/decal z-fighting.
+- [ ] Trace Contact Shadows depth reconstruction, reversed-Z/linear-depth precision, ray-start and normal bias, thickness, maximum distance, depth-pyramid mip selection and off-screen rejection. Far geometry must not alternate between foreground/background samples or darken both surfaces at a depth discontinuity.
+- [ ] Add a stable world-/view-distance and projected-size fade before depth precision becomes unreliable; the fade must be temporally smooth under camera motion and must not create a visible circular boundary.
+- [ ] Validate stationary/pan/walk behavior under native/DLAA and DLSS quality modes at near, medium and far distance. Preserve useful near contact while eliminating distant flicker, crawling and false double surfaces.
+
+### 6. Visual acceptance and release package
+
+- [ ] Validate WindowLife 0.5.6 exact masks, fallback windows, frames/facades, closed shutters, interior depth and silhouettes.
+- [ ] Preserve the owner-tested WindowLife fallback calibration of Room Width `110` / Room Height `140` as the current visual comparison point. Do not change the shipped default until it has been checked across small, large, round, arched and atlas-packed window families.
+- [ ] Replace the single global WindowLife room dimensions with automatic, distance-invariant small/medium/large aperture families derived from stable material/geometry/mask extents, plus conservative per-material overrides where automatic classification cannot represent a unique landmark window.
+- [ ] Separate the full-window layout domain from the pane clipping mask: mullions and crosshatch leadwork may divide glass visibility into small components, but all components belonging to one physical window must share one outer-aperture centre, floor anchor, room seed and parallax coordinate system.
+- [ ] Repair large-window UV mismatch and mid-pane room starts by anchoring room boundaries to the reconstructed outer aperture rather than raw repeating material UVs. Verify mirrored/flipped UV islands and atlas seams do not restart rooms inside a glass pane.
+- [ ] Specifically validate Whiterun crosshatch windows: retain glass-only clipping/refraction per small panel while spreading a coherent room across the entire framed window instead of fitting a separate miniature room into every panel.
+- [ ] Replace the current dark procedural occupant shapes with an authored, provenance-recorded silhouette atlas: multiple poses, profiles, body proportions, clothing/headwear and one-/two-person arrangements; softly coloured by room light, depth-blurred and varied without becoming recognisable repeated "UI icon" figures. Retain the procedural path only as a missing-asset fallback.
+- [ ] Create a separate provenance-recorded curtain atlas with multiple medieval fabric cuts, open/closed arrangements, folds, colours and opacity profiles. Sample curtains as their own parallax layer between glass and room background, with window-family-aware selection, edge-safe atlas gutters/mips and restrained movement; retain the procedural curtain path only as fallback.
+- [ ] Validate authored occupants and curtains from exterior and interior views, including people passing outside interior windows, without projecting onto frames, facades or closed shutters. Measure cost and keep the implementation atlas-based/batched with graceful asset-failure fallback.
+- [ ] Regression-check grass SSS/GGX/LOD, foliage wind, DLSS runoff, skin/tissue, Auto-POM and benchmark restoration paths.
+- [ ] Add only the final validated shader cache to beta, rerun the 36-module/package and 243-shader reconciliation audits, and preserve rollback/checksums.
+- [ ] Perform a final clean game launch, representative save/load/location traversal, screenshot comparison and log review before declaring the Nexus archive ready.
 
 ## Remaining Issues
 

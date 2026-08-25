@@ -533,6 +533,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--resolution", type=int, default=256)
     parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument(
+        "--epoch-offset",
+        type=int,
+        default=0,
+        help="Starting augmentation epoch for deterministic resumed training.",
+    )
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--gradient-accumulation", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=8.0e-5)
@@ -551,7 +557,12 @@ def main() -> None:
         raise ValueError("Resolution must be positive and divisible by 32")
     if args.tartanair_stride < 1 or not 1 <= args.validation_percent <= 40:
         raise ValueError("Invalid dataset stride or validation percentage")
-    if args.epochs < 1 or args.batch_size < 1 or args.gradient_accumulation < 1:
+    if (
+        args.epochs < 1
+        or args.epoch_offset < 0
+        or args.batch_size < 1
+        or args.gradient_accumulation < 1
+    ):
         raise ValueError("Epoch, batch size and gradient accumulation must be positive")
     if not 0.02 <= args.max_residual <= 0.35:
         raise ValueError("Max residual must remain within the protected 0.02-0.35 range")
@@ -588,8 +599,10 @@ def main() -> None:
     device = choose_device(args.device)
     config = PixDiTConfig(max_residual=args.max_residual)
     model = PixDiTStudent(config).to(device)
+    initial_checkpoint: dict[str, Any] | None = None
     if args.init is not None:
         checkpoint = checkpoint_load(args.init, "cpu")
+        initial_checkpoint = checkpoint
         init_config = PixDiTConfig.from_dict(checkpoint["config"])
         # Only max_residual may intentionally change; tensor architecture must match.
         architecture_fields = {key: value for key, value in config.to_dict().items() if key != "max_residual"}
@@ -609,19 +622,57 @@ def main() -> None:
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
+    checkpoint_path = args.output / "student_1step_real.pt"
+
+    def save_best_checkpoint(epoch_number: int, loss: float) -> None:
+        torch.save(
+            {
+                "format": "PIXL.PixDiT.Student1Step.RealData.v1",
+                "config": config.to_dict(),
+                "model": model.state_dict(),
+                "epoch": epoch_number,
+                "validation_loss": loss,
+                "inference_steps": 1,
+                "bounded_residual": True,
+                "dataset_inventory": "dataset_inventory.json",
+                "initialized_from": str(args.init) if args.init is not None else None,
+            },
+            checkpoint_path,
+        )
+
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95), weight_decay=0.01)
     use_amp = device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     best_loss = float("inf")
+    best_epoch = args.epoch_offset
+    best_validation: dict[str, Any] = {}
     started = time.perf_counter()
     max_gradient_norm = 0.0
     initial_loss: float | None = None
     final_training_loss = float("inf")
     validation: dict[str, Any] = {}
 
+    # A resumed run must never silently replace its initializer with a worse
+    # first epoch. Establish the incoming checkpoint as the incumbent and make
+    # later epochs beat it on the same deterministic validation set.
+    if initial_checkpoint is not None:
+        validation = validate(model, val_loader, device, args.max_residual)
+        best_loss = float(validation["loss"])
+        best_validation = validation
+        best_epoch = int(initial_checkpoint.get("epoch", args.epoch_offset))
+        save_best_checkpoint(best_epoch, best_loss)
+        raw_preview, output_preview, target_preview = validation["preview"]
+        save_tensor_preview(raw_preview, args.output / "preview_raw.png")
+        save_tensor_preview(output_preview, args.output / "preview_enhanced.png")
+        save_tensor_preview(target_preview, args.output / "preview_target.png")
+        print(
+            f"Loaded incumbent checkpoint at epoch {best_epoch}: "
+            f"val={best_loss:.6f} PSNR={validation['output_psnr_db']:.2f}dB")
+
     for epoch in range(args.epochs):
-        train_dataset.set_epoch(epoch)
+        absolute_epoch = args.epoch_offset + epoch
+        train_dataset.set_epoch(absolute_epoch)
         model.train()
         optimizer.zero_grad(set_to_none=True)
         epoch_losses: list[float] = []
@@ -657,19 +708,9 @@ def main() -> None:
         validation = validate(model, val_loader, device, args.max_residual)
         if validation["loss"] < best_loss:
             best_loss = float(validation["loss"])
-            torch.save(
-                {
-                    "format": "PIXL.PixDiT.Student1Step.RealData.v1",
-                    "config": config.to_dict(),
-                    "model": model.state_dict(),
-                    "epoch": epoch + 1,
-                    "validation_loss": best_loss,
-                    "inference_steps": 1,
-                    "bounded_residual": True,
-                    "dataset_inventory": "dataset_inventory.json",
-                },
-                args.output / "student_1step_real.pt",
-            )
+            best_validation = validation
+            best_epoch = absolute_epoch + 1
+            save_best_checkpoint(best_epoch, best_loss)
             raw_preview, output_preview, target_preview = validation["preview"]
             save_tensor_preview(raw_preview, args.output / "preview_raw.png")
             save_tensor_preview(output_preview, args.output / "preview_enhanced.png")
@@ -677,11 +718,12 @@ def main() -> None:
         if epoch == 0 or (epoch + 1) % 5 == 0 or epoch + 1 == args.epochs:
             print(
                 f"real-data epoch {epoch + 1:03d}/{args.epochs}: "
+                f"absolute={absolute_epoch + 1:03d} "
                 f"train={final_training_loss:.6f} val={validation['loss']:.6f} "
                 f"PSNR={validation['output_psnr_db']:.2f}dB "
                 f"residual={validation['mean_absolute_residual']:.5f}")
 
-    if initial_loss is None or not (args.output / "student_1step_real.pt").is_file():
+    if initial_loss is None or not checkpoint_path.is_file() or not best_validation:
         raise RuntimeError("Real-data training did not produce a checkpoint")
     elapsed = time.perf_counter() - started
     metrics = {
@@ -689,15 +731,20 @@ def main() -> None:
         "device": str(device),
         "parameter_count": count,
         "epochs": args.epochs,
+        "epoch_offset": args.epoch_offset,
+        "best_epoch": best_epoch,
+        "initialized_from": str(args.init) if args.init is not None else None,
         "batch_size": args.batch_size,
         "gradient_accumulation": args.gradient_accumulation,
         "max_residual": args.max_residual,
         "initial_training_loss": initial_loss,
         "final_training_loss": final_training_loss,
         "best_validation_loss": best_loss,
-        "baseline_validation_psnr_db": validation["baseline_psnr_db"],
-        "enhanced_validation_psnr_db": validation["output_psnr_db"],
-        "mean_absolute_residual": validation["mean_absolute_residual"],
+        "baseline_validation_psnr_db": best_validation["baseline_psnr_db"],
+        "enhanced_validation_psnr_db": best_validation["output_psnr_db"],
+        "mean_absolute_residual": best_validation["mean_absolute_residual"],
+        "final_validation_loss": validation["loss"],
+        "final_validation_psnr_db": validation["output_psnr_db"],
         "max_preclip_gradient_norm": max_gradient_norm,
         "elapsed_seconds": elapsed,
         "student_inference_steps": 1,
