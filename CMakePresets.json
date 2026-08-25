@@ -44,7 +44,7 @@
                 "CMAKE_CXX_FLAGS": "/EHsc /MP $penv{CXXFLAGS}",
                 "CMAKE_CXX_FLAGS_RELEASE": "/O2 /Ob3 /DNDEBUG"
             },
-            "generator": "Visual Studio 18 2026",
+            "generator": "Visual Studio 17 2022",
             "vendor": {
                 "microsoft.com/VisualStudioSettings/CMake/1.0": {
                     "intelliSenseMode": "windows-msvc-x64",
@@ -104,6 +104,11 @@
             "inherits": "skyrim"
         },
         {
+            "name": "PIXL-12C",
+            "description": "Canonical PIXL Renderer Release configuration",
+            "inherits": "ALL-VS2022"
+        },
+        {
             "name": "ALL-DEBUG",
             "description": "Debug build for CS SKSE plugin. CommonLibSSE is linked against the prebuilt Release package via fallback location properties.",
             "inherits": "ALL",
@@ -119,8 +124,6 @@
                 "ENABLE_SKYRIM_SE": "ON",
                 "ENABLE_SKYRIM_VR": "ON",
                 "AUTO_PLUGIN_DEPLOYMENT": "OFF",
-                "ZIP_TO_DIST": "OFF",
-                "AIO_ZIP_TO_DIST": "OFF",
                 "VCPKG_APPLOCAL_DEPS": "OFF",
                 "COMMONLIB_PREBUILT_MULTICONFIG": "ON",
                 "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "OFF",
@@ -137,66 +140,72 @@
             "cacheVariables": {
                 "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "OFF",
                 "SC_COMPILE_PDB": "OFF",
-                "ZIP_TO_DIST": "OFF",
-                "AIO_ZIP_TO_DIST": "OFF"
+                "VCPKG_APPLOCAL_DEPS": "OFF"
             }
         }
     ],
     "buildPresets": [
         {
             "name": "Dev",
-            "description": "Default build preset for developers, generate an AIO folder thats ready to copy",
+            "description": "Build and audit the optimized PIXL Renderer DLL",
             "configurePreset": "ALL",
             "configuration": "Release",
-            "targets": ["AIO"]
+            "targets": ["PIXL-Audit"]
         },
         {
             "name": "ALL",
-            "description": "(Deprecated), kept for CI, use Package instead",
+            "description": "Build and audit PIXL Renderer",
             "configurePreset": "ALL",
             "configuration": "Release",
-            "targets": ["Package-AIO-Manual"]
+            "targets": ["PIXL-Audit"]
         },
         {
             "name": "ALL-VS2022",
             "description": "Same as ALL but using Visual Studio 17 2022 toolchain",
             "configurePreset": "ALL-VS2022",
             "configuration": "Release",
-            "targets": ["Package-AIO-Manual"]
+            "targets": ["PIXL-Audit"]
+        },
+        {
+            "name": "PIXL-12C",
+            "description": "Canonical clean Release build and audit",
+            "configurePreset": "PIXL-12C",
+            "configuration": "Release",
+            "targets": ["PIXL-Audit"]
         },
         {
             "name": "Package",
-            "description": "Build preset to generate a AIO zip package in <SRC>/dist folder, mostly for CI",
+            "description": "Build the unified PIXL Renderer beta folder and Vortex archive",
             "configurePreset": "ALL",
             "configuration": "Release",
-            "targets": ["Package-AIO-Manual"]
+            "targets": ["PIXL-Standalone-Beta"]
         },
         {
             "name": "Shaders",
-            "description": "Build preset to copy shaders into <BUILD>/AIO folder for shader validation",
+            "description": "Build, audit, and stage a compile-on-device shader package",
             "configurePreset": "ALL",
             "configuration": "Release",
-            "targets": ["prepare_shaders"]
+            "targets": ["PIXL-Standalone-Beta"]
         },
         {
             "name": "Debug",
-            "description": "Debug build for CS SKSE plugin, generate an AIO folder thats ready to copy",
+            "description": "Debug build for the PIXL Renderer plugin",
             "configurePreset": "ALL-DEBUG",
             "configuration": "Debug",
-            "targets": ["AIO"]
+            "targets": ["PIXL-Audit"]
         },
         {
             "name": "Dev-Fast",
             "description": "Fastest iteration build: Ninja + no LTO + DLL only",
             "configurePreset": "Dev-Fast",
-            "targets": ["CommunityShaders"]
+            "targets": ["PIXLRenderer"]
         },
         {
             "name": "PR",
             "description": "CI build for pull requests: mildly optimized package without LTCG or full debug info",
             "configurePreset": "PR",
             "configuration": "Release",
-            "targets": ["Package-AIO-Manual"]
+            "targets": ["PIXL-Audit"]
         }
     ]
 }

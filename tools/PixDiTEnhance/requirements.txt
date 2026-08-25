@@ -1,0 +1,7 @@
+# Install PyTorch separately for the desired CUDA/CPU platform.
+numpy==1.26.4
+Pillow>=10.0,<12
+onnx==1.17.0
+onnxruntime>=1.18,<2
+onnxconverter-common==1.16.0
+

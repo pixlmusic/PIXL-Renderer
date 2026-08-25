@@ -1,5 +1,19 @@
-# Normalize all text files to LF
-* text=auto eol=lf
+# Private monorepo files that must not enter the public GPL source archive.
+/AGENTS.md export-ignore
+/AI-INSTRUCTIONS.md export-ignore
+/PIXL_ACTIVE_STATE.md export-ignore
+/PIXL_DEVELOPMENT_WORKFLOW.md export-ignore
+/PIXL_ENGINEERING_CONTEXT.md export-ignore
+/PIXL_RELEASE_PREP_REPORT.md export-ignore
+/PIXL_RELEASE_STATE.md export-ignore
+/START_CODEX_ACTIVE_DEVELOPMENT.md export-ignore
+/PRIVATE_COMPONENTS.md export-ignore
+/tools/PixDiTEnhance/** export-ignore
 
-# Ensure patch files always use LF line endings
-*.patch text eol=lf
+# Local/generated trees are ignored as well; these entries defend source
+# archives if a future private commit ever contains one accidentally.
+/build/** export-ignore
+/bin/** export-ignore
+/dist/** export-ignore
+/Data/** export-ignore
+/.playwright-cli/** export-ignore

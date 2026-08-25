@@ -24,7 +24,7 @@
 // For more information, please refer to <https://unlicense.org/>
 #pragma once
 
-#ifdef SK_HDR_PNG_COMMUNITY_SHADERS
+#ifdef SK_HDR_PNG_PIXL_RENDERER
 #include <winrt/base.h>
 namespace sk_hdr_png
 {
@@ -72,7 +72,7 @@ namespace sk_hdr_png
 
 namespace sk_hdr_png
 {
-#ifndef SK_HDR_PNG_COMMUNITY_SHADERS
+#ifndef SK_HDR_PNG_PIXL_RENDERER
   using format = reshade::api::format;
 #endif
 
@@ -849,7 +849,7 @@ sk_hdr_png::write_image_to_disk (const wchar_t* image_path, unsigned int width, 
 		fmt == format::r16g16b16a16_float ||
 		fmt == format::r10g10b10a2_unorm ||
 		fmt == format::b10g10r10a2_unorm
-#ifdef SK_HDR_PNG_COMMUNITY_SHADERS
+#ifdef SK_HDR_PNG_PIXL_RENDERER
 		|| fmt == format::r16g16b16a16_pq
 #endif
 		;
@@ -1005,7 +1005,7 @@ sk_hdr_png::write_image_to_disk (const wchar_t* image_path, unsigned int width, 
 				hr = bitmap_frame->WritePixels(height, row_stride, buffer_size, png_buffer);
 			}
 
-#ifdef SK_HDR_PNG_COMMUNITY_SHADERS
+#ifdef SK_HDR_PNG_PIXL_RENDERER
 			else if (fmt == format::r16g16b16a16_pq)
 			{
 				uint16_t* png_pixels = (uint16_t*)png_buffer;

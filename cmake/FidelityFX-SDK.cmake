@@ -4,11 +4,59 @@ set(FFX_ALL OFF)
 set(FFX_FSR3 ON)
 set(FFX_FSR ON)
 set(FFX_AUTO_COMPILE_SHADERS 1)
+set(
+  PIXL_FFX_SHORT_BINARY_ROOT
+  "$ENV{PIXL_FFX_SHORT_BINARY_ROOT}"
+  CACHE PATH
+  "Optional short alias of CMAKE_BINARY_DIR for FidelityFX_SC on long Windows paths"
+)
 
 # Note: extern/FidelityFX-SDK/sdk/CMakeLists.txt detects x64 via an exact
 # STREQUAL on CMAKE_EXE_LINKER_FLAGS == "/machine:x64" when
 # CMAKE_GENERATOR_PLATFORM is unset (Ninja). The ninja preset sets exactly
 # that value; appending anything else to the variable breaks the configure.
+
+# Keep the public FidelityFX submodule pinned to its upstream revision while
+# applying PIXL's reproducible Windows path-length repair. A source checkout may
+# already contain the patch (for example the active developer tree), so accept
+# either a cleanly applicable patch or a clean reverse check.
+find_package(Git REQUIRED QUIET)
+set(
+  _pixl_ffx_patch
+  "${CMAKE_SOURCE_DIR}/cmake/patches/FidelityFX-DX11-Short-Output.patch"
+)
+set(_pixl_ffx_source "${CMAKE_SOURCE_DIR}/extern/FidelityFX-SDK")
+execute_process(
+  COMMAND "${GIT_EXECUTABLE}" apply --check "${_pixl_ffx_patch}"
+  WORKING_DIRECTORY "${_pixl_ffx_source}"
+  RESULT_VARIABLE _pixl_ffx_patch_check
+  OUTPUT_QUIET
+  ERROR_QUIET
+)
+if(_pixl_ffx_patch_check EQUAL 0)
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply "${_pixl_ffx_patch}"
+    WORKING_DIRECTORY "${_pixl_ffx_source}"
+    RESULT_VARIABLE _pixl_ffx_patch_apply
+  )
+  if(NOT _pixl_ffx_patch_apply EQUAL 0)
+    message(FATAL_ERROR "Failed to apply PIXL's FidelityFX DX11 build patch")
+  endif()
+else()
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" apply --reverse --check "${_pixl_ffx_patch}"
+    WORKING_DIRECTORY "${_pixl_ffx_source}"
+    RESULT_VARIABLE _pixl_ffx_reverse_check
+    OUTPUT_QUIET
+    ERROR_QUIET
+  )
+  if(NOT _pixl_ffx_reverse_check EQUAL 0)
+    message(
+      FATAL_ERROR
+      "FidelityFX source is neither clean nor compatible with PIXL's required DX11 build patch"
+    )
+  endif()
+endif()
 
 add_subdirectory(${CMAKE_SOURCE_DIR}/extern/FidelityFX-SDK/sdk)
 

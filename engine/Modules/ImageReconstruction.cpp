@@ -1,0 +1,1842 @@
+#include "ImageReconstruction.h"
+
+#include "../I18n/I18n.h"
+#include "Deferred.h"
+#include "CameraSuite.h"
+#include "Hooks.h"
+#include "State.h"
+#include "ImageReconstruction/DX12SwapChain.h"
+#include "ImageReconstruction/FidelityFX.h"
+#include "ImageReconstruction/Streamline.h"
+#include "Utils/Game.h"
+#include "Utils/UI.h"
+#include <Windows.h>
+#include <algorithm>
+#include <cfloat>
+#include <cmath>
+#include <directx/d3dx12.h>
+#include <format>
+
+#define I18N_KEY_PREFIX "feature.image_reconstruction."
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
+	ImageReconstruction::Settings,
+	upscaleMethod,
+	upscaleMethodNoDLSS,
+	qualityMode,
+	frameLimitMode,
+	frameLimitFPS,
+	frameGenerationMode,
+	frameGenerationForceEnable,
+	frameGenerationAllowInMenus,
+	streamlineLogLevel,
+	sharpnessFSR,
+	sharpnessEnabledDLSS,
+	sharpnessDLSS,
+	presetDLSS,
+	forceLatestDLSSModelOnLegacyRTX,
+	reflexLowLatencyMode,
+	reflexLowLatencyBoost,
+	reflexUseMarkersToOptimize,
+	reflexUseFPSLimit,
+	reflexFPSLimit);
+
+decltype(&D3D11CreateDeviceAndSwapChain) ptrD3D11CreateDeviceAndSwapChainUpscaling;
+
+/**
+ * @brief Creates a Direct3D 11 device and swap chain, with support for advanced imageReconstruction and frame generation features.
+ *
+ * This function intercepts the standard D3D11 device and swap chain creation process to enable integration with Streamline and FidelityFX technologies, as well as optional D3D12 proxying for frame generation. It adjusts swap chain flags for tearing support, manages feature checks, and conditionally routes device creation through Streamline or FidelityFX proxies based on runtime settings and hardware capabilities. If frame generation is enabled and supported, a D3D12 proxy is used; otherwise, the standard D3D11 creation path is followed.
+ *
+ * @return HRESULT indicating the success or failure of device and swap chain creation.
+ */
+HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
+	IDXGIAdapter* pAdapter,
+	D3D_DRIVER_TYPE DriverType,
+	HMODULE Software,
+	UINT Flags,
+	[[maybe_unused]] const D3D_FEATURE_LEVEL* pFeatureLevels,
+	[[maybe_unused]] UINT FeatureLevels,
+	UINT SDKVersion,
+	DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
+	IDXGISwapChain** ppSwapChain,
+	ID3D11Device** ppDevice,
+	D3D_FEATURE_LEVEL* pFeatureLevel,
+	ID3D11DeviceContext** ppImmediateContext)
+{
+	DXGI_ADAPTER_DESC adapterDesc;
+	pAdapter->GetDesc(&adapterDesc);
+	globals::state->SetAdapterDescription(adapterDesc.Description);
+
+	auto& imageReconstruction = globals::pipeline::imageReconstruction;
+	imageReconstruction.LoadUpscalingSDKs();
+
+	if (imageReconstruction.IsBackendInitialized())
+		imageReconstruction.CheckBackendFeatures(pAdapter);
+
+	// FLIP_DISCARD requires BufferCount >= 2 and a flip-model-compatible (non-sRGB) format.
+	pSwapChainDesc->SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+	if (pSwapChainDesc->BufferCount < 2)
+		pSwapChainDesc->BufferCount = 2;
+
+	if (globals::pipeline::cameraSuite.loaded) {
+		logger::info("[ImageReconstruction] Upgrading swap chain format from {} to R10G10B10A2_UNORM for HDR", static_cast<int>(pSwapChainDesc->BufferDesc.Format));
+		pSwapChainDesc->BufferDesc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+	} else if (pSwapChainDesc->BufferDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) {
+		pSwapChainDesc->BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+	} else if (pSwapChainDesc->BufferDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) {
+		pSwapChainDesc->BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	}
+
+	bool shouldProxy = true;
+	if (shouldProxy)
+		if (!pSwapChainDesc->Windowed)
+			shouldProxy = false;
+
+	auto refreshRate = ImageReconstruction::GetRefreshRate(pSwapChainDesc->OutputWindow);
+	imageReconstruction.refreshRate = refreshRate;
+
+	if (shouldProxy) {
+		if (imageReconstruction.settings.frameGenerationMode)
+			if (refreshRate >= 120)
+				shouldProxy = true;
+			else if (imageReconstruction.settings.frameGenerationForceEnable)
+				shouldProxy = true;
+			else
+				shouldProxy = false;
+		else
+			shouldProxy = false;
+	}
+
+	imageReconstruction.lowRefreshRate = refreshRate < 120;
+	imageReconstruction.isWindowed = pSwapChainDesc->Windowed;
+
+	const D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_1;
+
+	if (shouldProxy) {
+		logger::info("[Frame Generation] Frame Generation enabled, using D3D12 proxy");
+
+		if (imageReconstruction.HasFrameGenModule()) {
+			DX::ThrowIfFailed(D3D11CreateDevice(
+				pAdapter,
+				DriverType,
+				Software,
+				Flags,
+				&featureLevel,
+				1,
+				SDKVersion,
+				ppDevice,
+				pFeatureLevel,
+				ppImmediateContext));
+
+			if (imageReconstruction.IsBackendInitialized()) {
+				// Bind Streamline's D3D11 device before creating the internal
+				// D3D12 swap chain. Upgrading that swap chain activates its
+				// Present hook immediately and therefore requires a bound device.
+				imageReconstruction.UpgradeBackendInterface((void**)&(*ppDevice));
+				imageReconstruction.SetBackendD3DDevice(*ppDevice);
+			}
+
+			imageReconstruction.SetProxyD3D11Device(*ppDevice);
+			imageReconstruction.SetProxyD3D11DeviceContext(*ppImmediateContext);
+			imageReconstruction.CreateProxySwapChain(pAdapter, *pSwapChainDesc);
+			imageReconstruction.CreateProxyInterop();
+
+			*ppSwapChain = imageReconstruction.GetProxySwapChain();
+
+			imageReconstruction.d3d12SwapChainActive = true;
+
+			if (imageReconstruction.IsBackendInitialized()) {
+				// The internal D3D12 swap chain was wrapped during creation so
+				// Streamline observes Present. Keep PIXL's D3D11-facing proxy
+				// outermost because other SKSE plugins rely on its GetDevice()
+				// override returning IID_ID3D11Device.
+				// Some features (notably Reflex/PCL) may report availability only after device bind.
+				imageReconstruction.CheckBackendFeatures(pAdapter);
+				imageReconstruction.PostBackendDevice();
+			}
+
+			return S_OK;
+		} else {
+			logger::warn("[Frame Generation] FidelityFX DLLs are not loaded, skipping proxy");
+			imageReconstruction.fidelityFXMissing = true;
+		}
+	}
+
+	auto ret = ptrD3D11CreateDeviceAndSwapChainUpscaling(pAdapter,
+		DriverType,
+		Software,
+		Flags,
+		&featureLevel,
+		1,
+		SDKVersion,
+		pSwapChainDesc,
+		ppSwapChain,
+		ppDevice,
+		pFeatureLevel,
+		ppImmediateContext);
+
+	if (imageReconstruction.IsBackendInitialized()) {
+		imageReconstruction.UpgradeBackendInterface((void**)&(*ppDevice));
+		imageReconstruction.UpgradeBackendInterface((void**)&(*ppSwapChain));
+		imageReconstruction.SetBackendD3DDevice(*ppDevice);
+		// Re-check after device bind to ensure feature availability is accurate.
+		imageReconstruction.CheckBackendFeatures(pAdapter);
+		imageReconstruction.PostBackendDevice();
+	}
+
+	return ret;
+}
+
+void ImageReconstruction::DrawSettings()
+{
+	// Display imageReconstruction options in the UI
+	std::vector<std::string> upscaleModes = {
+		T(TKEY("method_none"), "None"),
+		T(TKEY("method_taa"), "TAA")
+	};
+
+	std::string fsrLabel = "AMD FSR 3.1";
+	upscaleModes.push_back(fsrLabel);
+
+	std::string dlssLabel = "NVIDIA DLSS";
+	upscaleModes.push_back(dlssLabel);
+
+	// Determine available modes
+	bool featureDLSS = streamline.featureDLSS;
+	bool featureFSR = true;  // FSR is always available
+
+	uint32_t* currentUpscaleMode = &settings.upscaleMethod;
+	uint32_t availableModes = 1;  // Start with TAA
+	if (featureFSR)
+		availableModes = 2;  // Add FSR
+	if (featureDLSS)
+		availableModes = 3;  // Add DLSS if available
+	else
+		currentUpscaleMode = &settings.upscaleMethodNoDLSS;
+
+	// Dropdown for method selection
+	std::vector<const char*> modeLabels;
+	for (uint32_t i = 0; i <= availableModes; ++i)
+		modeLabels.push_back(upscaleModes[i].c_str());
+	ImGui::Combo(T(TKEY("method"), "Method"), (int*)currentUpscaleMode, modeLabels.data(), (int)modeLabels.size());
+
+	*currentUpscaleMode = std::min(availableModes, *currentUpscaleMode);
+
+	// Check the current upscale method
+	auto upscaleMethod = GetUpscaleMethod();
+
+	// Display warning for DLSS resolution limits
+	if (upscaleMethod == UpscaleMethod::kDLSS) {
+		float2 screenSize{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight };
+		if (screenSize.x > streamline.MAX_RESOLUTION || screenSize.y > streamline.MAX_RESOLUTION) {
+			Util::Text::Warning("Warning: Requested resolution %.0f x %.0f exceeds maximum supported resolution %d x %d for DLSS.",
+				screenSize.x, screenSize.y, streamline.MAX_RESOLUTION, streamline.MAX_RESOLUTION);
+			Util::Text::Warning("DLSS will not function. Lower your resolution or select a different imageReconstruction method.");
+		}
+	}
+
+	// Display imageReconstruction settings if applicable
+	if (upscaleMethod != UpscaleMethod::kNONE && upscaleMethod != UpscaleMethod::kTAA) {
+		const char* upscalePresetsDLSS[] = {
+			T(TKEY("preset_ultra_performance"), "Ultra Performance"),
+			T(TKEY("preset_performance"), "Performance"),
+			T(TKEY("preset_balanced"), "Balanced"),
+			T(TKEY("preset_quality"), "Quality"),
+			T(TKEY("preset_dlaa"), "DLAA")
+		};
+		const char* upscalePresets[] = {
+			T(TKEY("preset_ultra_performance"), "Ultra Performance"),
+			T(TKEY("preset_performance"), "Performance"),
+			T(TKEY("preset_balanced"), "Balanced"),
+			T(TKEY("preset_quality"), "Quality"),
+			T(TKEY("preset_native_aa"), "Native AA")
+		};
+
+		// Compute a safe preset index (4 - qualityMode) clamped to [0,4] to avoid negative/overflow indexing
+		int presetIndex = 0;
+		if (settings.qualityMode <= 4)
+			presetIndex = 4 - static_cast<int>(settings.qualityMode);
+		presetIndex = std::clamp(presetIndex, 0, 4);
+
+		// Choose preset name set and the corresponding scales once, then show a
+		// single SliderInt to avoid duplicated calls.
+		const char* baseLabel = nullptr;
+
+		if (upscaleMethod == UpscaleMethod::kFSR) {
+			baseLabel = upscalePresets[presetIndex];
+		} else if (upscaleMethod == UpscaleMethod::kDLSS) {
+			baseLabel = upscalePresetsDLSS[presetIndex];
+		}
+
+		if (baseLabel) {
+			// Format the label with preset name and resolution scale
+			std::string labelWithScale = std::format("{} ( {:.2f}x )", baseLabel, (resolutionScale.x + resolutionScale.y) * 0.5f);
+
+			ImGui::SliderInt(T(TKEY("upscale_preset"), "Upscale Preset"), (int*)&settings.qualityMode, 0, 4, labelWithScale.c_str());
+		}
+
+		if (upscaleMethod == UpscaleMethod::kFSR) {
+			ImGui::SliderFloat(T(TKEY("sharpness"), "Sharpness"), &settings.sharpnessFSR, 0.0f, 1.0f, "%.1f");
+			ImGui::SeparatorText("FSR GENERATION");
+			ImGui::Text("AMD FSR 3.1");
+			ImGui::SameLine();
+			ImGui::TextColored(ImVec4(0.42f, 0.82f, 0.64f, 1.0f), "ACTIVE / DX11");
+			ImGui::BeginDisabled();
+			bool fsr4Unavailable = false;
+			ImGui::Checkbox("AMD FSR 4.1", &fsr4Unavailable);
+			ImGui::EndDisabled();
+			if (auto _tt = Util::HoverTooltipWrapper()) {
+				ImGui::TextWrapped("FSR 4.1 is shown for capability clarity but cannot run through Skyrim's Direct3D 11 render path. The official AMD integration requires Direct3D 12; selecting it would otherwise only disguise the existing FSR 3.1 path.");
+			}
+		} else if (upscaleMethod == UpscaleMethod::kDLSS) {
+			ImGui::Checkbox(T(TKEY("enable_sharpening"), "Enable Sharpening"), &settings.sharpnessEnabledDLSS);
+			if (auto _tt = Util::HoverTooltipWrapper()) {
+				ImGui::Text("%s", T(TKEY("enable_sharpening_tooltip"),
+									  "Applies RCAS sharpening to the DLSS output.\n"
+									  "Off by default; DLSS already resolves a sharp image."));
+			}
+
+			if (settings.sharpnessEnabledDLSS)
+				ImGui::SliderFloat(T(TKEY("sharpness"), "Sharpness"), &settings.sharpnessDLSS, 0.0f, 1.0f, "%.1f");
+
+			const char* presets[] = {
+				T(TKEY("dlss_model_preset_default"), "Default"),
+				T(TKEY("dlss_model_preset_j"), "Preset J"),
+				T(TKEY("dlss_model_preset_k"), "Preset K"),
+				T(TKEY("dlss_model_preset_l"), "Preset L"),
+				T(TKEY("dlss_model_preset_m"), "Preset M")
+			};
+			ImGui::Combo(T(TKEY("dlss_model_preset"), "DLSS Model Preset"), (int*)&settings.presetDLSS, presets, 5);
+			if (auto _tt = Util::HoverTooltipWrapper()) {
+				ImGui::Text("%s", T(TKEY("dlss_model_preset_tooltip"),
+									  "Choose which DLSS AI model preset to use.\n"
+									  "Each model offers different visual quality, performance, and motion stability.\n"
+									  "Set to 'Default' for automatic selection based on your Upscale Preset and hardware.\n"
+									  "Changing this setting requires a restart to take effect."));
+			}
+
+			if (streamline.isRTXBelow40series) {
+				ImGui::SeparatorText("DLSS RUNTIME POLICY");
+				if (ImGui::Checkbox("Allow latest model on RTX 20 / 30", &settings.forceLatestDLSSModelOnLegacyRTX))
+					globals::state->Save();
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::TextWrapped("Overrides PIXL's conservative legacy-RTX preset policy and requests the latest installed DLSS model family. Your installed signed NVIDIA runtime remains authoritative; this does not spoof GPU support or replace its DLL.");
+				}
+				ImGui::TextColored(
+					settings.forceLatestDLSSModelOnLegacyRTX ? ImVec4(0.42f, 0.82f, 0.64f, 1.0f) : ImVec4(0.72f, 0.75f, 0.78f, 1.0f),
+					"%s",
+					settings.forceLatestDLSSModelOnLegacyRTX ? "LATEST INSTALLED MODEL REQUESTED" : "COMPATIBILITY MODEL POLICY");
+			}
+		}
+	}
+
+	const bool frameGenerationDx12PathActive = IsFrameGenerationDx12PathActive();
+
+	if (ImGui::TreeNodeEx(T(TKEY("frame_generation"), "Frame Generation"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		ImGui::Text("%s", T(TKEY("frame_generation_desc"),
+							  "Frame Generation interpolates real frames with generated ones for a smoother experience"));
+		ImGui::Text("%s", T(TKEY("frame_generation_tech"),
+							  "Uses AMD FSR Frame Generation technology"));
+		if (HasFrameGenModule())
+			ImGui::Text("%s", T(TKEY("frame_generation_available"),
+								  "AMD FSR Frame Generation is available."));
+		ImGui::Text("%s", T(TKEY("frame_generation_proxy_note"),
+							  "Requires a D3D11 to D3D12 proxy which can create compatibility issues"));
+		ImGui::Text("%s", T(TKEY("frame_generation_restart_note"),
+							  "Toggling this setting requires a restart to work correctly"));
+
+		bool onlyRequiresRestart = true;
+
+		if (!isWindowed) {
+			Util::Text::Warning("Warning: Requires windowed mode");
+
+			onlyRequiresRestart = false;
+		}
+
+		if (lowRefreshRate && !settings.frameGenerationForceEnable) {
+			Util::Text::Warning("Warning: Requires a high refresh rate monitor or Force Enable Frame Generation");
+
+			onlyRequiresRestart = false;
+		}
+
+		if (fidelityFXMissing) {
+			Util::Text::Warning("Warning: FidelityFX DLLs are not loaded");
+
+			onlyRequiresRestart = false;
+		}
+
+		if (onlyRequiresRestart && settings.frameGenerationMode && !frameGenerationDx12PathActive)
+			Util::Text::Warning("Warning: Requires restart");
+
+		if (!settings.frameGenerationMode && frameGenerationDx12PathActive)
+			Util::Text::Warning("Warning: Requires restart");
+
+		bool fgEnabled = settings.frameGenerationMode != 0;
+		if (ImGui::Checkbox(T(TKEY("frame_generation"), "Frame Generation"), &fgEnabled))
+			settings.frameGenerationMode = fgEnabled ? 1 : 0;
+
+		if (!frameGenerationDx12PathActive)
+			ImGui::BeginDisabled();
+
+		bool flEnabled = settings.frameLimitMode != 0;
+		if (ImGui::Checkbox(T(TKEY("frame_limit_vrr"), "Frame Limit (Variable Refresh Rate)"), &flEnabled))
+			settings.frameLimitMode = flEnabled ? 1 : 0;
+
+		if (!frameGenerationDx12PathActive)
+			ImGui::EndDisabled();
+
+		ImGui::TextWrapped("Allows frame generation to function on low refresh rate monitors. Detected: %.2f Hz", refreshRate);
+		bool fgForce = settings.frameGenerationForceEnable != 0;
+		if (ImGui::Checkbox(T(TKEY("force_enable_frame_generation"), "Force Enable Frame Generation"), &fgForce))
+			settings.frameGenerationForceEnable = fgForce ? 1 : 0;
+
+		ImGui::Checkbox(T(TKEY("frame_generation_in_menus"), "Frame Generation in Menus"), &settings.frameGenerationAllowInMenus);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("frame_generation_in_menus_tooltip_1"), "Keeps frame generation active while game menus are open."));
+			ImGui::TextUnformatted(T(TKEY("frame_generation_in_menus_tooltip_2"), "May feel smoother, but increases menu input latency."));
+		}
+
+		ImGui::TreePop();
+	}
+
+	if (streamline.reflexSupportedOnCurrentAdapter && ImGui::TreeNodeEx(T(TKEY("nvidia_reflex"), "NVIDIA Reflex"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		const bool reflexBlockedByFrameGeneration = frameGenerationDx12PathActive;
+		const bool reflexAvailable = streamline.initialized && streamline.featureReflex;
+		const bool reflexControlsAvailable = reflexAvailable && !reflexBlockedByFrameGeneration;
+		const bool markerOptimizationAvailable = reflexControlsAvailable && streamline.featurePCL;
+		if (reflexBlockedByFrameGeneration) {
+			ImGui::TextDisabled("%s", T(TKEY("reflex_blocked_by_fg"), "Reflex is unavailable while the DX12 frame-generation swapchain is active."));
+		}
+
+		if (!reflexAvailable) {
+			ImGui::TextDisabled("%s", T(TKEY("reflex_not_available"), "Reflex is not available. Ensure sl.reflex.dll is present and restart."));
+		}
+
+		if (!reflexControlsAvailable)
+			ImGui::BeginDisabled();
+
+		ImGui::Checkbox(T(TKEY("low_latency_mode"), "Low Latency Mode"), &settings.reflexLowLatencyMode);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("low_latency_mode_tooltip_1"), "Cuts input delay by syncing CPU work closer to the GPU."));
+			ImGui::TextUnformatted(T(TKEY("low_latency_mode_tooltip_2"), "Can reduce max FPS a little, but usually feels more responsive."));
+		}
+
+		if (!settings.reflexLowLatencyMode)
+			ImGui::BeginDisabled();
+
+		ImGui::Checkbox(T(TKEY("low_latency_boost"), "Low Latency Boost"), &settings.reflexLowLatencyBoost);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("low_latency_boost_tooltip_1"), "Keeps GPU clocks higher to avoid latency spikes at low GPU load."));
+			ImGui::TextUnformatted(T(TKEY("low_latency_boost_tooltip_2"), "Useful if frametime jumps; costs extra power and heat."));
+		}
+
+		if (!markerOptimizationAvailable)
+			ImGui::BeginDisabled();
+
+		ImGui::Checkbox(T(TKEY("use_markers_to_optimize"), "Use Markers To Optimize"), &settings.reflexUseMarkersToOptimize);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("use_markers_to_optimize_tooltip_1"), "Uses frame markers for tighter Reflex timing."));
+			ImGui::TextUnformatted(T(TKEY("use_markers_to_optimize_tooltip_2"), "Try On first; turn Off if it causes stutter on your setup."));
+		}
+
+		if (!markerOptimizationAvailable)
+			ImGui::EndDisabled();
+
+		if (!markerOptimizationAvailable) {
+			ImGui::TextDisabled("%s", T(TKEY("marker_optimization_unavailable"), "Marker optimization unavailable (PCL not loaded)."));
+		}
+
+		ImGui::Checkbox(T(TKEY("use_fps_limit"), "Use FPS Limit"), &settings.reflexUseFPSLimit);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("use_fps_limit_tooltip_1"), "Uses Reflex's internal FPS cap for steadier frametimes."));
+			ImGui::TextUnformatted(T(TKEY("use_fps_limit_tooltip_2"), "Can lower latency versus uncapped rendering."));
+		}
+
+		if (!settings.reflexLowLatencyMode)
+			ImGui::EndDisabled();
+
+		if (!settings.reflexUseFPSLimit)
+			ImGui::BeginDisabled();
+
+		if (!std::isfinite(settings.reflexFPSLimit))
+			settings.reflexFPSLimit = 60.0f;
+		settings.reflexFPSLimit = std::clamp(settings.reflexFPSLimit, 20.0f, 240.0f);
+		ImGui::SliderFloat(T(TKEY("fps_limit"), "FPS Limit"), &settings.reflexFPSLimit, 20.0f, 240.0f, "%.0f");
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T(TKEY("fps_limit_tooltip_1"), "Set your frame cap target."));
+			ImGui::TextUnformatted(T(TKEY("fps_limit_tooltip_2"), "Start about 2-3 FPS below refresh rate (e.g. 117 for 120 Hz)."));
+		}
+
+		if (!settings.reflexUseFPSLimit)
+			ImGui::EndDisabled();
+
+		if (!reflexControlsAvailable)
+			ImGui::EndDisabled();
+
+		ImGui::TreePop();
+	}
+
+	if (ImGui::TreeNodeEx(T(TKEY("backend_diagnostics"), "Backend Diagnostics"))) {
+		// Streamline log level selection
+		const char* logLevels[] = { "Off", "Default", "Verbose" };
+		int logLevelIdx = static_cast<int>(settings.streamlineLogLevel);
+		if (ImGui::Combo(T(TKEY("streamline_logging"), "Streamline Logging"), &logLevelIdx, logLevels, IM_ARRAYSIZE(logLevels))) {
+			settings.streamlineLogLevel = static_cast<uint>(logLevelIdx);
+		}
+		ImGui::TextUnformatted(T(TKEY("streamline_logging_restart_note"), "Changing this requires a restart to take effect."));
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::Text("%s", T(TKEY("streamline_logging_tooltip"), "Streamline logging controls the verbosity of NVIDIA Streamline backend logs. Useful for debugging issues with DLSS/DLSS-G."));
+		}
+
+		ImGui::Separator();
+		Util::DrawDllVersionTable("AMD FidelityFX DLLs (click to open folder)", FidelityFX::PluginDir, FidelityFX::dllVersions, "ffx_dll_versions");
+		Util::DrawDllVersionTable("NVIDIA Streamline DLLs (click to open folder)", Streamline::PluginDir, Streamline::dllVersions, "sl_dll_versions");
+		ImGui::TreePop();
+	}
+}
+
+void ImageReconstruction::SaveSettings(json& o_json)
+{
+	o_json = settings;
+	auto iniSettingCollection = globals::game::iniPrefSettingCollection;
+	if (iniSettingCollection) {
+		auto setting = iniSettingCollection->GetSetting("bUseTAA:Display");
+		if (setting) {
+			iniSettingCollection->WriteSetting(setting);
+		}
+	}
+}
+
+void ImageReconstruction::LoadSettings(json& o_json)
+{
+	settings = o_json;
+
+	// Sanitize loaded settings to ensure enum indices are valid
+	constexpr auto enumCount = 4;  // UpscaleMethod has 4 values: kNONE, kTAA, kFSR, kDLSS
+	if (settings.upscaleMethod >= static_cast<uint>(enumCount)) {
+		logger::warn("[ImageReconstruction] Loaded upscaleMethod {} out of range, clamping to {}", settings.upscaleMethod, enumCount ? enumCount - 1 : 0);
+		settings.upscaleMethod = enumCount ? enumCount - 1 : 0;
+	}
+	if (settings.upscaleMethodNoDLSS >= static_cast<uint>(enumCount)) {
+		logger::warn("[ImageReconstruction] Loaded upscaleMethodNoDLSS {} out of range, clamping to {}", settings.upscaleMethodNoDLSS, enumCount ? enumCount - 1 : 0);
+		settings.upscaleMethodNoDLSS = enumCount ? enumCount - 1 : 0;
+	}
+	if (settings.presetDLSS > 4) {
+		logger::warn("[ImageReconstruction] Loaded presetDLSS {} out of range, resetting to 0 (Default)", settings.presetDLSS);
+		settings.presetDLSS = 0;
+	}
+	const float originalReflexFPSLimit = settings.reflexFPSLimit;
+	if (!std::isfinite(settings.reflexFPSLimit)) {
+		settings.reflexFPSLimit = 60.0f;
+		logger::warn(
+			"[ImageReconstruction] Loaded reflexFPSLimit {} is not finite, resetting to {}",
+			originalReflexFPSLimit,
+			settings.reflexFPSLimit);
+	}
+	const float clampedReflexFPSLimit = std::clamp(settings.reflexFPSLimit, 20.0f, 240.0f);
+	if (clampedReflexFPSLimit != settings.reflexFPSLimit) {
+		logger::warn(
+			"[ImageReconstruction] Loaded reflexFPSLimit {} out of range, clamping to {}",
+			settings.reflexFPSLimit,
+			clampedReflexFPSLimit);
+	}
+	settings.reflexFPSLimit = clampedReflexFPSLimit;
+	auto iniSettingCollection = globals::game::iniPrefSettingCollection;
+	if (iniSettingCollection) {
+		auto setting = iniSettingCollection->GetSetting("bUseTAA:Display");
+		if (setting) {
+			iniSettingCollection->ReadSetting(setting);
+		}
+	}
+}
+
+void ImageReconstruction::RestoreDefaultSettings()
+{
+	settings = {};
+}
+
+void ImageReconstruction::DataLoaded()
+{
+	// Fix screenshots fix from Engine Fixes
+	Util::DisableVanillaTAA();
+
+	// The game defaults this to a non-zero value
+	static auto fDRClampOffset = RE::GetINISetting("fDRClampOffset:Display");
+	fDRClampOffset->data.f = 0.0f;
+}
+
+void ImageReconstruction::Load()
+{
+	*(uintptr_t*)&ptrD3D11CreateDeviceAndSwapChainUpscaling = SKSE::PatchIAT(hk_D3D11CreateDeviceAndSwapChainUpscaling, "d3d11.dll", "D3D11CreateDeviceAndSwapChain");
+}
+
+struct BSImageSpace_Init_FXAA
+{
+	static void thunk()
+	{
+		func();
+
+		// Force FXAA off safely
+		auto fxaaEnabled = reinterpret_cast<bool*>(REL::RelocationID(513281, 391028).address());
+		*fxaaEnabled = false;
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+void ImageReconstruction::PostPostLoad()
+{
+	bool isGOG = !GetModuleHandle(L"steam_api64.dll");
+	stl::detour_thunk<MenuManagerDrawInterfaceStartHook>(REL::RelocationID(79947, 82084));
+
+	// Calculates resolution and jitter
+	stl::write_thunk_call<Main_UpdateJitter>(REL::RelocationID(75460, 77245).address() + REL::Relocate(0xE5, isGOG ? 0x133 : 0xE2));
+
+	// Disables the original dynamic resolution system
+	REL::safe_write(REL::RelocationID(35556, 36555).address() + REL::Relocate(0x2D, 0x2D), REL::NOP5, sizeof(REL::NOP5));
+
+	// Performs imageReconstruction in between volumetric lighting and post processing
+	stl::write_thunk_call<Main_PostProcessing>(REL::RelocationID(100430, 107148).address() + REL::Relocate(0x1F0, 0x1E7));
+
+	// Patches RSSetScissorRect calls to use dynamic resolution
+	stl::detour_thunk<SetScissorRect>(REL::RelocationID(75564, 77365));
+
+	// Patches facegen texture generation to not use dynamic resolution
+	stl::detour_thunk<BSFaceGenManager_UpdatePendingCustomizationTextures>(REL::RelocationID(26455, 27041));
+
+	// Patches precipitation camera to not use dynamic resolution
+	stl::write_thunk_call<Main_RenderPrecipitation>(REL::RelocationID(35560, 36559).address() + REL::Relocate(0x3A1, 0x3A1));
+
+	// Forces FXAA off
+	stl::detour_thunk<BSImageSpace_Init_FXAA>(REL::RelocationID(98974, 105626));
+
+	logger::info("[ImageReconstruction] Installed hooks");
+}
+
+#undef I18N_KEY_PREFIX
+
+ImageReconstruction::UpscaleMethod ImageReconstruction::GetUpscaleMethod() const
+{
+	if (streamline.featureDLSS)
+		return (UpscaleMethod)settings.upscaleMethod;
+	return (UpscaleMethod)settings.upscaleMethodNoDLSS;
+}
+
+void ImageReconstruction::CreateUpscalingTextureResources(UpscaleMethod a_upscalemethod)
+{
+	logger::debug("[ImageReconstruction] Creating texture resources for method {} ({})", static_cast<int>(a_upscalemethod), magic_enum::enum_name(a_upscalemethod));
+
+	auto renderer = globals::game::renderer;
+	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+
+	D3D11_TEXTURE2D_DESC texDesc{};
+	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+	D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+	main.texture->GetDesc(&texDesc);
+	main.SRV->GetDesc(&srvDesc);
+	main.UAV->GetDesc(&uavDesc);
+
+	texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+
+	if (a_upscalemethod == UpscaleMethod::kDLSS || a_upscalemethod == UpscaleMethod::kFSR) {
+		texDesc.Format = DXGI_FORMAT_R8_UNORM;
+		srvDesc.Format = texDesc.Format;
+		uavDesc.Format = texDesc.Format;
+
+		if (!reactiveMaskTexture) {
+			reactiveMaskTexture = new Texture2D(texDesc);
+			reactiveMaskTexture->CreateSRV(srvDesc);
+			reactiveMaskTexture->CreateUAV(uavDesc);
+		}
+
+		if (!transparencyCompositionMaskTexture) {
+			transparencyCompositionMaskTexture = new Texture2D(texDesc);
+			transparencyCompositionMaskTexture->CreateSRV(srvDesc);
+			transparencyCompositionMaskTexture->CreateUAV(uavDesc);
+		}
+	}
+
+	// Motion vector copy texture is only needed for DLSS
+	if (a_upscalemethod == UpscaleMethod::kDLSS) {
+		if (!motionVectorCopyTexture) {
+			auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
+
+			D3D11_TEXTURE2D_DESC motionTexDesc{};
+			motionVector.texture->GetDesc(&motionTexDesc);
+
+			texDesc.Format = motionTexDesc.Format;
+			srvDesc.Format = texDesc.Format;
+			uavDesc.Format = texDesc.Format;
+
+			motionVectorCopyTexture = new Texture2D(motionTexDesc);
+			motionVectorCopyTexture->CreateSRV(srvDesc);
+			motionVectorCopyTexture->CreateUAV(uavDesc);
+		}
+
+		// RCAS sharpener texture - matches kMAIN format for HDR sharpening
+		if (!sharpenerTexture) {
+			main.texture->GetDesc(&texDesc);
+			main.SRV->GetDesc(&srvDesc);
+
+			texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+
+			srvDesc.Format = texDesc.Format;
+			srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+			srvDesc.Texture2D.MostDetailedMip = 0;
+			srvDesc.Texture2D.MipLevels = 1;
+
+			uavDesc.Format = texDesc.Format;
+			uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+			uavDesc.Texture2D.MipSlice = 0;
+
+			sharpenerTexture = new Texture2D(texDesc);
+			sharpenerTexture->CreateSRV(srvDesc);
+			sharpenerTexture->CreateUAV(uavDesc);
+		}
+	}
+}
+
+void ImageReconstruction::DestroyUpscalingTextureResources(UpscaleMethod a_upscalemethod)
+{
+	logger::debug("[ImageReconstruction] Destroying texture resources for method {} ({})", static_cast<int>(a_upscalemethod), magic_enum::enum_name(a_upscalemethod));
+
+	// Clean up D3D11 textures that are no longer needed
+	// Only destroy textures when switching away from methods that use them
+	if (a_upscalemethod != UpscaleMethod::kDLSS && a_upscalemethod != UpscaleMethod::kFSR) {
+		if (reactiveMaskTexture) {
+			reactiveMaskTexture->srv = nullptr;
+			reactiveMaskTexture->uav = nullptr;
+			reactiveMaskTexture->resource = nullptr;
+
+			delete reactiveMaskTexture;
+			reactiveMaskTexture = nullptr;
+		}
+
+		if (transparencyCompositionMaskTexture) {
+			transparencyCompositionMaskTexture->srv = nullptr;
+			transparencyCompositionMaskTexture->uav = nullptr;
+			transparencyCompositionMaskTexture->resource = nullptr;
+
+			delete transparencyCompositionMaskTexture;
+			transparencyCompositionMaskTexture = nullptr;
+		}
+	}
+
+	// Motion vector copy texture is only needed for DLSS - destroy when switching away from DLSS
+	if (a_upscalemethod != UpscaleMethod::kDLSS) {
+		if (motionVectorCopyTexture) {
+			motionVectorCopyTexture->srv = nullptr;
+			motionVectorCopyTexture->uav = nullptr;
+			motionVectorCopyTexture->resource = nullptr;
+
+			delete motionVectorCopyTexture;
+			motionVectorCopyTexture = nullptr;
+		}
+		if (sharpenerTexture) {
+			sharpenerTexture->srv = nullptr;
+			sharpenerTexture->uav = nullptr;
+			sharpenerTexture->resource = nullptr;
+
+			delete sharpenerTexture;
+			sharpenerTexture = nullptr;
+		}
+	}
+}
+
+void ImageReconstruction::CheckResources(UpscaleMethod a_upscalemethod)
+{
+	static auto previousUpscaleMode = UpscaleMethod::kTAA;
+	static bool previousFrameGenMode = false;
+
+	bool frameGenModeCurrent = (settings.frameGenerationMode && d3d12SwapChainActive);
+	bool frameGenModeChanged = frameGenModeCurrent != previousFrameGenMode;
+	bool upscaleModeChanged = (previousUpscaleMode != a_upscalemethod);
+
+	if (upscaleModeChanged || frameGenModeChanged) {
+		logger::debug("[ImageReconstruction] Resource change detected - Upscale: {} ({}) -> {} ({}), FrameGen: {} -> {} (d3d12Active={})",
+			static_cast<int>(previousUpscaleMode), magic_enum::enum_name(previousUpscaleMode), static_cast<int>(a_upscalemethod), magic_enum::enum_name(a_upscalemethod), previousFrameGenMode, frameGenModeCurrent, d3d12SwapChainActive);
+
+		// Destroy previous imageReconstruction method resources (only if they were actually active)
+		if (upscaleModeChanged) {
+			DestroyUpscalingTextureResources(a_upscalemethod);
+
+			// Only destroy SDK resources if the previous method was actually performing imageReconstruction
+			if (previousUpscalingWasActive) {
+				if (previousUpscaleMode == UpscaleMethod::kDLSS)
+					streamline.DestroyDLSSResources();
+				else if (previousUpscaleMode == UpscaleMethod::kFSR)
+					fidelityFX.DestroyFSRResources();
+			}
+			if (a_upscalemethod == UpscaleMethod::kFSR)
+				fidelityFX.CreateFSRResources();
+		}
+
+		// Create new imageReconstruction method resources
+		if (upscaleModeChanged) {
+			CreateUpscalingTextureResources(a_upscalemethod);
+		}
+
+		// Update tracking for next call
+		previousUpscaleMode = a_upscalemethod;
+		previousFrameGenMode = (settings.frameGenerationMode && d3d12SwapChainActive);
+		previousUpscalingWasActive = IsUpscalingActive();
+	}
+}
+
+ID3D11ComputeShader* ImageReconstruction::GetEncodeTexturesCS()
+{
+	auto upscaleMethod = GetUpscaleMethod();
+	uint methodIndex = (uint)upscaleMethod;
+
+	if (!encodeTexturesCS[methodIndex]) {
+		logger::debug("Compiling EncodeTexturesCS.hlsl for upscale method {}", methodIndex);
+
+		std::vector<std::pair<const char*, const char*>> defines;
+
+		// Add upscale method define
+		switch (upscaleMethod) {
+		case UpscaleMethod::kDLSS:
+			defines.push_back({ "DLSS", "" });
+			break;
+		case UpscaleMethod::kFSR:
+			defines.push_back({ "FSR", "" });
+			break;
+		default:
+			// No define for NONE or TAA
+			break;
+		}
+
+		encodeTexturesCS[methodIndex].attach((ID3D11ComputeShader*)Util::CompileShader(L"Data/Shaders/ImageReconstruction/EncodeTexturesCS.hlsl", defines, "cs_5_0"));
+	}
+	return encodeTexturesCS[methodIndex].get();
+}
+
+ID3D11PixelShader* ImageReconstruction::GetDepthRefractionUpscalePS()
+{
+	if (!depthRefractionUpscalePS) {
+		logger::debug("Compiling DepthRefractionUpscalePS.hlsl");
+		std::vector<std::pair<const char*, const char*>> defines = { { "PSHADER", "" } };
+		depthRefractionUpscalePS.attach((ID3D11PixelShader*)Util::CompileShader(L"Data/Shaders/ImageReconstruction/DepthRefractionUpscalePS.hlsl", defines, "ps_5_0"));
+	}
+
+	return depthRefractionUpscalePS.get();
+}
+
+ID3D11PixelShader* ImageReconstruction::GetUnderwaterMaskUpscalePS()
+{
+	if (!underwaterMaskUpscalePS) {
+		logger::debug("Compiling UnderwaterMaskPS.hlsl");
+		std::vector<std::pair<const char*, const char*>> defines = { { "PSHADER", "" } };
+		underwaterMaskUpscalePS.attach((ID3D11PixelShader*)Util::CompileShader(L"Data/Shaders/ImageReconstruction/UnderwaterMaskUpscalePS.hlsl", defines, "ps_5_0"));
+	}
+
+	return underwaterMaskUpscalePS.get();
+}
+
+ID3D11VertexShader* ImageReconstruction::GetUpscaleVS()
+{
+	if (!upscaleVS) {
+		logger::debug("Compiling UpscaleVS.hlsl");
+		upscaleVS.attach((ID3D11VertexShader*)Util::CompileShader(L"Data/Shaders/ImageReconstruction/UpscaleVS.hlsl", { { "VSHADER", "" } }, "vs_5_0"));
+	}
+
+	return upscaleVS.get();
+}
+
+eastl::unique_ptr<Texture2D> ImageReconstruction::CreateTextureFromSource(ID3D11Resource* src, uint32_t width, uint32_t height,
+	bool copyBindFlags, bool createSRV, bool createUAV, const char* name)
+{
+	D3D11_TEXTURE2D_DESC srcDesc;
+	static_cast<ID3D11Texture2D*>(src)->GetDesc(&srcDesc);
+
+	D3D11_TEXTURE2D_DESC desc = {};
+	desc.Width = width;
+	desc.Height = height;
+	desc.MipLevels = 1;
+	desc.ArraySize = 1;
+	desc.Format = srcDesc.Format;
+	desc.SampleDesc.Count = 1;
+	desc.Usage = D3D11_USAGE_DEFAULT;
+	desc.BindFlags = copyBindFlags ? srcDesc.BindFlags : (D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS);
+
+	auto tex = eastl::make_unique<Texture2D>(desc);
+
+	if (name) {
+		Util::SetResourceName(tex->resource.get(), name);
+	}
+
+	if (createSRV) {
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+		srvDesc.Format = srcDesc.Format;
+		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Texture2D.MostDetailedMip = 0;
+		srvDesc.Texture2D.MipLevels = 1;
+		tex->CreateSRV(srvDesc);
+	}
+	if (createUAV) {
+		D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+		uavDesc.Format = srcDesc.Format;
+		uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+		uavDesc.Texture2D.MipSlice = 0;
+		tex->CreateUAV(uavDesc);
+	}
+	return tex;
+}
+
+int32_t GetJitterPhaseCount(int32_t renderWidth, int32_t displayWidth)
+{
+	const float basePhaseCount = 8.0f;
+	const int32_t jitterPhaseCount = int32_t(basePhaseCount * pow((float(displayWidth) / renderWidth), 2.0f));
+	return jitterPhaseCount;
+}
+
+// Calculate halton number for index and base.
+static float Halton(int32_t index, int32_t base)
+{
+	float f = 1.0f, result = 0.0f;
+
+	for (int32_t currentIndex = index; currentIndex > 0;) {
+		f /= (float)base;
+		result = result + f * (float)(currentIndex % base);
+		currentIndex = (uint32_t)(floorf((float)(currentIndex) / (float)(base)));
+	}
+
+	return result;
+}
+
+void GetJitterOffset(float* outX, float* outY, int32_t index, int32_t phaseCount)
+{
+	const float x = Halton((index % phaseCount) + 1, 2) - 0.5f;
+	const float y = Halton((index % phaseCount) + 1, 3) - 0.5f;
+
+	*outX = x;
+	*outY = y;
+}
+
+void ImageReconstruction::BeginPhotoCaptureJitter(std::uint32_t targetSamples)
+{
+	photoCaptureJitterActive = true;
+	photoCaptureJitterIndex = 0u;
+	photoCaptureJitterPhaseCount =
+		std::clamp<std::uint32_t>(
+			std::max<std::uint32_t>(targetSamples, 32u),
+			32u,
+			128u);
+
+	logger::info(
+		"Photo Finish projection jitter enabled: {} unique phases requested for {} sample(s).",
+		photoCaptureJitterPhaseCount,
+		targetSamples);
+}
+
+void ImageReconstruction::SetPhotoCaptureJitterSample(std::uint32_t sampleIndex)
+{
+	photoCaptureJitterIndex = sampleIndex;
+}
+
+void ImageReconstruction::EndPhotoCaptureJitter()
+{
+	if (photoCaptureJitterActive)
+		logger::info("Photo Finish projection jitter released.");
+
+	photoCaptureJitterActive = false;
+	photoCaptureJitterIndex = 0u;
+}
+
+void ImageReconstruction::ConfigureTAA()
+{
+	auto upscaleMethod = GetUpscaleMethod();
+
+	// Force enable TAA if needed
+	Util::SetTemporal(upscaleMethod != UpscaleMethod::kNONE);
+}
+
+void ImageReconstruction::ConfigureUpscaling(RE::BSGraphics::State* a_viewport)
+{
+	auto upscaleMethod = GetUpscaleMethod();
+
+	// Delete or create resources as necessary
+	CheckResources(upscaleMethod);
+
+	// Cache original TAA values for UI
+	projectionPosScaleX = a_viewport->projectionPosScaleX;
+	projectionPosScaleY = a_viewport->projectionPosScaleY;
+
+	// Get full screen size
+	auto state = globals::state;
+	float2 screenSize{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight };
+
+	auto screenWidth = static_cast<int>(screenSize.x);
+	auto screenHeight = static_cast<int>(screenSize.y);
+
+	if (upscaleMethod != UpscaleMethod::kNONE && upscaleMethod != UpscaleMethod::kTAA) {
+		float resolutionScaleBase = 1.0f / ffxFsr3GetUpscaleRatioFromQualityMode((FfxFsr3QualityMode)settings.qualityMode);
+
+		auto renderWidth = static_cast<int>(screenWidth * resolutionScaleBase);
+		auto renderHeight = static_cast<int>(screenHeight * resolutionScaleBase);
+
+		resolutionScale.x = static_cast<float>(renderWidth) / static_cast<float>(screenWidth);
+		resolutionScale.y = static_cast<float>(renderHeight) / static_cast<float>(screenHeight);
+
+		auto phaseCount = GetJitterPhaseCount(renderWidth, screenWidth);
+
+		if (photoCaptureJitterActive) {
+			GetJitterOffset(
+				&jitter.x,
+				&jitter.y,
+				static_cast<int32_t>(photoCaptureJitterIndex),
+				static_cast<int32_t>(
+					std::max<std::uint32_t>(
+						photoCaptureJitterPhaseCount,
+						static_cast<std::uint32_t>(phaseCount))));
+		} else {
+			GetJitterOffset(&jitter.x, &jitter.y, state->frameCount, phaseCount);
+		}
+
+		a_viewport->projectionPosScaleX = -2.0f * jitter.x / renderWidth;
+
+		a_viewport->projectionPosScaleY = 2.0f * jitter.y / renderHeight;
+	} else {
+		resolutionScale = { 1.0f, 1.0f };
+
+		if (photoCaptureJitterActive) {
+			GetJitterOffset(
+				&jitter.x,
+				&jitter.y,
+				static_cast<int32_t>(photoCaptureJitterIndex),
+				static_cast<int32_t>(photoCaptureJitterPhaseCount));
+
+			a_viewport->projectionPosScaleX = -2.0f * jitter.x / screenWidth;
+			a_viewport->projectionPosScaleY = 2.0f * jitter.y / screenHeight;
+		} else {
+			jitter.x = -a_viewport->projectionPosScaleX * screenWidth / 2.0f;
+
+			jitter.y = a_viewport->projectionPosScaleY * screenHeight / 2.0f;
+		}
+	}
+
+	auto& runtimeData = a_viewport->GetRuntimeData();
+
+	runtimeData.dynamicResolutionPreviousWidthRatio = dynamicResolutionWidthRatio;
+	runtimeData.dynamicResolutionPreviousHeightRatio = dynamicResolutionHeightRatio;
+	runtimeData.dynamicResolutionWidthRatio = resolutionScale.x;
+	runtimeData.dynamicResolutionHeightRatio = resolutionScale.y;
+
+	dynamicResolutionWidthRatio = resolutionScale.x;
+	dynamicResolutionHeightRatio = resolutionScale.y;
+
+	// Disable dynamic resolution unless the game explicitly enables it
+	runtimeData.dynamicResolutionLock = 1;
+}
+
+void ImageReconstruction::SetupResources()
+{
+	QueryPerformanceFrequency(&qpf);
+
+	auto renderer = globals::game::renderer;
+	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+
+	D3D11_TEXTURE2D_DESC texDesc{};
+	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+	D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+
+	main.texture->GetDesc(&texDesc);
+	main.SRV->GetDesc(&srvDesc);
+	main.UAV->GetDesc(&uavDesc);
+
+	texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+
+	texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	srvDesc.Format = texDesc.Format;
+	uavDesc.Format = texDesc.Format;
+
+	D3D11_DEPTH_STENCIL_DESC depthStencilDesc = {};
+	depthStencilDesc.DepthEnable = true;                           // Enable depth testing
+	depthStencilDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;  // Write to all depth bits
+	depthStencilDesc.DepthFunc = D3D11_COMPARISON_ALWAYS;          // Always pass depth test (write all depths)
+
+	depthStencilDesc.StencilEnable = false;  // Disable stencil testing
+
+	DX::ThrowIfFailed(globals::d3d::device->CreateDepthStencilState(&depthStencilDesc, upscaleDepthStencilState.put()));
+
+	// Create jitter offset constant buffer for depth imageReconstruction
+	jitterCB = new ConstantBuffer(ConstantBufferDesc<JitterCB>());
+
+	// Create imageReconstruction data constant buffer for encode textures compute shader
+	upscalingDataCB = new ConstantBuffer(ConstantBufferDesc<UpscalingDataCB>());
+
+	// Create blend state for depth imageReconstruction
+	D3D11_BLEND_DESC blendDesc = {};
+	blendDesc.AlphaToCoverageEnable = false;
+	blendDesc.IndependentBlendEnable = false;
+	blendDesc.RenderTarget[0].BlendEnable = false;
+	blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+	DX::ThrowIfFailed(globals::d3d::device->CreateBlendState(&blendDesc, upscaleBlendState.put()));
+
+	// Create rasterizer state for fullscreen rendering
+	D3D11_RASTERIZER_DESC rasterizerDesc = {};
+	rasterizerDesc.FillMode = D3D11_FILL_SOLID;
+	rasterizerDesc.CullMode = D3D11_CULL_NONE;
+	rasterizerDesc.FrontCounterClockwise = false;
+	rasterizerDesc.DepthBias = 0;
+	rasterizerDesc.DepthBiasClamp = 0.0f;
+	rasterizerDesc.SlopeScaledDepthBias = 0.0f;
+	rasterizerDesc.DepthClipEnable = false;
+	rasterizerDesc.ScissorEnable = false;
+	rasterizerDesc.MultisampleEnable = false;
+	rasterizerDesc.AntialiasedLineEnable = false;
+	DX::ThrowIfFailed(globals::d3d::device->CreateRasterizerState(&rasterizerDesc, upscaleRasterizerState.put()));
+
+	CheckResources(GetUpscaleMethod());
+
+	rcas.Initialize();
+
+	if (d3d12SwapChainActive)
+		dx12SwapChain.CreateSharedResources();
+
+	copyDepthToSharedBufferPS.attach((ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\ImageReconstruction\\CopyDepthToSharedBufferPS.hlsl", { { "PSHADER", "" } }, "ps_5_0"));
+
+	// CameraSuite is ordered after ImageReconstruction in the central module list,
+	// so its own SetupResources pass sees the finalized reconstruction/swap-chain
+	// state. Calling it here as well destroyed and recreated the full HDR/camera
+	// resource set twice during every renderer initialization.
+}
+
+void ImageReconstruction::ClearShaderCache()
+{
+	for (int i = 0; i < 4; ++i) {
+		encodeTexturesCS[i] = nullptr;  // com_ptr automatically releases
+	}
+
+	depthRefractionUpscalePS = nullptr;  // com_ptr automatically releases
+	underwaterMaskUpscalePS = nullptr;   // com_ptr automatically releases
+	upscaleVS = nullptr;                 // com_ptr automatically releases
+}
+
+void ImageReconstruction::CopySharedD3D12Resources()
+{
+	ZoneScoped;
+	TracyD3D11Zone(globals::state->tracyCtx, "ImageReconstruction - Copy Shared D3D12 Resources");
+	globals::state->BeginPerfEvent("Copy Shared D3D12 Resources");
+
+	auto renderer = globals::game::renderer;
+	auto context = globals::d3d::context;
+
+	auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
+	context->CopyResource(dx12SwapChain.motionVectorBufferShared12->resource11, motionVector.texture);
+
+	auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+
+	{
+		// Set up viewport for fullscreen rendering
+		float2 screenSize{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight };
+
+		D3D11_VIEWPORT viewport = {};
+		viewport.TopLeftX = 0.0f;
+		viewport.TopLeftY = 0.0f;
+		viewport.Width = screenSize.x;
+		viewport.Height = screenSize.y;
+		viewport.MinDepth = 0.0f;
+		viewport.MaxDepth = 1.0f;
+		context->RSSetViewports(1, &viewport);
+
+		// Set up Input Assembler for fullscreen triangle
+		context->IASetInputLayout(nullptr);
+		context->IASetVertexBuffers(0, 0, nullptr, nullptr, nullptr);
+		context->IASetIndexBuffer(nullptr, DXGI_FORMAT_UNKNOWN, 0);
+		context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+		// Set up vertex shader
+		context->VSSetShader(GetUpscaleVS(), nullptr, 0);
+
+		// Set up rasterizer and blend states
+		context->RSSetState(upscaleRasterizerState.get());
+		context->OMSetBlendState(upscaleBlendState.get(), nullptr, 0xffffffff);
+
+		// Set up pixel shader resources
+		ID3D11ShaderResourceView* views[1] = { depth.depthSRV };
+		context->PSSetShaderResources(0, ARRAYSIZE(views), views);
+
+		// Set render target view for pixel shader output
+		ID3D11RenderTargetView* rtvs[1] = { dx12SwapChain.depthBufferShared12->rtv };
+		context->OMSetRenderTargets(ARRAYSIZE(rtvs), rtvs, nullptr);
+
+		context->PSSetShader(copyDepthToSharedBufferPS.get(), nullptr, 0);
+
+		globals::profiler->BeginPass("ImageReconstruction::CopyDepthD3D12");
+		context->Draw(3, 0);
+		globals::profiler->EndPass();
+	}
+
+	// Clean up
+	ID3D11ShaderResourceView* views[1] = { nullptr };
+	context->PSSetShaderResources(0, ARRAYSIZE(views), views);
+
+	context->OMSetRenderTargets(0, nullptr, nullptr);
+	context->PSSetShader(nullptr, nullptr, 0);
+	context->VSSetShader(nullptr, nullptr, 0);
+
+	globals::state->EndPerfEvent();
+}
+
+void UpdateCameraData()
+{
+	using func_t = decltype(&UpdateCameraData);
+	static REL::Relocation<func_t> func{ RELOCATION_ID(75472, 77258) };
+	func();
+}
+
+void ImageReconstruction::PostDisplay()
+{
+	auto viewport = globals::game::graphicsState;
+
+	viewport->projectionPosScaleX = projectionPosScaleX;
+	viewport->projectionPosScaleY = projectionPosScaleY;
+
+	auto& runtimeData = viewport->GetRuntimeData();
+
+	runtimeData.dynamicResolutionPreviousWidthRatio = 1;
+	runtimeData.dynamicResolutionPreviousHeightRatio = 1;
+	runtimeData.dynamicResolutionWidthRatio = 1;
+	runtimeData.dynamicResolutionHeightRatio = 1;
+	runtimeData.dynamicResolutionLock = 1;
+
+	globals::game::renderer->UpdateViewPort(0, 0, 1);
+	UpdateCameraData();
+
+	if (d3d12SwapChainActive)
+		globals::pipeline::cameraSuite.SetUIBuffer();
+
+	globals::state->UpdateSharedData(false, false);
+}
+
+void ImageReconstruction::TimerSleepQPC(int64_t targetQPC)
+{
+	static const int64_t timerFrequency = []() {
+		LARGE_INTEGER frequency{};
+		QueryPerformanceFrequency(&frequency);
+		return frequency.QuadPart;
+	}();
+	if (timerFrequency <= 0)
+		return;
+
+	LARGE_INTEGER currentQPC;
+	do {
+		QueryPerformanceCounter(&currentQPC);
+		const int64_t remaining = targetQPC - currentQPC.QuadPart;
+		const int64_t twoMilliseconds = (timerFrequency * 2) / 1000;
+		if (remaining > twoMilliseconds) {
+			const DWORD sleepMs = static_cast<DWORD>(std::max<int64_t>(1, (remaining * 1000 / timerFrequency) - 1));
+			Sleep(sleepMs);
+		} else {
+			YieldProcessor();
+		}
+	} while (currentQPC.QuadPart < targetQPC);
+}
+
+void ImageReconstruction::FrameLimiter()
+{
+	if (d3d12SwapChainActive) {
+		// Use frame latency waitable object if available for better frame pacing
+		HANDLE waitableObject = GetFrameLatencyWaitableObject();
+
+		// Wait for the next frame presentation slot
+		if (waitableObject)
+			WaitForSingleObject(waitableObject, INFINITE);
+
+	}
+
+	if (!settings.frameLimitMode)
+		return;
+	if (qpf.QuadPart <= 0)
+		QueryPerformanceFrequency(&qpf);
+	if (qpf.QuadPart <= 0)
+		return;
+
+	const double presentedTarget = settings.frameLimitFPS > 0.0f ?
+	                                   std::clamp(static_cast<double>(settings.frameLimitFPS), 20.0, 360.0) :
+	                                   std::max(static_cast<double>(refreshRate), 20.0);
+	const double renderTarget = ShouldUseFrameGenerationThisFrame() ? presentedTarget * 0.5 : presentedTarget;
+	const int64_t targetFrameTicks = static_cast<int64_t>(static_cast<double>(qpf.QuadPart) / renderTarget);
+
+	static LARGE_INTEGER lastFrame{};
+	LARGE_INTEGER now{};
+	QueryPerformanceCounter(&now);
+	if (lastFrame.QuadPart != 0 && now.QuadPart - lastFrame.QuadPart < targetFrameTicks)
+		TimerSleepQPC(lastFrame.QuadPart + targetFrameTicks);
+	QueryPerformanceCounter(&lastFrame);
+}
+
+/*
+* Copyright (c) 2022-2023 NVIDIA CORPORATION. All rights reserved
+*
+* Permission is hereby granted, free of charge, to any person obtaining a copy
+* of this software and associated documentation files (the "Software"), to deal
+* in the Software without restriction, including without limitation the rights
+* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+* copies of the Software, and to permit persons to whom the Software is
+* furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in all
+* copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+* AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+* SOFTWARE.
+*/
+
+double ImageReconstruction::GetRefreshRate(HWND a_window)
+{
+	HMONITOR monitor = MonitorFromWindow(a_window, MONITOR_DEFAULTTONEAREST);
+	MONITORINFOEXW info;
+	info.cbSize = sizeof(info);
+	if (GetMonitorInfoW(monitor, &info) != 0) {
+		// using the CCD get the associated path and display configuration
+		UINT32 requiredPaths, requiredModes;
+		if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &requiredPaths, &requiredModes) == ERROR_SUCCESS) {
+			std::vector<DISPLAYCONFIG_PATH_INFO> paths(requiredPaths);
+			std::vector<DISPLAYCONFIG_MODE_INFO> modes2(requiredModes);
+			if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &requiredPaths, paths.data(), &requiredModes, modes2.data(), nullptr) == ERROR_SUCCESS) {
+				// iterate through all the paths until find the exact source to match
+				for (auto& p : paths) {
+					DISPLAYCONFIG_SOURCE_DEVICE_NAME sourceName;
+					sourceName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+					sourceName.header.size = sizeof(sourceName);
+					sourceName.header.adapterId = p.sourceInfo.adapterId;
+					sourceName.header.id = p.sourceInfo.id;
+					if (DisplayConfigGetDeviceInfo(&sourceName.header) == ERROR_SUCCESS && wcscmp(info.szDevice, sourceName.viewGdiDeviceName) == 0) {
+						// find the matched device which is associated with current device
+						// there may be the possibility that display may be duplicated and windows may be one of them in such scenario
+						// there may be two callback because source is same target will be different
+						// as window is on both the display so either selecting either one is ok
+						// get the refresh rate
+						UINT numerator = p.targetInfo.refreshRate.Numerator;
+						UINT denominator = p.targetInfo.refreshRate.Denominator;
+						return (double)numerator / (double)denominator;
+					}
+				}
+			}
+		}
+	}
+	logger::error("Failed to retrieve refresh rate from swap chain");
+	return 60;
+}
+
+bool ImageReconstruction::IsFrameGenerationDx12PathActive() const
+{
+	return d3d12SwapChainActive;
+}
+
+bool ImageReconstruction::IsFrameGenerationActive() const
+{
+	return IsFrameGenerationDx12PathActive() && settings.frameGenerationMode && fidelityFX.isFrameGenActive;
+}
+
+bool ImageReconstruction::ShouldUseFrameGenerationThisFrame() const
+{
+	auto* ui = globals::game::ui;
+	auto* state = globals::state;
+	const bool menuOpen = (ui && ui->GameIsPaused()) || (state && state->IsMainOrLoadingMenuOpen(ui));
+	return IsFrameGenerationDx12PathActive() && settings.frameGenerationMode && (settings.frameGenerationAllowInMenus || !menuOpen);
+}
+
+bool ImageReconstruction::IsUpscalingActive() const
+{
+	auto method = GetUpscaleMethod();
+
+	// Only consider vendor upscalers (FSR/DLSS) as "active" when the
+	// selected method actually produces a downscale. If the renderer is
+	// currently running at 1:1 (no downscale), treat imageReconstruction as inactive.
+	if (!(method == UpscaleMethod::kFSR || method == UpscaleMethod::kDLSS)) {
+		return false;
+	}
+
+	// resolutionScale.x represents renderWidth / displayWidth.
+	return resolutionScale.x < .99f;
+}
+
+/**
+ * @brief Retrieves the current frame time for frame generation.
+ *
+ * Returns the frame time from the D3D12 swap chain if frame generation is active; otherwise, returns 0.
+ *
+ * @return float The current frame time in seconds, or 0 if frame generation is inactive.
+ */
+float ImageReconstruction::GetFrameGenerationFrameTime() const
+{
+	if (!IsFrameGenerationActive())
+		return 0.0f;
+
+	// Get the current frame time from D3D12 swapchain
+	if (dx12SwapChain.swapChain) {
+		// Get frame time from the D3D12 SwapChain
+		return GetFrameTime();
+	}
+
+	return 0.0f;
+}
+
+// Unified interface methods
+void ImageReconstruction::LoadUpscalingSDKs()
+{
+	// Initialize imageReconstruction SDK components during plugin startup
+	// This ensures all SDKs are available before any D3D device creation
+	streamline.LoadInterposer();
+	fidelityFX.LoadFFX();  // Only for frame generation now
+}
+
+HANDLE ImageReconstruction::GetFrameLatencyWaitableObject() const
+{
+	return dx12SwapChain.GetFrameLatencyWaitableObject();
+}
+
+float ImageReconstruction::GetFrameTime() const
+{
+	return dx12SwapChain.GetFrameTime();
+}
+
+// Backend interface methods
+bool ImageReconstruction::IsBackendInitialized() const
+{
+	return streamline.initialized;
+}
+
+void ImageReconstruction::CheckBackendFeatures(IDXGIAdapter* adapter)
+{
+	streamline.CheckFeatures(adapter);
+}
+
+void ImageReconstruction::UpgradeBackendInterface(void** ppInterface)
+{
+	streamline.slUpgradeInterface(ppInterface);
+}
+
+void ImageReconstruction::SetBackendD3DDevice(ID3D11Device* device)
+{
+	streamline.slSetD3DDevice(device);
+}
+
+void ImageReconstruction::PostBackendDevice()
+{
+	streamline.PostDevice();
+}
+
+// Module availability methods
+bool ImageReconstruction::HasFrameGenModule() const
+{
+	return fidelityFX.featureFSR3FG;
+}
+
+// Proxy interface methods
+void ImageReconstruction::SetProxyD3D11Device(ID3D11Device* device)
+{
+	dx12SwapChain.SetD3D11Device(device);
+}
+
+void ImageReconstruction::SetProxyD3D11DeviceContext(ID3D11DeviceContext* context)
+{
+	dx12SwapChain.SetD3D11DeviceContext(context);
+}
+
+void ImageReconstruction::CreateProxySwapChain(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC swapChainDesc)
+{
+	dx12SwapChain.CreateSwapChain(adapter, swapChainDesc);
+}
+
+void ImageReconstruction::CreateProxyInterop()
+{
+	dx12SwapChain.CreateInterop();
+}
+
+IDXGISwapChain* ImageReconstruction::GetProxySwapChain()
+{
+	return dx12SwapChain.GetSwapChainProxy();
+}
+
+ImageReconstruction::BlurResources ImageReconstruction::GetBlurResources() const
+{
+	if (d3d12SwapChainActive) {
+		return dx12SwapChain.GetBlurResources();
+	}
+	return {};
+}
+
+void ImageReconstruction::Upscale()
+{
+	ZoneScoped;
+	auto upscaleMethod = GetUpscaleMethod();
+
+	auto state = globals::state;
+	auto context = globals::d3d::context;
+	auto renderer = globals::game::renderer;
+
+	context->OMSetRenderTargets(0, nullptr, nullptr);  // Unbind all bound render targets
+
+	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+	auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
+
+	{
+		globals::profiler->BeginPass("ImageReconstruction::EncodeTextures");
+		state->BeginPerfEvent("Encode ImageReconstruction Textures");
+		TracyD3D11Zone(globals::state->tracyCtx, "Encode ImageReconstruction Textures");
+
+		auto& temporalAAMask = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kTEMPORAL_AA_MASK];
+		auto& normals = renderer->GetRuntimeData().renderTargets[globals::deferred->forwardRenderTargets[2]];
+		auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+
+		auto renderSize = Util::ConvertToDynamic(float2{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight });
+		uint32_t renderWidth = (uint32_t)renderSize.x;
+		uint32_t renderHeight = (uint32_t)renderSize.y;
+
+		ID3D11ShaderResourceView* views[4] = { temporalAAMask.SRV, normals.SRV, motionVector.SRV, depth.depthSRV };
+		context->CSSetShaderResources(0, ARRAYSIZE(views), views);
+		context->CSSetShader(GetEncodeTexturesCS(), nullptr, 0);
+
+		UpscalingDataCB upscalingData;
+		upscalingData.trueSamplingDim = float2((float)renderWidth, (float)renderHeight);
+		upscalingDataCB->Update(upscalingData);
+		auto upscalingBuffer = upscalingDataCB->CB();
+		context->CSSetConstantBuffers(0, 1, &upscalingBuffer);
+
+		// u2 (MotionVectorOutput): DLSS only — 5x5 dilated MVec for ghosting reduction.
+		ID3D11UnorderedAccessView* uavs[4] = {
+			reactiveMaskTexture->uav.get(),
+			transparencyCompositionMaskTexture->uav.get(),
+			(upscaleMethod == UpscaleMethod::kDLSS) ? motionVectorCopyTexture->uav.get() : nullptr,
+			nullptr
+		};
+		context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
+
+		context->Dispatch((renderWidth + 7) / 8, (renderHeight + 7) / 8, 1);
+
+		ID3D11ShaderResourceView* nullViews[4] = { nullptr, nullptr, nullptr, nullptr };
+		context->CSSetShaderResources(0, ARRAYSIZE(nullViews), nullViews);
+
+		ID3D11UnorderedAccessView* nullUAVs[4] = { nullptr, nullptr, nullptr, nullptr };
+		context->CSSetUnorderedAccessViews(0, ARRAYSIZE(nullUAVs), nullUAVs, nullptr);
+
+		ID3D11Buffer* nullBuffer = nullptr;
+		context->CSSetConstantBuffers(0, 1, &nullBuffer);
+
+		ID3D11ComputeShader* shader = nullptr;
+		context->CSSetShader(shader, nullptr, 0);
+
+		state->EndPerfEvent();
+		globals::profiler->EndPass();
+	}
+
+	{
+		globals::profiler->BeginPass("ImageReconstruction::Upscale");
+		state->BeginPerfEvent("ImageReconstruction");
+		TracyD3D11Zone(globals::state->tracyCtx, "ImageReconstruction Dispatch");
+
+		if (upscaleMethod == UpscaleMethod::kDLSS) {
+			streamline.Upscale(main.texture, reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVectorCopyTexture->resource.get());
+		} else if (upscaleMethod == UpscaleMethod::kFSR) {
+			fidelityFX.Upscale(main.texture, reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVector.texture, settings.sharpnessFSR);
+		}
+
+		state->EndPerfEvent();
+		globals::profiler->EndPass();
+	}
+}
+
+void ImageReconstruction::PerformUpscaling()
+{
+	ZoneScoped;
+	TracyD3D11Zone(globals::state->tracyCtx, "ImageReconstruction");
+	Upscale();
+	UpscaleDepth();
+
+	auto& runtimeData = globals::game::graphicsState->GetRuntimeData();
+
+	// Disable dynamic resolution past this point
+	runtimeData.dynamicResolutionLock = 1;
+
+	// Updates the PerFrame constant buffer so that dynamic resolution settings are disabled
+	UpdateCameraData();
+}
+
+void ImageReconstruction::UpscaleDepth()
+{
+	ZoneScoped;
+	TracyD3D11Zone(globals::state->tracyCtx, "ImageReconstruction - Depth");
+	// Optimization overview:
+	// 1) Early validation exits before issuing GPU work.
+	// 2) Wide-kernel depth mode uses hysteresis to avoid frequent toggles.
+	// 3) Resource copies are skipped for aliased src/dst to reduce copy churn.
+
+	// (1) Early validation exits
+	if (!IsUpscalingActive()) {
+		return;
+	}
+
+	auto state = globals::state;
+	auto renderer = globals::game::renderer;
+	auto context = globals::d3d::context;
+	auto deferred = globals::deferred;
+	if (!state || !renderer || !context || !deferred || !deferred->linearSampler || !jitterCB || !upscaleRasterizerState || !upscaleBlendState || !upscaleDepthStencilState) {
+		return;
+	}
+
+	float2 screenSize{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight };
+	if (screenSize.x <= 0.0f || screenSize.y <= 0.0f) {
+		return;
+	}
+
+	auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+	auto& depthCopy = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN_COPY];
+	auto& refractionNormals = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGET::kREFRACTION_NORMALS];
+	auto& saoCameraZ = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGET::kSAO_CAMERAZ];
+	auto& underwaterMask = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGET::kUNDERWATER_MASK];
+
+	if (!depth.texture || !depth.views[0] || !depthCopy.texture || !depthCopy.depthSRV ||
+		!refractionNormals.texture || !refractionNormals.textureCopy || !refractionNormals.SRVCopy || !refractionNormals.RTV || !saoCameraZ.RTV ||
+		!underwaterMask.texture || !underwaterMask.textureCopy || !underwaterMask.SRVCopy || !underwaterMask.RTV) {
+		return;
+	}
+	auto* fullscreenVS = GetUpscaleVS();
+	auto* depthUpscalePS = GetDepthRefractionUpscalePS();
+	auto* underwaterMaskPS = GetUnderwaterMaskUpscalePS();
+	if (!fullscreenVS || !depthUpscalePS || !underwaterMaskPS) {
+		return;
+	}
+
+	state->BeginPerfEvent("Render Target ImageReconstruction");
+
+	// Set up Input Assembler for fullscreen triangle (no vertex/index buffers needed)
+	context->IASetInputLayout(nullptr);
+	context->IASetVertexBuffers(0, 0, nullptr, nullptr, nullptr);
+	context->IASetIndexBuffer(nullptr, DXGI_FORMAT_UNKNOWN, 0);
+	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+	// Set up vertex shader that generates fullscreen triangle using SV_VertexID
+	context->VSSetShader(fullscreenVS, nullptr, 0);
+
+	// Set up viewport for fullscreen rendering
+	D3D11_VIEWPORT viewport = {};
+	viewport.TopLeftX = 0.0f;
+	viewport.TopLeftY = 0.0f;
+	viewport.Width = screenSize.x;
+	viewport.Height = screenSize.y;
+	viewport.MinDepth = 0.0f;
+	viewport.MaxDepth = 1.0f;
+	context->RSSetViewports(1, &viewport);
+
+	// Set rasterizer and blend state
+	context->RSSetState(upscaleRasterizerState.get());
+	context->OMSetBlendState(upscaleBlendState.get(), nullptr, 0xffffffff);
+
+	ID3D11SamplerState* samplers[] = { deferred->linearSampler };
+	context->PSSetSamplers(0, ARRAYSIZE(samplers), samplers);
+
+	// Set up jitter/depth-kernel constant buffer for imageReconstruction
+	JitterCB jitterData;
+	jitterData.jitter = jitter;
+	// (2) Wide-kernel hysteresis
+	{
+		constexpr float kEnterWideKernelRatio = 1.55f;
+		constexpr float kExitWideKernelRatio = 1.45f;
+		const float minScale = std::max(std::min(resolutionScale.x, resolutionScale.y), FLT_EPSILON);
+		const float upscaleRatio = 1.0f / minScale;
+
+		if (depthUpscaleUseWideKernel) {
+			if (upscaleRatio < kExitWideKernelRatio) {
+				depthUpscaleUseWideKernel = false;
+			}
+		} else {
+			if (upscaleRatio > kEnterWideKernelRatio) {
+				depthUpscaleUseWideKernel = true;
+			}
+		}
+
+		jitterData.useWideKernel = depthUpscaleUseWideKernel ? 1.0f : 0.0f;
+		jitterData.pad0 = 0.0f;
+	}
+
+	jitterCB->Update(jitterData);
+	auto bufferArray = jitterCB->CB();
+	context->PSSetConstantBuffers(0, 1, &bufferArray);
+
+	// (3) Skip aliased copies
+	const auto copyIfNonAliased = [&](ID3D11Resource* dst, ID3D11Resource* src) {
+		if (dst && src && dst != src) {
+			context->CopyResource(dst, src);
+		}
+	};
+
+	{
+		TracyD3D11Zone(globals::state->tracyCtx, "ImageReconstruction - Depth Upscale");
+
+		// Sometimes this is not already copied e.g. map menu.
+		// Skip alias copies to reduce unnecessary copy churn.
+		copyIfNonAliased(depthCopy.texture, depth.texture);
+
+		// Set depth stencil state to write 0x00
+		context->OMSetDepthStencilState(upscaleDepthStencilState.get(), 0x00);
+
+		copyIfNonAliased(refractionNormals.textureCopy, refractionNormals.texture);
+
+		ID3D11ShaderResourceView* srvs[] = { refractionNormals.SRVCopy, depthCopy.depthSRV, depthCopy.stencilSRV };
+		context->PSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
+
+		ID3D11RenderTargetView* rtvs[] = { refractionNormals.RTV, saoCameraZ.RTV };
+		context->OMSetRenderTargets(2, rtvs, depth.views[0]);
+
+		context->PSSetShader(depthUpscalePS, nullptr, 0);
+		globals::profiler->BeginPass("ImageReconstruction::DepthUpscale");
+		context->Draw(3, 0);
+		globals::profiler->EndPass();
+	}
+
+	{
+		TracyD3D11Zone(globals::state->tracyCtx, "ImageReconstruction - Underwater Mask");
+
+		viewport.Width = screenSize.x * 0.5f;
+		viewport.Height = screenSize.y * 0.5f;
+		context->RSSetViewports(1, &viewport);
+
+		copyIfNonAliased(underwaterMask.textureCopy, underwaterMask.texture);
+
+		context->OMSetDepthStencilState(nullptr, 0x00);
+
+		// t0: vanilla mask copy, t1: original depth.
+		ID3D11ShaderResourceView* srvs[] = { underwaterMask.SRVCopy, depthCopy.depthSRV };
+		context->PSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
+
+		ID3D11RenderTargetView* rtvs[] = { underwaterMask.RTV };
+		context->OMSetRenderTargets(ARRAYSIZE(rtvs), rtvs, nullptr);
+
+		context->PSSetShader(underwaterMaskPS, nullptr, 0);
+		globals::profiler->BeginPass("ImageReconstruction::UnderwaterMaskUpscale");
+		context->Draw(3, 0);
+		globals::profiler->EndPass();
+	}
+
+	ID3D11ShaderResourceView* nullPSResources[3] = { nullptr, nullptr, nullptr };
+	context->PSSetShaderResources(0, ARRAYSIZE(nullPSResources), nullPSResources);
+
+	state->EndPerfEvent();
+}
+
+void ImageReconstruction::ApplySharpening()
+{
+	ZoneScoped;
+	TracyD3D11Zone(globals::state->tracyCtx, "ImageReconstruction - Sharpening");
+
+	if (!sharpenerTexture)
+		return;
+
+	auto context = globals::d3d::context;
+	auto renderer = globals::game::renderer;
+	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+
+	if (!main.texture)
+		return;
+
+	context->OMSetRenderTargets(0, nullptr, nullptr);
+
+	if (settings.sharpnessEnabledDLSS && settings.sharpnessDLSS > 0.0f && main.UAV) {
+		// Match FSR3's slider->RCAS conversion exactly (ffx_fsr3upscaler.cpp + FsrRcasCon):
+		//   sharpenessRemapped = -2*slider + 2   (sharpness in stops)
+		//   rcasAttenuation    = exp2(-sharpenessRemapped) = exp2(2*slider - 2)
+		float currentSharpness = (-2.0f * settings.sharpnessDLSS) + 2.0f;
+		currentSharpness = exp2(-currentSharpness);
+
+		// DLSS has already written to sharpenerTexture; sharpen directly into kMAIN.UAV.
+		rcas.ApplySharpen(sharpenerTexture->srv.get(), main.UAV, currentSharpness);
+	} else {
+		// Sharpening is disabled: resolve the DLSS output without altering it.
+		context->CopyResource(main.texture, sharpenerTexture->resource.get());
+	}
+
+	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
+}
+
+void ImageReconstruction::Main_UpdateJitter::thunk(RE::BSGraphics::State* a_state)
+{
+	globals::pipeline::imageReconstruction.ConfigureTAA();
+	func(a_state);
+	globals::pipeline::imageReconstruction.ConfigureUpscaling(a_state);
+}
+
+void ImageReconstruction::MenuManagerDrawInterfaceStartHook::thunk(int64_t a1)
+{
+	globals::pipeline::imageReconstruction.PostDisplay();
+
+	// For non-Frame Gen HDR: redirect kFRAMEBUFFER.RTV to UI texture before vanilla UI renders
+	// When FG is active, its SetUIBuffer redirects to uiBufferWrapped instead
+	// When Camera Suite is not loaded, skip entirely so vanilla UI renders to kFRAMEBUFFER
+	auto& imageReconstruction = globals::pipeline::imageReconstruction;
+	if (!imageReconstruction.d3d12SwapChainActive && globals::pipeline::cameraSuite.loaded) {
+		globals::pipeline::cameraSuite.SetUIBuffer();
+	}
+
+	func(a1);
+}
+
+void ImageReconstruction::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32_t a3, RE::RENDER_TARGET a_target, void* a_4, bool a_5)
+{
+	auto& imageReconstruction = globals::pipeline::imageReconstruction;
+	auto upscaleMethod = imageReconstruction.GetUpscaleMethod();
+
+	if (imageReconstruction.ShouldUseFrameGenerationThisFrame())
+		imageReconstruction.CopySharedD3D12Resources();
+
+	if (upscaleMethod != UpscaleMethod::kNONE && upscaleMethod != UpscaleMethod::kTAA)
+		imageReconstruction.PerformUpscaling();
+
+	if (upscaleMethod == UpscaleMethod::kDLSS)
+		imageReconstruction.ApplySharpening();
+
+	Util::SetTemporal(upscaleMethod == UpscaleMethod::kTAA);
+
+	// Redirect kFRAMEBUFFER to float texture before ISHDR runs so HDR values >1.0 survive
+	// When Camera Suite is not loaded, ISHDR writes to vanilla kFRAMEBUFFER (SDR path)
+	bool hdrLoaded = globals::pipeline::cameraSuite.loaded;
+	if (hdrLoaded)
+		globals::pipeline::cameraSuite.RedirectFramebuffer();
+
+	func(a_this, a3, a_target, a_4, a_5);
+
+	// Restore kFRAMEBUFFER after ISHDR — hdrTexture now has the HDR scene
+	if (hdrLoaded)
+		globals::pipeline::cameraSuite.RestoreFramebuffer();
+
+	Util::SetTemporal(false);
+}
+
+void ImageReconstruction::SetScissorRect::thunk(RE::BSGraphics::Renderer* This, int a_left, int a_top, int a_right, int a_bottom)
+{
+	auto viewport = globals::game::graphicsState;
+	auto& runtimeData = viewport->GetRuntimeData();
+
+	if (!runtimeData.dynamicResolutionLock) {
+		a_left = static_cast<int>(a_left * runtimeData.dynamicResolutionWidthRatio);
+		a_right = static_cast<int>(a_right * runtimeData.dynamicResolutionWidthRatio);
+
+		a_top = static_cast<int>(a_top * runtimeData.dynamicResolutionHeightRatio);
+		a_bottom = static_cast<int>(a_bottom * runtimeData.dynamicResolutionHeightRatio);
+	}
+
+	func(This, a_left, a_top, a_right, a_bottom);
+}
+
+void ImageReconstruction::Main_RenderPrecipitation::thunk()
+{
+	auto& runtimeData = globals::game::graphicsState->GetRuntimeData();
+	runtimeData.dynamicResolutionLock = 1;
+	func();
+	runtimeData.dynamicResolutionLock = 0;
+}
+
+void ImageReconstruction::BSFaceGenManager_UpdatePendingCustomizationTextures::thunk()
+{
+	auto& runtimeData = globals::game::graphicsState->GetRuntimeData();
+	runtimeData.dynamicResolutionLock = 1;
+	func();
+	runtimeData.dynamicResolutionLock = 0;
+}

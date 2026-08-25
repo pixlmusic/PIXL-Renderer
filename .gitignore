@@ -1,6 +1,11 @@
-build/
-bin/
-dist/
+# Generated build, staging, and local runtime mirrors
+/build/
+/bin/
+/dist/
+/Data/
+
+# Local automation/browser state
+/.playwright-cli/
 .idea/
 .vs*/
 CMakeUserPresets.json
@@ -11,4 +16,17 @@ shadertoolsconfig.json
 **/.DS_Store
 .claude/settings.local.json
 
-tools/__pycache__/
+# Python environments, caches, datasets, and trained model artifacts
+**/__pycache__/
+*.py[cod]
+/.venv/
+**/.venv/
+**/.tartanair-env/
+*.onnx
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Downloaded local compiler bundle; the renderer build does not consume it.
+/extern/DirectXShaderCompiler/

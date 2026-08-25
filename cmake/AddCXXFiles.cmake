@@ -17,13 +17,13 @@ function(add_cxx_files TARGET)
 	file(GLOB_RECURSE HEADER_FILES
 		LIST_DIRECTORIES false
 		CONFIGURE_DEPENDS
-		"src/*.h"
-		"src/*.hpp"
-		"src/*.hxx"
-		"src/*.inl"
+		"engine/*.h"
+		"engine/*.hpp"
+		"engine/*.hxx"
+		"engine/*.inl"
 	)
 
-	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/src
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/engine
 		PREFIX "Header Files"
 		FILES ${HEADER_FILES})
 
@@ -32,11 +32,11 @@ function(add_cxx_files TARGET)
 	file(GLOB_RECURSE SOURCE_FILES
 		LIST_DIRECTORIES false
 		CONFIGURE_DEPENDS
-		"src/*.cpp"
-		"src/*.cxx"
+		"engine/*.cpp"
+		"engine/*.cxx"
 	)
 
-	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/src
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/engine
 		PREFIX "Source Files"
 		FILES ${SOURCE_FILES})
 
@@ -45,10 +45,10 @@ function(add_cxx_files TARGET)
 	file(GLOB_RECURSE HLSL_FILES
 		LIST_DIRECTORIES false
 		CONFIGURE_DEPENDS
-		"Features/**/*.hlsl"
-		"Features/**/*.hlsli"
-		"Package/**/*.hlsl"
-		"Package/**/*.hlsli"
+		"pipeline/**/Kernels/**/*.hlsl"
+		"pipeline/**/Kernels/**/*.hlsli"
+		"distribution/Shaders/**/*.hlsl"
+		"distribution/Shaders/**/*.hlsli"
 	)
 
 	set(HLSL_FILES ${HLSL_FILES} PARENT_SCOPE)

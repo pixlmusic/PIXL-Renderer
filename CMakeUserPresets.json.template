@@ -5,11 +5,10 @@
 			"name": "ALL-WITH-AUTO-DEPLOYMENT",
 			"binaryDir": "${sourceDir}/build/ALL",
 			"cacheVariables": {
-				"AUTO_PLUGIN_DEPLOYMENT": "ON",
-				"DEVBENCH_BRIDGE": "ON"
+				"AUTO_PLUGIN_DEPLOYMENT": "ON"
 			},
 			"environment": {
-				"CommunityShadersOutputDir": "F:/MySkyrimModpack/mods/CommunityShaders;F:/SteamLibrary/steamapps/common/Skyrim Special Edition/Data"
+				"PIXLRendererOutputDir": "$env{PIXL_RENDERER_OUTPUT_DIR}"
 			},
 			"inherits": "ALL"
 		}

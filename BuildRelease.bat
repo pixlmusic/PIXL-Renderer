@@ -5,7 +5,7 @@ rem Configure runs automatically when build\<CONFIGURE_PRESET>\CMakeCache.txt
 rem is missing. CONFIGURE_PRESET defaults to BUILD_PRESET. One-click wrappers:
 rem BuildDev.bat, BuildDevFast.bat, BuildPR.bat, BuildDebug.bat.
 
-set "preset=ALL"
+set "preset=PIXL-12C"
 if NOT "%~1" == "" (
     set "preset=%~1"
 )

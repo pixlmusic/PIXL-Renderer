@@ -7,5 +7,5 @@ CompileFlags:
     - -Isrc
     - -Iextern/CommonLibSSE-NG/include
     - -Ibuild/ALL/vcpkg_installed/x64-windows-static-md/include
-    - -Ipackage/Shaders
+    - -Idistribution/Shaders
   Compiler: clang-cl

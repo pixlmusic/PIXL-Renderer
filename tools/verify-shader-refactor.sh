@@ -3,7 +3,7 @@
 # fxc.exe is Windows-only and MSYS mangles its /switches, so the real work lives
 # in PowerShell. This just forwards arguments verbatim.
 #
-# Usage: tools/verify-shader-refactor.sh package/Shaders/Foo.hlsl [-BaseRef HEAD~1] ...
+# Usage: tools/verify-shader-refactor.sh distribution/Shaders/Foo.hlsl [-BaseRef HEAD~1] ...
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

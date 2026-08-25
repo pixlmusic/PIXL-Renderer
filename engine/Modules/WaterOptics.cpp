@@ -1,0 +1,120 @@
+#include "WaterOptics.h"
+
+#include <DDSTextureLoader.h>
+
+#include "I18n/I18n.h"
+#include "State.h"
+
+#define I18N_KEY_PREFIX "feature.water_optics."
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
+	WaterOptics::Settings,
+	EnableEnhancedCaustics,
+	CausticsStrength,
+	CausticsDispersion,
+	CausticsFocus,
+	EnableEnhancedSSR,
+	SSRThicknessScale,
+	SSRDistanceScale,
+	SSREdgeFade,
+	SurfaceSSRStrength,
+	CausticsVisibility,
+	WaterTintStrength,
+	ReflectionBrightness)
+
+void WaterOptics::DrawSettings()
+{
+	bool changed = false;
+	if (ImGui::TreeNodeEx(T(TKEY("caustics"), "Physical Caustics"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		changed |= Util::UIntCheckbox(T(TKEY("enhanced_caustics"), "Enhanced Caustics"), &settings.EnableEnhancedCaustics);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("%s", T(TKEY("enhanced_caustics_tooltip"), "Adds sun-projected multi-scale focusing, chromatic dispersion and depth-dependent absorption. Changes are real-time."));
+		ImGui::BeginDisabled(settings.EnableEnhancedCaustics == 0);
+		changed |= ImGui::SliderFloat(T(TKEY("caustics_strength"), "Intensity"), &settings.CausticsStrength, 0.0f, 2.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("%s", T(TKEY("caustics_strength_tooltip"), "Brightness contrast of focused underwater sunlight. The shader remains energy bounded."));
+		changed |= ImGui::SliderFloat(T(TKEY("caustics_dispersion"), "Color Dispersion"), &settings.CausticsDispersion, 0.0f, 1.5f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("%s", T(TKEY("caustics_dispersion_tooltip"), "Separates red and blue caustic wavelengths at depth."));
+		changed |= ImGui::SliderFloat(T(TKEY("caustics_focus"), "Focus Sharpness"), &settings.CausticsFocus, 0.25f, 2.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("%s", T(TKEY("caustics_focus_tooltip"), "Controls the bright refractive folds reconstructed from the caustic texture curvature."));
+		changed |= ImGui::SliderFloat(T(TKEY("caustics_visibility"), "Visibility"), &settings.CausticsVisibility, 0.0f, 2.5f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("%s", T(TKEY("caustics_visibility_tooltip"), "Controls pattern contrast after depth and sunlight attenuation. Raise this if weather lighting or dark water makes caustics difficult to see."));
+		ImGui::EndDisabled();
+		ImGui::TextDisabled("Visible on submerged receivers under directional sunlight; not drawn on the water surface itself.");
+		ImGui::TreePop();
+	}
+
+	if (ImGui::TreeNodeEx(T(TKEY("ssr"), "Screen-Space Reflections"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		changed |= Util::UIntCheckbox(T(TKEY("enhanced_ssr"), "Enhanced SSR Trace"), &settings.EnableEnhancedSSR);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("%s", T(TKEY("enhanced_ssr_tooltip"), "Uses perspective-distributed tracing, binary hit refinement, temporal confidence and directional color filtering. Image-space shaders require a shader-cache rebuild after first enabling; sliders are real-time."));
+		ImGui::BeginDisabled(settings.EnableEnhancedSSR == 0);
+		changed |= ImGui::SliderFloat(T(TKEY("ssr_thickness"), "Hit Thickness"), &settings.SSRThicknessScale, 0.25f, 3.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("%s", T(TKEY("ssr_thickness_tooltip"), "Tolerance for accepting a depth crossing. Raise to fill holes; lower to reduce reflection leaks."));
+		changed |= ImGui::SliderFloat(T(TKEY("ssr_distance"), "Trace Distance"), &settings.SSRDistanceScale, 0.25f, 1.5f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("%s", T(TKEY("ssr_distance_tooltip"), "Maximum screen-space ray reach. Long traces cover more of the screen but can expose off-screen gaps."));
+		changed |= ImGui::SliderFloat(T(TKEY("ssr_edge_fade"), "Edge Fade"), &settings.SSREdgeFade, 0.25f, 2.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("%s", T(TKEY("ssr_edge_fade_tooltip"), "Width of the confidence fade near screen borders and invalid reflection regions."));
+		changed |= ImGui::SliderFloat(T(TKEY("water_ssr_strength"), "Reflection Presence"), &settings.SurfaceSSRStrength, 0.0f, 1.5f, "%.2fx");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("%s", T(TKEY("water_ssr_strength_tooltip"), "Scales valid screen-space reflections when composited onto water. It does not brighten the cubemap fallback or invent reflections outside the screen."));
+		changed |= ImGui::SliderFloat("Reflection Balance", &settings.ReflectionBrightness, 0.5f, 1.15f, "%.2fx");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Balances the complete reflected lobe against Skyrim's authored refraction and weather lighting.");
+		changed |= ImGui::SliderFloat("Water Tint", &settings.WaterTintStrength, 0.0f, 1.0f, "%.2f");
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Controls depth-dependent colour absorption without replacing the underlying scene with a flat water colour.");
+		ImGui::EndDisabled();
+		ImGui::TreePop();
+	}
+
+	if (changed)
+		globals::state->UpdateFeatureData(globals::state->inWorld);
+}
+
+void WaterOptics::LoadSettings(json& o_json)
+{
+	// Older PIXL Renderer presets serialized this settings-less feature as null.
+	// Treat that legacy value as defaults so existing users can upgrade in place.
+	if (o_json.is_object())
+		settings = o_json;
+	else
+		settings = {};
+}
+void WaterOptics::SaveSettings(json& o_json) { o_json = settings; }
+void WaterOptics::RestoreDefaultSettings() { settings = {}; }
+
+void WaterOptics::SetupResources()
+{
+	auto device = globals::d3d::device;
+	auto context = globals::d3d::context;
+
+	constexpr auto causticsPath = L"Data\\Shaders\\WaterOptics\\watercaustics.dds";
+	const auto result = DirectX::CreateDDSTextureFromFile(device, context, causticsPath, nullptr, causticsView.put());
+	if (FAILED(result) || !causticsView) {
+		logger::error("[Water Optics] Failed to load required caustics texture (HRESULT 0x{:08X}): {}", static_cast<std::uint32_t>(result), "Data/Shaders/WaterOptics/watercaustics.dds");
+	} else {
+		logger::info("[Water Optics] Loaded caustics texture: {}", "Data/Shaders/WaterOptics/watercaustics.dds");
+	}
+}
+
+void WaterOptics::Prepass()
+{
+	auto context = globals::d3d::context;
+	auto srv = causticsView.get();
+	context->PSSetShaderResources(65, 1, &srv);
+}
+
+bool WaterOptics::HasShaderDefine(RE::BSShader::Type)
+{
+	return true;
+}
+
+#undef I18N_KEY_PREFIX
+

@@ -161,6 +161,12 @@ if(MSVC)
 			"$<$<CONFIG:DEBUG>:/INCREMENTAL;/OPT:NOREF;/OPT:NOICF>"
 			"$<$<CONFIG:RELEASE>:/INCREMENTAL;/OPT:NOREF;/OPT:NOICF;/DEBUG:FULL>"
 		)
+		# FidelityFX's prebuilt DX11 backend contains /GL objects. Be explicit
+		# about the inevitable LTCG pass so LINK does not emit LNK4075 and turn
+		# an informational linker restart into a /WX failure.
+		if(FFX_API_DX11 OR ENABLE_FSR3)
+			target_link_options(${PROJECT_NAME} PRIVATE "$<$<CONFIG:RELEASE>:/LTCG;/INCREMENTAL:NO>")
+		endif()
 	else()
 		# PR / CI path: one-shot link, shipping-sized DLL. /DEBUG is still
 		# required: the $<TARGET_PDB_FILE> packaging rules need a PDB to exist.
@@ -212,7 +218,7 @@ target_include_directories(
 	${CMAKE_CURRENT_SOURCE_DIR}/include
 	PRIVATE
 	${CMAKE_CURRENT_BINARY_DIR}/cmake
-	${CMAKE_CURRENT_SOURCE_DIR}/src
+	${CMAKE_CURRENT_SOURCE_DIR}/engine
 )
 
 target_link_libraries(
