@@ -23,6 +23,20 @@ public:
 	}
 
 	bool HasShaderDefine(RE::BSShader::Type shaderType) override;
+	bool AffectsCachedShader(
+		RE::BSShader::Type shaderType,
+		std::uint32_t,
+		CachedShaderStage stage) override
+	{
+		// CONTACT_SHADOWS is consumed by the Lighting, Grass, and DistantTree
+		// pixel shaders. The direct Bend raymarch kernel is module-owned and
+		// released independently by ClearShaderCache().
+		const bool supportedType =
+			shaderType == RE::BSShader::Type::Lighting ||
+			shaderType == RE::BSShader::Type::Grass ||
+			shaderType == RE::BSShader::Type::DistantTree;
+		return supportedType && stage == CachedShaderStage::Pixel;
+	}
 
 	struct BendSettings
 	{

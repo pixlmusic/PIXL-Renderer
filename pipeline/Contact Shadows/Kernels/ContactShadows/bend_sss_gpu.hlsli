@@ -345,6 +345,18 @@ void WriteScreenSpaceShadow(DispatchParameters inParameters, int3 inGroupID, int
 	if (start_depth == 0.0 || start_depth == 1.0)
 		return;
 
+	// Non-linear depth loses blocker separation precision at long range. Fade the
+	// ray result well before that regime instead of allowing distant roofs,
+	// decals and thin silhouettes to alternate between receiver/caster roles as
+	// the camera moves. This is view-distance based (not a screen-centred radius),
+	// so the broad smooth transition cannot form a circular boundary.
+	const float receiver_view_depth =
+		abs(SharedData::GetScreenDepth((float)start_depth));
+	const half distance_confidence =
+		(half)(1.0f - smoothstep(6144.0f, 12288.0f, receiver_view_depth));
+	if (distance_confidence <= 1e-3h)
+		return;
+
 	// lerp away from far depth by a tiny fraction?
 	if (inParameters.UsePrecisionOffset)
 		start_depth = lerp(start_depth, inParameters.FarDepthValue, -1.0 / 0xFFFF);
@@ -432,6 +444,8 @@ void WriteScreenSpaceShadow(DispatchParameters inParameters, int3 inGroupID, int
 	shadow_value = saturate(shadow_value * inParameters.ShadowContrast + (1.0h - inParameters.ShadowContrast));
 	half result = dot(shadow_value, 0.25h);
 #endif
+
+	result = lerp(1.0h, result, distance_confidence);
 
 	// Asking the GPU to write scattered single-byte pixels isn't great,
 	// but latency is hidden by the ray work above.

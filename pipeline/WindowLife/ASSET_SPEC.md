@@ -27,7 +27,9 @@ Curtains are a separate nearer parallax layer. Supply up to sixteen `512 x 512` 
 - curtain pairs should remain open through the centre and must not include a window frame;
 - leave at least 16 transparent pixels around each source edge for atlas padding/mips.
 
-The existing analytic curtain remains the no-asset fallback.
+WindowLife v0.6 ships `Kernels/WindowLife/CurtainAtlas.png`, a 2048-square
+4x4 straight-alpha atlas. The existing analytic curtain remains the no-asset
+fallback.
 
 ## Occupants
 
@@ -41,23 +43,27 @@ Occupants are another independent layer between the curtains and room background
 - alpha is coverage, not brightness; do not premultiply;
 - no floor/contact shadow, window, scenery, text, or watermark.
 
-WindowLife will seed room, curtain, and occupant indices independently per logical authored window. Their parallax depths must also remain independent so camera movement produces real layer separation instead of sliding one combined decal.
+WindowLife v0.6 ships `Kernels/WindowLife/OccupantAtlas.png`, a 2048-square
+4x4 straight-alpha atlas. WindowLife seeds room, curtain, and occupant indices
+independently per logical authored window. Their parallax depths remain
+independent so camera movement produces real layer separation instead of sliding
+one combined decal.
 
 ## Runtime sampling contract
 
-An installed `*_mask.dds` pane atlas is bound only to the matching real window material at Lighting PS `t125`; helper/proxy geometry that directly uses a mask texture remains rejected. The mask is sampled in the real material's UV space and is never copied into the PIXL package. This keeps third-party asset provenance separate while allowing exact pane/frame/mullion clipping when the user has supplied compatible masks. `t126` remains the PIXL room atlas and `t127` remains the 176-byte per-draw structured payload.
+An installed `*_mask.dds` pane atlas is bound only to the matching real window material at Lighting PS `t125`; helper/proxy geometry that directly uses a mask texture remains rejected. The mask is sampled in the real material's UV space and is never copied into the PIXL package. This keeps third-party asset provenance separate while allowing exact pane/frame/mullion clipping when the user has supplied compatible masks. `t123` and `t124` contain PIXL's occupant and curtain atlases, `t126` remains the PIXL room atlas, and `t127` remains the 176-byte per-draw structured payload.
 
-The packed atlases will use a fixed `4 x 4` grid. Each cell must be padded by duplicating its outer pixels into a 16-pixel gutter before mip generation. Shader UVs will be clamped inside the selected cell so neighbouring rooms never bleed at distance.
+The packed atlases use a fixed `4 x 4` grid. Shader UVs are clamped inside the selected cell with a mip-dependent inset so neighbouring rooms, curtains, and occupants never bleed at distance.
 
-Proposed layer order from glass inward:
+Active v0.6 layer order from glass inward:
 
 1. old-glass reflection, grime, and refraction on the pane;
-2. curtain atlas at roughly `0.18-0.25` of configured room depth;
-3. occupant atlas at a seeded `0.55-1.05` depth;
+2. curtain atlas at roughly `0.20` of configured room depth;
+3. occupant atlas at a seeded `0.68-1.62` depth;
 4. room atlas at roughly `1.10-1.35` depth;
 5. recessed-room edge/reveal fallback.
 
-Authored room colour should gently modulate existing window emission rather than replace Skyrim's glow colour. Missing or failed assets must leave the current procedural WindowLife result intact.
+Authored room colour replaces most of the flat source emission only where a trusted glass mask and recessed room are active. Missing or failed assets leave the procedural WindowLife result intact.
 
 ## Integrated v0.5 room atlas
 

@@ -228,7 +228,9 @@ namespace PIXLRenderer::QualityProfiles
 			// Material lighting is an artistic/user choice and must not be silently
 			// enabled by the motion-quality preset. In particular, selecting a wind
 			// quality level must never opt animated trees into a different BRDF.
-			vegetation.EnableEnhancedWind = quality >= Medium;
+			// Motion remains an explicit user choice.  Quality controls the cost and
+			// character of PIXL wind, but selecting a global preset must not suddenly
+			// animate a previously stable load order.
 			vegetation.SpecularAA = std::array{ 0.35f, 0.50f, 0.65f, 0.80f }[quality];
 			vegetation.FlutterStrength = std::array{ 0.12f, 0.18f, 0.22f, 0.28f }[quality];
 			ground.EnableDeformableGround = quality >= Medium;
@@ -272,6 +274,126 @@ namespace PIXLRenderer::QualityProfiles
 			case Group::Count: break;
 			}
 		}
+
+		int DetectMaterialsTier()
+		{
+			const auto& pbr = globals::pipeline::materialForge.settings;
+			const auto& materials = globals::pipeline::materialLayers.settings;
+			const auto& tuning = globals::pipeline::materialLayers.tuningSettings;
+			constexpr std::array<float, 4> specularAA{ 0.45f, 0.60f, 0.75f, 0.98f };
+			constexpr std::array<float, 4> multiscatter{ 0.55f, 0.75f, 1.00f, 1.00f };
+			constexpr std::array<std::uint32_t, 4> objectNearSteps{ 4, 6, 8, 8 };
+			constexpr std::array<std::uint32_t, 4> objectMaxSteps{ 8, 10, 14, 16 };
+			constexpr std::array<std::uint32_t, 4> terrainNearSteps{ 4, 8, 10, 12 };
+			constexpr std::array<std::uint32_t, 4> terrainMaxSteps{ 8, 12, 16, 20 };
+			constexpr std::array<std::uint32_t, 4> detailQuality{ 0, 1, 2, 2 };
+
+			for (int quality = Low; quality <= Ultra; ++quality) {
+				if (pbr.EnableSpecularAA == 1 &&
+				    NearlyEqual(pbr.SpecularAAStrength, specularAA[quality]) &&
+				    pbr.EnableGGXMultiScatter == 1 &&
+				    NearlyEqual(pbr.GGXMultiScatterStrength, multiscatter[quality]) &&
+				    materials.EnableComplexMaterial == 1 &&
+				    (materials.EnableParallax != 0) == (quality >= Medium) &&
+				    (materials.EnableHeightBlending != 0) == (quality >= High) &&
+				    (materials.EnableShadows != 0) == (quality >= Medium) &&
+				    tuning.ObjectNearSteps == objectNearSteps[quality] &&
+				    tuning.ObjectMaxSteps == objectMaxSteps[quality] &&
+				    tuning.ObjectRefinementSteps == 4 &&
+				    tuning.TerrainNearSteps == terrainNearSteps[quality] &&
+				    tuning.TerrainMaxSteps == terrainMaxSteps[quality] &&
+				    tuning.TerrainRefinementSteps == 4 &&
+				    (tuning.EnableDetailReconstruction != 0) == (quality >= Medium) &&
+				    tuning.DetailQuality == detailQuality[quality]) {
+					return quality;
+				}
+			}
+			return -1;
+		}
+
+		int DetectAtmosphereTier()
+		{
+			const auto& clouds = globals::pipeline::skyVeil.settings;
+			const auto& fog = globals::pipeline::atmosphere.settings;
+			constexpr std::array<float, 4> detail{ 0.20f, 0.35f, 0.45f, 0.60f };
+			constexpr std::array<float, 4> shadow{ 0.45f, 0.60f, 0.70f, 0.82f };
+			constexpr std::array<std::uint32_t, 4> gridXY{ 32, 24, 20, 16 };
+			constexpr std::array<std::uint32_t, 4> gridZ{ 32, 40, 52, 64 };
+			constexpr std::array<std::uint32_t, 4> historyMiss{ 1, 2, 3, 4 };
+
+			for (int quality = Low; quality <= Ultra; ++quality) {
+				if (clouds.EnableVolumetricClouds == 1 &&
+				    NearlyEqual(clouds.DetailStrength, detail[quality]) &&
+				    NearlyEqual(clouds.SelfShadowStrength, shadow[quality]) &&
+				    fog.volumetricGridPixelSize == gridXY[quality] &&
+				    fog.volumetricGridSizeZ == gridZ[quality] &&
+				    fog.volumetricHistoryMissSampleCount == historyMiss[quality]) {
+					return quality;
+				}
+			}
+			return -1;
+		}
+
+		int DetectWaterTier()
+		{
+			const auto& water = globals::pipeline::waterOptics.settings;
+			constexpr std::array<float, 4> distance{ 0.65f, 0.85f, 1.00f, 1.20f };
+			constexpr std::array<float, 4> edgeFade{ 1.35f, 1.15f, 1.00f, 0.90f };
+			constexpr std::array<float, 4> dispersion{ 0.20f, 0.35f, 0.50f, 0.65f };
+
+			for (int quality = Low; quality <= Ultra; ++quality) {
+				if ((water.EnableEnhancedSSR != 0) == (quality >= Medium) &&
+				    (water.EnableEnhancedCaustics != 0) == (quality >= Medium) &&
+				    NearlyEqual(water.SSRDistanceScale, distance[quality]) &&
+				    NearlyEqual(water.SSREdgeFade, edgeFade[quality]) &&
+				    NearlyEqual(water.CausticsDispersion, dispersion[quality])) {
+					return quality;
+				}
+			}
+			return -1;
+		}
+
+		int DetectTerrainVegetationTier()
+		{
+			const auto& vegetation = globals::pipeline::foliageDynamics.settings;
+			const auto& ground = globals::pipeline::groundResponse.settings;
+			const auto& terrain = globals::pipeline::terrainDetail.settings;
+			constexpr std::array<float, 4> specularAA{ 0.35f, 0.50f, 0.65f, 0.80f };
+			constexpr std::array<float, 4> flutter{ 0.12f, 0.18f, 0.22f, 0.28f };
+
+			for (int quality = Low; quality <= Ultra; ++quality) {
+				if (NearlyEqual(vegetation.SpecularAA, specularAA[quality]) &&
+				    NearlyEqual(vegetation.FlutterStrength, flutter[quality]) &&
+				    ground.EnableDeformableGround == (quality >= Medium) &&
+				    ground.EnableSnowDeformation == (quality >= Medium) &&
+				    ground.EnableMudDeformation == (quality >= High) &&
+				    terrain.enableLODTerrainTilingFix == 1) {
+					return quality;
+				}
+			}
+			return -1;
+		}
+
+		int DetectCharactersTier()
+		{
+			const auto& skin = globals::pipeline::skinOptics.settings;
+			const auto& sss = globals::pipeline::tissueDiffusion.settings;
+			const auto& hair = globals::pipeline::strandShading.settings;
+			constexpr std::array<uint, 4> samples{ 8, 12, 16, 21 };
+
+			for (int quality = Low; quality <= Ultra; ++quality) {
+				if (skin.EnableSkin &&
+				    skin.EnableSkinDetail == (quality >= Medium) &&
+				    skin.UseSSS == (quality >= Medium) &&
+				    sss.BurleySamples == samples[quality] &&
+				    hair.Enabled &&
+				    hair.HairMode == (quality >= High ? 1u : 0u) &&
+				    (hair.EnableSelfShadow != 0) == (quality >= Medium)) {
+					return quality;
+				}
+			}
+			return -1;
+		}
 	}
 
 	void Apply(Group group, int quality)
@@ -280,6 +402,7 @@ namespace PIXLRenderer::QualityProfiles
 		ApplyGroupSettings(group, quality);
 		SetMenuGroupQuality(group, quality);
 		globals::state->UpdateFeatureData(globals::state->inWorld);
+		globals::state->Save();
 	}
 
 	void ApplyGlobal(int quality)
@@ -314,6 +437,24 @@ namespace PIXLRenderer::QualityProfiles
 			    volumes.ExteriorQuality == nativeVolumeQuality &&
 			    volumes.InteriorQuality == nativeVolumeQuality)
 				return quality;
+		}
+		return -1;
+	}
+
+	int Detect(Group group)
+	{
+		switch (group) {
+		case Group::Lighting: return DetectLightingTier();
+		case Group::Materials: return DetectMaterialsTier();
+		case Group::Atmosphere: return DetectAtmosphereTier();
+		case Group::Water: return DetectWaterTier();
+		case Group::TerrainVegetation: return DetectTerrainVegetationTier();
+		case Group::Characters: return DetectCharactersTier();
+		case Group::Camera:
+			return globals::pipeline::cameraSuite.cameraQuality <= static_cast<std::uint32_t>(Ultra) ?
+			           static_cast<int>(globals::pipeline::cameraSuite.cameraQuality) :
+			           -1;
+		case Group::Count: return -1;
 		}
 		return -1;
 	}

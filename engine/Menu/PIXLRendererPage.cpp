@@ -628,22 +628,6 @@ namespace
 		auto& settings =
 			globals::menu->GetSettings();
 
-		const bool custom =
-			settings.LightingQuality !=
-				settings.RendererQuality ||
-			settings.MaterialsQuality !=
-				settings.RendererQuality ||
-			settings.AtmosphereQuality !=
-				settings.RendererQuality ||
-			settings.WaterQuality !=
-				settings.RendererQuality ||
-			settings.TerrainVegetationQuality !=
-				settings.RendererQuality ||
-			settings.CharactersQuality !=
-				settings.RendererQuality ||
-			settings.CameraQuality !=
-				settings.RendererQuality;
-
 		struct Row
 		{
 			const char* name;
@@ -697,6 +681,18 @@ namespace
 				QualityGroup::Camera,
 				"Physical exposure, local contrast, optics and depth-aware presentation." }
 		};
+
+		std::array<int, static_cast<size_t>(QualityGroup::Count)>
+			detectedTiers{};
+		bool custom = false;
+		for (size_t i = 0; i < rows.size(); ++i) {
+			detectedTiers[i] =
+				PIXLRenderer::QualityProfiles::Detect(
+					rows[i].group);
+			custom = custom ||
+				detectedTiers[i] != *rows[i].value ||
+				*rows[i].value != settings.RendererQuality;
+		}
 
 		static QualityPreviewSelection preview{};
 
@@ -826,6 +822,21 @@ namespace
 							*row.value);
 
 					QueueDeferredStateSave();
+				}
+
+				if (detectedTiers[i] != *row.value) {
+					ImGui::SameLine(
+						0.0f,
+						PIXLUI::Ref(7.0f));
+					ImGui::TextColored(
+						PIXLUI::ToVec4(
+							PIXLUI::Colors::Warning),
+						"CUSTOM");
+					if (ImGui::IsItemHovered()) {
+						ImGui::SetTooltip(
+							"Advanced values differ from the selected %s contract. Move the tier or use MATCH PROFILE to reapply it.",
+							QualityTierName(*row.value));
+					}
 				}
 
 				ImGui::PopID();

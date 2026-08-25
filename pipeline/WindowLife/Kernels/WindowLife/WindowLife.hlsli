@@ -24,6 +24,8 @@ namespace WindowLife
         float4 Asset0;
     };
 
+    Texture2D<float4> WindowLifeOccupantAtlas : register(t123);
+    Texture2D<float4> WindowLifeCurtainAtlas : register(t124);
     Texture2D<float4> WindowLifeAuthoredPaneMask : register(t125);
     Texture2D<float4> WindowLifeRoomAtlas : register(t126);
     StructuredBuffer<PerDrawData> WindowLifePerDraw : register(t127);
@@ -482,6 +484,8 @@ namespace WindowLife
         float confidence;
     };
 
+    float2 GetAdaptiveRoomSize();
+
     float SampleAuthoredPaneGuide(float2 materialUV, float mipLevel, float2 tile)
     {
         // Never let a wrapping material sampler join opposite sides of an atlas.
@@ -505,6 +509,7 @@ namespace WindowLife
         out float found)
     {
         const float guideThreshold = 0.50f;
+        const float requiredOutsideRun = HasExternalAuthoredMask() ? 3.0f : 2.0f;
         float insideUnits = 0.0f;
         float outsideUnits = 12.0f;
         float outsideRun = 0.0f;
@@ -523,10 +528,10 @@ namespace WindowLife
                     outsideRun = 0.0f;
                 } else {
                     outsideRun += 1.0f;
-                    // A single dark guide texel is normally a lead/wood mullion.
-                    // Require a two-texel gutter before declaring the edge so all
-                    // sub-panes of one authored window resolve to one room.
-                    if (outsideRun >= 2.0f) {
+                    // One or two dark guide texels are normally lead, wood, or a
+                    // cross-hatched mullion. Exact masks can use the wider bridge;
+                    // native glow keeps the tighter facade-safety rule.
+                    if (outsideRun >= requiredOutsideRun) {
                         outsideUnits = max((float)i - 1.0f, insideUnits + 0.25f);
                         found = 1.0f;
                     }
@@ -614,10 +619,13 @@ namespace WindowLife
             return result;
 
         float2 textureSize = float2((float)textureWidth, (float)textureHeight);
-        // Work at about 32 guide texels across the longest atlas dimension. This
-        // merges lead/cross mullions but preserves the larger black gutters between
-        // distinct window styles in Skyrim's architectural glow atlases.
-        float desiredMip = floor(log2(max(max(textureSize.x, textureSize.y) / 32.0f, 1.0f)));
+        // Exact external masks are deliberately reduced to roughly fourteen guide
+        // texels across the longest axis. This merges Whiterun cross-hatching and
+        // heavy Solitude mullions into one logical aperture while the full-size
+        // mask still clips every final pixel. Native glow atlases stay finer so a
+        // luminous facade cannot be merged into a room.
+        float guideResolution = HasExternalAuthoredMask() ? 14.0f : 24.0f;
+        float desiredMip = floor(log2(max(max(textureSize.x, textureSize.y) / guideResolution, 1.0f)));
         float guideMip = clamp(desiredMip, 0.0f, (float)(mipCount - 1u));
         float2 stepUV = exp2(guideMip) / textureSize;
         float2 tile = floor(materialUV);
@@ -698,7 +706,14 @@ namespace WindowLife
         // tall/narrow Solitude panes and disabled every interior layer.
         float nativeSaneSize = max(rawRoomSize.x, rawRoomSize.y) < radius * 3.25f ? 1.0f : 0.0f;
         float saneSize = lerp(nativeSaneSize, 1.0f, externalMask);
-        float usefulSize = min(rawRoomSize.x, rawRoomSize.y) >= lerp(8.0f, 4.0f, externalMask) ? 1.0f : 0.0f;
+        // Reject a surviving individual sub-pane as a room layout. In that case
+        // the exact mask continues to clip glass, but layout falls back to the
+        // stable geometry-sized aperture instead of squeezing a room into each
+        // tiny cross-hatched panel.
+        float2 minimumExactGroup = GetAdaptiveRoomSize() * float2(0.31f, 0.28f);
+        float nativeUsefulSize = min(rawRoomSize.x, rawRoomSize.y) >= 8.0f ? 1.0f : 0.0f;
+        float exactUsefulSize = all(rawRoomSize >= minimumExactGroup) ? 1.0f : 0.0f;
+        float usefulSize = lerp(nativeUsefulSize, exactUsefulSize, externalMask);
         // Authored-mask acceptance must not depend on the manual procedural room
         // sliders. Otherwise changing Room Cell Width/Height changes whether the
         // automatic fit is accepted and makes the toggle appear to be a no-op.
@@ -746,13 +761,20 @@ namespace WindowLife
         if (radius <= 0.0f)
             return authoredRoom;
 
-        // Dedicated small panes need a correspondingly small room cell. A fixed
-        // 112x150 world grid can intersect only one limb and collapse a person to
-        // a line. Large facade/window groups retain the authored repeating grid.
-        float2 boundedRoom = float2(
-            max(radius * 1.45f, 36.0f),
-            max(radius * 1.90f, 56.0f));
-        return min(authoredRoom, boundedRoom);
+        // Quantized aperture families avoid the old one-size-fits-all grid: small
+        // dedicated windows no longer squeeze people to a line, while large facade
+        // groups receive a larger coherent room instead of starting a new room in
+        // the middle of every broad pane. Quantization prevents camera-dependent
+        // scale shimmer and keeps the owner-validated 110x140 medium baseline.
+        float familyScale = radius < 48.0f
+            ? 0.68f
+            : (radius < 105.0f
+                ? 1.0f
+                : (radius < 210.0f ? 1.45f : 1.90f));
+        return clamp(
+            authoredRoom * familyScale,
+            float2(48.0f, 72.0f),
+            float2(256.0f, 336.0f));
     }
 
     float2 ConstrainRoomLocal(float2 baseRoomLocal, float2 requestedOffset)
@@ -841,10 +863,11 @@ namespace WindowLife
         float2 materialUV,
         float viewDepth)
     {
-        Result result = (Result)0;
         if (!IsCandidate() || SharedData::InMapMenu ||
             (SharedData::InInterior && GetInterior0().w < 0.5f))
-            return result;
+            return (Result)0;
+
+        Result result = (Result)0;
 
         float3 N = normalize(geometricNormal);
         float verticalSurface = Verticality(N);
@@ -937,6 +960,46 @@ namespace WindowLife
             (-viewPlane * curtainParallax + refractVector * 0.30f) / roomSize);
         float curtainSeed = Hash11(roomSeed * 67.13f + 4.7f);
         float curtainPresent = curtainSeed > 0.20f ? 1.0f : 0.0f;
+
+        // Prefer the authored 4x4 cloth atlas. Querying dimensions makes an
+        // unbound optional texture deterministic (0x0), preserving the analytic
+        // fallback without another C++/HLSL constant-buffer field.
+        uint curtainAtlasWidth = 0u;
+        uint curtainAtlasHeight = 0u;
+        uint curtainAtlasMipCount = 0u;
+        WindowLifeCurtainAtlas.GetDimensions(
+            0, curtainAtlasWidth, curtainAtlasHeight, curtainAtlasMipCount);
+        float curtainAtlasReady = curtainAtlasWidth > 0u && curtainAtlasHeight > 0u
+            ? 1.0f
+            : 0.0f;
+        float curtainTile = floor(Hash11(roomSeed * 47.91f + 19.7f) * 15.999f);
+        float curtainTileY = floor(curtainTile * 0.25f);
+        float curtainTileX = curtainTile - curtainTileY * 4.0f;
+        float curtainMaximumMip = min(
+            max((float)curtainAtlasMipCount - 1.0f, 0.0f), 7.0f);
+        float2 curtainGradientX = ddx_coarse(curtainLocal) * 0.25f;
+        float2 curtainGradientY = ddy_coarse(curtainLocal) * 0.25f;
+        float curtainFootprint = max(
+            length(curtainGradientX * float2((float)curtainAtlasWidth, (float)curtainAtlasHeight)),
+            length(curtainGradientY * float2((float)curtainAtlasWidth, (float)curtainAtlasHeight)));
+        float curtainMip = clamp(
+            log2(max(curtainFootprint, 1.0f)) - 0.30f,
+            0.0f,
+            curtainMaximumMip);
+        float curtainInset = min(
+            max(3.0f, exp2(curtainMip) * 1.20f) / 512.0f, 0.12f);
+        float2 curtainTileLocal = float2(curtainLocal.x, 1.0f - curtainLocal.y);
+        curtainTileLocal = lerp(
+            curtainInset.xx,
+            (1.0f - curtainInset).xx,
+            saturate(curtainTileLocal));
+        float2 curtainAtlasUV =
+            (float2(curtainTileX, curtainTileY) + curtainTileLocal) * 0.25f;
+        float4 curtainAtlasSample = WindowLifeCurtainAtlas.SampleLevel(
+            SampGlowSampler, curtainAtlasUV, curtainMip);
+
+        // Low-frequency analytic cloth remains the no-asset fallback only. It no
+        // longer impersonates every curtain with the same pair of sliding wedges.
         float curtainOpen = lerp(0.105f, 0.235f, Hash11(roomSeed * 43.7f + 8.3f));
         float curtainWave =
             sin(curtainLocal.y * 15.0f + roomSeed * 13.0f) * 0.018f;
@@ -956,9 +1019,13 @@ namespace WindowLife
         float curtainPleat =
             lerp(0.68f, 1.0f,
                 0.5f + 0.5f * sin(curtainLocal.x * 61.0f + roomSeed * 7.0f));
-        float curtainMask =
+        float analyticCurtainMask =
             saturate(max(leftCurtain, rightCurtain)) *
             curtainVertical * curtainPleat * curtainPresent;
+        float curtainMask = lerp(
+            analyticCurtainMask,
+            saturate(curtainAtlasSample.a) * curtainPresent,
+            curtainAtlasReady);
         result.curtainOcclusion =
             curtainMask * interiorPane * verticalSurface * grazingFade * distanceFade *
             GetInterior0().x * (allowCurtains ? 1.0f : 0.0f) *
@@ -1072,16 +1139,18 @@ namespace WindowLife
                 midRoomSample.rgb,
                 furnitureLayer);
 
-            // Analytic curtains are a genuine shallow coloured layer, rather than
-            // only a dark subtraction. Seeded cloth palettes prevent every window
-            // from repeating the same silhouette while the deeper atlas remains
-            // visible through the opening.
+            // Authored cloth retains its own restrained colour. The seeded palette
+            // is kept only for installations where the optional atlas is missing.
             float curtainPalette = Hash11(roomSeed * 29.17f + 2.3f);
-            float3 curtainTint = curtainPalette < 0.34f
+            float3 analyticCurtainTint = curtainPalette < 0.34f
                 ? float3(0.34f, 0.055f, 0.035f)
                 : (curtainPalette < 0.67f
                     ? float3(0.10f, 0.19f, 0.105f)
                     : float3(0.105f, 0.115f, 0.22f));
+            float3 curtainTint = lerp(
+                analyticCurtainTint,
+                max(curtainAtlasSample.rgb, 0.0f.xxx),
+                curtainAtlasReady);
             float roomIllumination = max(
                 dot(max(layeredRoomColor, 0.0f), float3(0.2126f, 0.7152f, 0.0722f)),
                 0.035f);
@@ -1089,7 +1158,7 @@ namespace WindowLife
                 curtainMask * GetInterior0().x * (allowCurtains ? 1.0f : 0.0f)) * 0.72f;
             layeredRoomColor = lerp(
                 layeredRoomColor,
-                curtainTint * (roomIllumination * 1.35f + 0.028f),
+                curtainTint * (roomIllumination * 1.20f + 0.035f),
                 curtainColorWeight);
 
             // Darkening the ray-clamped room edge turns the parallax boundary into
@@ -1149,12 +1218,56 @@ namespace WindowLife
         p.x *= clamp(roomSize.x / max(roomSize.y, 1.0f), 0.30f, 2.50f);
 
         float depthBlur = lerp(0.86f, 1.75f, depthSelector);
-        float person = PersonMask(
+        float analyticPerson = PersonMask(
             p, pose, phase, variant,
             GetOptics0().y, GetOptics0().w, depthBlur, direction);
 
+        uint occupantAtlasWidth = 0u;
+        uint occupantAtlasHeight = 0u;
+        uint occupantAtlasMipCount = 0u;
+        WindowLifeOccupantAtlas.GetDimensions(
+            0, occupantAtlasWidth, occupantAtlasHeight, occupantAtlasMipCount);
+        float occupantAtlasReady = occupantAtlasWidth > 0u && occupantAtlasHeight > 0u
+            ? 1.0f
+            : 0.0f;
+        float occupantScale = max(GetOptics0().w, 0.50f);
+        float2 occupantLocal = float2(
+            p.x / (0.66f * occupantScale) + 0.5f,
+            0.5f - p.y / (1.02f * occupantScale));
+        if (direction < 0.5f)
+            occupantLocal.x = 1.0f - occupantLocal.x;
+        float occupantInside =
+            step(0.0f, occupantLocal.x) * step(occupantLocal.x, 1.0f) *
+            step(0.0f, occupantLocal.y) * step(occupantLocal.y, 1.0f);
+        float occupantTile = floor(variant * 15.999f);
+        float occupantTileY = floor(occupantTile * 0.25f);
+        float occupantTileX = occupantTile - occupantTileY * 4.0f;
+        float occupantMaximumMip = min(
+            max((float)occupantAtlasMipCount - 1.0f, 0.0f), 7.0f);
+        float2 occupantGradientX = ddx_coarse(occupantLocal) * 0.25f;
+        float2 occupantGradientY = ddy_coarse(occupantLocal) * 0.25f;
+        float occupantFootprint = max(
+            length(occupantGradientX * float2((float)occupantAtlasWidth, (float)occupantAtlasHeight)),
+            length(occupantGradientY * float2((float)occupantAtlasWidth, (float)occupantAtlasHeight)));
+        float occupantMip = clamp(
+            log2(max(occupantFootprint, 1.0f)) - 0.15f,
+            0.0f,
+            occupantMaximumMip);
+        float occupantInset = min(
+            max(3.0f, exp2(occupantMip) * 1.25f) / 512.0f, 0.12f);
+        float2 safeOccupantLocal = lerp(
+            occupantInset.xx,
+            (1.0f - occupantInset).xx,
+            saturate(occupantLocal));
+        float2 occupantAtlasUV =
+            (float2(occupantTileX, occupantTileY) + safeOccupantLocal) * 0.25f;
+        float4 occupantAtlasSample = WindowLifeOccupantAtlas.SampleLevel(
+            SampGlowSampler, occupantAtlasUV, occupantMip);
+        float authoredPerson = saturate(occupantAtlasSample.a) * occupantInside;
+        float person = lerp(analyticPerson, authoredPerson, occupantAtlasReady);
+
         float pairSelector = Hash11(eventSeed * 143.1f + 1.9f);
-        if (pairSelector > 0.88f) {
+        if (pairSelector > 0.88f && occupantAtlasReady < 0.5f) {
             float secondPhase = frac(phase + 0.31f + Hash11(eventSeed * 17.0f) * 0.22f);
             float secondX = 0.5f + MotionX(secondPhase, 0.34f, 1.0f - direction) * 0.42f;
             float2 p2 = roomLocal - float2(secondX, personY - 0.035f);
@@ -1168,6 +1281,27 @@ namespace WindowLife
 
         float depthTransmission = lerp(1.0f, 0.72f, depthSelector);
         float coverage = person * envelope * interiorPane * verticalSurface * grazingFade * distanceFade * depthTransmission;
+        // Carry authored clothing colour through the existing room layer rather
+        // than growing the function return ABI. The independently computed person
+        // alpha still controls the shadow, while this restrained blend prevents
+        // every passer reading as the same black signage icon.
+        float authoredColourWeight =
+            authoredPerson * occupantAtlasReady * envelope * interiorPane *
+            verticalSurface * grazingFade * distanceFade * depthTransmission;
+        if (authoredColourWeight > 1.0e-4f && result.roomColorWeight > 1.0e-4f) {
+            float authoredLuma = max(
+                dot(max(occupantAtlasSample.rgb, 0.0f.xxx), float3(0.2126f, 0.7152f, 0.0722f)),
+                0.025f);
+            float roomLuma = max(
+                dot(max(result.roomColor, 0.0f.xxx), float3(0.2126f, 0.7152f, 0.0722f)),
+                0.035f);
+            float3 authoredTint = max(occupantAtlasSample.rgb, 0.0f.xxx) *
+                clamp(roomLuma * 0.58f / authoredLuma, 0.45f, 3.0f);
+            result.roomColor = lerp(
+                result.roomColor,
+                authoredTint,
+                saturate(authoredColourWeight) * 0.62f);
+        }
         float shadowStrength = SharedData::InInterior
             ? clamp(GetRuntime0().z * 0.42f + 0.08f, 0.10f, 0.40f)
             : GetRuntime0().z;

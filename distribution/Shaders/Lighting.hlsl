@@ -203,7 +203,11 @@ float2 GetTreeShiftVector(float4 position, float4 color)
 		// TREE_ANIM sometimes supplies a zero weather amplitude for smaller plants.
 		// Give those weighted branch tips a restrained ambient motion floor while
 		// retaining TreeParams.z as the authority during real wind.
-		float treeEnergy = max(abs(TreeParams.z), 1.25f);
+		// A large unconditional floor made calm branch cards rotate toward the
+		// light while their authored shading stayed comparatively flat.  That was
+		// the source of the reflective/mirror-like flashes reported when wind was
+		// enabled.  Retain a subtle idle motion and scale naturally with weather.
+		float treeEnergy = max(abs(TreeParams.z), 0.30f);
 		float2 secondary =
 			treeEnergy * secondaryMask * branchWave *
 			(0.020f + 0.026f * gustAmount) * (0.38f.xx + 0.62f * gust);
@@ -215,7 +219,7 @@ float2 GetTreeShiftVector(float4 position, float4 color)
 		float enhancement = saturate(
 			max(SharedData::foliageDynamicsSettings.WindStrength, 0.0f) * 0.5f);
 		float2 enhancedDelta = (primary - legacyShift) + secondary + tiny;
-		float maxDelta = treeEnergy * tip * (0.12f + 0.08f * gustAmount);
+		float maxDelta = treeEnergy * tip * (0.065f + 0.045f * gustAmount);
 		enhancedDelta = clamp(enhancedDelta, -maxDelta.xx, maxDelta.xx);
 		result += enhancedDelta * enhancement;
 	}
@@ -4407,9 +4411,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		// independent reflection, roughness, dirt and refraction layers.
 		diffuseColor *= lerp(1.0f, 0.08f, pixlRoomCompositeWeight);
 		emitColor = lerp(
-			emitColor,
-			pixlRoomTarget,
-			pixlRoomCompositeWeight);
+						emitColor,
+						pixlRoomTarget,
+						pixlRoomCompositeWeight);
 	}
 
 	float pixlWindowInteriorOcclusion = saturate(

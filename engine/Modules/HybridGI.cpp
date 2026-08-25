@@ -224,29 +224,11 @@ namespace
 
 	bool DrawPixlToggleField(const char* label, bool* value)
 	{
-		ImGui::PushID(label);
-		const float available = ImGui::GetContentRegionAvail().x;
-		const float latchWidth = PIXLUI::Ref(60.0f);
-
-		ImGui::AlignTextToFramePadding();
-		ImGui::TextColored(
-			PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
-			"%s",
-			label);
-
-		ImGui::SameLine();
-		ImGui::SetCursorPosX(
-			ImGui::GetCursorPosX() +
-			std::max(
-				0.0f,
-				available -
-				PIXLUI::Ref(18.0f) -
-				latchWidth));
-
-		const bool changed =
-			PIXLUI::Toggle("##latch", value);
-		ImGui::PopID();
-		return changed;
+		// Use the common full-width row instead of positioning the latch relative
+		// to the cursor *after* drawing the label.  The old calculation could push
+		// the SSAO latch beyond a narrow/table column, leaving only a few pixels of
+		// its hit box accessible at some UI scales.
+		return PIXLUI::LabeledToggle(label, value);
 	}
 
 	bool BeginSettingsTable(const char* id)

@@ -382,8 +382,79 @@ void WindowLife::SetupResources()
             roomMetadata.height);
     }
 
+    // The near curtain and mid-depth occupant layers are independent atlases.
+    // Missing assets are intentionally harmless: an unbound SRV samples zero and
+    // the shader retains its analytic curtain/person fallback.
+    const auto loadLayerAtlas = [&](const std::filesystem::path& path,
+                                    std::string_view label,
+                                    winrt::com_ptr<ID3D11ShaderResourceView>& target) {
+        target = nullptr;
+        DirectX::TexMetadata metadata{};
+        DirectX::ScratchImage image;
+        DirectX::ScratchImage mipChain;
+        const HRESULT loadResult = DirectX::LoadFromWICFile(
+            path.c_str(),
+            DirectX::WIC_FLAGS_FORCE_SRGB,
+            &metadata,
+            image);
+        if (FAILED(loadResult) || metadata.width != 2048u || metadata.height != 2048u) {
+            logger::warn(
+                "[WindowLife] {} atlas '{}' unavailable or not 2048x2048 (HRESULT 0x{:08X}, {}x{}); analytic fallback remains active.",
+                label,
+                path.string(),
+                static_cast<std::uint32_t>(loadResult),
+                metadata.width,
+                metadata.height);
+            return;
+        }
+
+        const HRESULT mipResult = DirectX::GenerateMipMaps(
+            image.GetImages(),
+            image.GetImageCount(),
+            metadata,
+            static_cast<DirectX::TEX_FILTER_FLAGS>(
+                DirectX::TEX_FILTER_CUBIC | DirectX::TEX_FILTER_SEPARATE_ALPHA),
+            0u,
+            mipChain);
+        const bool hasMips = SUCCEEDED(mipResult) && mipChain.GetImageCount() > 1u;
+        const DirectX::Image* uploadImages = hasMips ? mipChain.GetImages() : image.GetImages();
+        const std::size_t uploadCount = hasMips ? mipChain.GetImageCount() : image.GetImageCount();
+        const DirectX::TexMetadata& uploadMetadata = hasMips ? mipChain.GetMetadata() : metadata;
+        const HRESULT srvResult = DirectX::CreateShaderResourceView(
+            globals::d3d::device,
+            uploadImages,
+            uploadCount,
+            uploadMetadata,
+            target.put());
+        if (FAILED(srvResult)) {
+            logger::warn(
+                "[WindowLife] {} atlas SRV creation failed (HRESULT 0x{:08X}); analytic fallback remains active.",
+                label,
+                static_cast<std::uint32_t>(srvResult));
+            target = nullptr;
+            return;
+        }
+        logger::info(
+            "[WindowLife] {} atlas uploaded with {} mip levels.",
+            label,
+            uploadMetadata.mipLevels);
+    };
+
+    loadLayerAtlas(
+        "Data\\Shaders\\WindowLife\\OccupantAtlas.png",
+        "Occupant",
+        occupantAtlasSRV);
+    loadLayerAtlas(
+        "Data\\Shaders\\WindowLife\\CurtainAtlas.png",
+        "Curtain",
+        curtainAtlasSRV);
+
     logger::info(
-        "[WindowLife] Layered-window GPU resources ready (PS t{} optional pane mask, t{} room atlas={}, t{} structured SRV, 176-byte per-draw payload; FeatureData b6 unchanged).",
+        "[WindowLife] Layered-window GPU resources ready (PS t{} occupants={}, t{} curtains={}, t{} optional pane mask, t{} room atlas={}, t{} structured SRV, 176-byte per-draw payload; FeatureData b6 unchanged).",
+        kOccupantAtlasSRVSlot,
+        occupantAtlasSRV ? "ready" : "analytic",
+        kCurtainAtlasSRVSlot,
+        curtainAtlasSRV ? "ready" : "analytic",
         kAuthoredMaskSRVSlot,
         kRoomAtlasSRVSlot,
         roomAtlasSRV ? "ready" : "fallback",
@@ -522,12 +593,14 @@ void WindowLife::BindNeutral() const
 {
     if (!neutralSRV || !globals::d3d::context)
         return;
-    ID3D11ShaderResourceView* srvs[3] = {
+    ID3D11ShaderResourceView* srvs[5] = {
+        occupantAtlasSRV.get(),
+        curtainAtlasSRV.get(),
         nullptr,
         settings.EnableAuthoredRooms ? roomAtlasSRV.get() : nullptr,
         neutralSRV.get()
     };
-    globals::d3d::context->PSSetShaderResources(kAuthoredMaskSRVSlot, 3, srvs);
+    globals::d3d::context->PSSetShaderResources(kOccupantAtlasSRVSlot, 5, srvs);
 }
 
 ID3D11ShaderResourceView* WindowLife::GetAuthoredMaskSRV(const Classification& classification) const
@@ -542,12 +615,14 @@ void WindowLife::BindActive(const Classification& classification) const
 {
     if (!activeSRV || !globals::d3d::context)
         return;
-    ID3D11ShaderResourceView* srvs[3] = {
+    ID3D11ShaderResourceView* srvs[5] = {
+        occupantAtlasSRV.get(),
+        curtainAtlasSRV.get(),
         GetAuthoredMaskSRV(classification),
         settings.EnableAuthoredRooms ? roomAtlasSRV.get() : nullptr,
         activeSRV.get()
     };
-    globals::d3d::context->PSSetShaderResources(kAuthoredMaskSRVSlot, 3, srvs);
+    globals::d3d::context->PSSetShaderResources(kOccupantAtlasSRVSlot, 5, srvs);
 }
 
 WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShaderMaterialBase* material)
@@ -608,6 +683,13 @@ WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShad
     const bool windowProxyMask = ContainsAny(diffusePath, {
         "\\masks\\", "/masks/", "_mask.dds", "windowshadow", "window_shadow"
     });
+    // Closed/boarded shutters are deliberately opaque architectural surfaces.
+    // Their filenames often still contain "window", which previously promoted
+    // them into a bright inhabited pane at night.
+    const bool closedWindowSurface = ContainsAny(diffusePath, {
+        "shutter", "closedwindow", "closed_window", "windowclosed",
+        "window_closed", "boarded", "windowboard", "window_board"
+    });
     const bool hasGlowTexture = !glowPath.empty();
     const std::string authoredMaskKey = CanonicalWindowMaskKey(diffusePath);
     const bool hasAuthoredMask = !authoredMaskKey.empty() && authoredMaskSRVs.contains(authoredMaskKey);
@@ -627,7 +709,7 @@ WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShad
         result.score += 10;
     if (obviousNonBuildingGlass && !strongWindow)
         result.score -= 8;
-    if (windowProxyMask)
+    if (windowProxyMask || closedWindowSurface)
         result.score -= 16;
 
     const bool architecturalGlass = architecture && glass && !obviousNonBuildingGlass;
@@ -635,7 +717,8 @@ WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShad
     // as sufficient classified doors, roofs, gravestones and entire facade draws
     // as windows. Require an explicit window/glass token or a dedicated authored
     // pane mask whose basename matches the diffuse material being drawn.
-    result.isWindow = !windowProxyMask && (strongWindow || architecturalGlass || mappedAuthoredWindow);
+    result.isWindow = !windowProxyMask && !closedWindowSurface &&
+        (strongWindow || architecturalGlass || mappedAuthoredWindow);
     result.hasGlowTexture = hasGlowTexture;
     result.hasAuthoredMask = hasAuthoredMask;
     result.authoredMaskKey = hasAuthoredMask ? authoredMaskKey : std::string{};
@@ -663,7 +746,7 @@ WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShad
 
     if (settings.DebugWindowDetection && (result.isWindow || architecture || glass || hasGlowTexture)) {
         logger::info(
-            "[WindowLife] CLASSIFY {} tier={} score={} hash={:08X} arch={} glass={} glow={} mask={} explicit={} proxy={} texture='{}' maskKey='{}'",
+            "[WindowLife] CLASSIFY {} tier={} score={} hash={:08X} arch={} glass={} glow={} mask={} explicit={} proxy={} closed={} texture='{}' maskKey='{}'",
             result.isWindow ? "WINDOW" : "skip",
             result.materialTier,
             result.score,
@@ -674,6 +757,7 @@ WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShad
             hasAuthoredMask ? 1 : 0,
             result.explicitWindow ? 1 : 0,
             windowProxyMask ? 1 : 0,
+            closedWindowSurface ? 1 : 0,
             result.evidence,
             result.authoredMaskKey);
     }

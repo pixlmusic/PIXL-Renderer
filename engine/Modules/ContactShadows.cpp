@@ -259,9 +259,11 @@ void ContactShadows::RestoreDefaultSettings()
 	bendSettings = {};
 }
 
-bool ContactShadows::HasShaderDefine(RE::BSShader::Type)
+bool ContactShadows::HasShaderDefine(RE::BSShader::Type shaderType)
 {
-	return true;
+	return shaderType == RE::BSShader::Type::Lighting ||
+	       shaderType == RE::BSShader::Type::Grass ||
+	       shaderType == RE::BSShader::Type::DistantTree;
 }
 
 void ContactShadows::SetupResources()

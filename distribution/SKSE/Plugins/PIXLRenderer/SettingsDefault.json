@@ -650,8 +650,8 @@
                            "PaneThreshold":  0.16,
                            "ParallaxDepth":  28.0,
                            "Refraction":  2.5,
-                           "RoomHeight":  150.0,
-                           "RoomWidth":  112.0,
+                           "RoomHeight":  140.0,
+                           "RoomWidth":  110.0,
                            "SilhouetteSoftness":  0.055,
                            "SuppressWindowAutoPOM":  true
                        },

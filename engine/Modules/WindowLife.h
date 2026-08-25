@@ -90,8 +90,10 @@ struct WindowLife : RenderModule
         float PaneSoftness = 0.20f;
 
         // Stable procedural room grid and event cadence.
-        float RoomWidth = 112.0f;
-        float RoomHeight = 150.0f;
+        // Owner-validated medium-window baseline. The shader derives small,
+        // large, and grand aperture families from geometry bounds around it.
+        float RoomWidth = 110.0f;
+        float RoomHeight = 140.0f;
         float MotionSpeed = 1.0f;
 
         // Phase 2A architectural glass.
@@ -176,14 +178,21 @@ private:
     static float GetDayNightBlend(float a_hour);
     static float GetActivityForHour(float a_hour, const Settings& a_settings);
 
+    // Keep WindowLife's five private resources contiguous at the top of the
+    // D3D11 pixel-SRV range. The live binding audit reserves t123..t127 for this
+    // module; no existing PIXL or game resource occupies these slots.
+    static constexpr UINT kOccupantAtlasSRVSlot = 123;
+    static constexpr UINT kCurtainAtlasSRVSlot = 124;
     static constexpr UINT kAuthoredMaskSRVSlot = 125;
-    static constexpr UINT kPerDrawSRVSlot = 127;
     static constexpr UINT kRoomAtlasSRVSlot = 126;
+    static constexpr UINT kPerDrawSRVSlot = 127;
 
     winrt::com_ptr<ID3D11Buffer> activeBuffer;
     winrt::com_ptr<ID3D11Buffer> neutralBuffer;
     winrt::com_ptr<ID3D11ShaderResourceView> activeSRV;
     winrt::com_ptr<ID3D11ShaderResourceView> neutralSRV;
+    winrt::com_ptr<ID3D11ShaderResourceView> occupantAtlasSRV;
+    winrt::com_ptr<ID3D11ShaderResourceView> curtainAtlasSRV;
     winrt::com_ptr<ID3D11ShaderResourceView> roomAtlasSRV;
     PerGeometryData frameBaseData{};
     PerGeometryData currentActiveData{};
@@ -205,7 +214,9 @@ private:
         {
             stl::write_vfunc<0x6, BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
             logger::info(
-                "[WindowLife] Installed BSLightingShader geometry hook on PS t{} authored pane mask + t{} room atlas + t{} structured SRV.",
+                "[WindowLife] Installed BSLightingShader geometry hook on PS t{} occupant atlas + t{} curtain atlas + t{} authored pane mask + t{} room atlas + t{} structured SRV.",
+                kOccupantAtlasSRVSlot,
+                kCurtainAtlasSRVSlot,
                 kAuthoredMaskSRVSlot,
                 kRoomAtlasSRVSlot,
                 kPerDrawSRVSlot);

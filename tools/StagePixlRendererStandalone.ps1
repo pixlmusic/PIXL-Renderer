@@ -5,6 +5,7 @@ param(
     [string]$ArchivePath = "",
     [string]$BuildDirectory = "",
     [string]$PipelineLibrary = "",
+    [string]$UserConfigPath = "",
     [string]$AllowedOutputRoot = "",
     [switch]$SkipPipelineLibrary,
     [switch]$SkipArchive
@@ -97,6 +98,15 @@ Copy-Item -LiteralPath (Join-Path $sourceRoot "pipeline\Terrain Field\Assets\Plu
 Copy-Item -LiteralPath $dll -Destination (Join-Path $output "SKSE\Plugins\PIXLRenderer.dll") -Force
 $runtimeSource = Join-Path $sourceRoot "distribution\SKSE\Plugins\PIXLRenderer"
 Copy-Item -LiteralPath (Join-Path $runtimeSource "SettingsDefault.json") -Destination (Join-Path $configRoot "RendererDefaults.json") -Force
+if (-not [string]::IsNullOrWhiteSpace($UserConfigPath)) {
+    $resolvedUserConfig = (Resolve-Path -LiteralPath $UserConfigPath).Path
+    try {
+        Get-Content -LiteralPath $resolvedUserConfig -Raw | ConvertFrom-Json | Out-Null
+    } catch {
+        throw "Invalid user graphics configuration '$resolvedUserConfig': $($_.Exception.Message)"
+    }
+    Copy-Item -LiteralPath $resolvedUserConfig -Destination (Join-Path $configRoot "UserGraphics.json") -Force
+}
 Copy-Item -LiteralPath (Join-Path $runtimeSource "Presets\PIXL-Renderer-Live-Tested.json") -Destination (Join-Path $profileRoot "PIXL-Golden-Baseline.json") -Force
 New-Item -ItemType Directory -Path (Join-Path $interfaceRoot "Themes"),(Join-Path $interfaceRoot "Locale") -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $runtimeSource "Themes\PIXL.json") -Destination (Join-Path $interfaceRoot "Themes\PIXL.json") -Force

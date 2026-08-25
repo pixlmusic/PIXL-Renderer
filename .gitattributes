@@ -10,6 +10,8 @@
 /PRIVATE_COMPONENTS.md export-ignore
 /tools/PixDiTEnhance export-ignore
 /tools/PixDiTEnhance/** export-ignore
+/PIXL_AUTONOMOUS export-ignore
+/PIXL_AUTONOMOUS/** export-ignore
 
 # Local/generated trees are ignored as well; these entries defend source
 # archives if a future private commit ever contains one accidentally.

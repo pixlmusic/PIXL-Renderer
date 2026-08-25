@@ -22,8 +22,20 @@ namespace ContactShadows
 		// the soft blur/falloff expected from a finite light source.
 		float filtered = (c * 4.0f + l + r + u + d) * 0.125f;
 		float edge = saturate(abs(filtered - c) * 5.0f);
-		float blur = edge * edge * 0.72f;
-		return saturate(lerp(c, filtered, blur));
+		float viewDepth = abs(SharedData::GetScreenDepth(screenPosition.z));
+		float depthFootprint =
+			max(abs(ddx(viewDepth)), abs(ddy(viewDepth))) /
+			max(viewDepth, 1.0f);
+		float discontinuity = smoothstep(0.0025f, 0.022f, depthFootprint);
+		float blur = edge * edge * 0.72f * (1.0f - discontinuity);
+		float shadow = saturate(lerp(c, filtered, blur));
+
+		// At long range a one-pixel depth edge has insufficient precision for a
+		// trustworthy receiver/caster classification. Fade only those discontinuity
+		// pixels, retaining stable contact on continuous distant surfaces.
+		float distanceRisk = smoothstep(3072.0f, 8192.0f, viewDepth);
+		float receiverConfidence = 1.0f - discontinuity * distanceRisk;
+		return lerp(1.0f, shadow, receiverConfidence);
 	}
 
 	/**
@@ -47,6 +59,12 @@ namespace ContactShadows
 		float lightBias = lerp(1.0f, 0.35f, NdotL);
 		float3 originWS = positionWS + normalWS * normalBias + lightDirectionWS * lightBias;
 		float3 originVS = FrameBuffer::WorldToView(originWS);
+		float viewDistance = abs(originVS.z);
+		float distanceConfidence =
+			1.0f - smoothstep(3072.0f, 8192.0f, viewDistance);
+		strength *= distanceConfidence;
+		if (strength <= 1e-3f)
+			return 1.0f;
 		float3 rayDirectionVS = normalize(FrameBuffer::WorldToView(lightDirectionWS, false));
 		uint stepCount = rayLength < 48.0f ? 4u : 6u;
 		float invStepCount = rcp((float)stepCount);

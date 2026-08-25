@@ -25,6 +25,8 @@ namespace PIXLRenderer::QualityProfiles
 	void Apply(Group group, int quality);
 	/** Applies a coordinated quality level to every visual group and persists its menu state. */
 	void ApplyGlobal(int quality);
+	/** Returns the tier whose complete runtime contract currently matches, or -1 for Custom. */
+	int Detect(Group group);
 	/** Returns the active unified Lighting tier, or -1 when advanced values are custom. */
 	int DetectLightingTier();
 }

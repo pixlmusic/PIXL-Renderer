@@ -3,6 +3,11 @@
 /bin/
 /dist/
 /Data/
+/PIXL_AUTONOMOUS/
+
+# Private neural-enhancement research is developed and licensed separately.
+# It is not compiled, linked, loaded, or packaged by PIXL Renderer.
+/tools/PixDiTEnhance/
 
 # Local automation/browser state
 /.playwright-cli/

@@ -179,7 +179,12 @@ float3 CalculateWindDisplacement(VS_INPUT input, float windTimer)
 		// ambient field gives those cards natural calm motion; real weather remains
 		// authoritative as soon as its energy exceeds that floor.
 		float weatherEnergy = abs(WindVector.z) * max(windLength, 0.35f);
-		float motionEnergy = max(weatherEnergy, 2.0f);
+		// The previous 2-unit floor was larger than the authored weather bend in
+		// calm conditions.  It could rotate a whole card toward the light and make
+		// otherwise rough vegetation read as a silver/mirror facet.  Keep just
+		// enough ambient energy for ordinary terrain grass to breathe, then let the
+		// real weather vector take over continuously.
+		float motionEnergy = max(weatherEnergy, 0.32f);
 		float gustAmount = min(gustStrength, 2.0f);
 		float flutterAmount = min(flutterStrength, 2.0f);
 
@@ -192,7 +197,7 @@ float3 CalculateWindDisplacement(VS_INPUT input, float windTimer)
 			windDirection + crossWind * meander, windDirection);
 		float forwardBend =
 			motionEnergy * tip2 *
-			(0.18f + 0.12f * gustAmount) *
+			(0.11f + 0.075f * gustAmount) *
 			(0.30f + 0.70f * gustPulse) *
 			(0.72f + 0.28f * carrier);
 		float3 ambientSway = float3(flowingDirection, 0.0f) * forwardBend;
@@ -200,11 +205,11 @@ float3 CalculateWindDisplacement(VS_INPUT input, float windTimer)
 		float3 crossDrift =
 			float3(crossWind, 0.0f) *
 			(motionEnergy * tip2 * directionNoise *
-				(0.018f + 0.055f * gustAmount));
+				(0.012f + 0.032f * gustAmount));
 		float3 flutter =
 			float3(crossWind, 0.0f) *
 			(motionEnergy * tip2 * tip2 * flutterNoise *
-				0.045f * flutterAmount);
+				0.028f * flutterAmount);
 
 		// Never scale the authored Skyrim bend itself. The shipped WindStrength=2
 		// previously doubled the full card deformation, which can fold grass cards
@@ -216,7 +221,7 @@ float3 CalculateWindDisplacement(VS_INPUT input, float windTimer)
 			(structural - legacyDisplacement) + ambientSway + crossDrift + flutter;
 		// Bound the added deformation independently of shader/material normals so
 		// aggressive user values cannot fold cards into mirror-like facets.
-		float maxDelta = motionEnergy * tip2 * (0.42f + 0.20f * gustAmount);
+		float maxDelta = motionEnergy * tip2 * (0.18f + 0.10f * gustAmount);
 		float deltaLengthSq = dot(enhancedDelta, enhancedDelta);
 		if (deltaLengthSq > maxDelta * maxDelta && maxDelta > 1e-5f)
 			enhancedDelta *= maxDelta * rsqrt(deltaLengthSq);

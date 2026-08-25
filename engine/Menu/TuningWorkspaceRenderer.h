@@ -70,6 +70,14 @@ public:
 
 	// PIXL Director live photo-mode controls / HUD.
 	[[nodiscard]] static bool IsDirectorPhotoModeActive();
+	/**
+	 * @brief Returns whether Director can safely take ownership of gameplay now.
+	 *
+	 * This is the single eligibility gate used by both the UI and the runtime
+	 * hotkey entry point.  When supplied, @p reason receives a short user-facing
+	 * explanation for a rejected activation.
+	 */
+	[[nodiscard]] static bool IsDirectorPhotoModeAvailable(std::string* reason = nullptr);
 	static bool HandleDirectorKeyboardInput(std::uint32_t virtualKey);
 	static bool HandleDirectorGamepadInput(std::uint32_t gamepadKeyCode);
 	static void RenderDirectorPhotoModeOverlay();

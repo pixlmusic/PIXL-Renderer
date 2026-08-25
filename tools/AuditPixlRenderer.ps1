@@ -251,7 +251,11 @@ if ($PackageDirectory) {
 
         $packageText = Get-ChildItem -LiteralPath $package -Recurse -File | Where-Object {
             $_.Extension -in @('.json','.ini','.txt','.hlsl','.hlsli') -and
-            $_.Name -notin @('PIXL-RENDERER.manifest.json','SOURCE-AND-CREDITS.md','ATTRIBUTION.md','THIRD_PARTY_NOTICES.md')
+            # UserGraphics may legitimately retain false-valued legacy module
+            # keys so older profiles can round-trip. It is user data, not product
+            # identity or active source, and is included only when the staging
+            # caller explicitly supplies it.
+            $_.Name -notin @('PIXL-RENDERER.manifest.json','UserGraphics.json','SOURCE-AND-CREDITS.md','ATTRIBUTION.md','THIRD_PARTY_NOTICES.md')
         }
         $packageHit = $packageText | Select-String -Pattern 'Community Shaders|CommunityShaders|community-shaders|TruePBR|True PBR|CS Editor' | Select-Object -First 1
         if ($packageHit) { Add-Error "Retired identity remains in live package: $($packageHit.Path):$($packageHit.LineNumber)" }

@@ -1226,5 +1226,5 @@ void State::SaveTheme()
 {
 	// SelectedThemePreset is now persisted via SettingsUser.json (State::Save)
 	// Keep this function as a no-op for backward compatibility and to avoid writing separate theme files.
-	logger::info("SaveTheme() no longer writes SettingsTheme.json; SelectedThemePreset is saved with SettingsUser.json");
+	logger::debug("SaveTheme() is a compatibility no-op; SelectedThemePreset is persisted by State::Save");
 }

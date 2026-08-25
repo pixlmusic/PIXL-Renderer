@@ -113,10 +113,141 @@ namespace
 			DirectorWeatherPreset::Original;
 
 		CameraSuite::Settings originalCamera{};
+
+		// The player remains available for normal third-person compositions, but
+		// fades out before the free camera can intersect the body.  Preserve the
+		// actor's incoming alpha so stealth/fade state is restored exactly.
+		bool playerAlphaSnapshotValid = false;
+		float originalPlayerAlpha = 1.0f;
 	};
 
 	DirectorPhotoModeState
 		g_directorPhotoMode{};
+
+	bool EvaluateDirectorPhotoModeEligibility(
+		std::string* reason)
+	{
+		auto reject = [reason](std::string_view message) {
+			if (reason)
+				*reason = message;
+			return false;
+		};
+
+		auto* player =
+			RE::PlayerCharacter::GetSingleton();
+		auto* camera =
+			RE::PlayerCamera::GetSingleton();
+
+		if (!player ||
+			!player->Is3DLoaded() ||
+			!player->GetParentCell() ||
+			!camera) {
+			return reject(
+				"Photo Mode is available after the playable world has finished loading.");
+		}
+
+		if (player->IsDead()) {
+			return reject(
+				"Photo Mode is unavailable while the player is dead or reloading.");
+		}
+
+		auto* ui =
+			RE::UI::GetSingleton();
+
+		if (!ui) {
+			return reject(
+				"Photo Mode is waiting for Skyrim's interface state.");
+		}
+
+		if (ui->closingAllMenus) {
+			return reject(
+				"Photo Mode is unavailable during a menu or world transition.");
+		}
+
+		// These aggregate flags cover inventory/container/barter/crafting menus,
+		// pause/journal screens and modal confirmation boxes.  Explicit checks
+		// below cover non-pausing menus that still own camera or gameplay input.
+		if (ui->GameIsPaused() ||
+			ui->IsItemMenuOpen() ||
+			ui->IsApplicationMenuOpen() ||
+			ui->IsModalMenuOpen()) {
+			return reject(
+				"Close Skyrim's current menu before entering Photo Mode.");
+		}
+
+		const bool incompatibleMenuOpen =
+			ui->IsMenuOpen(RE::MapMenu::MENU_NAME) ||
+			ui->IsMenuOpen(RE::InventoryMenu::MENU_NAME) ||
+			ui->IsMenuOpen(RE::MagicMenu::MENU_NAME) ||
+			ui->IsMenuOpen(RE::FavoritesMenu::MENU_NAME) ||
+			ui->IsMenuOpen(RE::ContainerMenu::MENU_NAME) ||
+			ui->IsMenuOpen(RE::BarterMenu::MENU_NAME) ||
+			ui->IsMenuOpen(RE::CraftingMenu::MENU_NAME) ||
+			ui->IsMenuOpen(RE::JournalMenu::MENU_NAME) ||
+			ui->IsMenuOpen(RE::TweenMenu::MENU_NAME) ||
+			ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) ||
+			ui->IsMenuOpen(RE::MainMenu::MENU_NAME) ||
+			ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME) ||
+			ui->IsMenuOpen(RE::Console::MENU_NAME) ||
+			ui->IsMenuOpen(RE::BookMenu::MENU_NAME) ||
+			ui->IsMenuOpen(RE::SleepWaitMenu::MENU_NAME) ||
+			ui->IsMenuOpen(RE::LockpickingMenu::MENU_NAME) ||
+			ui->IsMenuOpen(RE::MessageBoxMenu::MENU_NAME);
+
+		if (incompatibleMenuOpen) {
+			return reject(
+				"Close Skyrim's current menu before entering Photo Mode.");
+		}
+
+		if (auto* state = globals::state;
+			state &&
+			(state->isMainMenuOpen ||
+			 state->isLoadingMenuOpen ||
+			 state->isMapMenuOpen)) {
+			return reject(
+				"Photo Mode is unavailable during map, loading and main-menu states.");
+		}
+
+		if (reason)
+			reason->clear();
+		return true;
+	}
+
+	void UpdateDirectorPlayerBodyFade(
+		RE::PlayerCamera* playerCamera)
+	{
+		if (!g_directorPhotoMode.active ||
+			!g_directorPhotoMode.playerAlphaSnapshotValid ||
+			!playerCamera ||
+			!playerCamera->cameraRoot)
+			return;
+
+		auto* player =
+			RE::PlayerCharacter::GetSingleton();
+		if (!player)
+			return;
+
+		const auto& cameraPosition =
+			playerCamera->cameraRoot->world.translate;
+		const auto playerPosition =
+			player->GetPosition();
+		const float dx = cameraPosition.x - playerPosition.x;
+		const float dy = cameraPosition.y - playerPosition.y;
+		const float dz = cameraPosition.z - playerPosition.z;
+		const float distance =
+			std::sqrt(dx * dx + dy * dy + dz * dz);
+
+		// Fully hide inside the character capsule, then ease back to the exact
+		// incoming alpha.  The hysteresis-sized transition avoids a hard pop while
+		// still preventing first-/third-person body intersections in the lens.
+		const float visibility =
+			std::clamp((distance - 72.0f) / 104.0f, 0.0f, 1.0f);
+		const float smoothVisibility =
+			visibility * visibility * (3.0f - 2.0f * visibility);
+
+		player->SetAlpha(
+			g_directorPhotoMode.originalPlayerAlpha * smoothVisibility);
+	}
 
 	std::string DirectorLower(
 		std::string_view value)
@@ -299,6 +430,8 @@ namespace
 				23.99f);
 	}
 
+	void ExitDirectorPhotoMode();
+
 	bool EnterDirectorPhotoMode()
 	{
 		auto* player =
@@ -306,10 +439,14 @@ namespace
 		auto* camera =
 			RE::PlayerCamera::GetSingleton();
 
-		if (!player ||
-			!player->Is3DLoaded() ||
-			!camera)
+		std::string unavailableReason;
+		if (!EvaluateDirectorPhotoModeEligibility(
+				&unavailableReason)) {
+			logger::info(
+				"[PIXL Director] Photo Mode activation rejected: {}",
+				unavailableReason);
 			return false;
+		}
 
 		if (camera->IsInFreeCameraMode() &&
 			!g_directorPhotoMode.active) {
@@ -362,6 +499,10 @@ namespace
 
 		g_directorPhotoMode.snapshotValid =
 			true;
+		g_directorPhotoMode.originalPlayerAlpha =
+			player->GetAlpha();
+		g_directorPhotoMode.playerAlphaSnapshotValid =
+			true;
 
 		g_directorPhotoMode.hudVisible = true;
 		g_directorPhotoMode.quickPanelVisible = false;
@@ -385,6 +526,13 @@ namespace
 
 		g_directorPhotoMode.active =
 			camera->IsInFreeCameraMode();
+
+		if (!g_directorPhotoMode.active) {
+			// Undo the camera/DOF/player snapshots immediately when native TFC
+			// refuses ownership.  This leaves no partially entered Photo Mode.
+			ExitDirectorPhotoMode();
+			return false;
+		}
 
 		if (g_directorPhotoMode.active) {
 			auto* freeCameraState =
@@ -414,6 +562,12 @@ namespace
 
 	void ExitDirectorPhotoMode()
 	{
+		if (!g_directorPhotoMode.active &&
+			!g_directorPhotoMode.snapshotValid &&
+			!g_directorPhotoMode.playerAlphaSnapshotValid) {
+			return;
+		}
+
 		auto* camera =
 			RE::PlayerCamera::GetSingleton();
 
@@ -459,6 +613,16 @@ namespace
 
 		cameraSuite.SetPhotoModeDofIsolation(false);
 
+		if (g_directorPhotoMode
+				.playerAlphaSnapshotValid) {
+			if (auto* player =
+					RE::PlayerCharacter::GetSingleton()) {
+				player->SetAlpha(
+					g_directorPhotoMode
+						.originalPlayerAlpha);
+			}
+		}
+
 		g_directorPhotoMode.active =
 			false;
 		g_directorPhotoMode.snapshotValid =
@@ -477,6 +641,8 @@ namespace
 		g_directorPhotoMode.cameraBoundaryHit = false;
 		g_directorPhotoMode.captureDelayFrames = 0;
 		g_directorPhotoMode.captureHideFrames = 0;
+		g_directorPhotoMode.playerAlphaSnapshotValid = false;
+		g_directorPhotoMode.originalPlayerAlpha = 1.0f;
 	}
 
 	void DrawDirectorQuickLook()
@@ -2216,6 +2382,16 @@ namespace
 		if (!g_directorPhotoMode.active)
 			return;
 
+		std::string unavailableReason;
+		if (!EvaluateDirectorPhotoModeEligibility(
+				&unavailableReason)) {
+			logger::info(
+				"[PIXL Director] Exiting Photo Mode safely: {}",
+				unavailableReason);
+			ExitDirectorPhotoMode();
+			return;
+		}
+
 		auto* playerCamera =
 			RE::PlayerCamera::GetSingleton();
 
@@ -2223,17 +2399,16 @@ namespace
 			return;
 
 		if (!playerCamera->IsInFreeCameraMode()) {
-			// Director owns the camera until the user explicitly exits via HOME
-			// or the Director menu. Never let an unrelated game input/menu state
-			// silently tear down Photo Mode.
-			playerCamera->ToggleFreeCameraMode(
-				true);
-
-			if (!playerCamera->IsInFreeCameraMode())
-				return;
+			// A load/death/menu transition can tear down native TFC before PIXL's
+			// overlay observes the corresponding UI state.  Restore once instead of
+			// attempting to seize the camera again in an incompatible game state.
+			ExitDirectorPhotoMode();
+			return;
 		}
 
 		EnforceDirectorCameraBoundary(
+			playerCamera);
+		UpdateDirectorPlayerBodyFade(
 			playerCamera);
 
 		if (g_directorPhotoMode.focusTargetMode)
@@ -2978,6 +3153,12 @@ bool TuningWorkspaceRenderer::IsDirectorPhotoModeActive()
 {
 	return
 		g_directorPhotoMode.active;
+}
+
+bool TuningWorkspaceRenderer::IsDirectorPhotoModeAvailable(
+	std::string* reason)
+{
+	return EvaluateDirectorPhotoModeEligibility(reason);
 }
 
 bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
@@ -4359,6 +4540,12 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 			playerCamera->IsInFreeCameraMode() &&
 			!g_directorPhotoMode.active;
 
+		std::string photoModeUnavailableReason;
+		const bool photoModeAvailable =
+			TuningWorkspaceRenderer::
+				IsDirectorPhotoModeAvailable(
+					&photoModeUnavailableReason);
+
 		ImGui::PushStyleColor(
 			ImGuiCol_ChildBg,
 			ImVec4(0, 0, 0, 0));
@@ -4400,6 +4587,10 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 				PIXLUI::StatusPill(
 					"EXTERNAL FREE CAMERA ACTIVE",
 					PIXLUI::Colors::Warning);
+			} else if (!photoModeAvailable) {
+				PIXLUI::StatusPill(
+					"WAITING FOR GAMEPLAY",
+					PIXLUI::Colors::Warning);
 			} else {
 				PIXLUI::StatusPill(
 					"GAMEPLAY",
@@ -4418,7 +4609,7 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 			if (!g_directorPhotoMode.active) {
 				ImGui::BeginDisabled(
 					foreignFreeCamera ||
-					!playerCamera);
+					!photoModeAvailable);
 
 				if (PIXLUI::ActionButton(
 						"ENTER PHOTO MODE",
@@ -4434,6 +4625,12 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 						PIXLUI::ToVec4(
 							PIXLUI::Colors::TextDim),
 						"Exit the existing free-camera session before PIXL Director takes control.");
+				} else if (!photoModeAvailable) {
+					ImGui::TextColored(
+						PIXLUI::ToVec4(
+							PIXLUI::Colors::TextDim),
+						"%s",
+						photoModeUnavailableReason.c_str());
 				} else {
 					ImGui::TextColored(
 						PIXLUI::ToVec4(

@@ -120,7 +120,7 @@ void FoliageDynamics::DrawSettings()
 	if (ImGui::TreeNodeEx(T(TKEY("vegetation_wind"), "Vegetation Wind"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		Util::UIntCheckbox(T(TKEY("enable_enhanced_wind"), "Natural Multi-Scale Wind"), &settings.EnableEnhancedWind);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("%s", T(TKEY("enable_enhanced_wind_tooltip"), "Adds world-stable calm motion, travelling gust cells, directional meander and tip flutter to terrain grass and TREE_ANIM vegetation. Motion is independent from foliage material/specular controls and preserves previous-frame deformation."));
+			ImGui::TextWrapped("%s", T(TKEY("enable_enhanced_wind_tooltip"), "Adds bounded world-stable calm motion, travelling gust cells, directional meander and tip flutter to terrain grass and TREE_ANIM vegetation. It does not enable or alter the foliage material/specular model, and preserves previous-frame deformation for stable motion vectors."));
 		ImGui::BeginDisabled(settings.EnableEnhancedWind == 0);
 		ImGui::SliderFloat(T(TKEY("wind_strength"), "Wind Response"), &settings.WindStrength, 0.0f, 2.0f, "%.2f");
 		if (auto _tt = Util::HoverTooltipWrapper())

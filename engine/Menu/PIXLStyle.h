@@ -2504,6 +2504,21 @@ namespace PIXLUI
 		const ImVec2 start = ImGui::GetCursorScreenPos();
 		const float width = ImGui::GetContentRegionAvail().x;
 		const float height = Ref(28.0f);
+		const float latchWidth = Ref(60.0f);
+		const float rowGap = Ref(8.0f);
+
+		// Make the complete label side of the row interactive.  This gives every
+		// normal module toggle a comfortable mouse/controller target while keeping
+		// a distinct non-overlapping latch ID on the right.
+		ImGui::SetCursorScreenPos(start);
+		const bool labelPressed =
+			ImGui::InvisibleButton(
+				"##labelHit",
+				ImVec2(
+					std::max(1.0f, width - latchWidth - rowGap),
+					height));
+		if (labelPressed)
+			*value = !*value;
 
 		const ImVec2 labelSize =
 			ImGui::CalcTextSize(label);
@@ -2516,17 +2531,17 @@ namespace PIXLUI
 
 		ImGui::SetCursorScreenPos(
 			ImVec2(
-				start.x + width - Ref(60.0f),
+				start.x + width - latchWidth,
 				start.y + Ref(1.0f)));
 
-		const bool changed =
+		const bool latchChanged =
 			Toggle("##value", value);
 
 		ImGui::SetCursorScreenPos(start);
 		ImGui::Dummy(ImVec2(width, height));
 
 		ImGui::PopID();
-		return changed;
+		return labelPressed || latchChanged;
 	}
 
 
