@@ -8,6 +8,7 @@
 /PIXL_RELEASE_STATE.md export-ignore
 /START_CODEX_ACTIVE_DEVELOPMENT.md export-ignore
 /PRIVATE_COMPONENTS.md export-ignore
+/tools/PixDiTEnhance export-ignore
 /tools/PixDiTEnhance/** export-ignore
 
 # Local/generated trees are ignored as well; these entries defend source
