@@ -112,9 +112,9 @@ PIXL eye optics/rendering is an active high-fidelity subsystem.
 - Last clean command: `cmake --build P:\build\PIXL-12C --clean-first --config Release --target PIXLRenderer -- /m /nr:false`
 - Result: PASS; full clean Release compilation and link completed after correcting the bundled FidelityFX DX11 shader compiler's overlong output argument.
 - DLL path: `build\PIXL-12C\Release\PIXLRenderer.dll`
-- Latest incremental Release build: PASS after WindowLife `0.5.5`; deployed DLL SHA-256 `C74901A7A33003C4DE9F0328661C38A108D3A60A03099DAC1B43EE5EB8F8058F`.
+- Latest clean Release build: PASS after WindowLife `0.5.6`; build/live/beta DLL SHA-256 `3C615F0DADD8C5718E63C01B3CEB7722D01CA3393207B0F2A2ADABBE733C416B` (19,399,680 bytes).
 - Relevant warnings/errors: only inherited FidelityFX `MSB8028` shared-intermediate warnings; no PIXL compiler/linker errors. `tools/AuditPixlRenderer.ps1` passes for all 36 modules.
-- FidelityFX build finding: `FidelityFX_SC.exe` exited with `0xC0000409` after receiving the long absolute H: output path. The DX11 backend now invokes it with portable relative `../shaders/dx11` from its CMake binary working directory; generated permutation dependencies remain absolute for CMake.
+- FidelityFX build finding: `FidelityFX_SC.exe` exited with `0xC0000409` after receiving the long absolute H: output path, and MSVC later failed to open generated includes through the same long tree. The committed top-level patch now routes both generation and include lookup through optional `PIXL_FFX_SHORT_BINARY_ROOT`; the validated build used `P:/build/PIXL-12C/ffx-dx11-shaders`.
 
 ## Current Shader Status
 
@@ -122,7 +122,7 @@ PIXL eye optics/rendering is an active high-fidelity subsystem.
 - Source shaders changed in this iteration: `distribution/Shaders/RunGrass.hlsl`, both Foliage Dynamics kernels, WindowLife, and all four Rain Response runoff compute shaders.
 - Last permutations tested: RunGrass PS with Foliage alone and with SkyBounce/ContactShadows/AmbientProbe/WorldProbes, RunGrass VS with Foliage, WindowLife base/Deferred/Envmapped/MaterialForge/Specular Lighting PS variants, and all four runoff CS stages.
 - Compile result: all targeted stages pass Windows SDK 10.0.26100 FXC `/Ges /WX /O3` using valid production permutations.
-- Module versions: Foliage Dynamics `2.1.0`; WindowLife `0.5.5`; Rain Response remains `3.2.0` because its changed runoff files are direct compute kernels and a version bump would unnecessarily invalidate every family receiving its global define.
+- Module versions: Foliage Dynamics `2.1.0`; WindowLife `0.5.6`; Rain Response remains `3.2.0` because its changed runoff files are direct compute kernels and a version bump would unnecessarily invalidate every family receiving its global define.
 - Runtime shader-cache status before this deployment: only 60 stages / 27,240,954 bytes remain under `Data\PIXL\PipelineLibrary`. The previous direct-kernel watcher path had already deleted the full library before the repair could take effect. No cache files were manually deleted for this deployment.
 - Canonical/live reconciliation: PASS, 243/243 matching; zero different, source-only, live-only, backup-like, or overlay-collision entries.
 - New watcher behavior: direct module `.hlsl` changes release only that module's owned kernels; tracked/owned `.hlsli` changes invalidate only affected pipeline families; `RunGrass.hlsl` maps to Grass; only genuinely unowned shared includes can request a full persistent-library clear. Full and selective invalidations now log an explicit reason.
@@ -131,7 +131,7 @@ PIXL eye optics/rendering is an active high-fidelity subsystem.
 
 - Last owner evidence: grass SSS works in both first and third person (PASS), but a detailed near-grass transition remains visible; normalized GGX highlights remain too weak; WindowLife `0.4.0` can place/tile occupants inconsistently and one Solitude facade still exposes invalid interior geometry; runoff has severe DLSS Balanced spatial break-up compared with DLAA.
 - Pre-deployment log review: the 14:31:59 run is 28,758 bytes / 393 lines with zero error/critical, shader-failure, exception, or assertion matches. It reports a valid disk cache and saves metadata at 14:32:25. This predates the new DLL and cannot validate the new runtime paths.
-- Deployment: PASS while Skyrim was closed. The live DLL SHA-256 is `334E42307CCAA71A74A76ED2479D975455323DCF485106FBCC20D607578DDE17`, exactly matching the clean Release build; all 242 assembled live shaders match canonical source. `UserGraphics.json` and the beta package were not modified.
+- Deployment: PASS while Skyrim was closed. The clean build, live game, and beta DLLs are byte-identical at SHA-256 `3C615F0DADD8C5718E63C01B3CEB7722D01CA3393207B0F2A2ADABBE733C416B`; all 243 assembled live shaders match canonical source. `UserGraphics.json` was not modified.
 - Audit: targeted `git diff --check` passes; `tools/AuditPixlRenderer.ps1` passes for all 36 modules.
 - New rollback checkpoint: `build\active-dev-checkpoints\20260824-153811-pre-grass-window-runoff` preserves the prior live DLL, the ten replaced live shader/descriptor files, and all 60 remaining pre-run cache stages (71 files / 46,688,089 bytes total).
 - Runtime validation of this build is pending the owner's next launch/cache recovery and scene tests.
@@ -466,6 +466,8 @@ Examples:
 - Replaced the root GitHub README with a first-person PIXL project page covering architecture, the 36 integrated modules and renderer services, installation, build/staging, Community Shaders v1.8.3 ancestry, GPL-3.0/source obligations, third-party notices, and PIXL music links.
 - Synchronized the clean Release DLL to live Data and beta. Final DLL SHA-256 is `3C615F0DADD8C5718E63C01B3CEB7722D01CA3393207B0F2A2ADABBE733C416B`; WindowLife 0.5.6 HLSL SHA-256 is `E7F6575B043C52FB65E924FD2990C54A480C2A77B306B0FCD5FFC0EAAEA04683` across source/live/beta. The audited beta contains 36 modules, the room atlas, no PixDiT/models, and no shader pipeline cache.
 - Re-ran the renderer/package audit successfully and reconciled all 243 canonical shaders against live Data: 243 matches, zero differences, zero source-only/live-only files, and zero overlay collisions.
+- Created local private-development checkpoints `c5ce2a0c` and `3bf6a6e2` without adding an external remote. The audited public-source export is `dist/PIXL-Renderer-v1.0-Source.zip` (75,827,696 bytes, 808 entries, SHA-256 `88727530520660A6255406FF6EC805433CDD10F6BCAEEEB259C1159DA3723060`); it excludes the independent private PixDiT workspace, internal ledgers, generated builds, runtime Data, model weights, and shader cache.
+- Final beta inventory is 287 files / 162,588,035 bytes, includes the WindowLife room atlas, and contains zero `.pixlbin`, model-weight, or PixDiT files. GitHub CLI is installed but unauthenticated, so no GitHub repository, remote, or push was created.
 
 ## Remaining Issues
 
