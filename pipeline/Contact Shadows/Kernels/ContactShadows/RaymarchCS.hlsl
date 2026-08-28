@@ -63,7 +63,9 @@ cbuffer PerFrame : register(b1)
 	// collapsing the shadow ray. These defaults match Bend's recommended range.
 	parameters.SurfaceThickness = SurfaceThickness > 1e-5f ? (half)SurfaceThickness : 0.005h;
 	parameters.BilinearThreshold = BilinearThreshold > 1e-5f ? (half)BilinearThreshold : 0.02h;
-	parameters.ShadowContrast = ShadowContrast >= 1.0f ? (half)ShadowContrast : 4.0h;
+	// The user-facing control is defined on [1, 4].  Values below one are
+	// clamped instead of jumping to maximum contrast.
+	parameters.ShadowContrast = clamp((half)ShadowContrast, 1.0h, 4.0h);
 
 	// Broad, flat interior floors still produced dark stepped blotches whenever
 	// repeated depth discontinuities were classified as edge casters. Prefer

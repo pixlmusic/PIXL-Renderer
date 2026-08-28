@@ -119,6 +119,17 @@ public:
 	virtual void SetupResources() override;
 	virtual void Prepass() override;
 
+	/**
+	 * @brief Rebinds the grass-only PS b13 payload at the BSGrassShader draw boundary.
+	 *
+	 * PS b13 is intentionally shared by several mutually exclusive shader families.
+	 * Frame-level bindings from Rain/Ground Response may therefore replace it before
+	 * grass draws. GroundResponse's existing BSGrassShader hook calls this after
+	 * vanilla geometry setup so every FOLIAGE_DYNAMICS grass draw receives the
+	 * current tuning values without changing the public FeatureData ABI.
+	 */
+	void BindGrassTuning() const;
+
 	/** @brief Draws the ImGui settings UI for grass specular, SSS, and lighting options. */
 	virtual void DrawSettings() override;
 

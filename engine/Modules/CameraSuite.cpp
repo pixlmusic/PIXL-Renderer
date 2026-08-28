@@ -275,69 +275,100 @@ bool CameraSuite::DetectHDR()
 	return hdrEnabled;
 }
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
-	CameraSuite::Settings,
-	enableHDR,
-	hdrPaperWhite,
-	hdrPeakNits,
-	hdrUIBrightness,
-	dontShowHDRWarning,
-	hdrAutoDetected,
-	enablePhysicalCamera,
-	cameraAutoExposure,
-	cameraExposureCompensationEV,
-	cameraMinExposureEV,
-	cameraMaxExposureEV,
-	cameraLowPercentile,
-	cameraHighPercentile,
-	cameraHighlightProtection,
-	cameraShadowDetail,
-	cameraContrast,
-	cameraLocalExposure,
-	cameraAdaptBrightToDark,
-	cameraAdaptDarkToBright,
-	cameraSaturation,
-	cameraToe,
-	cameraShoulder,
-	cameraInfluence,
-	menuSceneBrightness,
-	lookPreset,
-	lookOpacity,
-	enableBloom,
-	bloomStrength,
-	bloomThreshold,
-	bloomRadius,
-	enableStormglass,
-	stormglassStrength,
-	stormglassDropScale,
-	stormglassRefraction,
-	stormglassTrails,
-	stormglassDryingRate,
-	enableSubmergedOptics,
-	submergedStrength,
-	submergedBlur,
-	submergedRefraction,
-	submergedTransitionSpeed,
-	enableEnhancedDepthOfField,
-	dofStrength,
-	dofFocusDistance,
-	dofFocusRange,
-	dofBokehRadius,
-	dofHighlightResponse,
-	dofFocusEdgeProtection,
-	dofForegroundCoverage,
-	dofCatEye,
-	dofAnamorphicRatio,
-	experimentalBodycam,
-	bodycamStrength,
-	bodycamDistortion,
-	bodycamNoise,
-	bodycamVignette,
-	bodycamChromaticAberration,
-	bodycamSharpen,
-	bodycamExposureAggressiveness,
-	bodycamHighlightBloom,
-	bodycamWhiteBalance);
+#define PIXL_CAMERA_SETTINGS_JSON_FIELDS(X) \
+	X(enableHDR) \
+	X(hdrPaperWhite) \
+	X(hdrPeakNits) \
+	X(hdrUIBrightness) \
+	X(dontShowHDRWarning) \
+	X(hdrAutoDetected) \
+	X(enablePhysicalCamera) \
+	X(cameraAutoExposure) \
+	X(cameraExposureCompensationEV) \
+	X(cameraMinExposureEV) \
+	X(cameraMaxExposureEV) \
+	X(cameraLowPercentile) \
+	X(cameraHighPercentile) \
+	X(cameraHighlightProtection) \
+	X(cameraShadowDetail) \
+	X(cameraContrast) \
+	X(cameraLocalExposure) \
+	X(cameraAdaptBrightToDark) \
+	X(cameraAdaptDarkToBright) \
+	X(cameraSaturation) \
+	X(cameraToe) \
+	X(cameraShoulder) \
+	X(cameraInfluence) \
+	X(menuSceneBrightness) \
+	X(lookPreset) \
+	X(lookOpacity) \
+	X(enableBloom) \
+	X(bloomStrength) \
+	X(bloomThreshold) \
+	X(bloomRadius) \
+	X(enableStormglass) \
+	X(stormglassStrength) \
+	X(stormglassDropScale) \
+	X(stormglassRefraction) \
+	X(stormglassTrails) \
+	X(stormglassDryingRate) \
+	X(enableSubmergedOptics) \
+	X(submergedStrength) \
+	X(submergedBlur) \
+	X(submergedRefraction) \
+	X(submergedTransitionSpeed) \
+	X(enableColdLens) \
+	X(coldLensStrength) \
+	X(coldAltitudeStart) \
+	X(coldAltitudeFull) \
+	X(enableElementalDamageLens) \
+	X(elementalLensStrength) \
+	X(enableEnhancedDepthOfField) \
+	X(dofAutoFocus) \
+	X(dofStrength) \
+	X(dofFocusDistance) \
+	X(dofFocusRange) \
+	X(dofBokehRadius) \
+	X(dofHighlightResponse) \
+	X(dofFocusEdgeProtection) \
+	X(dofForegroundCoverage) \
+	X(dofCatEye) \
+	X(dofAnamorphicRatio) \
+	X(enableModernMotionBlur) \
+	X(motionBlurStrength) \
+	X(motionBlurShutter) \
+	X(motionBlurMaxPixels) \
+	X(experimentalBodycam) \
+	X(bodycamStrength) \
+	X(bodycamDistortion) \
+	X(bodycamNoise) \
+	X(bodycamVignette) \
+	X(bodycamChromaticAberration) \
+	X(bodycamSharpen) \
+	X(bodycamExposureAggressiveness) \
+	X(bodycamHighlightBloom) \
+	X(bodycamWhiteBalance)
+
+void to_json(nlohmann::json& json, const CameraSuite::Settings& settings)
+{
+	json = nlohmann::json::object();
+#define PIXL_CAMERA_WRITE_JSON(field) json[#field] = settings.field;
+	PIXL_CAMERA_SETTINGS_JSON_FIELDS(PIXL_CAMERA_WRITE_JSON)
+#undef PIXL_CAMERA_WRITE_JSON
+}
+
+void from_json(const nlohmann::json& json, CameraSuite::Settings& settings)
+{
+	// WITH_DEFAULT semantics: missing fields retain the in-class defaults. This
+	// keeps old user profiles forward compatible as CameraSuite grows.
+#define PIXL_CAMERA_READ_JSON(field) \
+	if (const auto it = json.find(#field); it != json.end() && !it->is_null()) \
+		it->get_to(settings.field);
+	PIXL_CAMERA_SETTINGS_JSON_FIELDS(PIXL_CAMERA_READ_JSON)
+#undef PIXL_CAMERA_READ_JSON
+}
+
+#undef PIXL_CAMERA_SETTINGS_JSON_FIELDS
 
 void CameraSuite::DrawSettings()
 {
@@ -590,7 +621,7 @@ void CameraSuite::DrawSettings()
 			float oldUIBrightness = settings.hdrUIBrightness;
 			float currentUIBrightness = settings.hdrUIBrightness;
 
-			ImGui::SliderFloat(T(TKEY("ui_brightness_multiplier"), "UI Brightness Multiplier"), &currentUIBrightness, 0.5f, 5.0f, "%.2fx");
+			ImGui::SliderFloat(T(TKEY("ui_brightness_multiplier"), "UI Brightness Multiplier"), &currentUIBrightness, 0.5f, 5.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
 			if (oldUIBrightness != currentUIBrightness) {
 				settings.hdrUIBrightness = currentUIBrightness;
 				UpdateHDRData();
@@ -653,7 +684,10 @@ void CameraSuite::DrawSettings()
 			DrawSettingsTooltip("Uses stronger highlight protection and local adaptation with a restrained cinematic contrast curve. Applies immediately.");
 
 			if (ImGui::CollapsingHeader("LUT / Tonemap", ImGuiTreeNodeFlags_DefaultOpen)) {
-				const char* looks[] = { "Original", "Nordic Neutral", "Saga", "Dramatic", "Hearthfire", "Bleak" };
+				const char* looks[] = {
+					"Original", "Nordic Neutral", "Saga", "Dramatic", "Hearthfire", "Bleak",
+					"Bleach", "Winter", "Sunset", "Fantasy Green", "Nightfall", "Cinematic"
+				};
 				int selectedLook = static_cast<int>(settings.lookPreset);
 				if (ImGui::Combo("Colour Grade", &selectedLook, looks, static_cast<int>(std::size(looks)))) {
 					settings.lookPreset = static_cast<uint>(std::clamp(selectedLook, 0, static_cast<int>(std::size(looks)) - 1));
@@ -671,7 +705,7 @@ void CameraSuite::DrawSettings()
 				DrawSettingsTooltip("Blends the selected LUT with the neutral tonemap in real time from 0 to 100%. Values around 20-45% preserve weather and texture authorship best.");
 			}
 			ImGui::SameLine();
-			if (ImGui::Button("Authentic Bodycam")) {
+			if (ImGui::Button("Bodycam Preset")) {
 				settings.cameraAutoExposure = true;
 				settings.cameraExposureCompensationEV = 0.0f;
 				settings.cameraAdaptBrightToDark = 0.55f;
@@ -786,16 +820,36 @@ void CameraSuite::DrawSettings()
 			ImGui::EndDisabled();
 		}
 
+		if (ImGui::CollapsingHeader("Cold & Elemental Lens", ImGuiTreeNodeFlags_DefaultOpen)) {
+			changed |= ImGui::Checkbox("Environmental Frost Edges", &settings.enableColdLens);
+			DrawSettingsTooltip("Builds a restrained crystalline edge response from live snowfall and high exterior altitude. It never affects HUD/menu composition and fades naturally in warmer clear areas.");
+			ImGui::BeginDisabled(!settings.enableColdLens);
+			changed |= ImGui::SliderFloat("Frost Edge Strength", &settings.coldLensStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			changed |= ImGui::SliderFloat("Cold Altitude Start", &settings.coldAltitudeStart, 0.0f, 70000.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
+			changed |= ImGui::SliderFloat("Cold Altitude Full", &settings.coldAltitudeFull, 1000.0f, 90000.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
+			settings.coldAltitudeFull = std::max(settings.coldAltitudeFull, settings.coldAltitudeStart + 1000.0f);
+			ImGui::EndDisabled();
+			changed |= ImGui::Checkbox("Elemental Hit Optics", &settings.enableElementalDamageLens);
+			DrawSettingsTooltip("Confirmed fire and frost projectile hits on the player produce short heat-distortion or ice-edge pulses. This includes compatible dragon breath projectiles without guessing from nearby spell visuals.");
+			ImGui::BeginDisabled(!settings.enableElementalDamageLens);
+			changed |= ImGui::SliderFloat("Elemental Presence", &settings.elementalLensStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::EndDisabled();
+		}
+
 		if (ImGui::CollapsingHeader("Cinematic Depth of Field", ImGuiTreeNodeFlags_DefaultOpen)) {
 			changed |= ImGui::Checkbox("Enable PIXL Depth of Field", &settings.enableEnhancedDepthOfField);
-			DrawSettingsTooltip("Requests a restrained gameplay focus plane and enhances Skyrim's depth-aware image-space pass. Stronger authored cinematic depth of field is preserved.");
+			DrawSettingsTooltip("Enables PIXL's depth-aware photographic aperture. The legacy Skyrim blur is bypassed so CameraSuite exclusively owns the visible depth-of-field result.");
 			ImGui::BeginDisabled(!settings.enableEnhancedDepthOfField);
+			changed |= ImGui::Checkbox("Gameplay Auto Focus", &settings.dofAutoFocus);
+			DrawSettingsTooltip("Focuses on valid geometry at the centre of the view. Disable this for a locked manual focus plane.");
 			changed |= ImGui::SliderFloat("DOF Strength", &settings.dofStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			DrawSettingsTooltip("Sets the minimum gameplay blur strength. Authored image-space modifiers can still apply a stronger effect.");
+			DrawSettingsTooltip("Controls the photographic circle-of-confusion strength around the PIXL focus plane.");
+			ImGui::BeginDisabled(settings.dofAutoFocus);
 			changed |= ImGui::SliderFloat("Focus Distance", &settings.dofFocusDistance, 100.0f, 20000.0f, "%.0f units", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+			ImGui::EndDisabled();
 			changed |= ImGui::SliderFloat("Focus Range", &settings.dofFocusRange, 100.0f, 20000.0f, "%.0f units", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
 			changed |= ImGui::SliderFloat("Bokeh Radius", &settings.dofBokehRadius, 0.5f, 2.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
-			DrawSettingsTooltip("Scales the aperture footprint relative to Skyrim's authored blur strength. Larger values create broader bokeh and cost no additional samples.");
+			DrawSettingsTooltip("Scales the aperture footprint. Larger values create broader bokeh; the sample budget is selected by Camera quality.");
 			changed |= ImGui::SliderFloat("Highlight Response", &settings.dofHighlightResponse, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 			DrawSettingsTooltip("Preserves bright points inside the defocused aperture. The response is soft-clamped to prevent fireflies.");
 			changed |= ImGui::SliderFloat("Focus Edge Protection", &settings.dofFocusEdgeProtection, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -806,6 +860,18 @@ void CameraSuite::DrawSettings()
 			DrawSettingsTooltip("Compresses bokeh toward the frame edges to mimic mechanical lens vignetting. Keep low for a neutral photographic look.");
 			changed |= ImGui::SliderFloat("Anamorphic Ratio", &settings.dofAnamorphicRatio, 0.5f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 			DrawSettingsTooltip("Shapes the aperture vertically versus horizontally. 1.0 is round; values above 1.0 create a restrained horizontal anamorphic oval.");
+			ImGui::EndDisabled();
+		}
+
+		if (ImGui::CollapsingHeader("Modern Motion Blur", ImGuiTreeNodeFlags_DefaultOpen)) {
+			changed |= ImGui::Checkbox("Enable Camera Motion Blur", &settings.enableModernMotionBlur);
+			DrawSettingsTooltip("Depth-aware, shutter-based camera motion blur. UI remains sharp, depth edges reject background bleeding, and tiny temporal jitter is ignored.");
+			ImGui::BeginDisabled(!settings.enableModernMotionBlur);
+			changed |= ImGui::SliderFloat("Motion Blur Strength", &settings.motionBlurStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			changed |= ImGui::SliderFloat("Shutter Angle", &settings.motionBlurShutter, 0.10f, 1.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+			DrawSettingsTooltip("Scales camera travel captured during the frame. 0.5 approximates a cinematic 180-degree shutter.");
+			changed |= ImGui::SliderFloat("Maximum Motion", &settings.motionBlurMaxPixels, 4.0f, 48.0f, "%.0f px", ImGuiSliderFlags_AlwaysClamp);
+			DrawSettingsTooltip("Bounds the blur footprint during rapid turns so the image remains readable and stable.");
 			ImGui::EndDisabled();
 		}
 
@@ -829,6 +895,14 @@ void CameraSuite::SaveSettings(json& o_json)
 {
 	std::lock_guard<std::mutex> lock(settingsMutex);
 	o_json = settings;
+	// Keep the core settings below nlohmann's non-intrusive macro arity limit;
+	// environmental lens additions remain normal, backward-compatible keys.
+	o_json["enableColdLens"] = settings.enableColdLens;
+	o_json["coldLensStrength"] = settings.coldLensStrength;
+	o_json["coldAltitudeStart"] = settings.coldAltitudeStart;
+	o_json["coldAltitudeFull"] = settings.coldAltitudeFull;
+	o_json["enableElementalDamageLens"] = settings.enableElementalDamageLens;
+	o_json["elementalLensStrength"] = settings.elementalLensStrength;
 }
 
 void CameraSuite::LoadSettings(json& o_json)
@@ -838,6 +912,14 @@ void CameraSuite::LoadSettings(json& o_json)
 	bool oldEnableHDR = settings.enableHDR;
 
 	settings = o_json;
+	settings.enableColdLens = o_json.value("enableColdLens", settings.enableColdLens);
+	settings.coldLensStrength = o_json.value("coldLensStrength", settings.coldLensStrength);
+	settings.coldAltitudeStart = o_json.value("coldAltitudeStart", settings.coldAltitudeStart);
+	settings.coldAltitudeFull = o_json.value("coldAltitudeFull", settings.coldAltitudeFull);
+	settings.enableElementalDamageLens =
+		o_json.value("enableElementalDamageLens", settings.enableElementalDamageLens);
+	settings.elementalLensStrength =
+		o_json.value("elementalLensStrength", settings.elementalLensStrength);
 	// Camera quality belongs to the coordinated menu contract rather than the
 	// authored camera-look JSON. Restore it on startup instead of reverting to
 	// the member default after a saved Low/Medium/High selection.
@@ -863,7 +945,7 @@ void CameraSuite::LoadSettings(json& o_json)
 	settings.cameraShoulder = std::clamp(settings.cameraShoulder, 0.2f, 1.5f);
 	settings.cameraInfluence = std::clamp(settings.cameraInfluence, 0.0f, 1.0f);
 	settings.menuSceneBrightness = std::clamp(settings.menuSceneBrightness, 0.75f, 3.0f);
-	settings.lookPreset = std::min(settings.lookPreset, 5u);
+	settings.lookPreset = std::min(settings.lookPreset, 11u);
 	settings.lookOpacity = std::clamp(settings.lookOpacity, 0.0f, 1.0f);
 	settings.bloomStrength = std::clamp(settings.bloomStrength, 0.0f, 3.0f);
 	settings.bloomThreshold = std::clamp(settings.bloomThreshold, 0.0f, 5.0f);
@@ -877,6 +959,13 @@ void CameraSuite::LoadSettings(json& o_json)
 	settings.submergedBlur = std::clamp(settings.submergedBlur, 0.0f, 1.0f);
 	settings.submergedRefraction = std::clamp(settings.submergedRefraction, 0.0f, 1.5f);
 	settings.submergedTransitionSpeed = std::clamp(settings.submergedTransitionSpeed, 0.5f, 8.0f);
+	settings.coldLensStrength = std::clamp(settings.coldLensStrength, 0.0f, 1.0f);
+	settings.coldAltitudeStart = std::clamp(settings.coldAltitudeStart, 0.0f, 70000.0f);
+	settings.coldAltitudeFull = std::clamp(
+		settings.coldAltitudeFull,
+		settings.coldAltitudeStart + 1000.0f,
+		90000.0f);
+	settings.elementalLensStrength = std::clamp(settings.elementalLensStrength, 0.0f, 1.0f);
 	settings.dofStrength = std::clamp(settings.dofStrength, 0.0f, 1.0f);
 	settings.dofFocusDistance = std::clamp(settings.dofFocusDistance, 100.0f, 20000.0f);
 	settings.dofFocusRange = std::clamp(settings.dofFocusRange, 100.0f, 20000.0f);
@@ -886,6 +975,9 @@ void CameraSuite::LoadSettings(json& o_json)
 	settings.dofForegroundCoverage = std::clamp(settings.dofForegroundCoverage, 0.0f, 1.5f);
 	settings.dofCatEye = std::clamp(settings.dofCatEye, 0.0f, 1.0f);
 	settings.dofAnamorphicRatio = std::clamp(settings.dofAnamorphicRatio, 0.5f, 2.0f);
+	settings.motionBlurStrength = std::clamp(settings.motionBlurStrength, 0.0f, 1.0f);
+	settings.motionBlurShutter = std::clamp(settings.motionBlurShutter, 0.10f, 1.0f);
+	settings.motionBlurMaxPixels = std::clamp(settings.motionBlurMaxPixels, 4.0f, 48.0f);
 	settings.bodycamStrength = std::clamp(settings.bodycamStrength, 0.0f, 1.0f);
 	settings.bodycamDistortion = std::clamp(settings.bodycamDistortion, 0.0f, 0.30f);
 	settings.bodycamNoise = std::clamp(settings.bodycamNoise, 0.0f, 0.60f);
@@ -956,16 +1048,27 @@ void CameraSuite::RestoreDefaultSettings()
 	settings.submergedBlur = 0.22f;
 	settings.submergedRefraction = 0.42f;
 	settings.submergedTransitionSpeed = 3.20f;
+	settings.enableColdLens = true;
+	settings.coldLensStrength = 0.28f;
+	settings.coldAltitudeStart = 28000.0f;
+	settings.coldAltitudeFull = 60000.0f;
+	settings.enableElementalDamageLens = true;
+	settings.elementalLensStrength = 0.45f;
 	settings.enableEnhancedDepthOfField = false;
+	settings.dofAutoFocus = true;
 	settings.dofStrength = 0.24f;
 	settings.dofFocusDistance = 2200.0f;
-	settings.dofFocusRange = 1600.0f;
+	settings.dofFocusRange = 480.0f;
 	settings.dofBokehRadius = 1.0f;
 	settings.dofHighlightResponse = 0.28f;
 	settings.dofFocusEdgeProtection = 0.85f;
 	settings.dofForegroundCoverage = 0.70f;
 	settings.dofCatEye = 0.20f;
 	settings.dofAnamorphicRatio = 1.0f;
+	settings.enableModernMotionBlur = false;
+	settings.motionBlurStrength = 0.45f;
+	settings.motionBlurShutter = 0.50f;
+	settings.motionBlurMaxPixels = 24.0f;
 	settings.experimentalBodycam = false;
 	settings.bodycamStrength = 0.75f;
 	settings.bodycamDistortion = 0.12f;
@@ -979,6 +1082,9 @@ void CameraSuite::RestoreDefaultSettings()
 	environmentStateValid = false;
 	environmentTime = 0.0f;
 	stormglassRainIntensityState = 0.0f;
+	coldLensState = 0.0f;
+	fireLensState = 0.0f;
+	frostImpactLensState = 0.0f;
 	stormglassWetnessState = 0.0f;
 	surfaceBreakFilmState = 0.0f;
 	submergedBlendState = 0.0f;
@@ -1160,16 +1266,15 @@ void CameraSuite::SetupResources()
 
 	UpdateHDRData();
 
+	// The presentation composite is required by framebuffer/UI redirection, so
+	// validate it during setup. Optional finishing shaders compile on their first
+	// real dispatch instead: disabled bloom, Stormglass and frame-generation UI
+	// paths should not add shader compilation work merely because CameraSuite is
+	// loaded. Every execution path below already obtains its shader through the
+	// corresponding Get*CS() helper.
 	GetHDROutputCS();
-	GetPhysicalCameraHistogramCS();
-	GetPhysicalCameraExposureCS();
-	GetPhysicalCameraLocalExposureCS();
-	GetBloomPrefilterCS();
-	GetBloomDownsampleCS();
-	GetBloomUpsampleCS();
-	GetStormglassFieldCS();
-	GetUIBrightnessCS();
 	LoadLookTexture();
+	LoadElementalLensTextures();
 
 	UpgradeLDRRenderTargets();
 }
@@ -1456,8 +1561,11 @@ bool CameraSuite::NeedsPresentationComposite() const
 {
 	const bool bloom = settings.enableBloom && settings.bloomStrength > 1e-4f;
 	const bool look = settings.lookPreset > 0u && settings.lookOpacity > 1e-4f;
-	const bool environment = settings.enableStormglass || settings.enableSubmergedOptics;
-	return settings.enableHDR || settings.enablePhysicalCamera || bloom || look || environment;
+	const bool environment = settings.enableStormglass || settings.enableSubmergedOptics ||
+		settings.enableColdLens || settings.enableElementalDamageLens;
+	const bool depthOfField = settings.enableEnhancedDepthOfField && settings.dofStrength > 1e-4f;
+	const bool motionBlur = settings.enableModernMotionBlur && settings.motionBlurStrength > 1e-4f;
+	return settings.enableHDR || settings.enablePhysicalCamera || bloom || look || environment || depthOfField || motionBlur;
 }
 
 void CameraSuite::SyncFramebufferUIRedirect()
@@ -1655,15 +1763,24 @@ HRESULT CameraSuite::HandleSwapChainPresent(
 	const bool frameGenActive = globals::pipeline::imageReconstruction.d3d12SwapChainActive;
 	const bool hdrReady = loaded && hdrDataCB && outputTexture && (NeedsPresentationComposite() || frameGenActive);
 
+	DrawRendererUIForPresent();
+
+	return RunPresentChainWithHDR(swapChain, syncInterval, flags, hdrReady, frameGenActive, presentChain);
+}
+
+void CameraSuite::DrawRendererUIForPresent()
+{
+	const bool frameGenActive = globals::pipeline::imageReconstruction.d3d12SwapChainActive;
+	const bool hdrReady = loaded && hdrDataCB && outputTexture && (NeedsPresentationComposite() || frameGenActive);
+
 	D3D11_VIEWPORT savedViewport{};
 	UINT viewportCount = 1;
 	globals::d3d::context->RSGetViewports(&viewportCount, &savedViewport);
 
 	DrawImGuiForPresent(frameGenActive, hdrReady);
 	globals::menu->DrawOverlay();
-	globals::d3d::context->RSSetViewports(1, &savedViewport);
-
-	return RunPresentChainWithHDR(swapChain, syncInterval, flags, hdrReady, frameGenActive, presentChain);
+	if (viewportCount > 0)
+		globals::d3d::context->RSSetViewports(1, &savedViewport);
 }
 
 void CameraSuite::ClearUIBuffer()
@@ -1778,9 +1895,11 @@ void CameraSuite::LoadLookTexture()
 	if (settings.lookPreset == 0)
 		return;
 
-	constexpr std::array<const wchar_t*, 6> paths{
+	constexpr std::array<const wchar_t*, 12> paths{
 		L"", L"Data\\Shaders\\CameraSuite\\Looks\\NordicNeutral.png", L"Data\\Shaders\\CameraSuite\\Looks\\Saga.png",
-		L"Data\\Shaders\\CameraSuite\\Looks\\Dramatic.png", L"Data\\Shaders\\CameraSuite\\Looks\\Hearthfire.png", L"Data\\Shaders\\CameraSuite\\Looks\\Bleak.png"
+		L"Data\\Shaders\\CameraSuite\\Looks\\Dramatic.png", L"Data\\Shaders\\CameraSuite\\Looks\\Hearthfire.png", L"Data\\Shaders\\CameraSuite\\Looks\\Bleak.png",
+		L"Data\\Shaders\\CameraSuite\\Looks\\Bleach.png", L"Data\\Shaders\\CameraSuite\\Looks\\Winter.png", L"Data\\Shaders\\CameraSuite\\Looks\\Sunset.png",
+		L"Data\\Shaders\\CameraSuite\\Looks\\FantasyGreen.png", L"Data\\Shaders\\CameraSuite\\Looks\\Nightfall.png", L"Data\\Shaders\\CameraSuite\\Looks\\Cinematic.png"
 	};
 	const uint index = std::min(settings.lookPreset, static_cast<uint>(paths.size() - 1));
 	// LUT bytes are sampled as encoded grading values and explicitly decoded in
@@ -1804,6 +1923,48 @@ void CameraSuite::LoadLookTexture()
 	}
 }
 
+void CameraSuite::LoadElementalLensTextures()
+{
+	frostLensTextureView = nullptr;
+	fireLensTextureView = nullptr;
+
+	struct LensAsset
+	{
+		const wchar_t* path;
+		const char* label;
+		winrt::com_ptr<ID3D11ShaderResourceView>* view;
+	};
+	const LensAsset assets[] = {
+		{ L"Data\\Shaders\\CameraSuite\\Lens\\FrostMask.png", "frost", &frostLensTextureView },
+		{ L"Data\\Shaders\\CameraSuite\\Lens\\FireMask.png", "fire", &fireLensTextureView }
+	};
+
+	for (const auto& asset : assets) {
+		// The artwork is display-colour RGBA. Force an sRGB SRV so its RGB is
+		// linearised before it is composited over PIXL's scene-linear image; alpha
+		// remains the authored optical coverage.
+		const HRESULT result = DirectX::CreateWICTextureFromFileEx(
+			globals::d3d::device,
+			asset.path,
+			0,
+			D3D11_USAGE_IMMUTABLE,
+			D3D11_BIND_SHADER_RESOURCE,
+			0,
+			0,
+			DirectX::WIC_LOADER_FORCE_SRGB,
+			nullptr,
+			asset.view->put());
+		if (FAILED(result) || !*asset.view) {
+			logger::warn(
+				"[PIXL Camera] Optional {} lens artwork unavailable (HRESULT 0x{:08X}); using procedural fallback",
+				asset.label,
+				static_cast<std::uint32_t>(result));
+		} else {
+			logger::info("[PIXL Camera] Loaded authored {} lens artwork", asset.label);
+		}
+	}
+}
+
 void CameraSuite::DispatchHDROutput(ID3D11ShaderResourceView* sceneSRV, ID3D11ShaderResourceView* uiSRV, ID3D11UnorderedAccessView* uav)
 {
 	auto context = globals::d3d::context;
@@ -1811,16 +1972,24 @@ void CameraSuite::DispatchHDROutput(ID3D11ShaderResourceView* sceneSRV, ID3D11Sh
 	if (!computeShader || !uav)
 		return;
 
-	ID3D11ShaderResourceView* views[7] = {
+	ID3D11ShaderResourceView* views[9] = {
 		sceneSRV,
 		uiSRV,
 		cameraExposureTexture ? cameraExposureTexture->srv.get() : nullptr,
 		lookTextureView.get(),
 		bloomPassReady && bloomHalfScratchTexture ? bloomHalfScratchTexture->srv.get() : nullptr,
 		localExposurePassReady && cameraLocalExposureTexture ? cameraLocalExposureTexture->srv.get() : nullptr,
-		stormglassPassReady && stormglassFieldTexture ? stormglassFieldTexture->srv.get() : nullptr
+		stormglassPassReady && stormglassFieldTexture ? stormglassFieldTexture->srv.get() : nullptr,
+		frostLensTextureView.get(),
+		fireLensTextureView.get()
 	};
 	context->CSSetShaderResources(0, ARRAYSIZE(views), views);
+	// CameraSuite owns its DOF compositor and therefore binds scene depth at the
+	// SharedData slot explicitly. This removes the old dependency on Skyrim
+	// deciding to schedule ISDepthOfField and also survives post-process state
+	// resets that clear the global t17 binding before Present.
+	ID3D11ShaderResourceView* sceneDepthView = Util::GetCurrentSceneDepthSRV(true);
+	context->CSSetShaderResources(17, 1, &sceneDepthView);
 	ID3D11SamplerState* samplers[1] = { lookSampler.get() };
 	context->CSSetSamplers(0, ARRAYSIZE(samplers), samplers);
 
@@ -1840,6 +2009,8 @@ void CameraSuite::DispatchHDROutput(ID3D11ShaderResourceView* sceneSRV, ID3D11Sh
 	for (auto& view : views)
 		view = nullptr;
 	context->CSSetShaderResources(0, ARRAYSIZE(views), views);
+	sceneDepthView = nullptr;
+	context->CSSetShaderResources(17, 1, &sceneDepthView);
 	samplers[0] = nullptr;
 	context->CSSetSamplers(0, ARRAYSIZE(samplers), samplers);
 
@@ -2558,7 +2729,10 @@ CameraSuite::PostProcessSettings CameraSuite::GetPostProcessData() const
 
 	auto* state = globals::state;
 	auto* ui = globals::game::ui;
-	const bool gameplay = state && state->inWorld && !state->isMapMenuOpen &&
+	// inWorld is not authoritative for the presented scene and can remain false
+	// during ordinary exterior or interior gameplay. Menu/pause ownership is the
+	// reliable guard for an image-space effect that must work in both cell types.
+	const bool gameplay = state && !state->isMapMenuOpen &&
 		!(ui && ui->GameIsPaused()) && !state->IsDisplayReferredModelMenuOpen(ui);
 	return {
 		loaded && settings.enableEnhancedDepthOfField && gameplay && !photoModeDofIsolation ? 1u : 0u,
@@ -2623,6 +2797,29 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 		return std::clamp(0.50f + 0.50f * presence, 0.0f, 1.0f);
 	};
 	const float directSkyRain = resolveDirectSkyRain();
+	const auto resolveDirectSkySnow = []() -> float {
+		auto* sky = RE::Sky::GetSingleton();
+		if (!sky)
+			sky = globals::game::sky;
+		if (!sky || sky->mode.get() != RE::Sky::Mode::kFull || !sky->IsSnowing())
+			return 0.0f;
+
+		auto weatherDensity = [](RE::TESWeather* weather) -> float {
+			if (!weather || !weather->precipitationData)
+				return 0.0f;
+			const float density = weather->precipitationData->GetSettingValue(
+				RE::BGSShaderParticleGeometryData::DataID::kParticleDensity).f;
+			return std::clamp(density / 3.0f, 0.0f, 1.0f);
+		};
+
+		const float weatherPct = std::clamp(sky->currentWeatherPct, 0.0f, 1.0f);
+		float intensity = std::lerp(
+			weatherDensity(sky->lastWeather),
+			weatherDensity(sky->currentWeather),
+			weatherPct);
+		return std::pow(std::clamp(std::max(intensity, 0.38f), 0.0f, 1.0f), 0.78f);
+	};
+	const float directSkySnow = resolveDirectSkySnow();
 
 	// Update weather/water optical state once per rendered frame. The same frame
 	// can request a gameplay composite, an FG UI composite and a clean capture;
@@ -2632,6 +2829,35 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 		const bool paused = ui && ui->GameIsPaused();
 		const float simulationDelta = paused ? 0.0f : frameDelta;
 		environmentTime = std::fmod(environmentTime + simulationDelta, 4096.0f);
+
+		float altitudeSignal = 0.0f;
+		if (settings.enableColdLens) {
+			const auto* sky = RE::Sky::GetSingleton();
+			const auto* player = RE::PlayerCharacter::GetSingleton();
+			if (sky && sky->mode.get() == RE::Sky::Mode::kFull && player) {
+				const float altitude = player->GetPosition().z;
+				const float altitudeStart =
+					std::clamp(settings.coldAltitudeStart, 0.0f, 70000.0f);
+				const float altitudeFull =
+					std::clamp(settings.coldAltitudeFull, altitudeStart + 1000.0f, 90000.0f);
+				const float t = std::clamp(
+					(altitude - altitudeStart) / std::max(altitudeFull - altitudeStart, 1.0f),
+					0.0f,
+					1.0f);
+				altitudeSignal = t * t * (3.0f - 2.0f * t);
+			}
+		}
+		const float coldTarget = settings.enableColdLens
+			? std::clamp(std::max(directSkySnow * 0.78f, altitudeSignal * 0.34f), 0.0f, 1.0f)
+			: 0.0f;
+		const float coldRate = coldTarget > coldLensState ? 0.85f : 0.22f;
+		const float coldResponse = 1.0f - std::exp(-simulationDelta * coldRate);
+		coldLensState = std::lerp(coldLensState, coldTarget, coldResponse);
+
+		// Confirmed elemental-hit pulses decay independently from the persistent
+		// environmental frost layer. Fire clears quickly; ice clings longer.
+		fireLensState = std::max(0.0f, fireLensState - simulationDelta * 0.62f);
+		frostImpactLensState = std::max(0.0f, frostImpactLensState - simulationDelta * 0.24f);
 
 
 		// Driveclub-style lateral water inertia from real camera angular velocity,
@@ -2831,6 +3057,41 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 		};
 		data.submergedFogAmount = std::clamp(waterData.underwaterFogAmount, 0.0f, 1.0f);
 	}
+
+	// PIXL DOF executes in HDROutputCS, which is a guaranteed CameraSuite pass.
+	// Gameplay/menu ownership and a valid depth SRV are resolved here so a null
+	// depth binding always degrades to the sharp baseline instead of smearing it.
+	const bool dofGameplay = globals::state && !globals::state->isMapMenuOpen &&
+		!(ui && ui->GameIsPaused()) && !isMainOrLoadingMenu;
+	data.dofEnabled = settings.enableEnhancedDepthOfField &&
+		settings.dofStrength > 1e-4f && dofGameplay && !photoModeDofIsolation &&
+		Util::GetCurrentSceneDepthSRV(true) ? 1.0f : 0.0f;
+	data.dofStrength = std::clamp(settings.dofStrength, 0.0f, 1.0f);
+	data.dofFocusDistance = std::clamp(settings.dofFocusDistance, 100.0f, 20000.0f);
+	data.dofFocusRange = std::clamp(settings.dofFocusRange, 100.0f, 20000.0f);
+	data.dofBokehRadius = std::clamp(settings.dofBokehRadius, 0.5f, 2.0f);
+	data.dofHighlightResponse = std::clamp(settings.dofHighlightResponse, 0.0f, 1.0f);
+	data.dofFocusEdgeProtection = std::clamp(settings.dofFocusEdgeProtection, 0.0f, 2.0f);
+	data.dofForegroundCoverage = std::clamp(settings.dofForegroundCoverage, 0.0f, 1.5f);
+	data.dofCatEye = std::clamp(settings.dofCatEye, 0.0f, 1.0f);
+	data.dofAnamorphicRatio = std::clamp(settings.dofAnamorphicRatio, 0.5f, 2.0f);
+	data.dofQuality = static_cast<float>(std::clamp(cameraQuality, 0u, 3u));
+	data.dofAutoFocus = settings.dofAutoFocus ? 1.0f : 0.0f;
+	const bool elementalGameplay = environmentPresentation &&
+		!(ui && ui->GameIsPaused()) && !isMainOrLoadingMenu;
+	data.coldLensAmount = elementalGameplay && settings.enableColdLens
+		? std::clamp(std::max(coldLensState, frostImpactLensState), 0.0f, 1.0f)
+		: 0.0f;
+	data.fireLensAmount = elementalGameplay && settings.enableElementalDamageLens
+		? std::clamp(fireLensState, 0.0f, 1.0f)
+		: 0.0f;
+	data.coldLensStrength = std::clamp(settings.coldLensStrength, 0.0f, 1.0f);
+	data.elementalLensStrength = std::clamp(settings.elementalLensStrength, 0.0f, 1.0f);
+	data.motionBlurEnabled = settings.enableModernMotionBlur && dofGameplay && !photoModeDofIsolation &&
+		Util::GetCurrentSceneDepthSRV(true) ? 1.0f : 0.0f;
+	data.motionBlurStrength = std::clamp(settings.motionBlurStrength, 0.0f, 1.0f);
+	data.motionBlurShutter = std::clamp(settings.motionBlurShutter, 0.10f, 1.0f);
+	data.motionBlurMaxPixels = std::clamp(settings.motionBlurMaxPixels, 4.0f, 48.0f);
 	return data;
 }
 
@@ -2854,33 +3115,11 @@ void CameraSuite::ApplyPlayerPostProcessing() const
 	if (settings.enableBloom)
 		hdr.bloomScale = 0.0f;
 
-	// Skyrim only schedules its DOF pass when the active image-space data has a
-	// non-zero strength. The PIXL controls used to improve an already-active pass
-	// but never requested one, making the user-facing switch appear broken.
-	// Preserve stronger authored/cinematic DOF and provide the player's baseline
-	// only during live gameplay, never over menus or paused presentation scenes.
-	auto* state = globals::state;
-	auto* ui = globals::game::ui;
-	const bool gameplay = state && state->inWorld && !state->isMapMenuOpen &&
-		!(ui && ui->GameIsPaused()) && !state->IsDisplayReferredModelMenuOpen(ui);
+	// CameraSuite now owns the entire visible depth-of-field result in its final
+	// depth-aware compute composite. Keep Bethesda's legacy pass disabled in every
+	// state so the two lenses can never stack or fight over focus parameters.
 	auto& dof = globals::game::imageSpaceManager->GetRuntimeData().data.baseData.depthOfField;
-
-	if (photoModeDofIsolation) {
-		// Director requires an optically clean source. Authored image spaces can
-		// rewrite this every frame, so suppress native DOF at the same point that
-		// PIXL normally requests it. The offline lens pass runs after accumulation.
-		dof.strength = 0.0f;
-		return;
-	}
-
-	if (settings.enableEnhancedDepthOfField && gameplay) {
-		const float playerStrength = std::clamp(settings.dofStrength, 0.0f, 1.0f);
-		if (playerStrength > dof.strength) {
-			dof.strength = playerStrength;
-			dof.distance = std::clamp(settings.dofFocusDistance, 100.0f, 20000.0f);
-			dof.range = std::clamp(settings.dofFocusRange, 100.0f, 20000.0f);
-		}
-	}
+	dof.strength = 0.0f;
 }
 
 void CameraSuite::SetPhotoModeDofIsolation(bool enabled)
@@ -2909,6 +3148,19 @@ void CameraSuite::SetPhotoModeDofIsolation(bool enabled)
 	}
 
 	UpdateHDRData();
+}
+
+void CameraSuite::TriggerElementalLens(float fireAmount, float frostAmount)
+{
+	if (!settings.enableElementalDamageLens)
+		return;
+
+	fireLensState = std::max(
+		fireLensState,
+		std::clamp(fireAmount, 0.0f, 1.0f));
+	frostImpactLensState = std::max(
+		frostImpactLensState,
+		std::clamp(frostAmount, 0.0f, 1.0f));
 }
 
 void CameraSuite::UpdateSwapChainColorSpace() const

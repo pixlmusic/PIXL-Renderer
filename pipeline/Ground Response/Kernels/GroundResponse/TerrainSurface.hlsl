@@ -974,13 +974,13 @@ float PatchTessellation(
 
     float distanceSafe = max(distanceToCamera, 0.0f);
 
-    // Existing runtime fields are reinterpreted without changing the b13 ABI:
+    // Existing tessellation fields retain their established b13 offsets:
     //   GeometryTessellationNear         = CLOSE quality
     //   GeometryTessellationFar          = MEDIUM quality
     //   GeometryTessellationNearDistance = CLOSE->MEDIUM boundary
     //   GeometryTessellationFarDistance  = MEDIUM->FAR boundary
-    // FAR quality is derived automatically so no new constant-buffer member is
-    // required and the proven 160-byte GroundResponse ABI remains untouched.
+    // FAR quality remains derived automatically; v3.3 only appends weather-snow
+    // state after the established 160-byte prefix.
     float closeTess =
         clamp(GroundRuntimeGeometryTessellationNear, 1.0f, 16.0f);
     float mediumTess =
@@ -1601,6 +1601,24 @@ TERRAIN_POINT DSMain(
 
             currentRaise = max(currentRaise + currentElemental, 0.0f);
             previousRaise = max(previousRaise + previousElemental, 0.0f);
+
+            // A storm adds one coherent blanket above the configured/static
+            // terrain profile. It remains snow-classified and compressible, while
+            // current/previous heights keep TAA/DLSS motion vectors stable during
+            // slow accumulation and clear-weather settling.
+            if (GroundRuntimeWeatherSnowEnabled != 0u)
+            {
+                float currentWeatherLayer =
+                    max(GroundRuntimeWeatherSnowRaise, 0.0f) *
+                    snowActivation * slopeMask * distanceMask *
+                    (1.0f - saturate(surface.current * compressionFraction));
+                float previousWeatherLayer =
+                    max(GroundRuntimePreviousWeatherSnowRaise, 0.0f) *
+                    snowActivation * slopeMask * previousDistanceMask *
+                    (1.0f - saturate(surface.previous * compressionFraction));
+                currentRaise += currentWeatherLayer;
+                previousRaise += previousWeatherLayer;
+            }
         }
 
         output.WorldPosition.z += currentRaise;

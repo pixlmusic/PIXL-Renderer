@@ -142,7 +142,7 @@ cbuffer VS_PerFrame : register(b12)
 
 #	if defined(TREE_ANIM)
 #		ifndef USE_PIXL_MULTI_FREQUENCY_TREE_WIND
-#			define USE_PIXL_MULTI_FREQUENCY_TREE_WIND 1
+#			define USE_PIXL_MULTI_FREQUENCY_TREE_WIND 0
 #		endif
 #		ifndef USE_PIXL_FLOW_WIND
 #			define USE_PIXL_FLOW_WIND 1
@@ -157,7 +157,7 @@ float2 GetTreeShiftVector(float4 position, float4 color)
 	float2 legacyShift = (tmp4.xz + 0.1.xx * tmp4.yw) * (TreeParams.z * color.w).xx;
 	float2 result = legacyShift;
 
-#		if USE_PIXL_MULTI_FREQUENCY_TREE_WIND && USE_PIXL_FLOW_WIND
+#		if defined(FOLIAGE_DYNAMICS) && USE_PIXL_MULTI_FREQUENCY_TREE_WIND && USE_PIXL_FLOW_WIND
 	if (SharedData::foliageDynamicsSettings.EnableEnhancedWind != 0) {
 		float spatialScale = max(SharedData::foliageDynamicsSettings.WindSpatialScale, 0.05f);
 		float gustStrength = max(SharedData::foliageDynamicsSettings.GustStrength, 0.0f);
@@ -173,23 +173,29 @@ float2 GetTreeShiftVector(float4 position, float4 color)
 		const float2 flowAxis = float2(0.8192319f, 0.5734624f);
 		float gustSpeed = max(SharedData::foliageDynamicsSettings.GustSpeed, 0.0f);
 		float flutterSpeed = max(SharedData::foliageDynamicsSettings.FlutterSpeed, 0.0f);
+		float instanceSeed = FoliageWind::Hash12(floor(treeAnchorWS.xy * 0.015625f));
+		float stiffness = lerp(
+			1.24f, 0.70f,
+			FoliageWind::Hash12(float2(instanceSeed * 43.0f, instanceSeed * 79.0f)));
+		float mass = lerp(
+			0.85f, 1.22f,
+			FoliageWind::Hash12(float2(instanceSeed * 61.0f, instanceSeed * 29.0f)));
 
-		float2 broadNoise = float2(
-			FoliageWind::AdvectedNoise(fieldPosition, WindTimers.x, flowAxis, spatialScale, gustSpeed, 0.00042f, 7.1f),
-			FoliageWind::AdvectedNoise(fieldPosition, WindTimers.y, flowAxis, spatialScale, gustSpeed, 0.00042f, 7.1f));
-		float2 branchNoise = float2(
-			FoliageWind::AdvectedNoise(fieldPosition + position.xy * 0.31f, WindTimers.x, flowAxis, spatialScale * 1.45f, gustSpeed * 0.87f, 0.00135f, 23.7f),
-			FoliageWind::AdvectedNoise(fieldPosition + position.xy * 0.31f, WindTimers.y, flowAxis, spatialScale * 1.45f, gustSpeed * 0.87f, 0.00135f, 23.7f));
-		float2 gust = float2(
-			FoliageWind::SmoothGust(broadNoise.x),
-			FoliageWind::SmoothGust(broadNoise.y));
-		float2 branchWave = branchNoise * 2.0f - 1.0f;
-		float localPhase = dot(position.xyz, float3(0.09f, 0.13f, 0.17f));
-		float2 flutterPhase =
-			localPhase.xx + WindTimers * (2.15f * flutterSpeed) + branchWave * 1.7f;
-		float2 tinyWave = sin(flutterPhase) * sin(flutterPhase * 0.61f + 1.93f);
+		FoliageWind::MultiScaleField currentField = FoliageWind::SampleMultiScaleField(
+			fieldPosition, WindTimers.x, flowAxis, spatialScale,
+			gustSpeed, flutterSpeed, instanceSeed);
+		FoliageWind::MultiScaleField previousField = FoliageWind::SampleMultiScaleField(
+			fieldPosition, WindTimers.y, flowAxis, spatialScale,
+			gustSpeed, flutterSpeed, instanceSeed);
+		float2 gust = float2(currentField.Gust, previousField.Gust);
+		float2 macroWave = float2(currentField.Macro, previousField.Macro);
+		float2 branchWave = float2(
+			currentField.Turbulence.x + currentField.Turbulence.y * 0.45f,
+			previousField.Turbulence.x + previousField.Turbulence.y * 0.45f);
+		float2 tinyWave = float2(currentField.Flutter, previousField.Flutter);
 
 		float tip = saturate(color.w);
+		float trunkMask = tip * 0.16f;
 		float secondaryMask = tip * tip;
 		float tinyMask = secondaryMask * secondaryMask;
 
@@ -200,30 +206,31 @@ float2 GetTreeShiftVector(float4 position, float4 color)
 		float2 primary =
 			legacyShift * (1.0f + (gust - 0.5f.xx) * (0.32f * gustAmount));
 
-		// TREE_ANIM sometimes supplies a zero weather amplitude for smaller plants.
-		// Give those weighted branch tips a restrained ambient motion floor while
-		// retaining TreeParams.z as the authority during real wind.
-		// A large unconditional floor made calm branch cards rotate toward the
-		// light while their authored shading stayed comparatively flat.  That was
-		// the source of the reflective/mirror-like flashes reported when wind was
-		// enabled.  Retain a subtle idle motion and scale naturally with weather.
-		float treeEnergy = max(abs(TreeParams.z), 0.30f);
+		// Trunk, branch and leaf response are separate. Real authored weather remains
+		// authoritative, with only a small idle floor for TREE_ANIM plants whose
+		// vanilla amplitude is zero. Stiffness/mass variation prevents synchronized
+		// fields without storing per-instance state.
+		float weatherEnergy = abs(TreeParams.z) * max(abs(TreeParams.y), 0.35f);
+		float treeEnergy = max(weatherEnergy, 0.18f) / max(stiffness * mass, 0.40f);
+		float2 macro =
+			treeEnergy * (trunkMask + secondaryMask * 0.45f) * macroWave *
+			(0.018f + 0.020f * gustAmount);
 		float2 secondary =
 			treeEnergy * secondaryMask * branchWave *
-			(0.020f + 0.026f * gustAmount) * (0.38f.xx + 0.62f * gust);
+			(0.022f + 0.031f * gustAmount) * (0.38f.xx + 0.62f * gust);
 		float2 tiny =
-			treeEnergy * tinyMask * tinyWave * (0.022f * flutterAmount);
+			treeEnergy * tinyMask * tinyWave * (0.028f * flutterAmount / max(stiffness, 0.45f));
 
 		// Keep authored tree motion authoritative. WindStrength controls only the
 		// additional PIXL frequencies; it must not multiply the complete bend.
-		float enhancement = saturate(
-			max(SharedData::foliageDynamicsSettings.WindStrength, 0.0f) * 0.5f);
-		float2 enhancedDelta = (primary - legacyShift) + secondary + tiny;
-		float maxDelta = treeEnergy * tip * (0.065f + 0.045f * gustAmount);
+		float enhancement = clamp(
+			SharedData::foliageDynamicsSettings.WindStrength, 0.0f, 2.0f);
+		float2 enhancedDelta = (primary - legacyShift) + macro + secondary + tiny;
+		float maxDelta = treeEnergy * tip * (0.075f + 0.055f * gustAmount);
 		enhancedDelta = clamp(enhancedDelta, -maxDelta.xx, maxDelta.xx);
 		result += enhancedDelta * enhancement;
 	}
-#		endif
+#		endif  // FOLIAGE_DYNAMICS && enhanced tree wind
 
 	return result;
 }
@@ -579,6 +586,13 @@ Texture2D<float4> TexLandNormal3Sampler : register(t9);
 Texture2D<float4> TexLandNormal4Sampler : register(t10);
 Texture2D<float4> TexLandNormal5Sampler : register(t11);
 Texture2D<float4> TexLandNormal6Sampler : register(t12);
+
+#		if defined(GROUND_RESPONSE)
+// Optional project-owned microsurface data. A null t110 produces a zero
+// gradient, so cached/source distributions remain gracefully compatible when
+// the asset has not been staged yet.
+Texture2D<float4> TexGroundSnowMicroSampler : register(t110);
+#		endif
 
 Texture2D<float4> TexLandTHDisp0Sampler : register(t92);
 Texture2D<float4> TexLandTHDisp1Sampler : register(t93);
@@ -2839,6 +2853,61 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		float localMudWeight =
 			1.0f - localSnowWeight;
 
+		// PIXL_GR_SNOW_MICROSURFACE_V1
+		// Reconstruct a stable world-space detail normal from the supplied packed
+		// snow artwork. Finite differences deliberately use the texture as height
+		// structure rather than assuming an engine-specific normal-map swizzle.
+		// The effect is snow-classification gated, distance faded, and softened in
+		// compressed tracks so it cannot texture rock/mud or overpower footprints.
+		float snowMicroSurfaceWeight =
+			saturate(
+				groundMaterialActivation *
+				localSnowWeight *
+				groundMicroDistanceFade *
+				(1.0f - groundDeformationAmount * 0.52f));
+		[branch] if (snowMicroSurfaceWeight > 1e-4f) {
+			const float snowTextureWorldPeriod = 640.0f;
+			const float snowTextureTexel = 1.0f / 512.0f;
+			float2 snowMicroUV = groundAbsoluteXY / snowTextureWorldPeriod;
+			float2 snowTexelX = float2(snowTextureTexel, 0.0f);
+			float2 snowTexelY = float2(0.0f, snowTextureTexel);
+
+			float3 snowLeft =
+				TexGroundSnowMicroSampler.SampleLevel(
+					SampColorSampler,
+					snowMicroUV - snowTexelX,
+					0.0f).rgb;
+			float3 snowRight =
+				TexGroundSnowMicroSampler.SampleLevel(
+					SampColorSampler,
+					snowMicroUV + snowTexelX,
+					0.0f).rgb;
+			float3 snowDown =
+				TexGroundSnowMicroSampler.SampleLevel(
+					SampColorSampler,
+					snowMicroUV - snowTexelY,
+					0.0f).rgb;
+			float3 snowUp =
+				TexGroundSnowMicroSampler.SampleLevel(
+					SampColorSampler,
+					snowMicroUV + snowTexelY,
+					0.0f).rgb;
+
+			const float3 snowHeightWeights =
+				float3(0.20f, 0.46f, 0.34f);
+			float2 snowMicroGradient =
+				float2(
+					dot(snowRight - snowLeft, snowHeightWeights),
+					dot(snowUp - snowDown, snowHeightWeights));
+			float3 snowDetailSlope =
+				float3(-snowMicroGradient.x, -snowMicroGradient.y, 0.0f) *
+				2.35f;
+			worldNormal =
+				normalize(
+					worldNormal +
+					snowDetailSlope * snowMicroSurfaceWeight);
+		}
+
 		// PIXL_GR_13BI_MUD_RESERVOIR_V1
 		float mudRain =
 			saturate(
@@ -3911,6 +3980,15 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	PhysicalLighting::EvaluateDirect(
 		dirLightContext, material, tbnTr, uvOriginal, uvOriginal_ddx, uvOriginal_ddy, inWorld || inReflection, dirLightOutput,
 		dirLegacyPhysicalDelta, dirLegacyPhysicalApplied);
+	// Enclosed interiors can retain a non-zero vanilla directional-light colour
+	// even though no sun is visible.  Diffuse remains under Skyrim's authored
+	// interior lighting contract, but a GGX lobe from that hidden direction reads
+	// as sunlight leaking through walls.  Interior Daylight is the controlled
+	// exception: State::HasDirectionalShadows is true only for a compatible
+	// sky-lit interior, where the real portal/shadow path supplies spatial falloff.
+	const float pixlDirectionalSpecularVisibility =
+		(!SharedData::InInterior || SharedData::HasDirectionalShadows) ? 1.0f : 0.0f;
+	dirLightOutput.specular *= pixlDirectionalSpecularVisibility;
 #	if !defined(MATERIAL_FORGE)
 	legacyPhysicalDelta += dirLegacyPhysicalDelta;
 	legacyPhysicalCoverage = max(legacyPhysicalCoverage, dirLegacyPhysicalApplied);
@@ -4140,8 +4218,19 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			}
 			float3 candidateDirection = candidateLight.positionWS.xyz - input.WorldPosition.xyz;
 			float candidateDistance = length(candidateDirection);
-			float candidateAttenuation = GetLocalLightAttenuation(
+			float candidateAttenuation;
+#			if defined(NATURAL_LIGHTING)
+			float candidateLegacyAttenuation = NaturalLighting::GetAttenuation(candidateDistance, candidateLight);
+			float candidatePhysicalBlend = GetPhysicalLocalLightFalloffStrength();
+			candidateAttenuation = candidatePhysicalBlend > 0.0f ?
+				lerp(candidateLegacyAttenuation,
+					GetPhysicalLocalLightAttenuation(candidateDistance, candidateLight.radius, candidateLight.fadeZone, candidateLight.sizeBias),
+					candidatePhysicalBlend) :
+				candidateLegacyAttenuation;
+#			else
+			candidateAttenuation = GetLocalLightAttenuation(
 				candidateDistance, candidateLight.radius, candidateLight.fadeZone, candidateLight.sizeBias);
+#			endif
 			float candidateScore = Color::RGBToLuminance(Color::PointLight(
 				candidateLight.color.xyz, (candidateLight.lightFlags & RadiantGrid::LightFlags::Linear) != 0)) *
 				candidateAttenuation * candidateLight.fade;
@@ -4182,11 +4271,15 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		if (!(inWorld || inReflection)) {
 			float normalizedMenuLightDistance = saturate(lightDist / max(light.radius, 1.0f));
 			intensityMultiplier = 1.0f - normalizedMenuLightDistance * normalizedMenuLightDistance;
-		} else if (SharedData::materialForgeSettings.EnablePhysicalLocalLightFalloff != 0) {
-			intensityMultiplier = GetLocalLightAttenuation(lightDist, light.radius, light.fadeZone, light.sizeBias);
 		} else {
 #			if defined(NATURAL_LIGHTING)
-			intensityMultiplier = NaturalLighting::GetAttenuation(lightDist, light);
+			float legacyAttenuation = NaturalLighting::GetAttenuation(lightDist, light);
+			float physicalBlend = GetPhysicalLocalLightFalloffStrength();
+			intensityMultiplier = physicalBlend > 0.0f ?
+				lerp(legacyAttenuation,
+					GetPhysicalLocalLightAttenuation(lightDist, light.radius, light.fadeZone, light.sizeBias),
+					physicalBlend) :
+				legacyAttenuation;
 #			else
 			intensityMultiplier = GetLocalLightAttenuation(lightDist, light.radius, 0.0f, light.sizeBias);
 #			endif

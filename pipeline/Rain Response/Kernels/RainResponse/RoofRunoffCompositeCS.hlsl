@@ -6,7 +6,10 @@ RWTexture2D<float4> MainRW : register(u0);
 float LoadRunoffMask(int2 pixel, int2 size)
 {
 	pixel = clamp(pixel, int2(0, 0), size - 1);
-	return saturate((float)RunoffMask.Load(int3(pixel, 0)) / 65535.0f);
+	float rawMask = saturate((float)RunoffMask.Load(int3(pixel, 0)) / 65535.0f);
+	// Reject only the faint quantised halo. The bright bead remains intact while
+	// its optical falloff reads tighter and less fuzzy after TAA/DLSS.
+	return smoothstep(0.055f, 0.86f, rawMask);
 }
 
 [numthreads(8, 8, 1)]
@@ -24,7 +27,8 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 		return;
 
 	uint encoded = RunoffMask.Load(int3(dispatchID.xy, 0));
-	float mask = saturate((float)encoded / 65535.0f);
+	float rawMask = saturate((float)encoded / 65535.0f);
+	float mask = smoothstep(0.055f, 0.86f, rawMask);
 	float rain = saturate(SharedData::rainResponseSettings.Raining);
 	float strength = max(SharedData::rainResponseSettings.RainRunoffStrength, 0.0f);
 	const bool debugMode = strength >= 1.49f;

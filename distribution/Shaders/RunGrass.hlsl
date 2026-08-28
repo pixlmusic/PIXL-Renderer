@@ -103,15 +103,9 @@ cbuffer cb8 : register(b8)
 	float4 cb8[240];
 }
 
-// Calculate wind displacement for a grass vertex. Current and previous frame
-// timers use the identical travelling field so TAA/motion blur remain coherent.
-#ifndef USE_PIXL_MULTI_FREQUENCY_WIND
-#	define USE_PIXL_MULTI_FREQUENCY_WIND 1
-#endif
-#ifndef USE_PIXL_FLOW_WIND
-#	define USE_PIXL_FLOW_WIND 1
-#endif
-
+// Calculate wind displacement for a grass vertex. Skyrim's authored wind stays
+// authoritative; PIXL adds one broad gust and a restrained tip response. Current
+// and previous timers use the identical field for coherent TAA/motion vectors.
 float3 CalculateWindDisplacement(VS_INPUT input, float windTimer)
 {
 	float windAngle =
@@ -130,104 +124,60 @@ float3 CalculateWindDisplacement(VS_INPUT input, float windTimer)
 
 	float3 legacyDisplacement = float3(WindVector.xy, 0.0f) * windPower;
 	float3 result = legacyDisplacement;
-
-#if USE_PIXL_MULTI_FREQUENCY_WIND && USE_PIXL_FLOW_WIND
 	if (SharedData::foliageDynamicsSettings.EnableEnhancedWind != 0)
 	{
-		float windLengthSq = dot(WindVector.xy, WindVector.xy);
-		float windLength = sqrt(max(windLengthSq, 1e-8f));
 		float2 windDirection = FoliageWind::SafeDirection(
 			WindVector.xy, float2(0.8192319f, 0.5734624f));
 		float2 crossWind = float2(-windDirection.y, windDirection.x);
 
-		float spatialScale =
-			max(SharedData::foliageDynamicsSettings.WindSpatialScale, 0.05f);
-		float gustStrength =
-			max(SharedData::foliageDynamicsSettings.GustStrength, 0.0f);
-		float flutterStrength =
-			max(SharedData::foliageDynamicsSettings.FlutterStrength, 0.0f);
-
 		// InstanceData1 is in the grass model's coordinate system. Transform the
-		// instance anchor before restoring Skyrim's camera-relative world origin;
-		// simply adding the two translations made gust cells slide on rotated grass.
+		// anchor before restoring Skyrim's camera-relative world origin so gusts do
+		// not follow the camera or slide on rotated grass batches.
 		float3 absoluteAnchorWS =
 			mul(World, float4(input.InstanceData1.xyz, 1.0f)).xyz +
 			FrameBuffer::CameraPosAdjust.xyz;
 		float2 absoluteAnchor = absoluteAnchorWS.xy;
+		float instanceSeed = FoliageWind::Hash12(floor(absoluteAnchor * 0.015625f));
+		FoliageWind::GrassGustField windField = FoliageWind::SampleGrassGust(
+			absoluteAnchor,
+			windTimer,
+			windDirection,
+			SharedData::foliageDynamicsSettings.WindSpatialScale,
+			SharedData::foliageDynamicsSettings.GustSpeed,
+			SharedData::foliageDynamicsSettings.FlutterSpeed,
+			instanceSeed);
 
-		float gustNoise = FoliageWind::AdvectedNoise(
-			absoluteAnchor, windTimer, windDirection, spatialScale,
-			SharedData::foliageDynamicsSettings.GustSpeed, 0.00105f, 3.7f);
-		float directionNoise = FoliageWind::AdvectedNoise(
-			absoluteAnchor, windTimer, windDirection, spatialScale,
-			SharedData::foliageDynamicsSettings.GustSpeed * 0.83f, 0.00215f, 19.4f) * 2.0f - 1.0f;
-		float flutterNoise = FoliageWind::AdvectedNoise(
-			absoluteAnchor + input.Position.zz * 0.35f, windTimer, windDirection, spatialScale * 1.65f,
-			SharedData::foliageDynamicsSettings.FlutterSpeed, 0.0067f, 41.2f) * 2.0f - 1.0f;
+		// Vertex alpha is Skyrim's authored bend weight: keep roots still and let
+		// tips carry the small cross-wind/flutter component.
+		float rootLock = smoothstep(0.04f, 0.32f, tip);
+		float stemResponse = rootLock * tip2;
+		float tipResponse = stemResponse * tip2;
+		float weatherEnergy = max(abs(WindVector.z), 0.08f);
+		float gustAmount = min(max(SharedData::foliageDynamicsSettings.GustStrength, 0.0f), 1.5f);
+		float flutterAmount = min(max(SharedData::foliageDynamicsSettings.FlutterStrength, 0.0f), 1.0f);
 
-		float gustPulse = FoliageWind::SmoothGust(gustNoise);
-		float gustSpeed = max(SharedData::foliageDynamicsSettings.GustSpeed, 0.0f);
-		float carrierPhase =
-			windTimer * (0.31f + 0.24f * gustSpeed) +
-			dot(absoluteAnchor, windDirection) * (0.0017f * spatialScale) +
-			gustNoise * 1.6f;
-		float carrier = sin(carrierPhase);
-
-		// Keep Skyrim's authored bend, but do not make PIXL motion a percentage of
-		// that bend. Some ordinary terrain-grass draws receive a near-zero legacy
-		// amplitude, which made the previous enhancement a complete no-op. A small
-		// ambient field gives those cards natural calm motion; real weather remains
-		// authoritative as soon as its energy exceeds that floor.
-		float weatherEnergy = abs(WindVector.z) * max(windLength, 0.35f);
-		// The previous 2-unit floor was larger than the authored weather bend in
-		// calm conditions.  It could rotate a whole card toward the light and make
-		// otherwise rough vegetation read as a silver/mirror facet.  Keep just
-		// enough ambient energy for ordinary terrain grass to breathe, then let the
-		// real weather vector take over continuously.
-		float motionEnergy = max(weatherEnergy, 0.32f);
-		float gustAmount = min(gustStrength, 2.0f);
-		float flutterAmount = min(flutterStrength, 2.0f);
-
-		float legacyEnvelope =
-			1.0f + (gustPulse - 0.5f) * (0.30f * gustAmount);
+		float legacyEnvelope = 1.0f +
+			(windField.Gust - 0.35f) * (0.24f * gustAmount);
 		float3 structural = legacyDisplacement * legacyEnvelope;
+		float3 gustBend = float3(windDirection, 0.0f) *
+			(weatherEnergy * stemResponse * windField.Gust * 0.105f * gustAmount);
+		float3 crossBend = float3(crossWind, 0.0f) *
+			(weatherEnergy * stemResponse * windField.Crosswind * 0.026f * gustAmount);
+		float3 tipFlutter = float3(crossWind, 0.0f) *
+			(weatherEnergy * tipResponse * windField.Flutter * 0.038f * flutterAmount);
 
-		float meander = directionNoise * (0.18f + 0.20f * gustAmount);
-		float2 flowingDirection = FoliageWind::SafeDirection(
-			windDirection + crossWind * meander, windDirection);
-		float forwardBend =
-			motionEnergy * tip2 *
-			(0.11f + 0.075f * gustAmount) *
-			(0.30f + 0.70f * gustPulse) *
-			(0.72f + 0.28f * carrier);
-		float3 ambientSway = float3(flowingDirection, 0.0f) * forwardBend;
-
-		float3 crossDrift =
-			float3(crossWind, 0.0f) *
-			(motionEnergy * tip2 * directionNoise *
-				(0.012f + 0.032f * gustAmount));
-		float3 flutter =
-			float3(crossWind, 0.0f) *
-			(motionEnergy * tip2 * tip2 * flutterNoise *
-				0.028f * flutterAmount);
-
-		// Never scale the authored Skyrim bend itself. The shipped WindStrength=2
-		// previously doubled the full card deformation, which can fold grass cards
-		// far enough to expose unstable reflective facets. Scale only PIXL's bounded
-		// gust/cross-wind/flutter delta; zero now means exact vanilla motion.
-		float enhancement = saturate(
-			max(SharedData::foliageDynamicsSettings.WindStrength, 0.0f) * 0.5f);
+		// Zero is exact vanilla. The added displacement is bounded separately from
+		// material normals, preventing the folded mirror-like cards seen previously.
+		float enhancement = clamp(
+			SharedData::foliageDynamicsSettings.WindStrength, 0.0f, 2.0f);
 		float3 enhancedDelta =
-			(structural - legacyDisplacement) + ambientSway + crossDrift + flutter;
-		// Bound the added deformation independently of shader/material normals so
-		// aggressive user values cannot fold cards into mirror-like facets.
-		float maxDelta = motionEnergy * tip2 * (0.18f + 0.10f * gustAmount);
+			(structural - legacyDisplacement) + gustBend + crossBend + tipFlutter;
+		float maxDelta = weatherEnergy * stemResponse * (0.14f + 0.08f * gustAmount);
 		float deltaLengthSq = dot(enhancedDelta, enhancedDelta);
 		if (deltaLengthSq > maxDelta * maxDelta && maxDelta > 1e-5f)
 			enhancedDelta *= maxDelta * rsqrt(deltaLengthSq);
 		result += enhancedDelta * enhancement;
 	}
-#endif
 
 	return result;
 }
@@ -474,6 +424,20 @@ cbuffer AlphaTestRefCB : register(b11)
 
 #	include "Common/ShadowSampling.hlsli"
 
+// Stable stochastic coverage for the engine's grass distance/per-instance fade.
+// This helper is shared by both the FOLIAGE_DYNAMICS and vanilla-compatible
+// pixel paths, so it must remain outside the feature guard below. Frame index is
+// deliberately fixed: temporal noise would sparkle in rain/TAA.
+void PixlApplyGrassDistanceDither(float coverage, float2 pixelPosition)
+{
+	coverage = saturate(coverage);
+	if (coverage < 0.9995f)
+	{
+		float threshold = Random::InterleavedGradientNoise(floor(pixelPosition), 0u);
+		clip(coverage - threshold);
+	}
+}
+
 // Legacy grass fallback for permutations without the enhanced foliage path.
 // Enhanced grass below uses FoliageDynamics::GetLightSpecularInput directly.
 float3 PixlGrassVisibleSpecular(
@@ -552,6 +516,20 @@ float PixlFilterGrassPerceptualRoughness(float3 normal, float perceptualRoughnes
 	return perceptualRoughness;
 }
 
+// Convert the texture footprint covered by one output pixel into a continuous
+// shading LOD. Unlike a world-distance ring, this follows the actual projected
+// card size and therefore remains valid across FOV and render-resolution changes.
+// Coarse derivatives keep every 2x2 quad on the same branch and contain no frame
+// index or stochastic term for TAA/DLSS stability.
+float PixlProjectedFoliageLOD(float2 uv, float2 textureDimensions)
+{
+	float2 texelDx = ddx_coarse(uv) * textureDimensions;
+	float2 texelDy = ddy_coarse(uv) * textureDimensions;
+	float texelsPerPixel = sqrt(max(dot(texelDx, texelDx), dot(texelDy, texelDy)));
+	float projectedMip = log2(max(texelsPerPixel, 1.0f));
+	return smoothstep(0.75f, 3.25f, projectedMip);
+}
+
 float3 PixlGrassSpecularInputRoughness(
 	float3 lightDirection,
 	float3 viewDirection,
@@ -582,18 +560,6 @@ float GetSoftLightMultiplier(float angle, float rolloff)
 	float clampedAngle = saturate(angle);
 	float arg2 = (clampedAngle * clampedAngle) * (3 - 2 * clampedAngle);
 	return saturate(arg1 - arg2);
-}
-
-// Stable stochastic coverage for the engine's grass distance/per-instance fade.
-// Frame index is deliberately fixed: temporal noise would sparkle in rain/TAA.
-void PixlApplyGrassDistanceDither(float coverage, float2 pixelPosition)
-{
-	coverage = saturate(coverage);
-	if (coverage < 0.9995f)
-	{
-		float threshold = Random::InterleavedGradientNoise(floor(pixelPosition), 0u);
-		clip(coverage - threshold);
-	}
 }
 
 float3 PixlTuneGrassColor(float3 color)
@@ -701,6 +667,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		complex = plausibleNormals >= 2u;
 	}
 
+	float2 foliageDiffuseUV = complex
+		? float2(input.TexCoord.x, input.TexCoord.y * 0.5f)
+		: input.TexCoord.xy;
+	float2 foliageDiffuseDimensions = float2(x, complex ? y * 0.5f : y);
+	float projectedDetailLOD = enhancedVegetation
+		? PixlProjectedFoliageLOD(foliageDiffuseUV, foliageDiffuseDimensions)
+		: 0.0f;
+
 	float4 baseColor;
 	if (complex) {
 		baseColor = TexBaseSampler.SampleBias(SampBaseSampler, float2(input.TexCoord.x, input.TexCoord.y * 0.5), SharedData::MipBias);
@@ -757,16 +731,34 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// physically present for the complete card lifetime and use trilinear mip bias
 	// only to suppress distant high-frequency detail. Filtering changes bandwidth,
 	// not the mean lighting direction, so crossing the interval cannot pop shading.
-	float normalFilterAmount = enhancedVegetation
+	float distanceDetailLOD = enhancedVegetation
 		? smoothstep(detailFadeStart, detailFadeEnd, grassViewDistance)
 		: 0.0f;
-	float packedNormalMipBias = SharedData::MipBias + normalFilterAmount * 1.25f;
-	float4 specColor = complex
-		? TexBaseSampler.SampleBias(
+	// The shared signal lets normal bandwidth, specular width, transmission and
+	// local-light detail simplify together. Projected footprint is authoritative;
+	// the existing distance term remains a conservative fallback for unusual UVs.
+	float foliageShadingLOD = enhancedVegetation
+		? saturate(max(projectedDetailLOD, distanceDetailLOD))
+		: 0.0f;
+	float foliageFarLOD = smoothstep(0.55f, 1.0f, foliageShadingLOD);
+	float foliageLocalDetailWeight = 1.0f - foliageFarLOD;
+	float packedNormalMipBias = SharedData::MipBias + foliageShadingLOD * 1.50f;
+	// Only the projected footprint may retire the packed micro-normal. This avoids
+	// bringing back the old world-distance material ring: a still-resolvable card
+	// keeps its authored normal regardless of distance. The detail weight reaches
+	// zero before the sample branch turns off, making the transition continuous.
+	float complexDetailWeight = enhancedVegetation
+		? 1.0f - smoothstep(0.55f, 0.98f, projectedDetailLOD)
+		: 1.0f;
+	bool sampleComplexDetail = complex && complexDetailWeight > 1.0e-4f;
+	float4 specColor = 1.0f.xxxx;
+	[branch] if (sampleComplexDetail)
+	{
+		specColor = TexBaseSampler.SampleBias(
 			SampBaseSampler,
 			float2(input.TexCoord.x, 0.5f + input.TexCoord.y * 0.5f),
-			packedNormalMipBias)
-		: 1.0f.xxxx;
+			packedNormalMipBias);
+	}
 	float2 screenUV = FrameBuffer::ViewToUV(viewPosition);
 	float screenNoise = Random::InterleavedGradientNoise(input.HPosition.xy, SharedData::FrameCount);
 
@@ -791,7 +783,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float3x3 tbn = 0;
 	float3 mirroredSpecularDetailNormal = normal;
 
-	if (complex)
+	[branch] if (sampleComplexDetail)
 	{
 		float3 normalColor = FoliageDynamics::TransformVegetationNormal(
 			specColor.xyz, flipComplexNormalY != FoliageTuning::FlipNormalY());
@@ -803,7 +795,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		tbn = FoliageDynamics::CalculateTBN(normal, -input.WorldPosition.xyz, input.TexCoord.xy);
 		float3 detailNormal = normalize(mul(normalColor, tbn));
 		float detailStrength =
-			enhancedVegetation ? FoliageTuning::NormalStrength() : 1.0f;
+			(enhancedVegetation ? FoliageTuning::NormalStrength() : 1.0f) *
+			complexDetailWeight;
 		normal = normalize(
 			geometricNormal +
 			(detailNormal - geometricNormal) * detailStrength);
@@ -863,12 +856,19 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// value of 1.0 still retained 88% unstable per-blade detail, fragmenting the
 	// GGX lobe into isolated triangle glints.
 	macroSpecularBlend *= lerp(0.72f, 0.94f, grassSpecularWetness);
+	// Once the normal atlas is below a resolvable footprint, move only the
+	// specular orientation toward the stable card normal. Diffuse/G-buffer normals
+	// retain the filtered authored mean, avoiding the old distance-ring pop.
+	macroSpecularBlend = saturate(max(macroSpecularBlend, foliageFarLOD * 0.92f));
 	float3 grassSpecularNormal =
 		normalize(lerp(normal, cardNormal, macroSpecularBlend));
 	float3 grassMirroredSpecularNormal = normalize(
 		lerp(mirroredSpecularDetailNormal, cardNormal, macroSpecularBlend));
 	bool mirrorComplexSpecularY =
 		enhancedVegetation && complex && FoliageTuning::MirrorSpecularY();
+	float mirroredSpecularDetailWeight = mirrorComplexSpecularY
+		? 1.0f - smoothstep(0.30f, 0.85f, foliageShadingLOD)
+		: 0.0f;
 
 	// Grass is a longitudinal thin dielectric, not only an isotropic flat card.
 	// Derive a stable blade direction from world-up projected onto the card plane.
@@ -920,17 +920,31 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// this gives sun and local lights the same normalized, anti-aliased GGX lobe.
 	float grassFilteredRoughness = PixlFilterGrassPerceptualRoughness(
 		grassSpecularNormal, grassRoughness);
+	grassFilteredRoughness = lerp(
+		grassFilteredRoughness,
+		max(grassFilteredRoughness, 0.58f),
+		foliageFarLOD);
 	float grassMirroredFilteredRoughness = grassFilteredRoughness;
 	[flatten] if (mirrorComplexSpecularY)
 		grassMirroredFilteredRoughness = PixlFilterGrassPerceptualRoughness(
 			grassMirroredSpecularNormal, grassRoughness);
+	grassMirroredFilteredRoughness = lerp(
+		grassMirroredFilteredRoughness,
+		max(grassMirroredFilteredRoughness, 0.58f),
+		foliageFarLOD);
 
 	float grassGBufferGloss =
-		enhancedVegetation ? saturate(1.0f - grassRoughness) : 0.0f;
+		enhancedVegetation ? saturate(1.0f - grassFilteredRoughness) : 0.0f;
 
 	if (enhancedVegetation &&
 		(!complex || SharedData::foliageDynamicsSettings.OverrideComplexGrassSettings))
 		baseColor.xyz *= SharedData::foliageDynamicsSettings.BasicGrassBrightness;
+
+	// A wet dielectric leaf becomes darker through absorption and smoother through
+	// reduced microscopic roughness; it does not become metallic.  Keep the existing
+	// wet roughness response above and reserve a modest amount of diffuse energy here.
+	[flatten] if (enhancedVegetation)
+		baseColor.xyz *= lerp(1.0f.xxx, 0.91f.xxx, grassSpecularWetness);
 
 	float llDirLightMult = (SharedData::linearLightCoreSettings.enableLinearLightCore && !SharedData::linearLightCoreSettings.isDirLightLinear) ? SharedData::linearLightCoreSettings.dirLightMult : 1.0f;
 	float3 dirLightColor = Color::DirectionalLight(SharedData::DirLightColor.xyz / max(llDirLightMult, 1e-5), SharedData::linearLightCoreSettings.isDirLightLinear) * llDirLightMult;
@@ -970,7 +984,19 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	float softLightRolloff = saturate(input.VertexNormal.w * 10.0) * SharedData::foliageDynamicsSettings.TissueDiffusionAmount * 2.0;
 
-	lightsDiffuseColor += dirLightColor * dirDetailedShadow * saturate(dirLightAngle) * Color::VanillaNormalization();
+	float grassDirectionalDiffuseShape = enhancedVegetation
+		? lerp(
+			1.0f,
+			FoliageDynamics::ThinSurfaceDiffuseShape(
+				normalize(SharedData::DirLightDirection.xyz),
+				viewDirection,
+				normal,
+				grassFilteredRoughness),
+			0.65f)
+		: 1.0f;
+	lightsDiffuseColor +=
+		dirLightColor * dirDetailedShadow * saturate(dirLightAngle) *
+		grassDirectionalDiffuseShape * Color::VanillaNormalization();
 
 	float3 vertexColor = Color::ColorToLinear(input.Color.xyz);
 	float vertexAO = max(max(vertexColor.r, vertexColor.g), vertexColor.b);
@@ -999,9 +1025,22 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float3 subsurfaceColor = dirLightColor * dirSoftShadow * (GetSoftLightMultiplier(dirLightAngle, softLightRolloff)) * Color::VanillaNormalization();
 #			if USE_PIXL_VEGETATION_BRDF
 	[branch] if (enhancedVegetation)
-		subsurfaceColor = dirSoftShadow * FoliageDynamics::GetGrassDirectionalTransmissionInput(
-			SharedData::DirLightDirection.xyz, viewDirection, normal, dirLightColor, baseColor.xyz,
-			SharedData::foliageDynamicsSettings.TissueDiffusionAmount * FoliageTuning::TransmissionBoost()) * Color::VanillaNormalization();
+	{
+		float3 simplifiedGrassTransmission = subsurfaceColor * baseColor.xyz;
+		[branch] if (foliageFarLOD < 0.999f)
+		{
+			float3 detailedGrassTransmission =
+				dirSoftShadow * FoliageDynamics::GetGrassDirectionalTransmissionInput(
+					SharedData::DirLightDirection.xyz, viewDirection, normal, dirLightColor, baseColor.xyz,
+					SharedData::foliageDynamicsSettings.TissueDiffusionAmount * FoliageTuning::TransmissionBoost()) * Color::VanillaNormalization();
+			subsurfaceColor = lerp(
+				detailedGrassTransmission, simplifiedGrassTransmission, foliageFarLOD);
+		}
+		else
+		{
+			subsurfaceColor = simplifiedGrassTransmission;
+		}
+	}
 #			endif
 
 	float3 directGrassSpecular = 0.0f.xxx;
@@ -1015,7 +1054,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 				grassSpecularNormal,
 				dirLightColor,
 				grassFilteredRoughness);
-		[flatten] if (mirrorComplexSpecularY)
+		[branch] if (mirroredSpecularDetailWeight > 1.0e-4f)
 		{
 			float3 mirroredDirectGrassSpecular =
 				dirDetailedShadow *
@@ -1027,8 +1066,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 					grassMirroredFilteredRoughness);
 			// Average rather than add: the mirrored response broadens orientation
 			// coverage without silently doubling normalized GGX energy.
-			directGrassSpecular =
+			float3 averagedDirectGrassSpecular =
 				(directGrassSpecular + mirroredDirectGrassSpecular) * 0.5f;
+			directGrassSpecular = lerp(
+				directGrassSpecular,
+				averagedDirectGrassSpecular,
+				mirroredSpecularDetailWeight);
 		}
 	}
 
@@ -1057,7 +1100,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float fibreFresnel =
 		0.04f + 0.96f * pow(1.0f - grassVdotH, 5.0f);
 	float fibreStrength = enhancedVegetation
-		? lerp(0.035f, 0.18f, grassSpecularWetness)
+		? lerp(0.035f, 0.18f, grassSpecularWetness) * foliageLocalDetailWeight
 		: 0.0f;
 
 	float3 directGrassFibreSpecular =
@@ -1118,13 +1161,38 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 				float lightNoL = dot(normalizedLightDirection.xyz, viewDirection);
 				float3 lightDiffuseColor;
 
-				lightDiffuseColor = lightColor * saturate(lightAngle);
+				float grassLocalDiffuseShape = enhancedVegetation
+					? lerp(
+						1.0f,
+						FoliageDynamics::ThinSurfaceDiffuseShape(
+							normalizedLightDirection,
+							viewDirection,
+							normal,
+							grassFilteredRoughness),
+						0.65f)
+					: 1.0f;
+				lightDiffuseColor =
+					lightColor * saturate(lightAngle) * grassLocalDiffuseShape;
 
 #				if USE_PIXL_VEGETATION_BRDF
 				if (enhancedVegetation)
-					subsurfaceColor += FoliageDynamics::GetTransmissionInput(
-						normalizedLightDirection, viewDirection, normal, lightColor, baseColor.xyz,
-						SharedData::foliageDynamicsSettings.TissueDiffusionAmount * FoliageTuning::TransmissionBoost()) * Color::VanillaNormalization();
+				{
+					float3 simplifiedLocalTransmission =
+						lightColor * GetSoftLightMultiplier(lightAngle, softLightRolloff) *
+						baseColor.xyz * Color::VanillaNormalization();
+					[branch] if (foliageFarLOD < 0.999f)
+					{
+						float3 detailedLocalTransmission = FoliageDynamics::GetTransmissionInput(
+							normalizedLightDirection, viewDirection, normal, lightColor, baseColor.xyz,
+							SharedData::foliageDynamicsSettings.TissueDiffusionAmount * FoliageTuning::TransmissionBoost()) * Color::VanillaNormalization();
+						subsurfaceColor += lerp(
+							detailedLocalTransmission, simplifiedLocalTransmission, foliageFarLOD);
+					}
+					else
+					{
+						subsurfaceColor += simplifiedLocalTransmission;
+					}
+				}
 				else
 					subsurfaceColor += lightColor * GetSoftLightMultiplier(lightAngle, softLightRolloff) * Color::VanillaNormalization();
 #				else
@@ -1133,7 +1201,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 				lightsDiffuseColor += lightDiffuseColor * Color::VanillaNormalization();
 
-				[branch] if (enhancedVegetation)
+				[branch] if (enhancedVegetation && foliageLocalDetailWeight > 1.0e-4f)
 				{
 					float3 localGrassSpecular = PixlGrassSpecularInputRoughness(
 							normalizedLightDirection,
@@ -1141,7 +1209,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 							grassSpecularNormal,
 							lightColor,
 							grassFilteredRoughness);
-					[flatten] if (mirrorComplexSpecularY)
+					[branch] if (mirroredSpecularDetailWeight > 1.0e-4f)
 					{
 						float3 mirroredLocalGrassSpecular = PixlGrassSpecularInputRoughness(
 							normalizedLightDirection,
@@ -1149,10 +1217,15 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 							grassMirroredSpecularNormal,
 							lightColor,
 							grassMirroredFilteredRoughness);
-						localGrassSpecular =
+						float3 averagedLocalGrassSpecular =
 							(localGrassSpecular + mirroredLocalGrassSpecular) * 0.5f;
+						localGrassSpecular = lerp(
+							localGrassSpecular,
+							averagedLocalGrassSpecular,
+							mirroredSpecularDetailWeight);
 					}
-					lightsSpecularColor += localGrassSpecular;
+					lightsSpecularColor +=
+						localGrassSpecular * foliageLocalDetailWeight;
 				}
 			}
 		}
@@ -1174,6 +1247,18 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	#if USE_PIXL_VEGETATION_BRDF
 	if (enhancedVegetation)
 	{
+		float grassTransmissionBudget = saturate(
+			SharedData::foliageDynamicsSettings.TissueDiffusionAmount *
+			SharedData::foliageDynamicsSettings.LeafTransmission *
+			FoliageTuning::TransmissionBoost());
+		float grassDiffuseEnergy = FoliageDynamics::ThinSurfaceDiffuseEnergy(
+			dot(normal, viewDirection),
+			grassTransmissionBudget,
+			SharedData::foliageDynamicsSettings.SpecularStrength);
+		// Blend into the physically-accounted budget conservatively so existing
+		// authored grass brightness remains the visual baseline while reflection and
+		// transmission can no longer stack without returning any diffuse energy.
+		diffuseColor *= lerp(1.0f, grassDiffuseEnergy, 0.55f);
 		diffuseColor *= albedo;
 		diffuseColor += subsurfaceColor;
 	}
@@ -1230,7 +1315,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	psout.Diffuse.xyz = diffuseColor;
 #			endif
 
-	float3 normalVS = normalize(FrameBuffer::WorldToView(normal, false));
+	// Basic grass has no authored normal map. Its spherical/card vertex normal can
+	// point almost sideways, which makes the Hybrid GI cosine lobe evaluate near
+	// zero even though the blade is visibly sky-facing. Preserve detailed Complex
+	// Grass normals, but provide a stable upward-biased GI normal for vanilla cards.
+	float3 hybridGINormal = complex
+		? normal
+		: normalize(lerp(normal, grassWorldUp, 0.46f));
+	float3 normalVS = normalize(FrameBuffer::WorldToView(hybridGINormal, false));
 	psout.Albedo = float4(albedo, 1);
 	psout.NormalGlossiness = float4(GBuffer::EncodeNormal(normalVS), grassGBufferGloss, 1);
 
@@ -1340,8 +1432,8 @@ PS_OUTPUT main(PS_INPUT input)
 	}
 #			endif  // RADIANT_GRID
 
-	float3 ddx = ddx_coarse(input.WorldPosition);
-	float3 ddy = ddy_coarse(input.WorldPosition);
+	float3 ddx = ddx_coarse(input.WorldPosition.xyz);
+	float3 ddy = ddy_coarse(input.WorldPosition.xyz);
 	float3 normalRaw = -cross(ddx, ddy);
 	float normalLenSq = dot(normalRaw, normalRaw);
 	float3 normal =

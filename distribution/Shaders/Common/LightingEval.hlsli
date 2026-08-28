@@ -50,18 +50,9 @@ IndirectContext CreateIndirectLightingContext(float3 worldNormal, float3 vertexN
 	return context;
 }
 
-/**
- * PIXL local-light attenuation. Physical mode uses a finite spherical emitter to
- * regularize 1/r^2 near the source and a smooth finite-radius window at the light's
- * authored cutoff. Legacy mode exactly preserves Skyrim's quadratic window.
- */
-float GetLocalLightAttenuation(float distance, float radius, float fadeZone, float sizeBias)
+/** PIXL's finite-emitter inverse-square path before user blending. */
+float GetPhysicalLocalLightAttenuation(float distance, float radius, float fadeZone, float sizeBias)
 {
-	float normalizedDistance = saturate(distance / max(radius, 1.0f));
-	float legacyAttenuation = 1.0f - normalizedDistance * normalizedDistance;
-	if (SharedData::materialForgeSettings.EnablePhysicalLocalLightFalloff == 0)
-		return legacyAttenuation;
-
 	float emitterRadius = max(SharedData::materialForgeSettings.LocalLightMinimumDistance, 1.0f);
 	float denominator = distance * distance + max(sizeBias, emitterRadius * emitterRadius);
 	float physicalAttenuation = (0.8f * METRES_TO_UNITS * METRES_TO_UNITS) / denominator;
@@ -70,6 +61,29 @@ float GetLocalLightAttenuation(float distance, float radius, float fadeZone, flo
 	float cutoff = saturate((radius - distance) * effectiveFadeZone);
 	cutoff = cutoff * cutoff * (3.0f - 2.0f * cutoff);
 	return physicalAttenuation * cutoff;
+}
+
+/**
+ * PIXL local-light attenuation. The final float in MaterialForge's stable
+ * five-register block is named pad0 in SharedData for cache/ABI compatibility;
+ * C++ owns it as PhysicalLocalLightFalloffStrength at the same byte offset.
+ */
+float GetPhysicalLocalLightFalloffStrength()
+{
+	return SharedData::materialForgeSettings.EnablePhysicalLocalLightFalloff != 0 ?
+		saturate(SharedData::materialForgeSettings.pad0) : 0.0f;
+}
+
+float GetLocalLightAttenuation(float distance, float radius, float fadeZone, float sizeBias)
+{
+	float normalizedDistance = saturate(distance / max(radius, 1.0f));
+	float legacyAttenuation = 1.0f - normalizedDistance * normalizedDistance;
+	float physicalBlend = GetPhysicalLocalLightFalloffStrength();
+	if (physicalBlend <= 0.0f)
+		return legacyAttenuation;
+
+	float physicalAttenuation = GetPhysicalLocalLightAttenuation(distance, radius, fadeZone, sizeBias);
+	return lerp(legacyAttenuation, physicalAttenuation, physicalBlend);
 }
 
 float3 VanillaSpecular(DirectContext context, float shininess, float2 uv, float2 uv_ddx, float2 uv_ddy)

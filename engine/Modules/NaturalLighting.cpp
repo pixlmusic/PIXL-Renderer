@@ -73,7 +73,7 @@ float NaturalLighting::CalculateRadius(const float intensity, const bool shadowC
 	const float safeCutoff = std::max(cutoff, 0.001f);
 	const float radicand = ScaledUnitsSq * std::max(
 		(2.0f * std::max(intensity, 0.0f) - safeCutoff * size * size) / (2.0f * safeCutoff), 0.0f);
-	return std::max(std::sqrt(radicand), 1.0f);
+	return std::max(std::sqrt(radicand) * InverseSquareRangeScale, 1.0f);
 }
 
 inline float NaturalLighting::SmoothStep(const float edge0, const float edge1, const float x)

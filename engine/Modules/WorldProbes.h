@@ -164,6 +164,17 @@ public:
  */
 bool HasShaderDefine(RE::BSShader::Type) override { return true; };
 
+	bool AffectsCachedShader(
+		RE::BSShader::Type shaderType,
+		std::uint32_t,
+		CachedShaderStage stage) override
+	{
+		// WORLD_PROBES is consumed by Skyrim pixel paths. The module's compute
+		// kernels are compiled independently at runtime and do not justify
+		// invalidating persistent vertex or compute shader-cache entries.
+		return stage == CachedShaderStage::Pixel && HasShaderDefine(shaderType);
+	}
+
 	/**
 	 * Initialize Direct3D resources required for dynamic cubemap generation.
 	 */

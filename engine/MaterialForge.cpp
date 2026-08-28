@@ -67,7 +67,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	EnableGGXMultiScatter,
 	GGXMultiScatterStrength,
 	LocalLightMinimumDistance,
-	pad0);
+	PhysicalLocalLightFalloffStrength);
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	MaterialForge::LegacyTuningSettings,
@@ -218,7 +218,7 @@ void MaterialForge::DrawSettings()
 				&settings.LegacyMetalInferenceMaximum, 0.f, 1.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 			DrawTooltip("Maximum guessed metalness for vanilla materials. This ceiling does not limit authored Material Forge or high-confidence Material Layers conductors.");
 		}
-		if (ImGui::TreeNodeEx("Legacy -> Physical Calibration", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (globals::state->IsDeveloperMode() && ImGui::TreeNodeEx("Legacy -> Physical Calibration", ImGuiTreeNodeFlags_DefaultOpen)) {
 			DrawUIntCheckbox("Enable Calibration", legacyTuningSettings.EnableTuning);
 			ImGui::SliderFloat("Calibration Strength", &legacyTuningSettings.ConversionStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 			DrawTooltip("0 restores the original PIXL legacy conversion; 1 applies all calibration controls below. Authored Material Forge PBR is unaffected.");
@@ -263,8 +263,11 @@ void MaterialForge::DrawSettings()
 
 		ImGui::SeparatorText("Physical Light Quality");
 		DrawUIntCheckbox("Inverse-Square Local Lights", settings.EnablePhysicalLocalLightFalloff);
-		DrawTooltip("Uses the PIXL regularized inverse-square attenuation path for local lights. Updates in real time and retains the legacy falloff when disabled.");
+		DrawTooltip("Blends local lights toward PIXL's regularized inverse-square attenuation. Disable to retain Skyrim/Natural Lighting falloff exactly.");
 		if (settings.EnablePhysicalLocalLightFalloff != 0) {
+			ImGui::SliderFloat("Physical Falloff Strength", &settings.PhysicalLocalLightFalloffStrength,
+				0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			DrawTooltip("0.00 matches Skyrim/Natural Lighting, 1.00 is fully inverse-square. The balanced 0.65 default keeps physical depth without making interiors impractically dark.");
 			ImGui::SliderFloat("Local Emitter Radius", &settings.LocalLightMinimumDistance,
 				7.0f, 70.0f, "%.0f units", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
 			DrawTooltip("Finite emitter radius used near the light to prevent an inverse-square singularity. Larger values produce broader, softer near-light response.");
@@ -300,6 +303,7 @@ void MaterialForge::DrawSettings()
 				0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 			DrawTooltip("Blends between the legacy single-scatter lobe and the energy-compensated rough-conductor response.");
 		}
+		if (globals::state->IsDeveloperMode()) {
 		static constexpr const char* debugModes[] = {
 			"Off",
 			"Adapter Coverage",
@@ -337,10 +341,11 @@ void MaterialForge::DrawSettings()
 		if (settings.LegacyPhysicalDebugMode != 0) {
 			ImGui::TextDisabled("Lighting geometry only; particles, flames, sky, and UI may remain visible");
 		}
+		}
 		ImGui::TreePop();
 	}
 
-	if (ImGui::TreeNodeEx(T(TKEY("texture_set_settings"), "Texture Set Settings"), ImGuiTreeNodeFlags_DefaultOpen)) {
+	if (globals::state->IsDeveloperMode() && ImGui::TreeNodeEx(T(TKEY("texture_set_settings"), "Texture Set Settings"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		if (Util::SearchableCombo(T(TKEY("texture_set"), "Texture Set"), selectedPbrTextureSetName, pbrTextureSets)) {
 			selectedPbrTextureSet = &pbrTextureSets[selectedPbrTextureSetName];
 		}
@@ -427,7 +432,7 @@ void MaterialForge::DrawSettings()
 		ImGui::TreePop();
 	}
 
-	if (ImGui::TreeNodeEx(T(TKEY("material_object_settings"), "Material Object Settings"), ImGuiTreeNodeFlags_DefaultOpen)) {
+	if (globals::state->IsDeveloperMode() && ImGui::TreeNodeEx(T(TKEY("material_object_settings"), "Material Object Settings"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		if (Util::SearchableCombo(T(TKEY("material_object"), "Material Object"), selectedPbrMaterialObjectName, pbrMaterialObjects)) {
 			selectedPbrMaterialObject = &pbrMaterialObjects[selectedPbrMaterialObjectName];
 		}

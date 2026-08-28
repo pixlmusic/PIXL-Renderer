@@ -18,6 +18,63 @@ std::list<std::string> errors;
 
 bool Load();
 
+namespace
+{
+	std::atomic_bool s_dataLoadedFinalized{ false };
+
+	void FinalizeRendererDataLoaded()
+	{
+		if (globals::game::quitGame.load(std::memory_order_acquire)) {
+			logger::info("Game was closed, skipping feature DataLoaded methods");
+			return;
+		}
+
+		if (s_dataLoadedFinalized.exchange(true, std::memory_order_acq_rel))
+			return;
+
+		auto shaderCache = globals::shaderCache;
+		if (shaderCache->IsDiskCache())
+			shaderCache->WriteDiskCacheInfo();
+
+		RenderModule::ForEachLoadedModule("DataLoaded", [](RenderModule* feature) { feature->DataLoaded(); });
+		logger::info("Renderer DataLoaded finalization complete");
+	}
+
+	void FinalizeRendererDataLoadedAfterCompilation()
+	{
+		auto shaderCache = globals::shaderCache;
+		if (!shaderCache->IsCompiling() || shaderCache->backgroundCompilation.load(std::memory_order_acquire)) {
+			FinalizeRendererDataLoaded();
+			return;
+		}
+
+		// Do not block the SKSE DataLoaded message handler. Blocking it stops
+		// Skyrim's frame pump immediately after the compiler card first appears,
+		// leaving only the game's loading spinner visible while worker threads keep
+		// compiling. A lightweight waiter preserves the existing foreground gate,
+		// while the main/render threads continue presenting the progress overlay.
+		logger::info("Foreground shader compilation active; keeping the PIXL compiler panel live until the gate is released");
+		std::thread([shaderCache]() {
+			while (shaderCache->IsCompiling() &&
+			       !shaderCache->backgroundCompilation.load(std::memory_order_acquire) &&
+			       !globals::game::quitGame.load(std::memory_order_acquire)) {
+				std::this_thread::sleep_for(100ms);
+			}
+
+			if (globals::game::quitGame.load(std::memory_order_acquire)) {
+				logger::info("Game was closed, skipping deferred feature DataLoaded methods");
+				return;
+			}
+
+			if (auto* taskInterface = SKSE::GetTaskInterface()) {
+				taskInterface->AddTask([]() { FinalizeRendererDataLoaded(); });
+			} else {
+				logger::error("Unable to finalize renderer DataLoaded state: SKSE task interface is unavailable");
+			}
+		}).detach();
+	}
+}
+
 void InitializeLog([[maybe_unused]] spdlog::level::level_enum a_level = spdlog::level::info)
 {
 #ifndef NDEBUG
@@ -131,21 +188,7 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 
 				auto shaderCache = globals::shaderCache;
 				shaderCache->menuLoaded = true;
-
-				while (shaderCache->IsCompiling() && !shaderCache->backgroundCompilation && !globals::game::quitGame) {
-					std::this_thread::sleep_for(100ms);
-				}
-
-				if (globals::game::quitGame) {
-					logger::info("Game was closed, skipping feature DataLoaded methods");
-					break;
-				}
-
-				if (shaderCache->IsDiskCache()) {
-					shaderCache->WriteDiskCacheInfo();
-				}
-
-				RenderModule::ForEachLoadedModule("DataLoaded", [](RenderModule* feature) { feature->DataLoaded(); });
+				FinalizeRendererDataLoadedAfterCompilation();
 			}
 
 			break;

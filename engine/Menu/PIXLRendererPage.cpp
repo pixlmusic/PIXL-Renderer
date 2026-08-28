@@ -24,6 +24,7 @@
 #include "Fonts.h"
 #include "Globals.h"
 #include "Menu.h"
+#include "Menu/TuningWorkspaceRenderer.h"
 #include "Renderer/QualityProfiles.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -655,31 +656,31 @@ namespace
 				"Atmosphere",
 				&settings.AtmosphereQuality,
 				QualityGroup::Atmosphere,
-				"Volumetric resolution, cloud structure, fog and atmospheric shadowing." },
+				"Volumetric-fog resolution, depth precision and temporal sampling." },
 			Row{
 				"Water",
 				"Water",
 				&settings.WaterQuality,
 				QualityGroup::Water,
-				"Reflection reach, shoreline response, underwater optics and caustics." },
+				"Water-reflection trace budget, edge stability and caustic dispersion." },
 			Row{
 				"Terrain & Vegetation",
 				"TerrainVegetation",
 				&settings.TerrainVegetationQuality,
 				QualityGroup::TerrainVegetation,
-				"Terrain continuity, vegetation lighting, ground interaction and distance detail." },
+				"Raised snow/mud distance and tessellation quality; vegetation appearance stays user-authored." },
 			Row{
 				"Characters",
 				"Characters",
 				&settings.CharactersQuality,
 				QualityGroup::Characters,
-				"Skin diffusion, detail preservation, hair shading and thin-surface response." },
+				"Skin diffusion samples, skin micro detail and hair self-shadow quality." },
 			Row{
 				"Camera",
 				"Camera",
 				&settings.CameraQuality,
 				QualityGroup::Camera,
-				"Physical exposure, local contrast, optics and depth-aware presentation." }
+				"Depth of field, motion blur and lens-effect sampling quality; camera exposure stays user-authored." }
 		};
 
 		std::array<int, static_cast<size_t>(QualityGroup::Count)>
@@ -2106,6 +2107,31 @@ namespace
 
 	void DrawCameraControls()
 	{
+		std::string directorUnavailableReason;
+		const bool directorActive =
+			TuningWorkspaceRenderer::IsDirectorPhotoModeActive();
+		const bool directorAvailable = directorActive ||
+			TuningWorkspaceRenderer::IsDirectorPhotoModeAvailable(
+				&directorUnavailableReason);
+
+		SectionHeading("PIXL DIRECTOR");
+		ImGui::TextColored(
+			PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
+			"Cinematic free camera, live shot controls and clean high-quality capture.");
+		ImGui::SameLine();
+		ImGui::BeginDisabled(!directorAvailable);
+		if (PIXLUI::ActionButton(
+				directorActive ? "RETURN TO DIRECTOR" : "OPEN PIXL DIRECTOR",
+				ImVec2(PIXLUI::Ref(190.0f), PIXLUI::Ref(32.0f)),
+				true)) {
+			TuningWorkspaceRenderer::OpenDirectorPhotoMode();
+		}
+		ImGui::EndDisabled();
+		if (!directorAvailable && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("%s", directorUnavailableReason.c_str());
+		}
+		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(5.0f)));
 		DrawFinishingControls();
 	}
 
@@ -2291,10 +2317,6 @@ namespace
 			globals::menu
 				->GetSettings()
 				.AdvancedMode = true;
-
-			globals::menu
-				->GetSettings()
-				.DeveloperMode = true;
 
 			globals::state->Save();
 		}

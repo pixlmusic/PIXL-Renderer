@@ -1,6 +1,10 @@
 #ifndef PIXL_FOLIAGE_WIND_HLSLI
 #define PIXL_FOLIAGE_WIND_HLSLI
 
+// PIXL's grass wind deliberately stays small and deterministic. Skyrim's
+// authored displacement remains the structural motion; this field supplies one
+// broad travelling gust envelope and one restrained cross-wind flutter signal.
+// Evaluating it with WindTimer and PreviousWindTimer yields exact motion history.
 namespace FoliageWind
 {
 	float Hash12(float2 p)
@@ -22,44 +26,55 @@ namespace FoliageWind
 		return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y);
 	}
 
-	float FBM2(float2 p)
-	{
-		float n0 = ValueNoise(p);
-		float n1 = ValueNoise(p * 2.071f + float2(17.17f, -9.31f));
-		return n0 * 0.68f + n1 * 0.32f;
-	}
-
-	float SmoothGust(float noiseValue)
-	{
-		// Keep broad cells quiet for part of their lifetime, then ease into a
-		// coherent gust. The second smoothstep avoids the mechanical sine-wave
-		// cadence of the original enhancement.
-		float pulse = smoothstep(0.24f, 0.82f, saturate(noiseValue));
-		return pulse * pulse * (3.0f - 2.0f * pulse);
-	}
-
 	float2 SafeDirection(float2 direction, float2 fallbackDirection)
 	{
 		float lengthSq = dot(direction, direction);
-		return lengthSq > 1e-8f
-			? direction * rsqrt(lengthSq)
-			: fallbackDirection;
+		return lengthSq > 1.0e-8f ? direction * rsqrt(lengthSq) : fallbackDirection;
 	}
 
-	float AdvectedNoise(
+	struct GrassGustField
+	{
+		float Gust;
+		float Crosswind;
+		float Flutter;
+	};
+
+	GrassGustField SampleGrassGust(
 		float2 absoluteWorldXY,
 		float time,
-		float2 direction,
+		float2 windDirection,
 		float spatialScale,
-		float speed,
-		float frequency,
+		float gustSpeed,
+		float flutterSpeed,
 		float seed)
 	{
-		float2 p =
-			absoluteWorldXY * (frequency * max(spatialScale, 0.05f)) -
-			direction * (time * max(speed, 0.0f) * 0.055f);
-		p += seed.xx;
-		return FBM2(p);
+		GrassGustField field;
+		float2 flow = SafeDirection(windDirection, float2(0.8192319f, 0.5734624f));
+		float2 crossFlow = float2(-flow.y, flow.x);
+		float scale = max(spatialScale, 0.25f);
+		float speed = max(gustSpeed, 0.1f);
+
+		// One smooth, very broad advected field avoids the conflicting frequencies
+		// and material-looking folds produced by the retired multi-wind system.
+		float2 gustPosition = absoluteWorldXY * (0.00048f * scale) -
+			flow * (time * speed * 0.075f) + seed * 11.7f.xx;
+		float gustNoise = ValueNoise(gustPosition);
+		float wave = 0.5f + 0.5f * sin(
+			dot(absoluteWorldXY, flow) * (0.00115f * scale) -
+			time * speed * 0.82f + seed * 6.28318531f);
+		float envelope = lerp(gustNoise, wave, 0.38f);
+		field.Gust = smoothstep(0.34f, 0.82f, envelope);
+
+		float crossPhase =
+			dot(absoluteWorldXY, crossFlow) * (0.0042f * scale) +
+			time * speed * 1.23f + seed * 17.0f;
+		field.Crosswind = sin(crossPhase) * (0.35f + 0.65f * field.Gust);
+
+		float flutterPhase =
+			time * (2.4f + 2.2f * max(flutterSpeed, 0.1f)) +
+			dot(absoluteWorldXY, flow) * 0.0105f + seed * 29.0f;
+		field.Flutter = sin(flutterPhase) * (0.72f + 0.28f * sin(flutterPhase * 0.61f + 1.7f));
+		return field;
 	}
 }
 

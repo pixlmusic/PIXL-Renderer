@@ -32,27 +32,27 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 
 void AmbientProbe::DrawSettings()
 {
-	Util::WeatherUI::UIntCheckbox(T(TKEY("enable_ibl"), "Enable AmbientProbe"), this, "EnableAmbientProbe", &settings.EnableAmbientProbe);
+	Util::WeatherUI::UIntCheckbox(T(TKEY("enable_ibl"), "Enable Ambient Lighting"), this, "EnableAmbientProbe", &settings.EnableAmbientProbe);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("enable_ibl_tooltip"), "Toggle AmbientProbe. When enabled, ambient lighting is derived from cubemap spherical harmonics instead of the vanilla system."));
 	}
-	Util::WeatherUI::SliderFloat(T(TKEY("env_ibl_scale"), "Env AmbientProbe Scale"), this, "EnvironmentProbeScale", &settings.EnvironmentProbeScale, 0.0f, 10.0f, "%.2f");
+	Util::WeatherUI::SliderFloat(T(TKEY("env_ibl_scale"), "Environment Lighting Strength"), this, "EnvironmentProbeScale", &settings.EnvironmentProbeScale, 0.0f, 10.0f, "%.2f");
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("env_ibl_scale_tooltip"), "Intensity multiplier for the environment AmbientProbe (from World Probes).\nControls how strongly the surrounding environment contributes to ambient lighting."));
 	}
-	Util::WeatherUI::SliderFloat(T(TKEY("sky_ibl_scale"), "Sky AmbientProbe Scale"), this, "SkyProbeScale", &settings.SkyProbeScale, 0.0f, 10.0f, "%.2f");
+	Util::WeatherUI::SliderFloat(T(TKEY("sky_ibl_scale"), "Sky Lighting Strength"), this, "SkyProbeScale", &settings.SkyProbeScale, 0.0f, 10.0f, "%.2f");
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("sky_ibl_scale_tooltip"), "Intensity multiplier for the sky AmbientProbe (from the game's native reflections cubemap).\nControls how strongly the sky contributes to ambient lighting."));
 	}
-	Util::WeatherUI::SliderFloat(T(TKEY("env_ibl_saturation"), "Env AmbientProbe Saturation"), this, "EnvironmentProbeSaturation", &settings.EnvironmentProbeSaturation, 0.0f, 2.0f, "%.2f");
+	Util::WeatherUI::SliderFloat(T(TKEY("env_ibl_saturation"), "Environment Lighting Saturation"), this, "EnvironmentProbeSaturation", &settings.EnvironmentProbeSaturation, 0.0f, 2.0f, "%.2f");
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("env_ibl_saturation_tooltip"), "Color saturation of the environment AmbientProbe.\nLower values produce more neutral ambient light; higher values produce more vivid color."));
 	}
-	Util::WeatherUI::SliderFloat(T(TKEY("sky_ibl_saturation"), "Sky AmbientProbe Saturation"), this, "SkyProbeSaturation", &settings.SkyProbeSaturation, 0.0f, 2.0f, "%.2f");
+	Util::WeatherUI::SliderFloat(T(TKEY("sky_ibl_saturation"), "Sky Lighting Saturation"), this, "SkyProbeSaturation", &settings.SkyProbeSaturation, 0.0f, 2.0f, "%.2f");
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("sky_ibl_saturation_tooltip"), "Color saturation of the sky AmbientProbe.\nLower values produce more neutral ambient light; higher values produce more vivid color."));
 	}
-	Util::WeatherUI::SliderFloat(T(TKEY("dalc_amount"), "DALC Amount"), this, "DALCAmount", &settings.DALCAmount, 0.0f, 1.0f, "%.2f");
+	Util::WeatherUI::SliderFloat(T(TKEY("dalc_amount"), "Vanilla Ambient Matching"), this, "DALCAmount", &settings.DALCAmount, 0.0f, 1.0f, "%.2f");
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("dalc_amount_tooltip"),
 							  "Blends the AmbientProbe brightness toward the game's vanilla ambient (DALC) level.\n"
@@ -66,7 +66,7 @@ void AmbientProbe::DrawSettings()
 			T(TKEY("dalc_mode_dalc_plus_sky_directional"), "DALC + Sky (Directional)")
 		};
 		int dalcMode = static_cast<int>(settings.DALCMode);
-		if (ImGui::Combo(T(TKEY("dalc_mode"), "DALC Mode"), &dalcMode, dalcModeNames, IM_ARRAYSIZE(dalcModeNames))) {
+		if (ImGui::Combo(T(TKEY("dalc_mode"), "Ambient Matching Mode"), &dalcMode, dalcModeNames, IM_ARRAYSIZE(dalcModeNames))) {
 			settings.DALCMode = static_cast<uint>(dalcMode);
 		}
 		if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -78,7 +78,7 @@ void AmbientProbe::DrawSettings()
 								  "DALC + Sky (Directional): Same, but SkyBounce also dims vanilla ambient per-direction."));
 		}
 	}
-	Util::UIntCheckbox(T(TKEY("use_static_ibl"), "Use Static AmbientProbe For Out-of-World Objects"), &settings.UseStaticAmbientProbe);
+	Util::UIntCheckbox(T(TKEY("use_static_ibl"), "Use Stable Lighting Outside the World"), &settings.UseStaticAmbientProbe);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("use_static_ibl_tooltip"), "Uses pre-baked static AmbientProbe cubemap textures for objects rendered outside the game world (e.g. inventory items, loading screens)."));
 	}

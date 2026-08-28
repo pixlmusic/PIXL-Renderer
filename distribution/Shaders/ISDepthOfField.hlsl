@@ -56,14 +56,22 @@ float GetFinalDepth(float depth, float near, float far)
 #	define USE_PIXL_CINEMATIC_DOF 1
 #endif
 
-#define PIXL_DOF_STABLE_GATHER_V2 1
+#define PIXL_DOF_OWNED_APERTURE_V3 1
 
 #if USE_PIXL_CINEMATIC_DOF
-static const float2 PixlDofDisk[12] = {
-	float2(0.0000f, 0.0000f), float2(0.5278f, 0.0859f), float2(-0.0401f, 0.5365f),
-	float2(-0.5542f, -0.0420f), float2(0.1004f, -0.5617f), float2(0.7799f, 0.4098f),
-	float2(-0.3630f, 0.8147f), float2(-0.8280f, -0.3376f), float2(0.3292f, -0.8409f),
-	float2(0.9583f, -0.1607f), float2(-0.0998f, 0.9748f), float2(-0.9506f, 0.1887f)
+// Vogel aperture: concentric rings alias into visible spokes while this
+// low-discrepancy disk remains stable at every Camera quality sample budget.
+static const float2 PixlDofDisk[20] = {
+	float2( 0.158114f,  0.000000f), float2(-0.201937f,  0.184991f),
+	float2( 0.030910f, -0.352200f), float2( 0.254528f,  0.331987f),
+	float2(-0.467091f, -0.082622f), float2( 0.442469f, -0.281463f),
+	float2(-0.147997f,  0.550542f), float2(-0.282247f, -0.543449f),
+	float2( 0.612363f,  0.223634f), float2(-0.637061f,  0.262970f),
+	float2( 0.307106f, -0.656267f), float2( 0.226943f,  0.723531f),
+	float2(-0.684010f, -0.396397f), float2( 0.802421f, -0.176410f),
+	float2(-0.489705f,  0.696555f), float2(-0.113133f, -0.873041f),
+	float2( 0.694527f,  0.585348f), float2(-0.934616f,  0.038649f),
+	float2( 0.681730f, -0.678413f), float2(-0.045610f,  0.986367f)
 };
 
 float PixlDofLuminance(float3 color)
@@ -80,11 +88,13 @@ float PixlDofLinearDepth(float rawDepth, float4 dofParams, float4 depthParams)
 	return GetFinalDepth(1.01f * rawDepth - 0.01f, dofParams.z, dofParams.w);
 }
 
-float PixlDofSignedCoC(float linearDepth, float focusDistance, float2 dofBlurRange)
+float PixlDofSignedCoC(float linearDepth, bool isSky, float focusDistance, float focusRange)
 {
+	if (isSky)
+		return 1.0f;
 	if (linearDepth <= 0.0f)
 		return 0.0f;
-	float range = linearDepth < focusDistance ? max(dofBlurRange.y, 1e-4f) : max(dofBlurRange.y, 1e-4f);
+	float range = max(focusRange, 1e-4f);
 	return clamp((linearDepth - focusDistance) / range, -1.0f, 1.0f);
 }
 
@@ -104,14 +114,15 @@ float2 PixlShapeAperture(float2 diskOffset, float2 screenUV)
 	return diskOffset;
 }
 
-float3 PixlGatherBokeh(float2 centerUV, float centerRawDepth, float centerLinearDepth,
-	float focusDistance, float2 dofBlurRange, float blurFactor, float4 dofParams)
+float3 PixlGatherBokeh(float2 centerUV, float centerLinearDepth, bool centerIsSky,
+	float focusDistance, float focusRange, float blurFactor, float4 dofParams)
 {
-	float centerCoC = PixlDofSignedCoC(centerLinearDepth, focusDistance, dofBlurRange);
-	// PIXL_DOF_STABLE_GATHER_V2: enhancement stays conservative because Skyrim's
-	// native pass already supplies the base blur. Gather the sharp source to form
-	// bokeh detail without recursively blurring an already-blurred texture.
-	float radiusPixels = lerp(0.50f, 3.25f, saturate(blurFactor)) *
+	float centerCoC = PixlDofSignedCoC(centerLinearDepth, centerIsSky, focusDistance, focusRange);
+	// This is the complete visible aperture, not an enhancement over Skyrim's
+	// preblur. The wider photographic footprint is therefore sampled exclusively
+	// from the sharp source and remains stable under dynamic resolution.
+	float shapedBlur = blurFactor * blurFactor * (3.0f - 2.0f * blurFactor);
+	float radiusPixels = lerp(0.75f, 18.0f, shapedBlur) *
 		max(SharedData::postProcessSettings.DofBokehRadius, 0.5f);
 	float edgeProtection = max(SharedData::postProcessSettings.DofFocusEdgeProtection, 0.0f);
 	float foregroundCoverage = max(SharedData::postProcessSettings.DofForegroundCoverage, 0.0f);
@@ -119,42 +130,49 @@ float3 PixlGatherBokeh(float2 centerUV, float centerRawDepth, float centerLinear
 
 	float3 sum = 0.0f;
 	float weightSum = 0.0f;
-	uint sampleCount = 6u + min(SharedData::postProcessSettings.DofQuality, 3u) * 2u;
+	uint sampleCount = 8u + min(SharedData::postProcessSettings.DofQuality, 3u) * 4u;
 	[loop] for (uint sampleIndex = 0u; sampleIndex < sampleCount; ++sampleIndex) {
 		float2 aperture = PixlShapeAperture(PixlDofDisk[sampleIndex], centerUV);
 		float2 sampleUV = saturate(centerUV + aperture * invScreenRes.xy * radiusPixels);
 		float2 adjustedSampleUV = FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(sampleUV);
 		float sampleRawDepth = DepthTex.SampleLevel(DepthSampler, adjustedSampleUV, 0.0f);
 		float sampleLinearDepth = PixlDofLinearDepth(sampleRawDepth, dofParams, params3);
-		float sampleCoC = PixlDofSignedCoC(sampleLinearDepth, focusDistance, dofBlurRange);
+		bool sampleIsSky = sampleRawDepth > 0.999998987f;
+		float sampleCoC = PixlDofSignedCoC(sampleLinearDepth, sampleIsSky, focusDistance, focusRange);
 
-		float relativeDepth = abs(sampleLinearDepth - centerLinearDepth) /
-			max(max(centerLinearDepth, sampleLinearDepth), 1.0f);
+		float relativeDepth = (centerIsSky || sampleIsSky)
+			? (centerIsSky == sampleIsSky ? 0.0f : 1.0f)
+			: abs(sampleLinearDepth - centerLinearDepth) /
+				max(max(centerLinearDepth, sampleLinearDepth), 1.0f);
 		float sameLayer = centerCoC * sampleCoC >= 0.0f ? 1.0f : 0.0f;
-		float depthWeight = exp2(-relativeDepth * (8.0f + 40.0f * edgeProtection));
+		float depthWeight = exp2(-relativeDepth * (6.0f + 42.0f * edgeProtection));
 		// A near defocused sample may cover a farther receiver; the reverse would
 		// leak background colour through the foreground silhouette.
-		float foregroundSpread = sampleCoC < centerCoC ? saturate(-sampleCoC) * foregroundCoverage : 0.0f;
-		float layerWeight = sameLayer > 0.5f ? depthWeight : max(depthWeight * 0.08f, foregroundSpread);
+		float foregroundSpread = sampleCoC < 0.0f && centerCoC >= 0.0f
+			? saturate(-sampleCoC) * foregroundCoverage
+			: 0.0f;
+		float layerWeight = sameLayer > 0.5f ? depthWeight : max(depthWeight * 0.025f, foregroundSpread);
 		if (sampleLinearDepth <= 0.0f)
 			layerWeight *= centerLinearDepth <= 0.0f ? 1.0f : 0.05f;
 
 		float3 sampleColor = ImageTex.SampleLevel(ImageSampler, adjustedSampleUV, 0.0f).xyz;
 		float luminance = PixlDofLuminance(sampleColor);
-		float highlight = 1.0f + highlightResponse * saturate((luminance - 0.8f) / (luminance + 1.0f)) * 1.5f;
-		float cocWeight = 0.20f + 0.80f * max(abs(sampleCoC), blurFactor);
+		float highlight = 1.0f + highlightResponse * saturate((luminance - 0.65f) / (luminance + 1.0f)) * 1.35f;
+		float cocWeight = 0.15f + 0.85f * max(abs(sampleCoC), blurFactor);
 		float weight = max(layerWeight * cocWeight * highlight, 1e-4f);
 		sum += sampleColor * weight;
 		weightSum += weight;
 	}
 
 	float3 bokeh = sum / max(weightSum, 1e-4f);
-	// Bound the luma-weighted aperture so a single HDR texel cannot become a firefly.
+	// Bound the luma-weighted aperture without borrowing Skyrim's blurred image.
+	// The floor deliberately leaves headroom for convincing point-light bokeh.
 	float bokehLum = PixlDofLuminance(bokeh);
-	float3 centerBlur = BlurredTex.Sample(BlurredSampler,
-		FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(centerUV)).xyz;
-	float centerLum = PixlDofLuminance(centerBlur);
-	float maxLum = max(centerLum * (2.0f + 2.0f * highlightResponse) + 0.25f, 1.0f);
+	float3 centerColor = ImageTex.SampleLevel(ImageSampler,
+		FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(centerUV), 0.0f).xyz;
+	float centerLum = PixlDofLuminance(centerColor);
+	float maxLum = max(centerLum * (2.0f + 2.0f * highlightResponse) + 0.5f,
+		2.0f + 3.0f * highlightResponse);
 	if (bokehLum > maxLum)
 		bokeh *= maxLum / max(bokehLum, 1e-5f);
 	return max(bokeh, 0.0f);
@@ -242,13 +260,11 @@ PS_OUTPUT main(PS_INPUT input)
 
 	float3 finalColor = lerp(imageColor, blurColor, blurFactor);
 #	if USE_PIXL_CINEMATIC_DOF
-	[branch] if (SharedData::postProcessSettings.EnableEnhancedDepthOfField != 0 && blurFactor > 1e-4f) {
-		float3 bokehColor = PixlGatherBokeh(
-			input.TexCoord, depthCC, finalDepth, focusDistance, dofBlurRange, blurFactor, dofParams);
-		// Preserve Skyrim's authored base DOF and use PIXL as a bounded optical
-		// enhancement rather than replacing the whole pass. This removes the old
-		// double-blur / miniature-look failure while retaining bokeh highlights.
-		finalColor = lerp(finalColor, bokehColor, saturate(blurFactor * 0.62f));
+	[branch] if (SharedData::postProcessSettings.EnableEnhancedDepthOfField != 0) {
+		// HDROutputCS is the sole PIXL lens owner. Keep this scheduled Bethesda
+		// integration pass sharp so native parameters cannot apply a differently
+		// focused blur before the final compositor.
+		finalColor = imageColor;
 	}
 #	endif
 #	if defined(FOGGED)

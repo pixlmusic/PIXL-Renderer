@@ -17,6 +17,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 void SkyBounce::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	queuedResetSkyBounce = true;
 }
 
 void SkyBounce::SaveSettings(json& o_json)
@@ -27,6 +28,7 @@ void SkyBounce::SaveSettings(json& o_json)
 void SkyBounce::RestoreDefaultSettings()
 {
 	settings = {};
+	queuedResetSkyBounce = true;
 }
 
 void SkyBounce::ResetSkyBounce()
@@ -45,10 +47,10 @@ void SkyBounce::ResetSkyBounce()
 void SkyBounce::DrawSettings()
 {
 	ImGui::Text("%s", T(TKEY("min_visibility_desc"), "Minimum visibility values. Diffuse darkens objects. Specular removes the sky from reflections."));
-	ImGui::SliderFloat(T(TKEY("diffuse_min_visibility"), "Diffuse Min Visibility"), &settings.MinDiffuseVisibility, 0.01f, 1.f, "%.2f");
+	ImGui::SliderFloat(T(TKEY("diffuse_min_visibility"), "Minimum Diffuse Sky Light"), &settings.MinDiffuseVisibility, 0.01f, 1.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::TextWrapped("Minimum sky visibility retained in diffuse ambient lighting. Updates in real time; lower values allow deeper outdoor occlusion.");
-	ImGui::SliderFloat(T(TKEY("specular_min_visibility"), "Specular Min Visibility"), &settings.MinSpecularVisibility, 0.01f, 1.f, "%.2f");
+	ImGui::SliderFloat(T(TKEY("specular_min_visibility"), "Minimum Sky Reflection"), &settings.MinSpecularVisibility, 0.01f, 1.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::TextWrapped("Minimum sky visibility retained in environment reflections. Updates in real time; lower values darken occluded rough reflections more strongly.");
 
@@ -60,7 +62,8 @@ void SkyBounce::DrawSettings()
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("%s", T(TKEY("rebuild_tooltip"), "Changes below require rebuilding, a loading screen, or moving away from the current location to apply."));
 
-	ImGui::SliderAngle(T(TKEY("max_zenith"), "Max Zenith Angle"), &settings.MaxZenith, 0, 90);
+	if (ImGui::SliderAngle(T(TKEY("max_zenith"), "Sky Occlusion Zenith Limit"), &settings.MaxZenith, 0, 90))
+		queuedResetSkyBounce = true;
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::Text("%s", T(TKEY("max_zenith_tooltip"), "Smaller angles creates more focused top-down shadow."));
 }

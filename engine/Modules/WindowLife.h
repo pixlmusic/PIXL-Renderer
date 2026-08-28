@@ -31,7 +31,7 @@ struct WindowLife : RenderModule
             {
                 T("feature.window_life.key_feature_1", "Old-glass Fresnel response, stable roughness/grime variation and restrained optical waviness"),
                 T("feature.window_life.key_feature_2", "Window classes keep silhouettes out of tiny, roof and awning panes"),
-                T("feature.window_life.key_feature_3", "Mask-fitted, asynchronous occupants with varied articulated motion and depth parallax"),
+                T("feature.window_life.key_feature_3", "Procedurally fitted, asynchronous occupants with varied articulated motion and depth parallax"),
                 T("feature.window_life.key_feature_4", "Window glass selectively overrides synthetic Auto-POM while retaining relief on frames and surrounding architecture")
             }
         };
@@ -76,11 +76,23 @@ struct WindowLife : RenderModule
         float Refraction = 2.5f;
         float SilhouetteSoftness = 0.055f;
         float HumanScale = 0.95f;
+        // Authored people are composited as a softly filtered colour layer. This
+        // is true opacity, independent of the legacy analytic-shadow fallback.
+        float OccupantOpacity = 1.00f;
         float CurtainStrength = 0.22f;
         float RoomDepthStrength = 0.14f;
         bool EnableAuthoredRooms = true;
         float AuthoredRoomStrength = 0.78f;
-        bool UseAuthoredMaskLayout = true;
+		float InteriorContrast = 1.0f;
+		float InteriorEmission = 1.0f;
+        // Magnifies authored room art inside an automatically reconstructed
+        // aperture without changing the physical window bounds or room identity.
+        float InteriorScale = 1.35f;
+        // Texture-mod-safe geometry fitting owns only the room coordinate system.
+        // Optional exact masks may clip the final glass pixels but never resize,
+        // retile, seed or otherwise move the recessed interior.
+        bool AutomaticRoomSizing = true;
+        bool UseExactGlassMasks = true;
         bool EnableInteriorPassers = true;
 
         // Distance LOD and pane discrimination.
@@ -90,8 +102,8 @@ struct WindowLife : RenderModule
         float PaneSoftness = 0.20f;
 
         // Stable procedural room grid and event cadence.
-        // Owner-validated medium-window baseline. The shader derives small,
-        // large, and grand aperture families from geometry bounds around it.
+        // Owner-validated fallback calibration. Preserve this path while the
+        // optional depth-reconstructed interior tier is developed separately.
         float RoomWidth = 110.0f;
         float RoomHeight = 140.0f;
         float MotionSpeed = 1.0f;
@@ -129,18 +141,22 @@ struct WindowLife : RenderModule
         float4 Glass0{};
         // c5: x dirt, y distortion, z normal retention, w suppress Auto-POM
         float4 Glass1{};
-        // c6: x material tier [1..3], y named glass token, z pane-source flags (1 game glow, 2 external authored mask), w explicit window token
+        // c6: x material tier [1..3], y named glass token, z pane-source flags (1 game glow), w explicit window token
         float4 Class0{};
         // c7: x min shallow radius, y min full radius, z full-window verticality, w architectural glass enabled
         float4 Eligibility0{};
-        // c8: x curtain shadow, y recessed-room shadow, z authored-mask layout, w interior passers
+        // c8: x curtain shadow, y recessed-room shadow, z automatic procedural sizing, w interior passers
         float4 Interior0{};
         // c9: xyz absolute geometry-bound centre, w geometry radius
         float4 Geometry0{};
-        // c10: x regional room family, y atlas ready/enabled, z authored-room blend, w tile count
+        // c10: x regional room family, y atlas ready/enabled, z authored-room blend,
+        //      w geometry layout hint (-1 facade, 0 unknown, 1 dedicated aperture)
         float4 Asset0{};
+		// c11: x authored-room contrast, y authored-room emission,
+		//      z authored-occupant opacity, w automatic room-art scale
+		float4 Presentation0{};
     };
-    static_assert(sizeof(PerGeometryData) == 176, "WindowLife per-draw payload must be exactly 176 bytes.");
+	static_assert(sizeof(PerGeometryData) == 192, "WindowLife per-draw payload must be exactly 192 bytes.");
     static_assert(sizeof(PerGeometryData) % 16 == 0, "WindowLife constant-buffer payload must remain 16-byte sized.");
 
     virtual void DrawSettings() override;
@@ -178,9 +194,10 @@ private:
     static float GetDayNightBlend(float a_hour);
     static float GetActivityForHour(float a_hour, const Settings& a_settings);
 
-    // Keep WindowLife's five private resources contiguous at the top of the
-    // D3D11 pixel-SRV range. The live binding audit reserves t123..t127 for this
-    // module; no existing PIXL or game resource occupies these slots.
+    // WindowLife owns one contiguous, audited D3D11 pixel-SRV range. Optional
+    // layer atlases intentionally occupy the two slots immediately before the
+    // accepted pane-mask/room/per-draw bindings so the public per-draw ABI does
+    // not change.
     static constexpr UINT kOccupantAtlasSRVSlot = 123;
     static constexpr UINT kCurtainAtlasSRVSlot = 124;
     static constexpr UINT kAuthoredMaskSRVSlot = 125;
@@ -214,7 +231,7 @@ private:
         {
             stl::write_vfunc<0x6, BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
             logger::info(
-                "[WindowLife] Installed BSLightingShader geometry hook on PS t{} occupant atlas + t{} curtain atlas + t{} authored pane mask + t{} room atlas + t{} structured SRV.",
+                "[WindowLife] Installed BSLightingShader geometry hook on PS t{} occupant atlas + t{} curtain atlas + t{} optional exact glass mask + t{} room atlas + t{} structured SRV.",
                 kOccupantAtlasSRVSlot,
                 kCurtainAtlasSRVSlot,
                 kAuthoredMaskSRVSlot,

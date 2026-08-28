@@ -10,13 +10,13 @@ public:
 	 * @return True if a valid flowmap texture was retrieved, false otherwise.
 	 */
 	bool TryGetFlowmap(RE::NiPointer<RE::NiSourceTexture>& outFlowmapTex) const;
-	/** @brief Returns the flowmap width in pixels. */
+	/** @brief Returns the flowmap width in world cells. */
 	int32_t GetWidth() const { return width; }
-	/** @brief Returns the flowmap height in pixels. */
+	/** @brief Returns the flowmap height in world cells. */
 	int32_t GetHeight() const { return height; }
-	/** @brief Returns the inverse of the flowmap width (1.0 / width). */
+	/** @brief Returns the inverse of the flowmap width in cells (1.0 / width). */
 	float GetInverseWidth() const { return invWidth; }
-	/** @brief Returns the inverse of the flowmap height (1.0 / height). */
+	/** @brief Returns the inverse of the flowmap height in cells (1.0 / height). */
 	float GetInverseHeight() const { return invHeight; }
 	/** @brief Returns the X offset of the flowmap in cell coordinates. */
 	int32_t GetOffsetX() const { return offsetX; }

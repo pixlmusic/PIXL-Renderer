@@ -128,15 +128,15 @@ void WriteProductionBead(int2 pixel, float intensity, float viewDistance)
 	// the old Phase 4 half-resolution cards.
 	float nearWeight =
 		1.0f - smoothstep(
-			RunoffNearSizeDistance * 0.62f,
-			RunoffNearSizeDistance,
+			RunoffNearSizeDistance * 0.50f,
+			RunoffNearSizeDistance * 0.88f,
 			viewDistance);
 
 	if (nearWeight > 0.05f && intensity > 0.36f) {
-		float sideIntensity = intensity * nearWeight * 0.30f;
+		float sideIntensity = intensity * nearWeight * 0.20f;
 		WriteMask(pixel + int2(-1, 0), sideIntensity);
 		WriteMask(pixel + int2( 1, 0), sideIntensity);
-		WriteMask(pixel + int2( 0, 2), sideIntensity * 0.58f);
+		WriteMask(pixel + int2( 0, 2), sideIntensity * 0.34f);
 	}
 }
 

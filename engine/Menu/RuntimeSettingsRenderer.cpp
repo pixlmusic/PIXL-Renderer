@@ -223,11 +223,11 @@ void RuntimeSettingsRenderer::RenderShadersTab()
 		auto shaderCache = globals::shaderCache;
 
 		bool useCustomShaders = shaderCache->IsEnabled();
-		if (ImGui::Checkbox(T("menu.settings.use_custom_shaders", "Use Custom Shaders"), &useCustomShaders)) {
+		if (ImGui::Checkbox(T("menu.settings.use_custom_shaders", "Enable PIXL Renderer Shaders"), &useCustomShaders)) {
 			shaderCache->SetEnabled(useCustomShaders);
 		}
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T("menu.settings.use_custom_shaders_tooltip", "Disabling this effectively disables all features."));
+			ImGui::Text("%s", T("menu.settings.use_custom_shaders_tooltip", "Master switch for PIXL's shader pipeline. Disable only for troubleshooting; renderer modules will have no visual effect while it is off."));
 		}
 
 		bool useDiskCache = shaderCache->IsDiskCache();
@@ -235,12 +235,12 @@ void RuntimeSettingsRenderer::RenderShadersTab()
 			shaderCache->SetDiskCache(useDiskCache);
 		}
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T("menu.settings.enable_disk_cache_tooltip", "Disables loading shaders from disk and prevents saving compiled shaders to disk cache."));
+			ImGui::Text("%s", T("menu.settings.enable_disk_cache_tooltip", "Loads previously compiled shaders from disk and saves new results. Disabling this forces compilation work to be repeated on future launches."));
 		}
 
 		bool skipUnchanged = shaderCache->IsSkipUnchangedShaders();
 		ImGui::BeginDisabled(!useDiskCache);
-		if (ImGui::Checkbox(T("menu.settings.skip_unchanged_shaders", "Skip Unchanged Shaders"), &skipUnchanged)) {
+		if (ImGui::Checkbox(T("menu.settings.skip_unchanged_shaders", "Rebuild Changed Shaders Only"), &skipUnchanged)) {
 			shaderCache->SetSkipUnchangedShaders(skipUnchanged);
 		}
 		ImGui::EndDisabled();
@@ -255,11 +255,11 @@ void RuntimeSettingsRenderer::RenderShadersTab()
 		}
 
 		bool useAsync = shaderCache->IsAsync();
-		if (ImGui::Checkbox(T("menu.settings.enable_async", "Enable Async"), &useAsync)) {
+		if (ImGui::Checkbox(T("menu.settings.enable_async", "Compile Shaders in Background"), &useAsync)) {
 			shaderCache->SetAsync(useAsync);
 		}
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T("menu.settings.enable_async_tooltip", "Skips a shader being replaced if it hasn't been compiled yet. Also makes compilation blazingly fast!"));
+			ImGui::Text("%s", T("menu.settings.enable_async_tooltip", "Lets Skyrim continue while shaders compile. A shader keeps its previous implementation until its replacement is ready."));
 		}
 
 		// Skip confirmation when clearing shader cache
@@ -478,7 +478,7 @@ void RuntimeSettingsRenderer::RenderBehaviorTab()
 				ImGui::Text("%s", T("menu.settings.use_monochrome_icons_tooltip", "Uses white monochrome icons that adapt to your theme's text color"));
 			}
 			ImGui::SameLine();
-			if (ImGui::Checkbox(T("menu.settings.use_monochrome_cs_logo", "Use Monochrome CS Logo"), &themeSettings.UseMonochromeLogo)) {
+			if (ImGui::Checkbox(T("menu.settings.use_monochrome_cs_logo", "Use Monochrome PIXL Logo"), &themeSettings.UseMonochromeLogo)) {
 				globals::menu->pendingIconReload = true;
 			}
 			if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -497,7 +497,7 @@ void RuntimeSettingsRenderer::RenderBehaviorTab()
 			ImGui::Text("%s", T("menu.settings.center_header_title_tooltip", "Centers the PIXL Renderer title and logo in the header title bar"));
 		}
 
-		ImGui::Checkbox(T("menu.settings.auto_hide_feature_list", "Auto-hide RenderModule List"), &globals::menu->GetSettings().AutoHideFeatureList);
+		ImGui::Checkbox(T("menu.settings.auto_hide_feature_list", "Auto-hide Feature List"), &globals::menu->GetSettings().AutoHideFeatureList);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("%s", T("menu.settings.auto_hide_feature_list_tooltip", "Automatically hides the left feature list panel. Move cursor to the left edge to show it."));
 		}

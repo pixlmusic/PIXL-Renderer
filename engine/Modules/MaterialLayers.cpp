@@ -322,8 +322,8 @@ void MaterialLayers::DrawSettings()
 			tuningSettings.ObjectNearSteps = static_cast<uint>(std::clamp(objectNearSteps, 4, 24));
 		if (ImGui::SliderInt("Object Maximum Steps", &objectMaxSteps, 4, 32))
 			tuningSettings.ObjectMaxSteps = static_cast<uint>(std::clamp(objectMaxSteps, 4, 32));
-		if (ImGui::SliderInt("Object Refinement Steps", &objectRefinement, 4, 12))
-			tuningSettings.ObjectRefinementSteps = static_cast<uint>(std::clamp(objectRefinement, 4, 12));
+		if (ImGui::SliderInt("Object Refinement Steps", &objectRefinement, 2, 12))
+			tuningSettings.ObjectRefinementSteps = static_cast<uint>(std::clamp(objectRefinement, 2, 12));
 
 		ImGui::SeparatorText("Synthetic Height Reconstruction");
 		ImGui::SliderFloat("Height Contrast", &tuningSettings.AutoHeightContrast, 0.25f, 5.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -373,8 +373,8 @@ void MaterialLayers::DrawSettings()
 			tuningSettings.TerrainNearSteps = static_cast<uint>(std::clamp(terrainNearSteps, 4, 32));
 		if (ImGui::SliderInt("Terrain Maximum Steps", &terrainMaxSteps, 4, 64))
 			tuningSettings.TerrainMaxSteps = static_cast<uint>(std::clamp(terrainMaxSteps, 4, 64));
-		if (ImGui::SliderInt("Terrain Refinement Steps", &terrainRefinement, 4, 16))
-			tuningSettings.TerrainRefinementSteps = static_cast<uint>(std::clamp(terrainRefinement, 4, 16));
+		if (ImGui::SliderInt("Terrain Refinement Steps", &terrainRefinement, 2, 16))
+			tuningSettings.TerrainRefinementSteps = static_cast<uint>(std::clamp(terrainRefinement, 2, 16));
 
 		Util::UIntCheckbox(T(TKEY("enable_height_blending"), "Enable Terrain Height Blending"), &settings.EnableHeightBlending);
 		Util::UIntCheckbox(T(TKEY("enable_parallax_warping_fix"), "Enable Parallax Warping Fix"), &settings.EnableParallaxWarpingFix);

@@ -80,7 +80,8 @@ static const float WORLD_SIZE = 4096.0f;
 static const float CELL_SIZE = WORLD_SIZE / float(TEXTURE_SIZE);
 
 // Conservative first-pass physical tuning. These are shader-local on purpose:
-// 13AD does not alter the proven 48-byte surface CB or 160-byte b13 ABI.
+// 13AD does not alter the proven 48-byte surface CB or the established 160-byte
+// prefix of terrain b13. GroundResponse 3.3 appends weather snow after that prefix.
 // PIXL_GR_13AM_EXTENDED_SNOW_PHASES_V1
 static const float SETTLING_SECONDS = 11.50f;
 static const float SETTLING_CORE_RESIDUAL = 0.28f;

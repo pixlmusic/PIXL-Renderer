@@ -78,8 +78,7 @@ void FoliageDynamics::Prepass()
 		tuningSettings.Magic = TuningMagic;
 		tuningSettings.Version = TuningVersion;
 		tuningCB->Update(tuningSettings);
-		auto* buffer = tuningCB->CB();
-		globals::d3d::context->PSSetConstantBuffers(13, 1, &buffer);
+		BindGrassTuning();
 	} catch (const std::exception& e) {
 		logger::error("[FoliageDynamics] b13 grass tuning upload/bind failed: {}", e.what());
 		delete tuningCB;
@@ -91,6 +90,15 @@ void FoliageDynamics::Prepass()
 	}
 }
 
+void FoliageDynamics::BindGrassTuning() const
+{
+	if (!tuningCB)
+		return;
+
+	auto* buffer = tuningCB->CB();
+	globals::d3d::context->PSSetConstantBuffers(13, 1, &buffer);
+}
+
 void FoliageDynamics::DrawSettings()
 {
 	if (ImGui::TreeNodeEx(T(TKEY("vegetation_model"), "PIXL Vegetation Model"), ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -98,13 +106,13 @@ void FoliageDynamics::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("enable_enhanced_vegetation_tooltip"), "Controls grass/leaf lighting only: energy-aware GGX, wrapped diffuse light, transmission and specular anti-aliasing. It never enables or scales wind motion."));
 		ImGui::BeginDisabled(settings.EnableEnhancedVegetation == 0);
-		ImGui::SliderFloat(T(TKEY("leaf_transmission"), "Leaf Transmission"), &settings.LeafTransmission, 0.0f, 2.0f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("leaf_transmission"), "Leaf Transmission"), &settings.LeafTransmission, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("leaf_transmission_tooltip"), "Controls colored sunlight transmitted through grass blades and animated leaves."));
-		ImGui::SliderFloat(T(TKEY("leaf_diffuse_wrap"), "Diffuse Wrap"), &settings.LeafDiffuseWrap, 0.0f, 1.0f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("leaf_diffuse_wrap"), "Diffuse Wrap"), &settings.LeafDiffuseWrap, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("leaf_diffuse_wrap_tooltip"), "Softens the light terminator on thin vegetation while conserving average brightness."));
-		ImGui::SliderFloat(T(TKEY("vegetation_specular_aa"), "Specular Anti-Aliasing"), &settings.SpecularAA, 0.0f, 1.5f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("vegetation_specular_aa"), "Specular Anti-Aliasing"), &settings.SpecularAA, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("vegetation_specular_aa_tooltip"), "Suppresses shimmering highlights from detailed foliage normals at distance."));
 		ImGui::SliderFloat("Grass Card Specular Coherence", &settings.GrassMacroSpecular, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -118,26 +126,26 @@ void FoliageDynamics::DrawSettings()
 	}
 
 	if (ImGui::TreeNodeEx(T(TKEY("vegetation_wind"), "Vegetation Wind"), ImGuiTreeNodeFlags_DefaultOpen)) {
-		Util::UIntCheckbox(T(TKEY("enable_enhanced_wind"), "Natural Multi-Scale Wind"), &settings.EnableEnhancedWind);
+		Util::UIntCheckbox(T(TKEY("enable_enhanced_wind"), "Natural Grass Gusts"), &settings.EnableEnhancedWind);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("%s", T(TKEY("enable_enhanced_wind_tooltip"), "Adds bounded world-stable calm motion, travelling gust cells, directional meander and tip flutter to terrain grass and TREE_ANIM vegetation. It does not enable or alter the foliage material/specular model, and preserves previous-frame deformation for stable motion vectors."));
+			ImGui::TextWrapped("%s", T(TKEY("enable_enhanced_wind_tooltip"), "Adds one bounded world-stable travelling gust and restrained tip flutter to ordinary terrain grass. Skyrim's authored tree and grass motion remains the structural baseline; previous-frame deformation stays deterministic for TAA/DLSS."));
 		ImGui::BeginDisabled(settings.EnableEnhancedWind == 0);
-		ImGui::SliderFloat(T(TKEY("wind_strength"), "Wind Response"), &settings.WindStrength, 0.0f, 2.0f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("wind_strength"), "Wind Response"), &settings.WindStrength, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("wind_strength_tooltip"), "Overall response of PIXL's added motion. 0 is exact vanilla movement; real weather dominates, with a restrained ambient floor so ordinary terrain grass does not remain rigid."));
-		ImGui::SliderFloat(T(TKEY("gust_strength"), "Gust Strength"), &settings.GustStrength, 0.0f, 1.5f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("gust_strength"), "Gust Strength"), &settings.GustStrength, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("gust_strength_tooltip"), "Amplitude of broad, spatially coherent gusts."));
-		ImGui::SliderFloat(T(TKEY("flutter_strength"), "Leaf Flutter"), &settings.FlutterStrength, 0.0f, 1.0f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("flutter_strength"), "Leaf Flutter"), &settings.FlutterStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("flutter_strength_tooltip"), "Fine cross-wind movement at blade and leaf tips. Keep modest to avoid noisy distant foliage."));
-		ImGui::SliderFloat(T(TKEY("wind_spatial_scale"), "Gust Size"), &settings.WindSpatialScale, 0.25f, 3.0f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("wind_spatial_scale"), "Gust Size"), &settings.WindSpatialScale, 0.25f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("wind_spatial_scale_tooltip"), "Spatial scale of gust cells. Lower values produce broader coordinated motion."));
-		ImGui::SliderFloat(T(TKEY("gust_speed"), "Gust Speed"), &settings.GustSpeed, 0.25f, 2.5f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("gust_speed"), "Gust Speed"), &settings.GustSpeed, 0.25f, 2.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("gust_speed_tooltip"), "Travel speed of broad wind pulses."));
-		ImGui::SliderFloat(T(TKEY("flutter_speed"), "Flutter Speed"), &settings.FlutterSpeed, 0.25f, 3.0f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("flutter_speed"), "Flutter Speed"), &settings.FlutterSpeed, 0.25f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("flutter_speed_tooltip"), "Frequency multiplier for fine leaf and grass-tip motion."));
 		ImGui::EndDisabled();
@@ -179,9 +187,9 @@ void FoliageDynamics::DrawSettings()
 		ImGui::SliderFloat("Grass Saturation", &tuningSettings.GrassSaturation, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat("Grass Contrast", &tuningSettings.GrassContrast, 0.5f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat("Wet Specular Boost", &tuningSettings.GrassWetSpecularBoost, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Normalized GGX Response", &tuningSettings.GrassSpecularNormalization, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat("Normalized GGX Response", &tuningSettings.GrassSpecularNormalization, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Scales PIXL's energy-normalized GGX foliage response after Skyrim/PBR light calibration. 1.0 is physically calibrated; this is separate from the artistic Specular Strength control.");
+			ImGui::TextWrapped("Scales PIXL's energy-normalized GGX foliage response after Skyrim/PBR light calibration. 1.0 is calibrated; 2-4x is an intentional artistic backlit-blade boost and remains separate from Specular Strength.");
 		ImGui::SliderFloat("Complex Specular Map Influence", &tuningSettings.GrassComplexSpecularMapInfluence, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Controls how strongly the packed complex-grass alpha channel modulates reflection. PIXL defaults to 0.15 so an author mask can add variation but cannot restrict the whole GGX response to blade tips. 0 gives uniform material response; 1 uses the authored channel exactly.");
@@ -193,7 +201,7 @@ void FoliageDynamics::DrawSettings()
 
 	if (ImGui::TreeNodeEx(T(TKEY("complex_grass"), "Vegetation Specular"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		ImGui::TextWrapped("Controls directional/local GGX highlights for grass and animated tree foliage.");
-		ImGui::SliderFloat(T(TKEY("glossiness"), "Glossiness"), &settings.Glossiness, 1.0f, 100.0f);
+		ImGui::SliderFloat(T(TKEY("glossiness"), "Glossiness"), &settings.Glossiness, 1.0f, 100.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextWrapped("Maps directly to foliage GGX roughness. Higher values produce tighter highlights on both grass and animated leaves.");
 		}
@@ -216,7 +224,7 @@ void FoliageDynamics::DrawSettings()
 			settings.ComplexGrassMode = static_cast<uint>(std::clamp(complexMode, 0, 3));
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Auto validates several pixels from the packed normal half before enabling Complex Grass. Basic/Vanilla never interprets the lower half of an ordinary diffuse texture as a normal map. The two Force modes are for known Complex Grass textures.");
-		ImGui::SliderFloat(T(TKEY("detection_threshold"), "Detection Threshold"), &settings.ComplexGrassThreshold, 0.001f, 0.1f, "%.3f");
+		ImGui::SliderFloat(T(TKEY("detection_threshold"), "Detection Threshold"), &settings.ComplexGrassThreshold, 0.001f, 0.1f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("%s", T(TKEY("detection_threshold_tooltip"),
 								  "Tolerance used by Auto mode. Lower values require the packed normal sentinel to be closer to unit length."));
@@ -228,7 +236,7 @@ void FoliageDynamics::DrawSettings()
 	}
 
 	if (ImGui::TreeNodeEx(T(TKEY("effects"), "Effects"), ImGuiTreeNodeFlags_DefaultOpen)) {
-		ImGui::SliderFloat(T(TKEY("sss_amount"), "SSS Amount"), &settings.TissueDiffusionAmount, 0.0f, 1.0f);
+		ImGui::SliderFloat(T(TKEY("sss_amount"), "SSS Amount"), &settings.TissueDiffusionAmount, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("%s", T(TKEY("sss_tooltip"),
 								  "Tissue Diffusion (SSS) amount. "
@@ -255,7 +263,7 @@ void FoliageDynamics::DrawSettings()
 		ImGui::Spacing();
 		ImGui::Spacing();
 		ImGui::TextWrapped("%s", T(TKEY("basic_grass"), "Basic Grass"));
-		ImGui::SliderFloat(T(TKEY("brightness"), "Brightness"), &settings.BasicGrassBrightness, 0.0f, 1.0f);
+		ImGui::SliderFloat(T(TKEY("brightness"), "Brightness"), &settings.BasicGrassBrightness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("%s", T(TKEY("brightness_tooltip"), "Darkens the grass textures to look better with the new lighting"));
 		}

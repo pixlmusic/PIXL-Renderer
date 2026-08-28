@@ -21,7 +21,10 @@ float3 GetSamplingVector(uint3 ThreadID, in RWTexture2DArray<float4> OutputTextu
 	float depth = 0.0f;
 	OutputTexture.GetDimensions(width, height, depth);
 
-	float2 st = ThreadID.xy / float2(width, height);
+	// Cubemap rays pass through texel centres. Sampling integer corners made each
+	// face asymmetric (-1 reached one edge while +1 was never reached), which
+	// biased reconstruction and filtering at face boundaries.
+	float2 st = (float2(ThreadID.xy) + 0.5) / float2(width, height);
 	float2 uv = 2.0 * float2(st.x, 1.0 - st.y) - 1.0;
 
 	// Select vector based on cubemap face index.

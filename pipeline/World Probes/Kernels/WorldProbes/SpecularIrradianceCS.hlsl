@@ -78,7 +78,9 @@ float3 getSamplingVector(uint3 ThreadID)
 	float outputWidth, outputHeight, outputDepth;
 	outputTexture.GetDimensions(outputWidth, outputHeight, outputDepth);
 
-	float2 st = ThreadID.xy / float2(outputWidth, outputHeight);
+	// Use texel-centred directions. This keeps the GGX convolution aligned with
+	// capture/inference and removes the previous one-sided face-domain bias.
+	float2 st = (float2(ThreadID.xy) + 0.5) / float2(outputWidth, outputHeight);
 	float2 uv = 2.0 * float2(st.x, 1.0 - st.y) - 1.0;
 
 	// Select vector based on cubemap face index.

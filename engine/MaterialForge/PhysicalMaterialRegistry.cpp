@@ -37,6 +37,81 @@ namespace
 		return normalized;
 	}
 
+	std::string NormalizeResourceName(std::string_view source)
+	{
+		std::string normalized(source);
+		std::ranges::transform(normalized, normalized.begin(), [](unsigned char character) {
+			if (character == '/')
+				return '\\';
+			return static_cast<char>(std::tolower(character));
+		});
+		return normalized;
+	}
+
+	bool HasFurToken(std::string_view path, std::string_view token)
+	{
+		auto isBoundary = [](char character) {
+			return character == '\\' || character == '/' || character == '_' ||
+				character == '-' || character == '.' || character == ' ';
+		};
+
+		std::size_t cursor = 0;
+		while ((cursor = path.find(token, cursor)) != std::string_view::npos) {
+			const std::size_t end = cursor + token.size();
+			const bool left = cursor == 0 || isBoundary(path[cursor - 1]);
+			const bool right = end == path.size() || isBoundary(path[end]);
+			if (left && right)
+				return true;
+			++cursor;
+		}
+		return false;
+	}
+
+	float ClassifyFurMaterial(std::string_view texturePath, std::string_view meshPath = {})
+	{
+		const std::string evidence =
+			NormalizeResourceName(std::string(texturePath) + "\\" + std::string(meshPath));
+		if (evidence.empty())
+			return 0.0f;
+
+		// Explicit authoring vocabulary is authoritative. Boundary-aware matching
+		// avoids false positives such as "furniture" and "furnace".
+		for (const auto token : { "fur", "furry", "pelt", "fleece", "sheepskin" }) {
+			if (HasFurToken(evidence, token))
+				return 1.0f;
+		}
+
+		// Creature names alone are not enough (eyes, claws and armour often share a
+		// directory), so require a body/skin/coat cue as corroborating evidence.
+		bool creature = false;
+		for (const auto token : {
+				 "wolf", "fox", "bear", "sabrecat", "sabercat", "werewolf",
+				 "khajiit", "mammoth", "dog", "rabbit", "hare", "goat" }) {
+			creature = creature || HasFurToken(evidence, token);
+		}
+		bool coat = false;
+		for (const auto token : { "body", "skin", "coat", "torso", "hide" })
+			coat = coat || HasFurToken(evidence, token);
+
+		return creature && coat ? 0.86f : 0.0f;
+	}
+
+	void ApplyFurSemantics(PhysicalMaterial::Descriptor& descriptor, float confidence)
+	{
+		if (confidence < 0.80f)
+			return;
+		descriptor.featureMask |=
+			static_cast<std::uint32_t>(PhysicalMaterial::MaterialTrait::FurShell) |
+			static_cast<std::uint32_t>(PhysicalMaterial::MaterialTrait::Fuzz);
+		descriptor.furConfidence = std::clamp(confidence, 0.0f, 1.0f);
+		descriptor.furShellLength = 1.0f;
+		descriptor.furDensity = std::lerp(0.72f, 1.0f, descriptor.furConfidence);
+		descriptor.furSoftness = std::lerp(0.68f, 0.92f, descriptor.furConfidence);
+		descriptor.fuzzWeight = std::max(descriptor.fuzzWeight, 0.42f * descriptor.furConfidence);
+		if (descriptor.fuzzColor[0] + descriptor.fuzzColor[1] + descriptor.fuzzColor[2] <= 1.0e-4f)
+			descriptor.fuzzColor = { 1.0f, 1.0f, 1.0f };
+	}
+
 	bool SamePayload(const PhysicalMaterial::TableEntry& left, const PhysicalMaterial::TableEntry& right)
 	{
 		if (left.bindingCount != right.bindingCount ||
@@ -95,6 +170,8 @@ namespace PhysicalMaterial
 
 		addBinding(Texture::BaseColor, ColorSpace::SRGB, material.diffuseTexture);
 		addBinding(Texture::Normal, ColorSpace::Linear, material.normalTexture);
+		if (material.diffuseTexture)
+			ApplyFurSemantics(descriptor, ClassifyFurMaterial(NormalizeResourceName(*material.diffuseTexture)));
 
 		using enum RE::BSShaderMaterial::Feature;
 		switch (material.GetFeature()) {
@@ -134,6 +211,13 @@ namespace PhysicalMaterial
 
 	MaterialID Registry::ObservePBR(const BSLightingShaderMaterialPBR& material, const Descriptor& descriptor)
 	{
+		Descriptor resolvedDescriptor = descriptor;
+		const std::string diffusePath = material.diffuseTexture
+			? NormalizeResourceName(*material.diffuseTexture)
+			: std::string{};
+		ApplyFurSemantics(
+			resolvedDescriptor,
+			ClassifyFurMaterial(diffusePath, material.inputFilePath));
 		const std::array bindings{
 			SourceBinding{ Texture::BaseColor, ColorSpace::SRGB, material.diffuseTexture.get() },
 			SourceBinding{ Texture::Normal, ColorSpace::Linear, material.normalTexture.get() },
@@ -143,7 +227,7 @@ namespace PhysicalMaterial
 			SourceBinding{ Texture::Features0, ColorSpace::SRGB, material.featuresTexture0.get() },
 			SourceBinding{ Texture::Features1, ColorSpace::Linear, material.featuresTexture1.get() }
 		};
-		return Observe({ &material, 0 }, descriptor, bindings);
+		return Observe({ &material, 0 }, resolvedDescriptor, bindings);
 	}
 
 	MaterialID Registry::ObservePBRLandscape(

@@ -26,11 +26,38 @@
 cbuffer RCASConfig : register(b0)
 {
 	float sharpness;
-	float3 pad;
+	uint useConfidence;
+	float2 inputDimensions;
 };
 
 Texture2D<float4> Source : register(t0);
+Texture2D<float> ReactiveMask : register(t1);
+Texture2D<float> TransparencyMask : register(t2);
+Texture2D<float2> MotionVectors : register(t3);
 RWTexture2D<float4> Dest : register(u0);
+
+float GetSharpenConfidence(uint2 outputPixel, uint2 outputDimensions)
+{
+	if (useConfidence == 0)
+		return 1.0;
+
+	uint2 validInputDimensions = max(uint2(inputDimensions), 1u.xx);
+	float2 inputPosition =
+		(float2(outputPixel) + 0.5) * (inputDimensions / float2(outputDimensions));
+	uint2 inputPixel = min(uint2(inputPosition), validInputDimensions - 1u.xx);
+
+	float reactive = saturate(ReactiveMask.Load(int3(inputPixel, 0)) * 1.25);
+	float transparency = saturate(TransparencyMask.Load(int3(inputPixel, 0)) * 1.5);
+	float unstableSurface = max(reactive, transparency);
+
+	// Motion vectors are normalized screen-space deltas. Evaluate them in output
+	// pixels so quality modes share one confidence response.
+	float2 motion = MotionVectors.Load(int3(inputPixel, 0));
+	float motionPixels = length(motion * float2(outputDimensions));
+	float motionConfidence = exp2(-motionPixels * 0.10);
+
+	return saturate((1.0 - unstableSurface) * motionConfidence);
+}
 
 [numthreads(8, 8, 1)] void main(uint3 DTid : SV_DispatchThreadID) {
 	uint2 texDim;
@@ -103,7 +130,7 @@ RWTexture2D<float4> Dest : register(u0);
 	float lobe = max(-FSR_RCAS_LIMIT, min(max(lobeR, max(lobeG, lobeB)), 0.0)) * sharpness;
 
 	// Apply noise removal.
-	lobe *= nz;
+	lobe *= nz * GetSharpenConfidence(DTid.xy, texDim);
 
 	// Resolve, which needs the medium precision rcp approximation to avoid visible tonality changes.
 	float rcpL = rcp(4.0 * lobe + 1.0);

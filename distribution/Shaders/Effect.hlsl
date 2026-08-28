@@ -512,6 +512,53 @@ float3 PixlEffectSoftKnee(float3 color, float knee, float headroom)
 	return color * (compressed / max(luma, 1e-4f));
 }
 
+// PIXL_EFFECT_INCANDESCENT_PARTICLES_V1
+// A bounded, colour-aware response for warm additive particle families. It is
+// intentionally gated to particle/strip permutations: opaque effect meshes and
+// non-additive smoke retain their authored appearance. Bright cores approach an
+// incandescent near-white while cooler edges keep orange/red chroma, adding
+// readable flame depth without another sample, resource, or simulation pass.
+float3 PixlEffectIncandescentParticles(float3 color, float opacity)
+{
+	color = max(color, 0.0f.xxx);
+	float luma = Color::RGBToLuminance(color);
+	float dominantWarm = max(color.r, color.g);
+	float blueDeficit =
+		saturate(
+			(dominantWarm - color.b) /
+			max(dominantWarm, 0.05f));
+	float warmSupport =
+		max(
+			saturate((color.r - 0.10f) * 2.4f),
+			saturate((color.g - color.b) * 3.0f));
+	float warmSignal = blueDeficit * warmSupport;
+	float hotCore =
+		smoothstep(
+			0.22f,
+			1.12f,
+			luma + dominantWarm * 0.22f);
+
+	float3 incandescent =
+		lerp(
+			float3(1.0f, 0.34f, 0.055f),
+			float3(1.0f, 0.91f, 0.72f),
+			hotCore);
+	incandescent *=
+		luma /
+		max(Color::RGBToLuminance(incandescent), 1e-4f);
+
+	float incandescentWeight =
+		saturate(opacity) *
+		warmSignal *
+		lerp(0.16f, 0.34f, hotCore);
+	float3 shaped =
+		lerp(color, incandescent, incandescentWeight);
+
+	// Roll very bright stacked cores into HDR headroom instead of allowing a
+	// flat clipped rectangle; bloom still receives ample energy above 1.0.
+	return PixlEffectSoftKnee(shaped, 1.05f, 2.30f);
+}
+
 float3 PixlEffectAmbientProbe(float3 ambientColor)
 {
 #	if defined(AMBIENT_PROBE)
@@ -937,6 +984,13 @@ PS_OUTPUT main(PS_INPUT input)
 #	if !defined(LIGHTING) && defined(VC) && defined(TEXCOORD) && defined(NORMALS) && defined(TEXTURE) && defined(FALLOFF) && defined(SOFT)
 	if (Permutation::PixelShaderDescriptor & Permutation::EffectFlags::GrayscaleToAlpha && lightingInfluence == 1.0)
 		lightColor = GetLightingShadow(lightColor, input.WorldPosition.xyz, input.Position.xy, depth, shadowVariance);
+#	endif
+
+#	if defined(ADDBLEND) && (defined(PARTICLES) || defined(STRIP_PARTICLES))
+	lightColor =
+		PixlEffectIncandescentParticles(
+			lightColor,
+			alpha);
 #	endif
 
 	lightColor = Color::EffectMult(lightColor);

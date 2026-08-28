@@ -32,6 +32,9 @@ struct RadiantGrid : OverlayFeature
 		bool applyEffectMaterialTint = true;
 		ParticleLightConfig config{};
 		RE::NiColorA baseColor{ 1.0f, 1.0f, 1.0f, 1.0f };
+		float radiusScale = 0.5f;
+		float minimumRadius = 0.0f;
+		float intensityScale = 1.0f;
 	};
 
 	ParticleLightConfigStore particleLightConfigs;

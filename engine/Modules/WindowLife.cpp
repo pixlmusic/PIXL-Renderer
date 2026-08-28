@@ -27,11 +27,16 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
     Refraction,
     SilhouetteSoftness,
     HumanScale,
+    OccupantOpacity,
     CurtainStrength,
     RoomDepthStrength,
     EnableAuthoredRooms,
     AuthoredRoomStrength,
-    UseAuthoredMaskLayout,
+	InteriorContrast,
+	InteriorEmission,
+    InteriorScale,
+    AutomaticRoomSizing,
+    UseExactGlassMasks,
     EnableInteriorPassers,
     DistanceFadeStart,
     DistanceFadeEnd,
@@ -137,16 +142,19 @@ void WindowLife::DrawSettings()
 
     ImGui::Spacing();
     ImGui::Text("%s", T("feature.window_life.visibility", "Occupancy"));
-    ImGui::SliderFloat(T("feature.window_life.day_shadow", "Day Shadow Strength"), &settings.DayShadowStrength, 0.0f, 0.35f, "%.2f");
-    ImGui::SliderFloat(T("feature.window_life.night_shadow", "Night Shadow Strength"), &settings.NightShadowStrength, 0.0f, 0.85f, "%.2f");
+    ImGui::SliderFloat(T("feature.window_life.occupant_opacity", "Occupant Opacity"), &settings.OccupantOpacity, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    if (auto _tt = Util::HoverTooltipWrapper()) {
+        ImGui::TextWrapped("Controls the true opacity of the softly filtered authored people. It no longer makes them into translucent black ghosts.");
+    }
     ImGui::SliderFloat(T("feature.window_life.day_activity", "Day Activity"), &settings.DayActivity, 0.0f, 1.0f, "%.2f");
     ImGui::SliderFloat(T("feature.window_life.evening_activity", "Evening Activity"), &settings.EveningActivity, 0.0f, 1.0f, "%.2f");
     ImGui::SliderFloat(T("feature.window_life.late_activity", "Late Night Activity"), &settings.LateNightActivity, 0.0f, 1.0f, "%.2f");
 
     ImGui::Spacing();
     ImGui::Text("%s", T("feature.window_life.eligibility", "Window Eligibility"));
-    ImGui::SliderFloat(T("feature.window_life.min_shallow_radius", "Minimum Shallow Window Radius"), &settings.MinShallowWindowRadius, 4.0f, 96.0f, "%.0f");
-    ImGui::SliderFloat(T("feature.window_life.min_full_radius", "Minimum Full Window Radius"), &settings.MinFullWindowRadius, 12.0f, 160.0f, "%.0f");
+    ImGui::SliderFloat(T("feature.window_life.min_shallow_radius", "Minimum Glass-Only Window Size"), &settings.MinShallowWindowRadius, 4.0f, 96.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SliderFloat(T("feature.window_life.min_full_radius", "Minimum Occupied Window Size"), &settings.MinFullWindowRadius, 12.0f, 160.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+    settings.MinFullWindowRadius = std::max(settings.MinFullWindowRadius, settings.MinShallowWindowRadius + 1.0f);
     ImGui::SliderFloat(T("feature.window_life.full_verticality", "Full Occupancy Verticality"), &settings.FullWindowVerticality, 0.25f, 0.95f, "%.2f");
     if (auto _tt = Util::HoverTooltipWrapper()) {
         ImGui::TextWrapped("%s", T("feature.window_life.eligibility_tooltip", "Tiny dedicated meshes become glass-only. Sloped roof/awning panes are downgraded in the shader even when their parent geometry is large."));
@@ -158,35 +166,56 @@ void WindowLife::DrawSettings()
     ImGui::SliderFloat(T("feature.window_life.refraction", "Interior Refraction"), &settings.Refraction, 0.0f, 8.0f, "%.2f");
     ImGui::SliderFloat(T("feature.window_life.softness", "Silhouette Softness"), &settings.SilhouetteSoftness, 0.015f, 0.16f, "%.3f");
     ImGui::SliderFloat(T("feature.window_life.human_scale", "Human Scale"), &settings.HumanScale, 0.65f, 1.35f, "%.2f");
-    ImGui::SliderFloat(T("feature.window_life.curtain_strength", "Curtain Layer Strength"), &settings.CurtainStrength, 0.0f, 0.55f, "%.2f");
+    ImGui::SliderFloat(T("feature.window_life.curtain_strength", "Curtain Opacity"), &settings.CurtainStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SliderFloat(T("feature.window_life.room_depth_strength", "Recessed Room Depth"), &settings.RoomDepthStrength, 0.0f, 0.40f, "%.2f");
     ImGui::Checkbox(T("feature.window_life.authored_rooms", "Authored Room Backgrounds"), &settings.EnableAuthoredRooms);
     ImGui::SliderFloat(T("feature.window_life.authored_room_strength", "Authored Room Visibility"), &settings.AuthoredRoomStrength, 0.0f, 1.0f, "%.2f");
-    ImGui::Checkbox(T("feature.window_life.mask_layout", "Fit Interiors to Authored Window Masks"), &settings.UseAuthoredMaskLayout);
+	ImGui::SliderFloat(T("feature.window_life.interior_contrast", "Interior Contrast"), &settings.InteriorContrast, 0.50f, 2.0f, "%.2f");
+	ImGui::SliderFloat(T("feature.window_life.interior_emission", "Interior Emission"), &settings.InteriorEmission, 0.0f, 3.0f, "%.2fx");
+	ImGui::SliderFloat(T("feature.window_life.interior_scale", "Interior Scale"), &settings.InteriorScale, 1.0f, 1.80f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextWrapped("Controls the recessed room artwork only. Scale crops and magnifies the interior inside Automatic Room Sizing without changing the detected window, room identity or pane mask. Contrast separates furniture and walls; emission controls readability through the original glass.");
+	}
+    ImGui::Checkbox(T("feature.window_life.auto_room_sizing", "Automatic Room Sizing"), &settings.AutomaticRoomSizing);
     ImGui::Checkbox(T("feature.window_life.interior_passers", "Interior View Passers-by"), &settings.EnableInteriorPassers);
     if (auto _tt = Util::HoverTooltipWrapper()) {
-        ImGui::TextWrapped("Glow masks automatically fit the room and occupants to each authored window group. Curtains sit near exterior glass; interior views instead show occasional passers-by outside blocking the window light.");
+        ImGui::TextWrapped("Automatic mode groups mullioned panes from the currently installed native window texture, reconstructs one stable world-space aperture, and falls back to PIXL's calibrated geometry layout only when that evidence is uncertain. Rooms, curtains and occupants share the same fit.");
     }
 
     ImGui::Spacing();
     ImGui::Text("%s", T("feature.window_life.masking", "Pane Mask & Distance"));
+    if (ImGui::Checkbox(T("feature.window_life.exact_glass_masks", "Use Installed Glass Masks"), &settings.UseExactGlassMasks)) {
+        classificationCache.clear();
+        activeDataValid = false;
+    }
+    if (auto _tt = Util::HoverTooltipWrapper()) {
+        ImGui::TextWrapped("Uses an optional diffuse-matched mask only to keep WindowLife inside real glass. It never controls room UVs, size, occupants or parallax, and safely falls back to procedural detection for replacement textures without a matching mask.");
+    }
     ImGui::SliderFloat(T("feature.window_life.pane_threshold", "Pane Threshold"), &settings.PaneThreshold, 0.0f, 0.55f, "%.2f");
     ImGui::SliderFloat(T("feature.window_life.pane_softness", "Pane Mask Softness"), &settings.PaneSoftness, 0.03f, 0.50f, "%.2f");
-    ImGui::SliderFloat(T("feature.window_life.fade_start", "Distance Fade Start"), &settings.DistanceFadeStart, 256.0f, 10000.0f, "%.0f");
-    ImGui::SliderFloat(T("feature.window_life.fade_end", "Distance Fade End"), &settings.DistanceFadeEnd, 512.0f, 16000.0f, "%.0f");
+    ImGui::SliderFloat(T("feature.window_life.fade_start", "Distance Fade Start"), &settings.DistanceFadeStart, 256.0f, 10000.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SliderFloat(T("feature.window_life.fade_end", "Distance Fade End"), &settings.DistanceFadeEnd, 512.0f, 16000.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+    settings.DistanceFadeEnd = std::max(settings.DistanceFadeEnd, settings.DistanceFadeStart + 1.0f);
 
     if (globals::state && globals::state->IsDeveloperMode()) {
         ImGui::Spacing();
         ImGui::Text("%s", T("feature.window_life.developer", "Developer"));
-        ImGui::SliderFloat(T("feature.window_life.room_width", "Fallback Room Width"), &settings.RoomWidth, 64.0f, 220.0f, "%.0f");
-        ImGui::SliderFloat(T("feature.window_life.room_height", "Fallback Room Height"), &settings.RoomHeight, 96.0f, 260.0f, "%.0f");
+        ImGui::BeginDisabled(settings.AutomaticRoomSizing);
+        ImGui::SliderFloat(T("feature.window_life.room_width", "Manual Room Width"), &settings.RoomWidth, 64.0f, 220.0f, "%.0f");
+        ImGui::SliderFloat(T("feature.window_life.room_height", "Manual Room Height"), &settings.RoomHeight, 96.0f, 260.0f, "%.0f");
+        ImGui::EndDisabled();
         if (auto _tt = Util::HoverTooltipWrapper()) {
-            ImGui::TextWrapped("Used only when a material has no usable authored glow mask, or when authored-mask fitting is disabled. These values no longer change automatic mask-fit acceptance.");
+            ImGui::TextWrapped("These controls apply only when Automatic Window Room Sizing is disabled. Automatic mode owns its stable calibration and cannot silently inherit stale manual values.");
+        }
+        ImGui::SliderFloat(T("feature.window_life.day_shadow", "Fallback Day Silhouette Darkness"), &settings.DayShadowStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SliderFloat(T("feature.window_life.night_shadow", "Fallback Night Silhouette Darkness"), &settings.NightShadowStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        if (auto _tt = Util::HoverTooltipWrapper()) {
+            ImGui::TextWrapped("Used only if the authored occupant atlas is unavailable. Normal installations use Occupant Opacity above.");
         }
         ImGui::SliderFloat(T("feature.window_life.motion_speed", "Activity Speed"), &settings.MotionSpeed, 0.25f, 2.5f, "%.2f");
         ImGui::Checkbox(T("feature.window_life.debug_detection", "Show Window Class Overlay"), &settings.DebugWindowDetection);
         if (auto _tt = Util::HoverTooltipWrapper()) {
-            ImGui::TextWrapped("With authored fitting enabled: red = fit rejected, cyan = room/background fit, green = full occupant-safe fit. Otherwise blue/amber/green show the material tier.");
+            ImGui::TextWrapped("Blue/amber/green show the material tier. Room sizing itself is procedural and independent of third-party pane-mask atlases.");
         }
         if (ImGui::Button(T("feature.window_life.clear_classifier", "Re-scan Window Materials"))) {
             classificationCache.clear();
@@ -247,11 +276,9 @@ void WindowLife::SetupResources()
     activeDataValid = false;
     activeDataFrame = ~0u;
 
-    // Window Shadows-style mask atlases are optional runtime inputs, not bundled
-    // PIXL assets. When present, bind the mask matching the diffuse texture stem
-    // directly to the real window draw. This avoids rendering the helper proxy
-    // geometry and gives the shader the authored pane layout even when the NIF did
-    // not bind its glow texture to Skyrim's material slot.
+    // Optional Window Shadows-style masks are exact glass stencils only. They are
+    // matched to the diffuse texture stem and bound on the real material draw;
+    // they never promote a material into a window or control the room layout.
     authoredMaskSRVs.clear();
     const std::filesystem::path authoredMaskRoot = "Data\\Textures\\masks";
     std::size_t loadedMaskCount = 0u;
@@ -281,7 +308,7 @@ void WindowLife::SetupResources()
             if (FAILED(loadResult) || maskMetadata.width < 8u || maskMetadata.height < 8u) {
                 ++failedMaskCount;
                 logger::warn(
-                    "[WindowLife] Authored pane mask '{}' could not be loaded or is too small (HRESULT 0x{:08X}).",
+                    "[WindowLife] Exact glass mask '{}' could not be loaded or is too small (HRESULT 0x{:08X}).",
                     it->path().filename().string(),
                     static_cast<std::uint32_t>(loadResult));
                 continue;
@@ -297,7 +324,7 @@ void WindowLife::SetupResources()
             if (FAILED(srvResult)) {
                 ++failedMaskCount;
                 logger::warn(
-                    "[WindowLife] Authored pane mask '{}' SRV creation failed (HRESULT 0x{:08X}).",
+                    "[WindowLife] Exact glass mask '{}' SRV creation failed (HRESULT 0x{:08X}).",
                     it->path().filename().string(),
                     static_cast<std::uint32_t>(srvResult));
                 continue;
@@ -309,11 +336,11 @@ void WindowLife::SetupResources()
     }
     if (maskDirectoryError) {
         logger::warn(
-            "[WindowLife] Authored pane-mask directory scan failed (error {}).",
+            "[WindowLife] Exact glass-mask directory scan failed (error {}).",
             maskDirectoryError.value());
     }
     logger::info(
-        "[WindowLife] Loaded {} optional authored pane-mask atlases from Data\\Textures\\masks ({} failed).",
+        "[WindowLife] Loaded {} optional exact glass masks for final pane clipping ({} failed); procedural room placement remains authoritative.",
         loadedMaskCount,
         failedMaskCount);
     classificationCache.clear();
@@ -382,9 +409,9 @@ void WindowLife::SetupResources()
             roomMetadata.height);
     }
 
-    // The near curtain and mid-depth occupant layers are independent atlases.
-    // Missing assets are intentionally harmless: an unbound SRV samples zero and
-    // the shader retains its analytic curtain/person fallback.
+    // The shallow curtain and mid-depth occupant layers use independent 4x4
+    // atlases. Their absence is deliberately non-fatal: the shader observes an
+    // unbound texture and retains the accepted analytic fallback.
     const auto loadLayerAtlas = [&](const std::filesystem::path& path,
                                     std::string_view label,
                                     winrt::com_ptr<ID3D11ShaderResourceView>& target) {
@@ -450,7 +477,7 @@ void WindowLife::SetupResources()
         curtainAtlasSRV);
 
     logger::info(
-        "[WindowLife] Layered-window GPU resources ready (PS t{} occupants={}, t{} curtains={}, t{} optional pane mask, t{} room atlas={}, t{} structured SRV, 176-byte per-draw payload; FeatureData b6 unchanged).",
+		"[WindowLife] Layered-window GPU resources ready (PS t{} occupants={}, t{} curtains={}, t{} optional exact pane clip, t{} room atlas={}, t{} structured SRV, 192-byte per-draw payload; FeatureData b6 unchanged).",
         kOccupantAtlasSRVSlot,
         occupantAtlasSRV ? "ready" : "analytic",
         kCurtainAtlasSRVSlot,
@@ -563,17 +590,23 @@ void WindowLife::RefreshFrameBaseData()
         settings.EnableArchitecturalGlass ? 1.0f : 0.0f
     };
     frameBaseData.Interior0 = {
-        std::clamp(settings.CurtainStrength, 0.0f, 0.75f),
+        std::clamp(settings.CurtainStrength, 0.0f, 1.0f),
         std::clamp(settings.RoomDepthStrength, 0.0f, 0.60f),
-        settings.UseAuthoredMaskLayout ? 1.0f : 0.0f,
+        settings.AutomaticRoomSizing ? 1.0f : 0.0f,
         settings.EnableInteriorPassers ? 1.0f : 0.0f
     };
     frameBaseData.Asset0 = {
         0.0f,
         settings.EnableAuthoredRooms && roomAtlasSRV ? 1.0f : 0.0f,
         std::clamp(settings.AuthoredRoomStrength, 0.0f, 1.0f),
-        16.0f
+        0.0f
     };
+	frameBaseData.Presentation0 = {
+		std::clamp(settings.InteriorContrast, 0.50f, 2.0f),
+		std::clamp(settings.InteriorEmission, 0.0f, 3.0f),
+		std::clamp(settings.OccupantOpacity, 0.0f, 1.0f),
+		std::clamp(settings.InteriorScale, 1.0f, 1.8f)
+	};
 
     activeDataFrame = frame;
 }
@@ -605,7 +638,7 @@ void WindowLife::BindNeutral() const
 
 ID3D11ShaderResourceView* WindowLife::GetAuthoredMaskSRV(const Classification& classification) const
 {
-    if (!classification.hasAuthoredMask || classification.authoredMaskKey.empty())
+    if (!settings.UseExactGlassMasks || !classification.hasAuthoredMask || classification.authoredMaskKey.empty())
         return nullptr;
     const auto it = authoredMaskSRVs.find(classification.authoredMaskKey);
     return it != authoredMaskSRVs.end() ? it->second.get() : nullptr;
@@ -683,17 +716,18 @@ WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShad
     const bool windowProxyMask = ContainsAny(diffusePath, {
         "\\masks\\", "/masks/", "_mask.dds", "windowshadow", "window_shadow"
     });
-    // Closed/boarded shutters are deliberately opaque architectural surfaces.
-    // Their filenames often still contain "window", which previously promoted
-    // them into a bright inhabited pane at night.
+    // Closed/boarded shutters remain opaque architecture even when a texture
+    // replacer preserves "window" in the filename.
     const bool closedWindowSurface = ContainsAny(diffusePath, {
         "shutter", "closedwindow", "closed_window", "windowclosed",
         "window_closed", "boarded", "windowboard", "window_board"
     });
     const bool hasGlowTexture = !glowPath.empty();
     const std::string authoredMaskKey = CanonicalWindowMaskKey(diffusePath);
-    const bool hasAuthoredMask = !authoredMaskKey.empty() && authoredMaskSRVs.contains(authoredMaskKey);
-    const bool mappedAuthoredWindow = architecture && hasAuthoredMask && !obviousNonBuildingGlass;
+    const bool hasAuthoredMask =
+        settings.UseExactGlassMasks &&
+        !authoredMaskKey.empty() &&
+        authoredMaskSRVs.contains(authoredMaskKey);
 
     if (strongWindow)
         result.score += 8;
@@ -705,8 +739,6 @@ WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShad
         result.score += 2;
     if (architecture && hasGlowTexture)
         result.score += 3;
-    if (hasAuthoredMask)
-        result.score += 10;
     if (obviousNonBuildingGlass && !strongWindow)
         result.score -= 8;
     if (windowProxyMask || closedWindowSurface)
@@ -718,11 +750,13 @@ WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShad
     // as windows. Require an explicit window/glass token or a dedicated authored
     // pane mask whose basename matches the diffuse material being drawn.
     result.isWindow = !windowProxyMask && !closedWindowSurface &&
-        (strongWindow || architecturalGlass || mappedAuthoredWindow);
+        (strongWindow || architecturalGlass);
     result.hasGlowTexture = hasGlowTexture;
-    result.hasAuthoredMask = hasAuthoredMask;
-    result.authoredMaskKey = hasAuthoredMask ? authoredMaskKey : std::string{};
-    result.explicitWindow = strongWindow || mappedAuthoredWindow;
+    // A mask is supplemental evidence on an already accepted material. It must
+    // never promote facade/helper geometry or restore the old proxy-mesh bug.
+    result.hasAuthoredMask = result.isWindow && hasAuthoredMask;
+    result.authoredMaskKey = result.hasAuthoredMask ? authoredMaskKey : std::string{};
+    result.explicitWindow = strongWindow;
     result.namedGlass = glass;
     if (ContainsAny(allPaths, { "markarth", "dwemer" }))
         result.roomFamily = 4;
@@ -737,7 +771,7 @@ WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShad
 
     // Material tier is only a ceiling. Geometry radius and surface orientation can
     // downgrade it later; they can never promote decorative/non-window materials.
-    if (strongWindow || mappedAuthoredWindow)
+    if (strongWindow)
         result.materialTier = 3;
     else if (architecturalGlass)
         result.materialTier = 2;
@@ -746,7 +780,7 @@ WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShad
 
     if (settings.DebugWindowDetection && (result.isWindow || architecture || glass || hasGlowTexture)) {
         logger::info(
-            "[WindowLife] CLASSIFY {} tier={} score={} hash={:08X} arch={} glass={} glow={} mask={} explicit={} proxy={} closed={} texture='{}' maskKey='{}'",
+            "[WindowLife] CLASSIFY {} tier={} score={} hash={:08X} arch={} glass={} glow={} mask={} explicit={} proxy={} closed={} texture='{}' layout='{}'",
             result.isWindow ? "WINDOW" : "skip",
             result.materialTier,
             result.score,
@@ -754,12 +788,12 @@ WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShad
             architecture ? 1 : 0,
             glass ? 1 : 0,
             hasGlowTexture ? 1 : 0,
-            hasAuthoredMask ? 1 : 0,
+            result.hasAuthoredMask ? 1 : 0,
             result.explicitWindow ? 1 : 0,
             windowProxyMask ? 1 : 0,
             closedWindowSurface ? 1 : 0,
             result.evidence,
-            result.authoredMaskKey);
+            result.hasAuthoredMask ? "procedural + exact clip" : "procedural");
     }
 
     return result;
@@ -809,6 +843,19 @@ void WindowLife::UpdateAndBindActive(const Classification& classification, const
     if (geometry) {
         const auto& center = geometry->worldBound.center;
         data.Geometry0 = { center.x, center.y, center.z, geometryRadius };
+
+        // The NIF geometry name is stable across diffuse/normal texture replacers.
+        // It lets dedicated aperture meshes use one auto-scaled room while large
+        // walls/facades retain a repeating reference grid.
+        const char* rawGeometryName = geometry->name.c_str();
+        const std::string geometryName = rawGeometryName ? Lower(rawGeometryName) : std::string{};
+        const bool dedicatedAperture = ContainsAny(geometryName, {
+            "window", "glass", "pane", "glazing"
+        });
+        const bool facadeGeometry = ContainsAny(geometryName, {
+            "facade", "wall", "house", "building", "exterior"
+        });
+        data.Asset0.w = dedicatedAperture ? 1.0f : (facadeGeometry ? -1.0f : 0.0f);
     } else {
         data.Geometry0 = { 0.0f, 0.0f, 0.0f, geometryRadius };
     }

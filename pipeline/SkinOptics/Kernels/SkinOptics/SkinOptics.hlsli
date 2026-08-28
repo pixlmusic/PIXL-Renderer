@@ -48,7 +48,8 @@ namespace SkinOptics
 		float3 worldNormal,
 		float3 light,
 		float3 view,
-		float d)
+		float authoredThickness,
+		float macroCurvature)
 	{
 		/**
 		* Calculate the scale of the effect.
@@ -69,7 +70,18 @@ namespace SkinOptics
 		// float d2 = shadowPosition.z; // 'd2' has a range of 0..'lightFarPlane'
 		// d1 *= lightFarPlane; // So we scale 'd1' accordingly:
 		// float d = scale * abs(d1 - d2);
-		d = scale * abs(d);  // Use the passed 'd' value instead of calculating it here.
+		// Skyrim's FaceGen soft-light texture supplies the existing per-pixel optical
+		// thickness (1 - _sk.r).  Macro curvature is a useful secondary cue for ears,
+		// nostrils and the nose rim where the same texture represents a shorter path at
+		// grazing/back-light angles.  Keep the correction deliberately bounded so flat
+		// areas and materials with only the scalar fallback retain the approved response.
+		const float thickness = saturate(abs(authoredThickness));
+		const float curvatureResponse = saturate(macroCurvature * 4.0f);
+		const float curvatureThinFeature =
+			curvatureResponse * (1.0f - 0.35f * thickness);
+		const float effectiveThickness =
+			thickness * lerp(1.0f, 0.82f, curvatureThinFeature);
+		float d = scale * effectiveThickness;
 
 		/**
 		* Armed with the thickness, we can now calculate the color by means of the
@@ -174,7 +186,8 @@ namespace SkinOptics
 									  N,
 									  L,
 									  V,
-									  material.Thickness) *
+									  material.Thickness,
+									  material.Curvature) *
 		                          SharedData::skinOpticsData.sssParams.w;
 		// Detailed and soft shadow terms describe the same visibility path. Multiplying
 		// both squared local-light shadows and over-darkened directional transmission.

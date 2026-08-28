@@ -273,11 +273,11 @@ void ImageReconstruction::DrawSettings()
 			// Format the label with preset name and resolution scale
 			std::string labelWithScale = std::format("{} ( {:.2f}x )", baseLabel, (resolutionScale.x + resolutionScale.y) * 0.5f);
 
-			ImGui::SliderInt(T(TKEY("upscale_preset"), "Upscale Preset"), (int*)&settings.qualityMode, 0, 4, labelWithScale.c_str());
+			ImGui::SliderInt(T(TKEY("upscale_preset"), "Upscale Preset"), (int*)&settings.qualityMode, 0, 4, labelWithScale.c_str(), ImGuiSliderFlags_AlwaysClamp);
 		}
 
 		if (upscaleMethod == UpscaleMethod::kFSR) {
-			ImGui::SliderFloat(T(TKEY("sharpness"), "Sharpness"), &settings.sharpnessFSR, 0.0f, 1.0f, "%.1f");
+			ImGui::SliderFloat(T(TKEY("sharpness"), "Sharpness"), &settings.sharpnessFSR, 0.0f, 1.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 			ImGui::SeparatorText("FSR GENERATION");
 			ImGui::Text("AMD FSR 3.1");
 			ImGui::SameLine();
@@ -298,7 +298,7 @@ void ImageReconstruction::DrawSettings()
 			}
 
 			if (settings.sharpnessEnabledDLSS)
-				ImGui::SliderFloat(T(TKEY("sharpness"), "Sharpness"), &settings.sharpnessDLSS, 0.0f, 1.0f, "%.1f");
+				ImGui::SliderFloat(T(TKEY("sharpness"), "Sharpness"), &settings.sharpnessDLSS, 0.0f, 1.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 
 			const char* presets[] = {
 				T(TKEY("dlss_model_preset_default"), "Default"),
@@ -462,7 +462,7 @@ void ImageReconstruction::DrawSettings()
 		if (!std::isfinite(settings.reflexFPSLimit))
 			settings.reflexFPSLimit = 60.0f;
 		settings.reflexFPSLimit = std::clamp(settings.reflexFPSLimit, 20.0f, 240.0f);
-		ImGui::SliderFloat(T(TKEY("fps_limit"), "FPS Limit"), &settings.reflexFPSLimit, 20.0f, 240.0f, "%.0f");
+		ImGui::SliderFloat(T(TKEY("fps_limit"), "FPS Limit"), &settings.reflexFPSLimit, 20.0f, 240.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("fps_limit_tooltip_1"), "Set your frame cap target."));
 			ImGui::TextUnformatted(T(TKEY("fps_limit_tooltip_2"), "Start about 2-3 FPS below refresh rate (e.g. 117 for 120 Hz)."));
@@ -477,7 +477,7 @@ void ImageReconstruction::DrawSettings()
 		ImGui::TreePop();
 	}
 
-	if (ImGui::TreeNodeEx(T(TKEY("backend_diagnostics"), "Backend Diagnostics"))) {
+	if (globals::state->IsDeveloperMode() && ImGui::TreeNodeEx(T(TKEY("backend_diagnostics"), "Backend Diagnostics"))) {
 		// Streamline log level selection
 		const char* logLevels[] = { "Off", "Default", "Verbose" };
 		int logLevelIdx = static_cast<int>(settings.streamlineLogLevel);
@@ -1747,7 +1747,19 @@ void ImageReconstruction::ApplySharpening()
 		currentSharpness = exp2(-currentSharpness);
 
 		// DLSS has already written to sharpenerTexture; sharpen directly into kMAIN.UAV.
-		rcas.ApplySharpen(sharpenerTexture->srv.get(), main.UAV, currentSharpness);
+		const float2 outputDimensions{
+			static_cast<float>(globals::game::graphicsState->screenWidth),
+			static_cast<float>(globals::game::graphicsState->screenHeight)
+		};
+		const float2 inputDimensions = Util::ConvertToDynamic(outputDimensions);
+		rcas.ApplySharpen(
+			sharpenerTexture->srv.get(),
+			main.UAV,
+			currentSharpness,
+			reactiveMaskTexture ? reactiveMaskTexture->srv.get() : nullptr,
+			transparencyCompositionMaskTexture ? transparencyCompositionMaskTexture->srv.get() : nullptr,
+			motionVectorCopyTexture ? motionVectorCopyTexture->srv.get() : nullptr,
+			inputDimensions);
 	} else {
 		// Sharpening is disabled: resolve the DLSS output without altering it.
 		context->CopyResource(main.texture, sharpenerTexture->resource.get());

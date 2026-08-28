@@ -56,7 +56,7 @@ namespace PIXLRenderer::QualityProfiles
 			LightingContract{ 0, 3, 6, 3, 2, 6, false, 16, 1, 1, 20, 2.8f, 4.0f, 4.0f, 0.08f },
 			LightingContract{ 0, 4, 8, 4, 3, 4, true, 24, 1, 1, 20, 2.5f, 5.0f, 6.0f, 0.10f },
 			LightingContract{ 0, 5, 10, 6, 4, 3, true, 32, 2, 1, 20, 2.2f, 6.0f, 8.0f, 0.12f },
-			LightingContract{ 0, 6, 12, 8, 4, 2, true, 48, 2, 1, 18, 2.0f, 8.0f, 10.0f, 0.14f }
+			LightingContract{ 0, 6, 12, 8, 4, 2, true, 48, 2, 2, 18, 2.0f, 8.0f, 10.0f, 0.14f }
 		};
 
 		bool NearlyEqual(float left, float right)
@@ -166,12 +166,17 @@ namespace PIXLRenderer::QualityProfiles
 			auto& pbr = globals::pipeline::materialForge.settings;
 			auto& materials = globals::pipeline::materialLayers.settings;
 			auto& tuning = globals::pipeline::materialLayers.tuningSettings;
-			constexpr std::array<float, 4> specularAA{ 0.45f, 0.60f, 0.75f, 0.98f };
+			// 1.34 is the accepted live-tested Ultra value. Keep this contract in
+			// lockstep with DetectMaterialsTier() so selecting Ultra never changes
+			// the approved baseline appearance or immediately reports Custom.
+			constexpr std::array<float, 4> specularAA{ 0.50f, 0.75f, 1.00f, 1.34f };
 			constexpr std::array<float, 4> multiscatter{ 0.55f, 0.75f, 1.00f, 1.00f };
-			constexpr std::array<std::uint32_t, 4> objectNearSteps{ 4, 6, 8, 8 };
-			constexpr std::array<std::uint32_t, 4> objectMaxSteps{ 8, 10, 14, 16 };
-			constexpr std::array<std::uint32_t, 4> terrainNearSteps{ 4, 8, 10, 12 };
-			constexpr std::array<std::uint32_t, 4> terrainMaxSteps{ 8, 12, 16, 20 };
+			constexpr std::array<std::uint32_t, 4> objectNearSteps{ 4, 6, 9, 12 };
+			constexpr std::array<std::uint32_t, 4> objectMaxSteps{ 8, 12, 18, 24 };
+			constexpr std::array<std::uint32_t, 4> objectRefinementSteps{ 2, 4, 6, 8 };
+			constexpr std::array<std::uint32_t, 4> terrainNearSteps{ 4, 6, 8, 10 };
+			constexpr std::array<std::uint32_t, 4> terrainMaxSteps{ 8, 14, 22, 30 };
+			constexpr std::array<std::uint32_t, 4> terrainRefinementSteps{ 2, 4, 6, 8 };
 			constexpr std::array<std::uint32_t, 4> detailQuality{ 0, 1, 2, 2 };
 			pbr.EnableSpecularAA = 1;
 			pbr.SpecularAAStrength = specularAA[quality];
@@ -185,10 +190,10 @@ namespace PIXLRenderer::QualityProfiles
 			// exactly matches the shipped live tuning block.
 			tuning.ObjectNearSteps = objectNearSteps[quality];
 			tuning.ObjectMaxSteps = objectMaxSteps[quality];
-			tuning.ObjectRefinementSteps = 4;
+			tuning.ObjectRefinementSteps = objectRefinementSteps[quality];
 			tuning.TerrainNearSteps = terrainNearSteps[quality];
 			tuning.TerrainMaxSteps = terrainMaxSteps[quality];
-			tuning.TerrainRefinementSteps = 4;
+			tuning.TerrainRefinementSteps = terrainRefinementSteps[quality];
 			tuning.EnableDetailReconstruction = quality >= Medium;
 			tuning.DetailQuality = detailQuality[quality];
 		}
@@ -197,9 +202,10 @@ namespace PIXLRenderer::QualityProfiles
 		{
 			auto& clouds = globals::pipeline::skyVeil.settings;
 			auto& fog = globals::pipeline::atmosphere.settings;
-			clouds.EnableVolumetricClouds = 1;
-			clouds.DetailStrength = std::array{ 0.20f, 0.35f, 0.45f, 0.60f }[quality];
-			clouds.SelfShadowStrength = std::array{ 0.45f, 0.60f, 0.70f, 0.82f }[quality];
+			// Cloud presence and its authored look remain user-owned. The quality
+			// contract scales the real volumetric grid cost without silently enabling
+			// clouds in the approved Ultra configuration, where they are intentionally off.
+			static_cast<void>(clouds);
 			// Smaller XY footprints and deeper Z grids increase froxel count. The
 			// Atmosphere prepass detects these changes and recreates its resources.
 			fog.volumetricGridPixelSize = std::array<std::uint32_t, 4>{ 32, 24, 20, 16 }[quality];
@@ -212,30 +218,40 @@ namespace PIXLRenderer::QualityProfiles
 		void ApplyWater(int quality)
 		{
 			auto& water = globals::pipeline::waterOptics.settings;
-			water.EnableEnhancedSSR = quality >= Medium;
-			water.EnableEnhancedCaustics = quality >= Medium;
-			water.SSRDistanceScale = std::array{ 0.65f, 0.85f, 1.00f, 1.20f }[quality];
-			water.SSREdgeFade = std::array{ 1.35f, 1.15f, 1.00f, 0.90f }[quality];
-			water.CausticsDispersion = std::array{ 0.20f, 0.35f, 0.50f, 0.65f }[quality];
+			// Keep the signature PIXL reflection/caustic path present at every tier;
+			// distance and dispersion scale its cost/clarity instead of reverting Low
+			// to a visibly different vanilla water material.
+			water.EnableEnhancedSSR = true;
+			water.EnableEnhancedCaustics = true;
+			water.SSRDistanceScale = std::array{ 0.65f, 0.86f, 1.06f, 1.29f }[quality];
+			water.SSREdgeFade = std::array{ 1.35f, 1.15f, 0.95f, 0.80f }[quality];
+			water.CausticsDispersion = std::array{ 0.25f, 0.45f, 0.65f, 0.88f }[quality];
 			globals::pipeline::hybridGI.recompileFlag = true;
 			globals::pipeline::hybridGI.queuedResetHistory = true;
 		}
 
 		void ApplyTerrainVegetation(int quality)
 		{
-			auto& vegetation = globals::pipeline::foliageDynamics.settings;
 			auto& ground = globals::pipeline::groundResponse.settings;
-			// Material lighting is an artistic/user choice and must not be silently
-			// enabled by the motion-quality preset. In particular, selecting a wind
-			// quality level must never opt animated trees into a different BRDF.
-			// Motion remains an explicit user choice.  Quality controls the cost and
-			// character of PIXL wind, but selecting a global preset must not suddenly
-			// animate a previously stable load order.
-			vegetation.SpecularAA = std::array{ 0.35f, 0.50f, 0.65f, 0.80f }[quality];
-			vegetation.FlutterStrength = std::array{ 0.12f, 0.18f, 0.22f, 0.28f }[quality];
-			ground.EnableDeformableGround = quality >= Medium;
-			ground.EnableSnowDeformation = quality >= Medium;
-			ground.EnableMudDeformation = quality >= High;
+			// Vegetation material response and wind character are artistic controls,
+			// not workload controls. Preserve them at every quality tier. Scale the
+			// expensive raised snow/mud tessellation envelope instead: this produces a
+			// real GPU-cost change while retaining every PIXL interaction feature.
+			constexpr std::array<float, 4> geometryDistance{ 1800.0f, 2600.0f, 3400.0f, 4000.0f };
+			constexpr std::array<float, 4> geometryFadeStart{ 1450.0f, 2150.0f, 2850.0f, 3400.0f };
+			constexpr std::array<float, 4> tessellationNear{ 4.0f, 7.0f, 10.0f, 14.0f };
+			constexpr std::array<float, 4> tessellationFar{ 1.5f, 2.0f, 2.5f, 3.0f };
+			constexpr std::array<float, 4> nearDistance{ 400.0f, 500.0f, 600.0f, 699.0f };
+			constexpr std::array<float, 4> farDistance{ 900.0f, 1250.0f, 1600.0f, 1895.0f };
+			ground.EnableDeformableGround = true;
+			ground.EnableSnowDeformation = true;
+			ground.EnableMudDeformation = true;
+			ground.GeometryRenderDistance = geometryDistance[quality];
+			ground.GeometryFadeStart = geometryFadeStart[quality];
+			ground.GeometryTessellationNear = tessellationNear[quality];
+			ground.GeometryTessellationFar = tessellationFar[quality];
+			ground.GeometryTessellationNearDistance = nearDistance[quality];
+			ground.GeometryTessellationFarDistance = farDistance[quality];
 			globals::pipeline::terrainDetail.settings.enableLODTerrainTilingFix = 1;
 		}
 
@@ -246,7 +262,9 @@ namespace PIXLRenderer::QualityProfiles
 			auto& hair = globals::pipeline::strandShading.settings;
 			skin.EnableSkin = true;
 			skin.EnableSkinDetail = quality >= Medium;
-			skin.UseSSS = quality >= Medium;
+			// Dialogue faces must retain the PIXL skin identity even on Low; tiers
+			// reduce Burley samples/detail rather than disabling scattering outright.
+			skin.UseSSS = true;
 			sss.settings.BurleySamples = std::array<uint, 4>{ 8, 12, 16, 21 }[quality];
 			sss.updateKernels = true;
 			hair.Enabled = true;
@@ -280,12 +298,14 @@ namespace PIXLRenderer::QualityProfiles
 			const auto& pbr = globals::pipeline::materialForge.settings;
 			const auto& materials = globals::pipeline::materialLayers.settings;
 			const auto& tuning = globals::pipeline::materialLayers.tuningSettings;
-			constexpr std::array<float, 4> specularAA{ 0.45f, 0.60f, 0.75f, 0.98f };
+			constexpr std::array<float, 4> specularAA{ 0.50f, 0.75f, 1.00f, 1.34f };
 			constexpr std::array<float, 4> multiscatter{ 0.55f, 0.75f, 1.00f, 1.00f };
-			constexpr std::array<std::uint32_t, 4> objectNearSteps{ 4, 6, 8, 8 };
-			constexpr std::array<std::uint32_t, 4> objectMaxSteps{ 8, 10, 14, 16 };
-			constexpr std::array<std::uint32_t, 4> terrainNearSteps{ 4, 8, 10, 12 };
-			constexpr std::array<std::uint32_t, 4> terrainMaxSteps{ 8, 12, 16, 20 };
+			constexpr std::array<std::uint32_t, 4> objectNearSteps{ 4, 6, 9, 12 };
+			constexpr std::array<std::uint32_t, 4> objectMaxSteps{ 8, 12, 18, 24 };
+			constexpr std::array<std::uint32_t, 4> objectRefinementSteps{ 2, 4, 6, 8 };
+			constexpr std::array<std::uint32_t, 4> terrainNearSteps{ 4, 6, 8, 10 };
+			constexpr std::array<std::uint32_t, 4> terrainMaxSteps{ 8, 14, 22, 30 };
+			constexpr std::array<std::uint32_t, 4> terrainRefinementSteps{ 2, 4, 6, 8 };
 			constexpr std::array<std::uint32_t, 4> detailQuality{ 0, 1, 2, 2 };
 
 			for (int quality = Low; quality <= Ultra; ++quality) {
@@ -299,10 +319,10 @@ namespace PIXLRenderer::QualityProfiles
 				    (materials.EnableShadows != 0) == (quality >= Medium) &&
 				    tuning.ObjectNearSteps == objectNearSteps[quality] &&
 				    tuning.ObjectMaxSteps == objectMaxSteps[quality] &&
-				    tuning.ObjectRefinementSteps == 4 &&
+				    tuning.ObjectRefinementSteps == objectRefinementSteps[quality] &&
 				    tuning.TerrainNearSteps == terrainNearSteps[quality] &&
 				    tuning.TerrainMaxSteps == terrainMaxSteps[quality] &&
-				    tuning.TerrainRefinementSteps == 4 &&
+				    tuning.TerrainRefinementSteps == terrainRefinementSteps[quality] &&
 				    (tuning.EnableDetailReconstruction != 0) == (quality >= Medium) &&
 				    tuning.DetailQuality == detailQuality[quality]) {
 					return quality;
@@ -313,19 +333,13 @@ namespace PIXLRenderer::QualityProfiles
 
 		int DetectAtmosphereTier()
 		{
-			const auto& clouds = globals::pipeline::skyVeil.settings;
 			const auto& fog = globals::pipeline::atmosphere.settings;
-			constexpr std::array<float, 4> detail{ 0.20f, 0.35f, 0.45f, 0.60f };
-			constexpr std::array<float, 4> shadow{ 0.45f, 0.60f, 0.70f, 0.82f };
 			constexpr std::array<std::uint32_t, 4> gridXY{ 32, 24, 20, 16 };
 			constexpr std::array<std::uint32_t, 4> gridZ{ 32, 40, 52, 64 };
 			constexpr std::array<std::uint32_t, 4> historyMiss{ 1, 2, 3, 4 };
 
 			for (int quality = Low; quality <= Ultra; ++quality) {
-				if (clouds.EnableVolumetricClouds == 1 &&
-				    NearlyEqual(clouds.DetailStrength, detail[quality]) &&
-				    NearlyEqual(clouds.SelfShadowStrength, shadow[quality]) &&
-				    fog.volumetricGridPixelSize == gridXY[quality] &&
+				if (fog.volumetricGridPixelSize == gridXY[quality] &&
 				    fog.volumetricGridSizeZ == gridZ[quality] &&
 				    fog.volumetricHistoryMissSampleCount == historyMiss[quality]) {
 					return quality;
@@ -337,13 +351,13 @@ namespace PIXLRenderer::QualityProfiles
 		int DetectWaterTier()
 		{
 			const auto& water = globals::pipeline::waterOptics.settings;
-			constexpr std::array<float, 4> distance{ 0.65f, 0.85f, 1.00f, 1.20f };
-			constexpr std::array<float, 4> edgeFade{ 1.35f, 1.15f, 1.00f, 0.90f };
-			constexpr std::array<float, 4> dispersion{ 0.20f, 0.35f, 0.50f, 0.65f };
+			constexpr std::array<float, 4> distance{ 0.65f, 0.86f, 1.06f, 1.29f };
+			constexpr std::array<float, 4> edgeFade{ 1.35f, 1.15f, 0.95f, 0.80f };
+			constexpr std::array<float, 4> dispersion{ 0.25f, 0.45f, 0.65f, 0.88f };
 
 			for (int quality = Low; quality <= Ultra; ++quality) {
-				if ((water.EnableEnhancedSSR != 0) == (quality >= Medium) &&
-				    (water.EnableEnhancedCaustics != 0) == (quality >= Medium) &&
+				if (water.EnableEnhancedSSR != 0 &&
+				    water.EnableEnhancedCaustics != 0 &&
 				    NearlyEqual(water.SSRDistanceScale, distance[quality]) &&
 				    NearlyEqual(water.SSREdgeFade, edgeFade[quality]) &&
 				    NearlyEqual(water.CausticsDispersion, dispersion[quality])) {
@@ -355,18 +369,25 @@ namespace PIXLRenderer::QualityProfiles
 
 		int DetectTerrainVegetationTier()
 		{
-			const auto& vegetation = globals::pipeline::foliageDynamics.settings;
 			const auto& ground = globals::pipeline::groundResponse.settings;
 			const auto& terrain = globals::pipeline::terrainDetail.settings;
-			constexpr std::array<float, 4> specularAA{ 0.35f, 0.50f, 0.65f, 0.80f };
-			constexpr std::array<float, 4> flutter{ 0.12f, 0.18f, 0.22f, 0.28f };
+			constexpr std::array<float, 4> geometryDistance{ 1800.0f, 2600.0f, 3400.0f, 4000.0f };
+			constexpr std::array<float, 4> geometryFadeStart{ 1450.0f, 2150.0f, 2850.0f, 3400.0f };
+			constexpr std::array<float, 4> tessellationNear{ 4.0f, 7.0f, 10.0f, 14.0f };
+			constexpr std::array<float, 4> tessellationFar{ 1.5f, 2.0f, 2.5f, 3.0f };
+			constexpr std::array<float, 4> nearDistance{ 400.0f, 500.0f, 600.0f, 699.0f };
+			constexpr std::array<float, 4> farDistance{ 900.0f, 1250.0f, 1600.0f, 1895.0f };
 
 			for (int quality = Low; quality <= Ultra; ++quality) {
-				if (NearlyEqual(vegetation.SpecularAA, specularAA[quality]) &&
-				    NearlyEqual(vegetation.FlutterStrength, flutter[quality]) &&
-				    ground.EnableDeformableGround == (quality >= Medium) &&
-				    ground.EnableSnowDeformation == (quality >= Medium) &&
-				    ground.EnableMudDeformation == (quality >= High) &&
+				if (ground.EnableDeformableGround &&
+				    ground.EnableSnowDeformation &&
+				    ground.EnableMudDeformation &&
+				    NearlyEqual(ground.GeometryRenderDistance, geometryDistance[quality]) &&
+				    NearlyEqual(ground.GeometryFadeStart, geometryFadeStart[quality]) &&
+				    NearlyEqual(ground.GeometryTessellationNear, tessellationNear[quality]) &&
+				    NearlyEqual(ground.GeometryTessellationFar, tessellationFar[quality]) &&
+				    NearlyEqual(ground.GeometryTessellationNearDistance, nearDistance[quality]) &&
+				    NearlyEqual(ground.GeometryTessellationFarDistance, farDistance[quality]) &&
 				    terrain.enableLODTerrainTilingFix == 1) {
 					return quality;
 				}
@@ -384,7 +405,7 @@ namespace PIXLRenderer::QualityProfiles
 			for (int quality = Low; quality <= Ultra; ++quality) {
 				if (skin.EnableSkin &&
 				    skin.EnableSkinDetail == (quality >= Medium) &&
-				    skin.UseSSS == (quality >= Medium) &&
+				    skin.UseSSS &&
 				    sss.BurleySamples == samples[quality] &&
 				    hair.Enabled &&
 				    hair.HairMode == (quality >= High ? 1u : 0u) &&

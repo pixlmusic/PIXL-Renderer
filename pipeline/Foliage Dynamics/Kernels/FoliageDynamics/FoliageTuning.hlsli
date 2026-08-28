@@ -62,7 +62,7 @@ namespace FoliageTuning
 	float LocalLightBoost() { return IsValid() ? clamp(PIXLFG_GrassLocalLightBoost, 0.0f, 3.0f) : 1.0f; }
 	float DetailDistanceScale() { return IsValid() ? clamp(PIXLFG_GrassDetailDistanceScale, 0.5f, 2.0f) : 1.0f; }
 	float DetailTransitionSoftness() { return IsValid() ? clamp(PIXLFG_GrassDetailTransitionSoftness, 0.5f, 2.0f) : 1.0f; }
-	float SpecularNormalization() { return IsValid() ? clamp(PIXLFG_GrassSpecularNormalization, 0.0f, 2.0f) : 1.0f; }
+	float SpecularNormalization() { return IsValid() ? clamp(PIXLFG_GrassSpecularNormalization, 0.0f, 4.0f) : 1.0f; }
 	float ComplexSpecularMapInfluence() { return IsValid() ? saturate(PIXLFG_GrassComplexSpecularMapInfluence) : 0.15f; }
 	bool MirrorSpecularY() { return IsValid() && PIXLFG_GrassMirrorSpecularY != 0u; }
 }

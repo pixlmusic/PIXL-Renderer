@@ -48,6 +48,15 @@ public:
 	};
 
 	bool HasShaderDefine(RE::BSShader::Type shaderType) override;
+	bool AffectsCachedShader(
+		RE::BSShader::Type shaderType,
+		std::uint32_t,
+		CachedShaderStage stage) override
+	{
+		// All current WaterOptics integration is pixel-stage code. Preserve cached
+		// vertex/compute entries when the module version changes.
+		return stage == CachedShaderStage::Pixel && HasShaderDefine(shaderType);
+	}
 
 	/** @brief Loads the water caustics DDS texture from disk. */
 	virtual void SetupResources() override;

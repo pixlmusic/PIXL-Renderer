@@ -29,15 +29,18 @@ std::vector<std::pair<std::string_view, std::string_view>> WorldProbes::GetShade
 
 void WorldProbes::DrawSettings()
 {
-	if (ImGui::TreeNodeEx(T(TKEY("screen_space_reflections"), "Screen Space Reflections"), ImGuiTreeNodeFlags_DefaultOpen)) {
-		recompileFlag |= Util::UIntCheckbox(T(TKEY("enable_ssr"), "Enable Screen Space Reflections"), &settings.EnabledSSR);
+	if (ImGui::TreeNodeEx(T(TKEY("screen_space_reflections"), "Water Screen-Space Reflections"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		recompileFlag |= Util::UIntCheckbox(T(TKEY("enable_ssr"), "Enable Water Screen-Space Reflections"), &settings.EnabledSSR);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T(TKEY("enable_ssr_tooltip"), "Enable Screen Space Reflections on water. Changing this queues the affected shader permutations for automatic recompilation."));
+			ImGui::Text("%s", T(TKEY("enable_ssr_tooltip"), "Master switch for screen-space reflections on water. Water Optics controls the enhanced trace quality; changing this master switch queues the affected shader permutations for automatic recompilation."));
 		}
 		ImGui::TreePop();
 	}
 
-	if (ImGui::TreeNodeEx(T(TKEY("dynamic_cubemap_creator"), "Dynamic Cubemap Creator"), ImGuiTreeNodeFlags_DefaultOpen)) {
+	// Cubemap authoring requires the CREATOR permutation and writes DDS assets to
+	// disk. It is an engineering tool, not a player-facing renderer control.
+	if (globals::state->IsDeveloperMode() &&
+	    ImGui::TreeNodeEx(T(TKEY("dynamic_cubemap_creator"), "Dynamic Cubemap Creator"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		ImGui::Text("%s", T(TKEY("creator_info"), "You must enable creator mode by adding the shader define CREATOR"));
 		Util::UIntCheckbox(T(TKEY("enable_creator"), "Enable Creator"), &settings.EnabledCreator);
 		if (auto _tt = Util::HoverTooltipWrapper())

@@ -15,6 +15,42 @@ namespace FoliageDynamics
 		return lerp(0.72f, 0.10f, pow(g, 0.65f));
 	}
 
+	float3 ThinSurfaceTransmissionTint(float3 baseColor, float thickness)
+	{
+		// A cheap Beer-Lambert proxy: darker/chlorophyll-rich channels absorb more
+		// light as the sheet becomes thicker. Blend with the legacy square-root tint
+		// so existing grass packs keep their authored colour while gaining believable
+		// wavelength-dependent back-lighting.
+		float3 saturatedBase = saturate(baseColor);
+		float3 absorption = 1.0f.xxx - saturatedBase;
+		float3 beerTint = exp2(-absorption * (0.75f + 1.65f * saturate(thickness)));
+		return lerp(sqrt(saturatedBase), beerTint, 0.58f);
+	}
+
+	float ThinSurfaceDiffuseEnergy(float normalDotView, float transmission, float specularStrength)
+	{
+		// Reserve energy for the dielectric Fresnel lobe and transmitted light.
+		// Artistic strength remains supported but cannot make diffuse + reflection
+		// exceed the incident energy by several times as the previous stack could.
+		float grazing = 1.0f - saturate(abs(normalDotView));
+		float fresnel = 0.04f + 0.96f * grazing * grazing * grazing * grazing * grazing;
+		float reflected = saturate(fresnel * clamp(specularStrength, 0.0f, 2.0f));
+		float transmitted = saturate(transmission) * 0.34f;
+		return saturate(1.0f - reflected - transmitted);
+	}
+
+	float ThinSurfaceDiffuseShape(
+		float3 L, float3 V, float3 N, float perceptualRoughness)
+	{
+		float NdotL = saturate(dot(N, L));
+		float NdotV = saturate(dot(N, V));
+		float oren = BRDF::Diffuse_OrenNayar(
+			clamp(perceptualRoughness, 0.08f, 1.0f), N, V, L, NdotV, NdotL).x;
+		// Return a shape correction relative to PIXL's existing calibrated Lambert
+		// response rather than changing the renderer's directional-light units.
+		return clamp(oren / max(BRDF::Diffuse_Lambert(), 1e-4f), 0.72f, 1.20f);
+	}
+
 	float3 GetLightSpecularInput(float3 L, float3 V, float3 N, float3 lightColor, float shininess)
 	{
 		float3 Hsum = V + L;
@@ -65,7 +101,9 @@ namespace FoliageDynamics
 		float enhancedAmount = amount;
 		if (SharedData::foliageDynamicsSettings.EnableEnhancedVegetation != 0)
 			enhancedAmount *= SharedData::foliageDynamicsSettings.LeafTransmission;
-		return lightColor * sqrt(saturate(baseColor)) * transmission * saturate(enhancedAmount);
+		float thickness = saturate(enhancedAmount);
+		float3 transmissionTint = ThinSurfaceTransmissionTint(baseColor, thickness);
+		return lightColor * transmissionTint * transmission * thickness * 0.86f;
 	#else
 		return 0.0f.xxx;
 	#endif
@@ -90,7 +128,7 @@ namespace FoliageDynamics
 			enhancedAmount *= SharedData::foliageDynamicsSettings.LeafTransmission;
 		float3 viewStableScatter =
 			max(lightColor, 0.0f.xxx) *
-			sqrt(saturate(baseColor)) *
+			ThinSurfaceTransmissionTint(baseColor, saturate(enhancedAmount)) *
 			(sheetIncidence * 0.18f) *
 			saturate(enhancedAmount);
 		return max(directionalTransmission, viewStableScatter);

@@ -32,15 +32,22 @@ void main(uint2 dispatchID : SV_DispatchThreadID)
 
     float3 sum = 0.0f;
     float weightSum = 0.0f;
+	float rawLuminanceSum = 0.0f;
+	float maximumLuminance = 0.0f;
     [unroll]
     for (uint y = 0u; y < 2u; ++y) {
         [unroll]
         for (uint x = 0u; x < 2u; ++x) {
             uint2 p = min(base + uint2(x, y), sceneDimensions - 1u);
             float3 color = DecodeBloomScene(p) * exposure;
-            float karis = rcp(1.0f + PixlLuminance(color));
+			float luminance = PixlLuminance(color);
+			// Karis average suppresses isolated sub-pixel fireflies while retaining
+			// coherent emissive surfaces and bright practical light sources.
+            float karis = rcp(1.0f + 0.65f * luminance);
             sum += color * karis;
             weightSum += karis;
+			rawLuminanceSum += luminance;
+			maximumLuminance = max(maximumLuminance, luminance);
         }
     }
 
@@ -48,8 +55,14 @@ void main(uint2 dispatchID : SV_DispatchThreadID)
     float threshold = max(bloomThreshold, 0.0f);
     float knee = max(threshold * 0.35f, 0.05f);
     float luminance = PixlLuminance(average);
-    float soft = saturate((luminance - threshold + knee) / (2.0f * knee));
-    soft = soft * soft * (3.0f - 2.0f * soft);
-    float contribution = max(luminance - threshold, 0.0f) + soft * knee;
-    BloomOut[dispatchID] = average * (contribution / max(luminance, 1e-4f));
+	// Quadratic soft knee: continuous in value and slope, unlike the broad halo
+	// ramp of Skyrim's original image-space bloom.
+	float soft = clamp(luminance - threshold + knee, 0.0f, 2.0f * knee);
+	soft = soft * soft / max(4.0f * knee, 1e-4f);
+	float contribution = max(luminance - threshold, soft);
+
+	float rawAverageLuminance = rawLuminanceSum * 0.25f;
+	float coherence = saturate(rawAverageLuminance / max(maximumLuminance, 1e-4f) * 3.0f);
+	float fireflyGuard = lerp(0.72f, 1.0f, coherence);
+    BloomOut[dispatchID] = average * (contribution / max(luminance, 1e-4f)) * fireflyGuard;
 }

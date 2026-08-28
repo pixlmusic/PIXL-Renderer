@@ -32,12 +32,12 @@ namespace PIXLRendererPage
 
 	inline constexpr std::array<Placement, 33> Placements{ {
 		{ "HybridGI", CategoryOrder[0], "INDIRECT LIGHT & REFLECTIONS", "Lighting controls are real time. Resolution and pipeline toggles automatically rebuild the affected compute shaders." },
-		{ "WorldProbes", CategoryOrder[0], "INDIRECT LIGHT & REFLECTIONS", "Reflection controls are real time; changing water SSR automatically queues a shader rebuild." },
-		{ "SkyBounce", CategoryOrder[0], "INDIRECT LIGHT & REFLECTIONS", "Visibility controls are real time. Zenith changes need the page's Rebuild SkyBounce action or a scene transition." },
+		{ "WorldProbes", CategoryOrder[0], "INDIRECT LIGHT & REFLECTIONS", "Environment probes update automatically with the scene. Probe-authoring tools are available only in Developer Mode." },
+		{ "SkyBounce", CategoryOrder[0], "INDIRECT LIGHT & REFLECTIONS", "Visibility controls are real time; zenith changes automatically queue a safe probe refresh." },
 		{ "AmbientProbe", CategoryOrder[0], "INDIRECT LIGHT & REFLECTIONS", "Diffuse environment and sky-light matching controls update in real time; captured probe content refreshes with the scene." },
-		{ "NaturalLighting", CategoryOrder[0], "DIRECT LIGHT", "Physical light calibration updates through PIXL's coordinated lighting path; boot-state changes require a restart." },
+		{ "NaturalLighting", CategoryOrder[0], "DIRECT LIGHT", "Physical inverse-square light calibration is automatic. The current release exposes no per-light user tuning." },
 		{ "LinearLightCore", CategoryOrder[0], "DIRECT LIGHT", "Linear-light accumulation is selected at startup; quality parameters remain coordinated by the shared physical lighting path." },
-		{ "RadiantGrid", CategoryOrder[0], "DIRECT LIGHT", "Cluster and visualization controls update in real time." },
+		{ "RadiantGrid", CategoryOrder[0], "DIRECT LIGHT", "Particle-light participation updates in real time. Cluster visualizers are Developer Mode diagnostics." },
 		{ "ContactShadows", CategoryOrder[0], "DIRECT LIGHT", "Controls update in real time. Sample-count changes automatically rebuild the ray-march shader." },
 		{ "SkyVeil", CategoryOrder[0], "SKY & ATMOSPHERE", "Cloud-shadow opacity follows weather in real time; enabling the shader hook requires a restart." },
 		{ "InteriorDaylight", CategoryOrder[0], "SKY & ATMOSPHERE", "Interior sun matching updates with cells and weather; boot-state changes require a restart." },
@@ -54,16 +54,16 @@ namespace PIXLRendererPage
 		{ "GroundResponse", CategoryOrder[1], "LAND & VEGETATION", "Grass and deformable-ground controls are real time. Initial installation adds Lighting permutations and requires a shader-cache rebuild." },
 		{ "FoliageDynamics", CategoryOrder[1], "LAND & VEGETATION", "Vegetation lighting controls update in real time through the shared feature buffer." },
 		{ "TerrainDetail", CategoryOrder[1], "LAND & VEGETATION", "Terrain stochastic sampling controls update in real time; enabling the hook at boot requires a restart." },
-		{ "TerrainOcclusion", CategoryOrder[1], "LAND & VEGETATION", "Terrain shadow parameters update in real time; heightfield data refreshes as exterior cells change." },
-		{ "Waterbody", CategoryOrder[1], "WATER & WEATHER", "Water mesh selection applies to newly built water caches; use the regeneration actions on the page when requested." },
-		{ "WaterOptics", CategoryOrder[1], "WATER & WEATHER", "Caustics and underwater-lighting shader integration is selected at startup; boot-state changes require a restart." },
+		{ "TerrainOcclusion", CategoryOrder[1], "LAND & VEGETATION", "Terrain-shadow participation updates in real time; heightfield data refreshes automatically as exterior cells change." },
+		{ "Waterbody", CategoryOrder[1], "WATER & WEATHER", "Optimised mesh selection applies when water caches are rebuilt; manual cache tools are Developer Mode actions." },
+		{ "WaterOptics", CategoryOrder[1], "WATER & WEATHER", "Reflection and caustic tuning is real time. Initial shader integration or module boot-state changes require a restart." },
 		{ "RainResponse", CategoryOrder[1], "WATER & WEATHER", "Weather, material wetness, ripple and splash controls update in real time." },
 		{ "SkinOptics", CategoryOrder[2], "SKIN", "SkinOptics optical controls update in real time; texture reload actions explicitly refresh authored detail assets." },
 		{ "TissueDiffusion", CategoryOrder[2], "SKIN", "Diffusion controls update in real time. Burley sample-count changes rebuild the sampling kernel." },
 		{ "StrandShading", CategoryOrder[2], "HAIR & FABRIC", "Hair scattering, transmission and self-shadow controls update in real time." },
 		{ "ThinSurface", CategoryOrder[2], "HAIR & FABRIC", "Global cloth and thin-surface controls update in real time; per-mesh material tags remain authoritative." },
 		{ "CameraSuite", CategoryOrder[3], "COLOUR & OUTPUT", "Camera and tone controls update in real time. Windows HDR detection or display-mode changes may require a restart." },
-		{ "ImageReconstruction", CategoryOrder[3], "IMAGE & PERFORMANCE", "ImageReconstruction is installed as part of the renderer but remains an explicit display choice; changing the technology can require a restart." }
+		{ "ImageReconstruction", CategoryOrder[3], "IMAGE & PERFORMANCE", "Image reconstruction is installed as part of the renderer but remains an explicit display choice; changing the technology can require a restart." }
 	} };
 
 	inline std::optional<Placement> GetPlacement(std::string_view featureShortName)

@@ -47,12 +47,17 @@ cbuffer GroundResponseRuntimeCB : register(b13)
 
     float2 GroundRuntimeSurfaceOriginAbsolute;
     uint2 GroundRuntimeSurfaceArrayOrigin;
+
+    float GroundRuntimeWeatherSnowRaise;
+    float GroundRuntimePreviousWeatherSnowRaise;
+    float GroundRuntimeWeatherSnowIntensity;
+    uint GroundRuntimeWeatherSnowEnabled;
 };
 
 namespace GroundResponseRuntime
 {
     static const uint RuntimeMagic = 0x47523330u;   // "GR30"
-    static const uint RuntimeVersion = 0x00030000u;
+    static const uint RuntimeVersion = 0x00030100u;
     static const uint DebugOverlayBit = 1u << 0;
     static const uint GeometrySelfTestBit = 1u << 1;
 

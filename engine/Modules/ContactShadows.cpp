@@ -25,25 +25,25 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 void ContactShadows::DrawSettings()
 {
 	if (ImGui::TreeNodeEx(T(TKEY("general"), "General"), ImGuiTreeNodeFlags_DefaultOpen)) {
-		Util::UIntCheckbox(T(TKEY("enable"), "Enable"), &bendSettings.Enable);
+		Util::UIntCheckbox(T(TKEY("enable"), "Sun & Moon Contact Shadows"), &bendSettings.Enable);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("%s", T(TKEY("enable_tooltip"), "Enable screen-space contact shadows from the sun/moon direction."));
 
-		Util::UIntSlider(T(TKEY("sample_count"), "Sample Count Multiplier"), &bendSettings.SampleCount, 1, 4);
+		Util::UIntSlider(T(TKEY("sample_count"), "Shadow Ray Quality"), &bendSettings.SampleCount, 1, 4);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("%s", T(TKEY("sample_count_tooltip"), "Multiplier for shadow ray sample count. Higher values increase shadow reach at the cost of performance. Adapts to render resolution and automatically rebuilds the ray-march shader when needed."));
 
-		ImGui::SliderFloat(T(TKEY("surface_thickness"), "Surface Thickness"), &bendSettings.SurfaceThickness, 0.005f, 0.05f);
+		ImGui::SliderFloat(T(TKEY("surface_thickness"), "Surface Thickness"), &bendSettings.SurfaceThickness, 0.005f, 0.05f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("%s", T(TKEY("surface_thickness_tooltip"), "Assumed thickness of surfaces for shadow detection. Lower values produce thinner, more precise shadows."));
 
-		ImGui::SliderFloat(T(TKEY("bilinear_threshold"), "Bilinear Threshold"), &bendSettings.BilinearThreshold, 0.02f, 1.0f);
+		ImGui::SliderFloat(T(TKEY("bilinear_threshold"), "Edge Smoothing Threshold"), &bendSettings.BilinearThreshold, 0.02f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("%s", T(TKEY("bilinear_threshold_tooltip"), "Depth threshold for edge detection during bilinear interpolation. Higher values smooth more aggressively across edges."));
 
-		ImGui::SliderFloat(T(TKEY("shadow_contrast"), "Shadow Contrast"), &bendSettings.ShadowContrast, 0.0f, 4.0f);
+		ImGui::SliderFloat(T(TKEY("shadow_contrast"), "Shadow Edge Contrast"), &bendSettings.ShadowContrast, 1.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text("%s", T(TKEY("shadow_contrast_tooltip"), "Contrast boost for the shadow transition. Higher values produce harder shadow edges."));
+			ImGui::Text("%s", T(TKEY("shadow_contrast_tooltip"), "Contrast boost for the shadow transition. 1 preserves the traced visibility; higher values produce harder contact edges."));
 
 		ImGui::Spacing();
 		ImGui::Spacing();
@@ -182,6 +182,9 @@ void ContactShadows::DrawShadows()
 				data.WaveOffset[0] = dispatchData.WaveOffset_Shader[0];
 				data.WaveOffset[1] = dispatchData.WaveOffset_Shader[1];
 
+				// Bend's Skyrim integration was runtime-validated with this ordering.
+				// Reversing the pair makes the generated visibility buffer approach
+				// zero over the complete screen and suppresses all directional light.
 				data.FarDepthValue = 1.0f;
 				data.NearDepthValue = 0.0f;
 
@@ -281,6 +284,8 @@ void ContactShadows::SetupResources()
 		samplerDesc.MaxAnisotropy = 1;
 		samplerDesc.MinLOD = 0;
 		samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+		// Match the far-depth sentinel supplied to Bend above. Its sweep samples
+		// outside the viewport deliberately, so the border must remain invalid.
 		samplerDesc.BorderColor[0] = 1.0f;
 		samplerDesc.BorderColor[1] = 1.0f;
 		samplerDesc.BorderColor[2] = 1.0f;

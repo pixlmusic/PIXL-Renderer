@@ -78,6 +78,8 @@ public:
 	 * explanation for a rejected activation.
 	 */
 	[[nodiscard]] static bool IsDirectorPhotoModeAvailable(std::string* reason = nullptr);
+	/** Enters Director through its authoritative eligibility gate, or returns to its live HUD when already active. */
+	static bool OpenDirectorPhotoMode();
 	static bool HandleDirectorKeyboardInput(std::uint32_t virtualKey);
 	static bool HandleDirectorGamepadInput(std::uint32_t gamepadKeyCode);
 	static void RenderDirectorPhotoModeOverlay();

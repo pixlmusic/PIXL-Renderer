@@ -8,18 +8,24 @@
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	InteriorDaylight::Settings,
+	AutoEnableCompatibleSkyInteriors,
 	ForceDoubleSidedRendering,
 	InteriorShadowDistance)
 
 void InteriorDaylight::DrawSettings()
 {
+	ImGui::Checkbox("Automatic Sky-Interior Daylight", &settings.AutoEnableCompatibleSkyInteriors);
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextWrapped(
+			"Lets PIXL use Skyrim's exterior sun, moon and weather lighting in interior cells that explicitly expose the sky and use sky lighting, even when an older cell omitted the sunlight-shadow extension flag. Fully enclosed interiors remain untouched.");
+	}
 	ImGui::Checkbox(T(TKEY("force_double_sided"), "Force Double-Sided Rendering"), &settings.ForceDoubleSidedRendering);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("force_double_sided_tooltip"),
 							  "Disables backface culling during sun shadowmap rendering in interiors. "
 							  "Will prevent most light leaking through unmasked/unprepared interiors at a small performance cost. "));
 	}
-	if (ImGui::SliderFloat(T(TKEY("interior_shadow_distance"), "Interior Shadow Distance"), &settings.InteriorShadowDistance, 1000.0f, 8000.0f)) {
+	if (ImGui::SliderFloat(T(TKEY("interior_shadow_distance"), "Interior Shadow Distance"), &settings.InteriorShadowDistance, 1000.0f, 8000.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp)) {
 		*gInteriorShadowDistance = settings.InteriorShadowDistance;
 		auto tes = RE::TES::GetSingleton();
 		SetShadowDistance(tes && tes->interiorCell);
@@ -83,7 +89,17 @@ void InteriorDaylight::EarlyPrepass()
 
 inline bool InteriorDaylight::IsInteriorWithSun(const RE::TESObjectCELL* cell)
 {
-	return cell && cell->cellFlags.all(RE::TESObjectCELL::Flag::kIsInteriorCell, RE::TESObjectCELL::Flag::kShowSky, RE::TESObjectCELL::Flag::kUseSkyLighting, static_cast<RE::TESObjectCELL::Flag>(CellFlagExt::kSunlightShadows));
+	if (!cell || !cell->cellFlags.all(
+			RE::TESObjectCELL::Flag::kIsInteriorCell,
+			RE::TESObjectCELL::Flag::kShowSky,
+			RE::TESObjectCELL::Flag::kUseSkyLighting)) {
+		return false;
+	}
+
+	const bool authoredSunShadows = cell->cellFlags.any(
+		static_cast<RE::TESObjectCELL::Flag>(CellFlagExt::kSunlightShadows));
+	return authoredSunShadows ||
+		globals::pipeline::interiorDaylight.settings.AutoEnableCompatibleSkyInteriors;
 }
 
 RE::TESWorldSpace* InteriorDaylight::GetWorldSpace::thunk(RE::TES* tes)

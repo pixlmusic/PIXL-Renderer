@@ -115,6 +115,11 @@ cbuffer HybridGICB : register(b1)
 	float ContactDepthStrength;
 	float ContactDepthRadius;
 	float ContactDepthBias;
+
+	// Task 09 adaptive ray allocation is append-only. The permutation is
+	// enabled at shader compile time; this value controls its work floor.
+	float AdaptiveRayMinimum;
+	float3 pad3;
 };
 
 SamplerState samplerPointClamp : register(s0);

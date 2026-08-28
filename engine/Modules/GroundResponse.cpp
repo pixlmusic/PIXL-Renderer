@@ -1,5 +1,8 @@
 #include "GroundResponse.h"
 
+#include "CameraSuite.h"
+#include "FoliageDynamics.h"
+
 #include "Globals.h"
 #include "I18n/I18n.h"
 #include "MaterialForge/BSLightingShaderMaterialPBRLandscape.h"
@@ -33,6 +36,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <WICTextureLoader.h>
 
 #define I18N_KEY_PREFIX "feature.ground_response."
 
@@ -85,12 +89,37 @@ static constexpr float MAX_CAMERA_REBASE_DELTA = 512.0f;
 static constexpr float PLAYER_GROUND_PROXY_RADIUS = 14.0f;
 static constexpr float PLAYER_GROUND_PROXY_CENTER_Z = 7.0f;
 static constexpr uint GROUND_RUNTIME_MAGIC = 0x47523330u;      // "GR30"
-static constexpr uint GROUND_RUNTIME_VERSION = 0x00030000u;
+static constexpr uint GROUND_RUNTIME_VERSION = 0x00030100u;
 static constexpr uint TERRAIN_DEBUG_OVERLAY = 1u << 0;
 static constexpr uint TERRAIN_DEBUG_GEOMETRY_SELF_TEST = 1u << 1;
-// ABI-safe runtime bit: the 160-byte b13 layout is unchanged.
+// Runtime debug bits remain stable; v3.3 appends one float4 weather-snow
+// register after the formerly 160-byte b13 payload.
 static constexpr uint TERRAIN_DEBUG_RAW_DIRECTIONAL_SHADOW = 1u << 2;
 static constexpr uint TERRAIN_DEBUG_FOCUS_DIRECTIONAL_SHADOW = 1u << 3;
+
+static float ResolveGroundSnowIntensity()
+{
+	auto* sky = globals::game::sky;
+	if (!sky || sky->mode.get() != RE::Sky::Mode::kFull || !sky->IsSnowing())
+		return 0.0f;
+
+	auto weatherDensity = [](RE::TESWeather* weather) -> float {
+		if (!weather || !weather->precipitationData)
+			return 0.0f;
+
+		const float density = weather->precipitationData->GetSettingValue(
+			RE::BGSShaderParticleGeometryData::DataID::kParticleDensity).f;
+		return std::clamp(density / 3.0f, 0.0f, 1.0f);
+	};
+
+	const float weatherPct = std::clamp(sky->currentWeatherPct, 0.0f, 1.0f);
+	float intensity = std::lerp(
+		weatherDensity(sky->lastWeather),
+		weatherDensity(sky->currentWeather),
+		weatherPct);
+	intensity = std::max(intensity, 0.38f);
+	return std::pow(std::clamp(intensity, 0.0f, 1.0f), 0.78f);
+}
 
 // TerrainSeam intentionally enables alpha blending for its deferred terrain replay.
 // GroundResponse's raised snow/mud shell is a real opaque surface and must not
@@ -1195,6 +1224,20 @@ namespace
 		variedThickness +=
 			availableDeepRaise *
 			deepSignal;
+
+		// Mirror the slowly accumulated renderer layer exactly so locomotion reacts
+		// to the snow depth the actor can actually see. It is a separate blanket
+		// above the static procedural drift field and therefore returns to zero in
+		// clear weather without changing the configured base thickness.
+		if (a_ground.settings.EnableWeatherSnowAccumulation) {
+			variedThickness +=
+				std::clamp(
+					a_ground.weatherSnowRaiseState,
+					0.0f,
+					std::max(a_ground.settings.WeatherSnowMaximumRaise, 0.0f)) *
+				snowActivation *
+				a_slopeMask;
+		}
 
 		return
 			std::max(
@@ -3180,6 +3223,10 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	MudRequiresWetness,
 	SnowMaximumDepth,
 	SnowSurfaceThickness,
+	EnableWeatherSnowAccumulation,
+	WeatherSnowMaximumRaise,
+	WeatherSnowAccumulationRate,
+	WeatherSnowMeltRate,
 	GeometryRenderDistance,
 	GeometryFadeStart,
 	GeometryMinimumSlopeZ,
@@ -3252,7 +3299,16 @@ void GroundResponse::DrawSettings()
 			if (auto _tt = Util::HoverTooltipWrapper())
 				ImGui::TextWrapped("Replays the real landscape as a raised adaptive shell. The shell samples the persistent absolute-world compaction map in the domain shader: untouched texels stay raised, stamped texels collapse toward the original landscape. Snow and mud use the same footprint data but different physical thickness/floor values.");
 			ImGui::BeginDisabled(!settings.EnableGeometricSnow);
-			changed |= ImGui::SliderFloat("Undisturbed Snow Thickness", &settings.SnowSurfaceThickness, 2.0f, 24.0f, "%.1f units", ImGuiSliderFlags_AlwaysClamp);
+		changed |= ImGui::SliderFloat("Undisturbed Snow Thickness", &settings.SnowSurfaceThickness, 2.0f, 24.0f, "%.1f units", ImGuiSliderFlags_AlwaysClamp);
+		changed |= ImGui::Checkbox("Weather Snow Accumulation", &settings.EnableWeatherSnowAccumulation);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Snowfall slowly raises only terrain layers Skyrim marks as snow. Clear weather settles the added layer back to the configured undisturbed base; the same depth is mirrored into movement resistance.");
+		ImGui::BeginDisabled(!settings.EnableWeatherSnowAccumulation);
+		changed |= ImGui::SliderFloat("Storm Snow Raise", &settings.WeatherSnowMaximumRaise, 0.0f, 24.0f, "%.1f units", ImGuiSliderFlags_AlwaysClamp);
+		changed |= ImGui::SliderFloat("Snowfall Accumulation", &settings.WeatherSnowAccumulationRate, 0.0f, 0.25f, "%.3f units/s", ImGuiSliderFlags_AlwaysClamp);
+		changed |= ImGui::SliderFloat("Clear-Weather Settle", &settings.WeatherSnowMeltRate, 0.0f, 0.25f, "%.3f units/s", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::TextDisabled("Live weather layer: %.2f / %.2f units", weatherSnowRaiseState, std::max(settings.WeatherSnowMaximumRaise, 0.0f));
+		ImGui::EndDisabled();
 			const float derivedMudSurfaceThickness =
 				std::clamp(
 					std::max(
@@ -3447,12 +3503,14 @@ void GroundResponse::DrawSettings()
 		changed |= ImGui::SliderFloat("Track Recovery Rate", &settings.TrackRecoveryRate, 0.05f, 2.0f, "%.2f units/s", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Recovery speed after Track Hold Time expires. Internally this is converted to normalized compaction recovery using the snow-shell thickness, so snow and mud share one persistent footprint lifetime.");
-		changed |= ImGui::Checkbox("Debug Interaction Field", &settings.DebugInteractionField);
-		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Non-destructive diagnostic tint over the real terrain texture: red = no actor collision boxes, magenta = missing Material Forge snow metadata, cyan = snow, brown = mud/non-snow, green/yellow = contact/depression. The overlay is accepted only when the GroundResponse runtime magic/version match exactly.");
-		changed |= ImGui::Checkbox("Geometry Self-Test (+64 units)", &settings.GeometrySelfTest);
-		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Diagnostic only. Forces every eligible nearby terrain patch through 16x tessellation and raises the generated surface by 64 units. If the surface does not visibly jump upward, the HS/DS stages are not controlling the draw. Turn this off for normal play.");
+		if (globals::state->IsDeveloperMode()) {
+			changed |= ImGui::Checkbox("Debug Interaction Field", &settings.DebugInteractionField);
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("Non-destructive diagnostic tint over the real terrain texture: red = no actor collision boxes, magenta = missing Material Forge snow metadata, cyan = snow, brown = mud/non-snow, green/yellow = contact/depression. The overlay is accepted only when the GroundResponse runtime magic/version match exactly.");
+			changed |= ImGui::Checkbox("Geometry Self-Test (+64 units)", &settings.GeometrySelfTest);
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("Diagnostic only. Forces every eligible nearby terrain patch through 16x tessellation and raises the generated surface by 64 units. If the surface does not visibly jump upward, the HS/DS stages are not controlling the draw. Turn this off for normal play.");
+		}
 		ImGui::EndDisabled();
 		ImGui::TreePop();
 	}
@@ -4256,6 +4314,29 @@ void GroundResponse::Update()
 		frameDelta = std::min(frameDelta, MAX_GROUND_FRAME_DELTA);
 		perFrameData.TimeDelta = frameDelta * !globals::game::ui->GameIsPaused();
 
+		previousWeatherSnowRaiseState = weatherSnowRaiseState;
+		weatherSnowIntensityState = settings.EnableWeatherSnowAccumulation
+			? ResolveGroundSnowIntensity()
+			: 0.0f;
+		if (settings.EnableWeatherSnowAccumulation) {
+			const float maximumRaise =
+				std::clamp(settings.WeatherSnowMaximumRaise, 0.0f, 24.0f);
+			if (weatherSnowIntensityState > 1.0e-4f) {
+				weatherSnowRaiseState +=
+					perFrameData.TimeDelta *
+					std::clamp(settings.WeatherSnowAccumulationRate, 0.0f, 0.25f) *
+					weatherSnowIntensityState;
+			} else {
+				weatherSnowRaiseState -=
+					perFrameData.TimeDelta *
+					std::clamp(settings.WeatherSnowMeltRate, 0.0f, 0.25f);
+			}
+			weatherSnowRaiseState =
+				std::clamp(weatherSnowRaiseState, 0.0f, maximumRaise);
+		} else {
+			weatherSnowRaiseState = 0.0f;
+		}
+
 		float cameraHeightDelta =
 			clipmapInitialized ? (prevEyePosNI.z - eyePosNI.z) : 0.0f;
 		const bool finiteCameraDelta = std::isfinite(cameraHeightDelta);
@@ -4356,6 +4437,11 @@ void GroundResponse::Update()
 
 		perFrameData.SurfaceOriginAbsolute = surfaceOriginAbsolute;
 		perFrameData.SurfaceArrayOrigin = surfaceArrayOrigin;
+		perFrameData.WeatherSnowRaise = weatherSnowRaiseState;
+		perFrameData.PreviousWeatherSnowRaise = previousWeatherSnowRaiseState;
+		perFrameData.WeatherSnowIntensity = weatherSnowIntensityState;
+		perFrameData.WeatherSnowEnabled =
+			settings.EnableWeatherSnowAccumulation ? 1u : 0u;
 
 		SurfaceFieldData surfaceFieldData{};
 		surfaceFieldData.OriginAbsolute = surfaceOriginAbsolute;
@@ -4546,6 +4632,14 @@ void GroundResponse::EarlyPrepass()
 void GroundResponse::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	settings.WeatherSnowMaximumRaise =
+		std::clamp(settings.WeatherSnowMaximumRaise, 0.0f, 24.0f);
+	settings.WeatherSnowAccumulationRate =
+		std::clamp(settings.WeatherSnowAccumulationRate, 0.0f, 0.25f);
+	settings.WeatherSnowMeltRate =
+		std::clamp(settings.WeatherSnowMeltRate, 0.0f, 0.25f);
+	weatherSnowRaiseState =
+		std::clamp(weatherSnowRaiseState, 0.0f, settings.WeatherSnowMaximumRaise);
 
 	g_groundResistanceSettings.EnableMovementResistance =
 		o_json.value("EnableMovementResistance", true);
@@ -4667,6 +4761,9 @@ void GroundResponse::SaveSettings(json& o_json)
 void GroundResponse::RestoreDefaultSettings()
 {
 	settings = {};
+	weatherSnowRaiseState = 0.0f;
+	previousWeatherSnowRaiseState = 0.0f;
+	weatherSnowIntensityState = 0.0f;
 	g_groundResistanceSettings = {};
 	g_alwaysCompressForms.clear();
 	g_neverDeformForms.clear();
@@ -4676,7 +4773,8 @@ void GroundResponse::RestoreDefaultSettings()
 void GroundResponse::QueueProjectileImpact(
 	RE::Projectile* a_projectile,
 	const RE::NiPoint3& a_position,
-	const RE::NiPoint3& a_velocity)
+	const RE::NiPoint3& a_velocity,
+	RE::TESObjectREFR* a_target)
 {
 	if (!a_projectile ||
 		!settings.EnableDeformableGround ||
@@ -4720,6 +4818,17 @@ void GroundResponse::QueueProjectileImpact(
 			: 0.0f;
 	const float impactSignal =
 		std::clamp(velocityMagnitude / 1200.0f, 0.0f, 1.0f);
+
+	// Camera optics react only to a confirmed AddImpact receiver. Runtime ground
+	// sampling deliberately leaves a_target null, so nearby fire/frost cannot
+	// create a false full-screen hit. This also covers dragon breath projectiles
+	// once Skyrim reports that their concrete receiver is the player.
+	if (a_target == RE::PlayerCharacter::GetSingleton()) {
+		const float lensAmount = 0.82f + impactSignal * 0.18f;
+		globals::pipeline::cameraSuite.TriggerElementalLens(
+			element == GroundElementKind::kFire ? lensAmount : 0.0f,
+			element == GroundElementKind::kFrost ? lensAmount : 0.0f);
+	}
 
 	GroundPendingInteraction interaction{};
 	interaction.start = interaction.end =
@@ -4885,6 +4994,9 @@ void GroundResponse::QueueMagicCast(
 	// Frostbite) must never recreate the old one-shot shout-shaped stamp.
 	bool explicitBreathEvent = voicePower;
 	float projectileRange = 0.0f;
+	bool hasFlamethrower = false;
+	bool hasCone = false;
+	bool hasBeam = false;
 
 	// A number of concentration effects (Flames/Frostbite and many modded breath
 	// effects) do not deliver useful LAND AddImpact callbacks. Detect the authored
@@ -4898,15 +5010,11 @@ void GroundResponse::QueueMagicCast(
 		if (!projectile)
 			continue;
 
-		const bool surfaceStream =
-			projectile->IsFlamethrower() ||
-			projectile->IsCone() ||
-			projectile->IsBeam();
+		hasFlamethrower = hasFlamethrower || projectile->IsFlamethrower();
+		hasCone = hasCone || projectile->IsCone();
+		hasBeam = hasBeam || projectile->IsBeam();
+		const bool surfaceStream = hasFlamethrower || hasCone || hasBeam;
 		continuousOrBreath = continuousOrBreath || surfaceStream;
-		breathLike =
-			breathLike ||
-			projectile->IsFlamethrower() ||
-			projectile->IsCone();
 
 		if (std::isfinite(projectile->data.range) &&
 			projectile->data.range > 1.0f) {
@@ -4933,6 +5041,25 @@ void GroundResponse::QueueMagicCast(
 	if (!a_continuousTick && !explicitBreathEvent)
 		return;
 
+	// Projectile archetype describes the footprint. Ordinary Flames is a narrow
+	// flamethrower ribbon, not a dragon-breath cone; cones and beams retain their
+	// own authored profiles, while explicit voice/EditorID breath stays broad.
+	enum class StreamProfile : std::uint8_t
+	{
+		kBeam,
+		kFlamethrower,
+		kCone,
+		kBreath
+	};
+	const StreamProfile streamProfile = breathLike
+		? StreamProfile::kBreath
+		: (hasFlamethrower
+			? StreamProfile::kFlamethrower
+			: (hasCone ? StreamProfile::kCone : StreamProfile::kBeam));
+	const bool broadBreath = streamProfile == StreamProfile::kBreath;
+	const bool coneStream = streamProfile == StreamProfile::kCone;
+	const bool flameStream = streamProfile == StreamProfile::kFlamethrower;
+
 	const RE::NiPoint3 casterPos = a_caster->GetPosition();
 	if (!GroundFinitePoint(casterPos))
 		return;
@@ -4948,16 +5075,18 @@ void GroundResponse::QueueMagicCast(
 	}
 
 	const float startDistance =
-		std::clamp(casterRadius * 0.72f, 28.0f, breathLike ? 180.0f : 96.0f);
+		std::clamp(casterRadius * 0.72f, 28.0f, broadBreath ? 180.0f : 96.0f);
 	const float rayHeight =
 		casterPos.z +
-		std::clamp(casterRadius * 0.34f, 46.0f, breathLike ? 150.0f : 92.0f);
+		std::clamp(casterRadius * 0.34f, 46.0f, broadBreath ? 150.0f : 92.0f);
 
 	float authoredRange = spell->GetRange();
 	if (!std::isfinite(authoredRange) || authoredRange <= 1.0f)
 		authoredRange = 0.0f;
 
-	const float defaultRange = breathLike ? 820.0f : 520.0f;
+	const float defaultRange = broadBreath
+		? 820.0f
+		: (coneStream ? 520.0f : (flameStream ? 400.0f : 600.0f));
 	const float range =
 		std::clamp(
 			std::max({ authoredRange, projectileRange, defaultRange }),
@@ -4966,8 +5095,8 @@ void GroundResponse::QueueMagicCast(
 
 	constexpr float kDegToRad = 0.01745329251994329577f;
 	const float halfAngle =
-		(breathLike ? 18.0f : 9.0f) * kDegToRad;
-	const int rayHalfCount = breathLike ? 2 : 1;
+		(broadBreath ? 18.0f : (coneStream ? 10.0f : 0.0f)) * kDegToRad;
+	const int rayHalfCount = broadBreath ? 2 : (coneStream ? 1 : 0);
 	const float baseAngle = a_caster->GetAngleZ();
 	const float clearance =
 		std::clamp(settings.ReceiverBlockerClearance, 2.0f, 12.0f);
@@ -4976,7 +5105,9 @@ void GroundResponse::QueueMagicCast(
 	// impact because adjacent cone rays overlap near the caster. Repeated
 	// concentration events converge smoothly into t103's existing bounded
 	// elemental field instead of hitting the hard limit instantly.
-	const float rayElementScale = breathLike ? 0.42f : 0.52f;
+	const float rayElementScale = broadBreath
+		? 0.42f
+		: (coneStream ? 0.48f : (flameStream ? 0.58f : 0.62f));
 	const float limit =
 		std::clamp(settings.ElementalHeightLimit, 0.0f, ELEMENTAL_HARD_LIMIT);
 	std::uint32_t emittedRuns = 0u;
@@ -5049,15 +5180,20 @@ void GroundResponse::QueueMagicCast(
 					casterPos.x + dirX * lastValidDistance,
 					casterPos.y + dirY * lastValidDistance
 				};
-				interaction.startRadius =
-					breathLike ? 10.0f : 8.0f;
-				interaction.endRadius =
-					std::clamp(
-						interaction.startRadius +
-							(lastValidDistance - firstValidDistance) *
-								(breathLike ? 0.025f : 0.014f),
-						interaction.startRadius,
-						breathLike ? 34.0f : 22.0f);
+				interaction.startRadius = broadBreath
+					? 10.0f
+					: (coneStream ? 9.0f : (flameStream ? 10.0f : 6.0f));
+				const float radiusGrowth = broadBreath
+					? 0.025f
+					: (coneStream ? 0.014f : (flameStream ? 0.004f : 0.003f));
+				const float maximumRadius = broadBreath
+					? 34.0f
+					: (coneStream ? 22.0f : (flameStream ? 14.0f : 9.0f));
+				interaction.endRadius = std::clamp(
+					interaction.startRadius +
+						(lastValidDistance - firstValidDistance) * radiusGrowth,
+					interaction.startRadius,
+					maximumRadius);
 
 				// Magic streams primarily modify snow mass rather than behaving
 				// like a physical shove. Keep compaction subtle, with frost
@@ -5077,7 +5213,7 @@ void GroundResponse::QueueMagicCast(
 						endFalloff / std::max(startFalloff, 1.0e-3f),
 						0.04f,
 						1.0f);
-				interaction.priority = breathLike ? 96.0f : 92.0f;
+				interaction.priority = broadBreath ? 96.0f : 92.0f;
 				interaction.elementalSnowOnly = true;
 				interaction.source = GroundInteractionSource::kMagic;
 				interaction.sourceFormID = a_spellFormID;
@@ -5155,10 +5291,10 @@ void GroundResponse::QueueMagicCast(
 			s_magicDiagCount.fetch_add(1u, std::memory_order_relaxed);
 		if (diagIndex < 48u) {
 			logger::debug(
-				"[GR-MAGIC-STREAM] spell={:08X} element={} breath={} runs={} caster={:08X}",
+				"[GR-MAGIC-STREAM] spell={:08X} element={} profile={} runs={} caster={:08X}",
 				a_spellFormID,
 				GroundElementLabel(element),
-				breathLike ? 1 : 0,
+				static_cast<std::uint32_t>(streamProfile),
 				emittedRuns,
 				a_caster->GetFormID());
 		}
@@ -5624,6 +5760,31 @@ void GroundResponse::SetupResources()
 			SURFACE_TEXTURE_SIZE,
 			SURFACE_TEXTURE_SIZE,
 			"surface elemental snow");
+
+	// PIXL_GR_SNOW_MICROSURFACE_V1
+	// The source artwork is supplied by the project owner as redistribution-cleared
+	// material and converted losslessly to PNG for WIC/runtime portability. Ignore
+	// embedded colour-space metadata because its channels are treated as linear
+	// microsurface data, not display colour.
+	constexpr auto snowMicroPath = L"Data\\Shaders\\GroundResponse\\SnowMicro.png";
+	const HRESULT snowMicroResult = DirectX::CreateWICTextureFromFileEx(
+		globals::d3d::device,
+		snowMicroPath,
+		0,
+		D3D11_USAGE_IMMUTABLE,
+		D3D11_BIND_SHADER_RESOURCE,
+		0,
+		0,
+		DirectX::WIC_LOADER_IGNORE_SRGB,
+		nullptr,
+		snowMicroTextureSRV.put());
+	if (FAILED(snowMicroResult) || !snowMicroTextureSRV) {
+		logger::warn(
+			"[GroundResponse] Optional snow microsurface texture unavailable (HRESULT 0x{:08X}); retaining procedural detail",
+			static_cast<std::uint32_t>(snowMicroResult));
+	} else {
+		logger::info("[GroundResponse] Loaded PIXL snow microsurface texture");
+	}
 	// createRWTexture initializes t103 to zero, so an initially disabled
 	// elemental system does not need another full-resource clear on frame one.
 	surfaceElementalClearedWhileDisabled = !settings.EnableElementalSnow;
@@ -5825,7 +5986,7 @@ void GroundResponse::Hooks::MissileProjectile_AddImpact::thunk(
 {
 	// Capture magic/projectile metadata before vanilla AddImpact mutates runtime impact state.
 	globals::pipeline::groundResponse.QueueProjectileImpact(
-		This, a_targetLoc, a_velocity);
+		This, a_targetLoc, a_velocity, a_ref);
 	func(This, a_ref, a_targetLoc, a_velocity, a_collidable, a_arg6, a_arg7);
 }
 
@@ -5840,7 +6001,7 @@ void GroundResponse::Hooks::ArrowProjectile_AddImpact::thunk(
 {
 	// Capture magic/projectile metadata before vanilla AddImpact mutates runtime impact state.
 	globals::pipeline::groundResponse.QueueProjectileImpact(
-		This, a_targetLoc, a_velocity);
+		This, a_targetLoc, a_velocity, a_ref);
 	func(This, a_ref, a_targetLoc, a_velocity, a_collidable, a_arg6, a_arg7);
 }
 
@@ -5855,7 +6016,7 @@ void GroundResponse::Hooks::GrenadeProjectile_AddImpact::thunk(
 {
 	// Capture magic/projectile metadata before vanilla AddImpact mutates runtime impact state.
 	globals::pipeline::groundResponse.QueueProjectileImpact(
-		This, a_targetLoc, a_velocity);
+		This, a_targetLoc, a_velocity, a_ref);
 	func(This, a_ref, a_targetLoc, a_velocity, a_collidable, a_arg6, a_arg7);
 }
 
@@ -5870,7 +6031,7 @@ void GroundResponse::Hooks::BeamProjectile_AddImpact::thunk(
 {
 	// Capture magic/projectile metadata before vanilla AddImpact mutates runtime impact state.
 	globals::pipeline::groundResponse.QueueProjectileImpact(
-		This, a_targetLoc, a_velocity);
+		This, a_targetLoc, a_velocity, a_ref);
 	func(This, a_ref, a_targetLoc, a_velocity, a_collidable, a_arg6, a_arg7);
 }
 
@@ -5885,7 +6046,7 @@ void GroundResponse::Hooks::FlameProjectile_AddImpact::thunk(
 {
 	// Capture magic/projectile metadata before vanilla AddImpact mutates runtime impact state.
 	globals::pipeline::groundResponse.QueueProjectileImpact(
-		This, a_targetLoc, a_velocity);
+		This, a_targetLoc, a_velocity, a_ref);
 	func(This, a_ref, a_targetLoc, a_velocity, a_collidable, a_arg6, a_arg7);
 }
 
@@ -5900,7 +6061,7 @@ void GroundResponse::Hooks::ConeProjectile_AddImpact::thunk(
 {
 	// Capture magic/projectile metadata before vanilla AddImpact mutates runtime impact state.
 	globals::pipeline::groundResponse.QueueProjectileImpact(
-		This, a_targetLoc, a_velocity);
+		This, a_targetLoc, a_velocity, a_ref);
 	func(This, a_ref, a_targetLoc, a_velocity, a_collidable, a_arg6, a_arg7);
 }
 #endif
@@ -5931,6 +6092,13 @@ void GroundResponse::Hooks::BSGrassShader_SetupGeometry::thunk(RE::BSShader* Thi
 			? groundResponse.collisionTexture->srv.get()
 			: nullptr;
 	context->VSSetShaderResources(100, 1, &grassInteractionSRV);
+
+	// PS b13 is shared by unrelated shader families. Rain Response and terrain
+	// replay may have rebound it since FoliageDynamics::Prepass, while Skyrim's
+	// own geometry setup can also replace stage state. Grass consumes the PIXL
+	// foliage payload, so establish ownership here at the final draw boundary.
+	if (globals::pipeline::foliageDynamics.loaded)
+		globals::pipeline::foliageDynamics.BindGrassTuning();
 }
 
 void GroundResponse::ClearShaderCache()
@@ -6500,6 +6668,8 @@ void GroundResponse::TerrainPassShaderHacks()
 			: nullptr;
 	context->PSSetShaderResources(100, 1, &nullLegacyTerrainPS);
 	context->PSSetShaderResources(101, 1, &surfaceSRV);
+	ID3D11ShaderResourceView* snowMicroSRV = snowMicroTextureSRV.get();
+	context->PSSetShaderResources(110, 1, &snowMicroSRV);
 
 	if (!terrainGeometryWanted || terrainOverrideApplied)
 		return;
@@ -6958,6 +7128,8 @@ void GroundResponse::BindDefaultRuntimeData()
 			: nullptr;
 	context->PSSetShaderResources(100, 1, &nullLegacyTerrainPS);
 	context->PSSetShaderResources(101, 1, &surfaceSRV);
+	ID3D11ShaderResourceView* snowMicroSRV = snowMicroTextureSRV.get();
+	context->PSSetShaderResources(110, 1, &snowMicroSRV);
 }
 
 void GroundResponse::UpdateCollisionTexture()

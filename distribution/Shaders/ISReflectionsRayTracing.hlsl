@@ -135,9 +135,13 @@ float4 GetReflectionColorLegacy(
 #if USE_PIXL_ENHANCED_SSR
 float4 GetReflectionColorEnhanced(float3 projReflectionDirection, float3 projPosition, float3 viewReflectionDirection)
 {
-	static const int coarseIterations = 48;
 	static const int refineIterations = 6;
 	float traceScale = clamp(SharedData::waterOpticsSettings.SSRDistanceScale, 0.25f, 1.5f);
+	// Trace Distance is also the public SSR workload control used by the Water
+	// quality profile.  The shipped Ultra value (1.29) retains the original
+	// 48-step trace exactly, while lower tiers reduce real texture/depth work
+	// instead of only changing the length of an otherwise fixed-cost ray.
+	int coarseIterations = (int)round(lerp(24.0f, 48.0f, saturate((traceScale - 0.65f) / 0.64f)));
 	float3 rayDirection = projReflectionDirection * traceScale;
 	float3 previousRaySample = projPosition;
 	float previousSceneDepth = DepthTex.SampleLevel(DepthSampler, ConvertRaySample(projPosition.xy), 0).x;

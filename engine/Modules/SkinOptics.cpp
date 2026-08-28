@@ -43,9 +43,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 
 void SkinOptics::DrawSettings()
 {
-	ImGui::Checkbox(T("feature.skin_optics.enable_advanced_skin", "Enable Advanced SkinOptics"), &settings.EnableSkin);
+	ImGui::Checkbox(T("feature.skin_optics.enable_advanced_skin", "Enable Advanced Skin Shading"), &settings.EnableSkin);
 
-	ImGui::Text("%s", T("feature.skin_optics.advanced_skin_shader_using_dual_specular_lobes", "Advanced SkinOptics Shader using dual specular lobes."));
+	ImGui::TextWrapped("%s", T("feature.skin_optics.advanced_skin_shader_using_dual_specular_lobes", "Natural skin reflection, fine surface detail, transmission and dynamic wetness."));
 
 	ImGui::Spacing();
 	ImGui::SliderFloat(T("feature.skin_optics.primary_roughness", "Primary Roughness"), &settings.SkinMainRoughness, 0.0f, 1.0f, "%.2f");
@@ -116,7 +116,7 @@ void SkinOptics::DrawSettings()
 
 	ImGui::Spacing();
 
-	ImGui::SliderFloat(T("feature.skin_optics.extra_skin_wetness", "Extra SkinOptics Wetness"), &settings.ExtraSkinWetness, 0.0f, 2.0f, "%.2f");
+	ImGui::SliderFloat(T("feature.skin_optics.extra_skin_wetness", "Additional Skin Wetness"), &settings.ExtraSkinWetness, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T("feature.skin_optics.adds_a_constant_layer_of_wetness_to_all", "Adds a constant layer of wetness to all skin, making it look slightly damp or sweaty at all times, even when not in water or exerting effort."));
 	}
@@ -141,6 +141,7 @@ void SkinOptics::DrawSettings()
 		}
 		ImGui::SliderFloat(T("feature.skin_optics.full_sweat_threshold", "Full Sweat Threshold"), &settings.FullSweat, 0.0f, 1.0f, "%.2f",
 			ImGuiSliderFlags_AlwaysClamp);
+		settings.FullSweat = std::min(settings.FullSweat, settings.StartSweat);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text(T("feature.skin_optics.the_character_reaches_maximum_sweat_when_stamina_drops", "The character reaches maximum sweat when stamina drops below this percentage. For example, 0.15 means full sweat below 15%% stamina."));
 		}
@@ -165,17 +166,17 @@ void SkinOptics::DrawSettings()
 
 	ImGui::Spacing();
 
-	ImGui::Checkbox(T("feature.skin_optics.enable_skin_detail", "Enable SkinOptics Detail"), &settings.EnableSkinDetail);
+	ImGui::Checkbox(T("feature.skin_optics.enable_skin_detail", "Enable Skin Micro Detail"), &settings.EnableSkinDetail);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T("feature.skin_optics.enable_skin_detail_texture", "Enable skin detail texture"));
 	}
 
-	ImGui::SliderFloat(T("feature.skin_optics.skin_detail_strength", "SkinOptics Detail Strength"), &settings.SkinDetailStrength, -2.0f, 2.0f);
+	ImGui::SliderFloat(T("feature.skin_optics.skin_detail_strength", "Micro Detail Strength"), &settings.SkinDetailStrength, -2.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T("feature.skin_optics.strength_of_skin_detail_texture", "Strength of skin detail texture"));
 	}
 
-	ImGui::SliderFloat(T("feature.skin_optics.skin_detail_tiling", "SkinOptics Detail Tiling"), &settings.SkinDetailTiling, 1.0f, 50.0f, "%1.f");
+	ImGui::SliderFloat(T("feature.skin_optics.skin_detail_tiling", "Micro Detail Scale"), &settings.SkinDetailTiling, 1.0f, 50.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T("feature.skin_optics.the_more_tiling_the_more_detailed_the_skin", "The more tiling, the more detailed the skin will be"));
 	}
@@ -185,11 +186,13 @@ void SkinOptics::DrawSettings()
 		ImGui::Text("%s", T("feature.skin_optics.multiply_the_tiling_for_the_body_to_match", "Multiply the tiling for the body to match the face"));
 	}
 
-	if (ImGui::Button(T("feature.skin_optics.reload_skin_detail_texture", "Reload SkinOptics Detail Texture"))) {
-		ReloadSkinDetail();
-	}
+	if (globals::state && globals::state->IsDeveloperMode()) {
+		if (ImGui::Button(T("feature.skin_optics.reload_skin_detail_texture", "Reload Skin Detail Texture"))) {
+			ReloadSkinDetail();
+		}
 
-	BUFFER_VIEWER_NODE(texSkinDetail, 1.0f)
+		BUFFER_VIEWER_NODE(texSkinDetail, 1.0f)
+	}
 }
 
 void SkinOptics::LoadSkinDetailTexture()

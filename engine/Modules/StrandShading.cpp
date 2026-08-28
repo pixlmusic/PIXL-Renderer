@@ -35,7 +35,7 @@ void StrandShading::DrawSettings()
 			ImGui::TextWrapped("%s", text);
 	};
 
-	Util::UIntCheckbox(T(TKEY("enabled"), "Enabled"), &settings.Enabled);
+	Util::UIntCheckbox(T(TKEY("enabled"), "Enable Advanced Hair Shading"), &settings.Enabled);
 	int hairMode = static_cast<int>(std::min(settings.HairMode, 1u));
 	if (ImGui::Combo(T(TKEY("hair_mode"), "Hair Mode"), &hairMode, "Kajiya-Kay\0Marschner\0"))
 		settings.HairMode = static_cast<uint32_t>(std::clamp(hairMode, 0, 1));
@@ -55,17 +55,17 @@ void StrandShading::DrawSettings()
 							  "Glossiness in Kajiya-Kay mode maps to the specular exponent.\n"
 							  "In Marschner mode, it controls the roughness of the hair surface.\n"));
 	}
-	ImGui::SliderFloat(T(TKEY("specular_multiplier"), "Specular Multiplier"), &settings.SpecularMult, 0.0f, 10.0f, "%.2f");
+	ImGui::SliderFloat(T(TKEY("specular_multiplier"), "Direct Highlight Strength"), &settings.SpecularMult, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	tooltip("Scales direct R/TT/TRT fibre highlights. The PIXL path bounds individual-fibre energy before applying this artistic multiplier.");
-	ImGui::SliderFloat(T(TKEY("diffuse_multiplier"), "Diffuse Multiplier"), &settings.DiffuseMult, 0.0f, 10.0f, "%.2f");
+	ImGui::SliderFloat(T(TKEY("diffuse_multiplier"), "Direct Light Strength"), &settings.DiffuseMult, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	tooltip("Scales broad multiple scattering between unresolved hair strands.");
-	ImGui::SliderFloat(T(TKEY("indirect_specular_multiplier"), "Indirect Specular Multiplier"), &settings.SpecularIndirectMult, 0.0f, 10.0f, "%.2f");
+	ImGui::SliderFloat(T(TKEY("indirect_specular_multiplier"), "Environment Highlight Strength"), &settings.SpecularIndirectMult, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	tooltip("Controls environment reflection carried by the anisotropic fibre specular lobe.");
-	ImGui::SliderFloat(T(TKEY("indirect_diffuse_multiplier"), "Indirect Diffuse Multiplier"), &settings.DiffuseIndirectMult, 0.0f, 10.0f, "%.2f");
+	ImGui::SliderFloat(T(TKEY("indirect_diffuse_multiplier"), "Environment Light Strength"), &settings.DiffuseIndirectMult, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	tooltip("Controls broad environment lighting scattered through the hair volume.");
-	ImGui::SliderFloat(T(TKEY("hair_base_color_multiplier"), "Hair Base Color Multiplier"), &settings.BaseColorMult, 0.0f, 10.0f, "%.2f");
+	ImGui::SliderFloat(T(TKEY("hair_base_color_multiplier"), "Hair Colour Strength"), &settings.BaseColorMult, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	tooltip("Scales the authored absorption colour before the hair scattering model. Values near 1.0 preserve texture intent.");
-	ImGui::SliderFloat(T(TKEY("hair_saturation"), "Hair Saturation"), &settings.HairSaturation, 0.0f, 5.0f, "%.2f");
+	ImGui::SliderFloat(T(TKEY("hair_saturation"), "Hair Saturation"), &settings.HairSaturation, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	tooltip("Adjusts chroma of the fibre absorption colour without changing its average luminance.");
 	ImGui::SliderFloat(T(TKEY("transmission"), "Transmission"), &settings.Transmission, 0.0f, 1.0f, "%.2f");
 	tooltip("Strength of light transmitted through and around backlit strands.");

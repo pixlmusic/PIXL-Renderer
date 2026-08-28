@@ -45,6 +45,10 @@ public:
 		bool MudRequiresWetness = true;
 		float SnowMaximumDepth = 18.0f;
 		float SnowSurfaceThickness = 10.0f;
+		bool EnableWeatherSnowAccumulation = true;
+		float WeatherSnowMaximumRaise = 14.0f;
+		float WeatherSnowAccumulationRate = 0.060f;
+		float WeatherSnowMeltRate = 0.035f;
 		float GeometryRenderDistance = 4000.0f; // PIXL_GR_13Y_DEFAULTS_V1
 		float GeometryFadeStart = 3400.0f;
 		float GeometryMinimumSlopeZ = 0.42f;
@@ -212,6 +216,14 @@ public:
 		// legacy grass-collision transform and therefore may be camera-relative.
 		float2 SurfaceOriginAbsolute;
 		DirectX::XMUINT2 SurfaceArrayOrigin;
+
+		// Slowly varying weather layer. Current/previous values keep terrain
+		// motion vectors coherent while a storm accumulates or clear weather
+		// settles the blanket back to the configured base thickness.
+		float WeatherSnowRaise;
+		float PreviousWeatherSnowRaise;
+		float WeatherSnowIntensity;
+		uint WeatherSnowEnabled;
 	};
 	STATIC_ASSERT_ALIGNAS_16(PerFrame);
 	static_assert(offsetof(PerFrame, TerrainSnow1to4) == 48, "GroundResponse compute ABI must keep the first 48 bytes unchanged.");
@@ -222,9 +234,13 @@ public:
 	static_assert(offsetof(PerFrame, RuntimeVersion) == 140, "GroundResponse b13 runtime version ABI mismatch.");
 	static_assert(offsetof(PerFrame, SurfaceOriginAbsolute) == 144, "GroundResponse b13 surface origin ABI mismatch.");
 	static_assert(offsetof(PerFrame, SurfaceArrayOrigin) == 152, "GroundResponse b13 surface array origin ABI mismatch.");
-	static_assert(sizeof(PerFrame) == 160, "GroundResponse::PerFrame must match GroundResponse/Runtime.hlsli.");
+	static_assert(offsetof(PerFrame, WeatherSnowRaise) == 160, "GroundResponse b13 weather-snow ABI mismatch.");
+	static_assert(sizeof(PerFrame) == 176, "GroundResponse::PerFrame must match GroundResponse/Runtime.hlsli.");
 
 	Settings settings;
+	float weatherSnowRaiseState = 0.0f;
+	float previousWeatherSnowRaiseState = 0.0f;
+	float weatherSnowIntensityState = 0.0f;
 	float2 currentPosOffset{};
 	DirectX::XMUINT2 currentArrayOrigin{};
 	GroundData GetGroundData() const;
@@ -269,6 +285,10 @@ public:
 	Texture2D* surfaceDeformationTexture = nullptr;
 	Texture2D* surfaceDisplacementTexture = nullptr;  // t102 displaced snow
 	Texture2D* surfaceElementalTexture = nullptr;     // t103 signed frost/fire height + heat smoothing
+	// User-supplied, redistribution-cleared snow microsurface atlas. This is a
+	// read-only optional detail resource; a missing file leaves the procedural
+	// GroundResponse snow path intact.
+	winrt::com_ptr<ID3D11ShaderResourceView> snowMicroTextureSRV;  // PS t110
 
 	// PIXL_GR_13BF_CRISP_HULL_SHADOWS_V1
 	// Owned copies of Skyrim's live directional shadow-cascade atlas captured while
@@ -399,7 +419,11 @@ public:
 	virtual void RestoreDefaultSettings() override;
 
 	/** Queues one projectile/magic impact into the absolute-world surface field. */
-	void QueueProjectileImpact(RE::Projectile* a_projectile, const RE::NiPoint3& a_position, const RE::NiPoint3& a_velocity);
+	void QueueProjectileImpact(
+		RE::Projectile* a_projectile,
+		const RE::NiPoint3& a_position,
+		const RE::NiPoint3& a_velocity,
+		RE::TESObjectREFR* a_target = nullptr);
 	/** Converts an elemental concentration/cone/breath spell into receiver-aware ground interaction. */
 	void QueueMagicCast(RE::TESObjectREFR* a_caster, RE::FormID a_spellFormID, bool a_continuousTick = false);
 	/** Converts a TESShout variation spell cast into an occlusion-aware tapered cone. */

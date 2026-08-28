@@ -31,8 +31,21 @@ public:
 	 * @param inputTexture SRV of the texture to sharpen (typically kMAIN render target).
 	 * @param outputUAV UAV to write sharpened result to.
 	 * @param sharpness Sharpening strength (0.0 = no sharpening, higher = more sharp).
+	 * @param reactiveMask Optional reconstruction reactive-mask SRV.
+	 * @param transparencyMask Optional reconstruction transparency-mask SRV.
+	 * @param motionVectors Optional reconstruction motion-vector SRV.
+	 * @param inputDimensions Valid dynamic-resolution input rectangle in pixels.
+	 *
+	 * The legacy RCAS path is retained exactly when any optional confidence input is unavailable.
 	 */
-	void ApplySharpen(ID3D11ShaderResourceView* inputTexture, ID3D11UnorderedAccessView* outputUAV, float sharpness);
+	void ApplySharpen(
+		ID3D11ShaderResourceView* inputTexture,
+		ID3D11UnorderedAccessView* outputUAV,
+		float sharpness,
+		ID3D11ShaderResourceView* reactiveMask = nullptr,
+		ID3D11ShaderResourceView* transparencyMask = nullptr,
+		ID3D11ShaderResourceView* motionVectors = nullptr,
+		float2 inputDimensions = {});
 
 private:
 	void CreateComputeShader();

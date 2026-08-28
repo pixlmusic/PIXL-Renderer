@@ -11,7 +11,7 @@ public:
 	virtual std::pair<std::string, std::vector<std::string>> GetModuleSummary() override
 	{
 		return { T("feature.interior_daylight.description", "Allows for the sun and moon to cast light and shadows into interior spaces."),
-			{ T("feature.interior_daylight.key_feature_1", "Functions only for explicitly enabled interiors"),
+			{ T("feature.interior_daylight.key_feature_1", "Automatically supports compatible sky-lit interiors"),
 				T("feature.interior_daylight.key_feature_2", "Utilizes existing sun, moon, and weather systems"),
 				T("feature.interior_daylight.key_feature_3", "Includes an option to force double-sided rendering for unprepared interiors"),
 				T("feature.interior_daylight.key_feature_4", "Fixes geometry culling issues that cause light leakage") } };
@@ -35,6 +35,7 @@ public:
 
 	struct Settings
 	{
+		bool AutoEnableCompatibleSkyInteriors = true;
 		bool ForceDoubleSidedRendering = true;
 		float InteriorShadowDistance = 5000;
 	};

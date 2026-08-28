@@ -27,7 +27,7 @@ void TissueDiffusion::DrawSettings()
 	if (ImGui::TreeNodeEx(T(TKEY("settings"), "Settings"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		Util::UIntCheckbox(T(TKEY("enable_character_lighting"), "Enable Character Lighting"), &settings.EnableCharacterLighting);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T(TKEY("enable_character_lighting_tooltip"), "Vanilla feature."));
+			ImGui::TextWrapped("%s", T(TKEY("enable_character_lighting_tooltip"), "Preserves Skyrim's dedicated character-light contribution before PIXL applies subsurface diffusion."));
 		}
 		if (settings.EnableCharacterLighting) {
 			ImGui::SliderFloat(T(TKEY("strength"), "Strength"), &settings.CharacterLightingStrength, 0, 5, "%.2f");

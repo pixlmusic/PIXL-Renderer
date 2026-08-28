@@ -114,7 +114,8 @@ public:
 		float GGXMultiScatterStrength = 1.0f;
 		/** Finite emitter radius used to regularize inverse-square attenuation near a light. */
 		float LocalLightMinimumDistance = 28.0f;
-		float pad0 = 0.0f;
+		/** Blends Skyrim/Natural Lighting attenuation into PIXL's physical local-light falloff. */
+		float PhysicalLocalLightFalloffStrength = 0.65f;
 	};
 	STATIC_ASSERT_ALIGNAS_16(Settings);
 	static_assert(sizeof(Settings) == 80, "MaterialForge::Settings must match its five-register shader ABI.");
@@ -139,7 +140,7 @@ public:
 	static_assert(offsetof(Settings, EnableGGXMultiScatter) == 64);
 	static_assert(offsetof(Settings, GGXMultiScatterStrength) == 68);
 	static_assert(offsetof(Settings, LocalLightMinimumDistance) == 72);
-	static_assert(offsetof(Settings, pad0) == 76);
+	static_assert(offsetof(Settings, PhysicalLocalLightFalloffStrength) == 76);
 
 	Settings settings;
 

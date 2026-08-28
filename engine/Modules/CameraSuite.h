@@ -68,7 +68,7 @@ public:
 		float cameraShoulder = 0.72f;
 		float cameraInfluence = 1.0f;        // Full physical response by default; lower values are an authoring aid
 		float menuSceneBrightness = 1.0f;
-		uint lookPreset = 0;              // 0=Original, 1..5=curated PIXL LUTs
+		uint lookPreset = 0;              // 0=Original, 1..11=curated PIXL LUTs
 		float lookOpacity = 0.35f;
 
 		// PIXL-owned global finishing policy. These replace the need for an
@@ -96,17 +96,39 @@ public:
 		float submergedRefraction = 0.42f;
 		float submergedTransitionSpeed = 3.20f;
 
-		// Depth-aware bokeh reconstruction layered onto Skyrim's native DOF pass.
+		// Environmental and impact-reactive edge optics. The cold layer is driven
+		// by real snow weather plus exterior altitude; elemental pulses are fed by
+		// confirmed player projectile impacts rather than by camera proximity.
+		bool enableColdLens = true;
+		float coldLensStrength = 0.28f;
+		float coldAltitudeStart = 28000.0f;
+		float coldAltitudeFull = 60000.0f;
+		bool enableElementalDamageLens = true;
+		float elementalLensStrength = 0.45f;
+
+		// PIXL-owned depth-aware bokeh reconstruction. Skyrim's image-space pass is
+		// retained only as the integration point that supplies sharp colour/depth;
+		// its legacy blurred image is bypassed whenever this feature is active.
 		bool enableEnhancedDepthOfField = false;
+		bool dofAutoFocus = true;
 		float dofStrength = 0.24f;
 		float dofFocusDistance = 2200.0f;
-		float dofFocusRange = 1600.0f;
+		float dofFocusRange = 480.0f;
 		float dofBokehRadius = 1.0f;
 		float dofHighlightResponse = 0.28f;
 		float dofFocusEdgeProtection = 0.85f;
 		float dofForegroundCoverage = 0.70f;
 		float dofCatEye = 0.20f;
 		float dofAnamorphicRatio = 1.0f;
+
+		// Depth-aware camera motion blur. This is deliberately opt-in so the
+		// accepted PIXL Ultra presentation remains unchanged until requested.
+		// The final CameraSuite pass reconstructs camera motion from scene depth;
+		// UI is composited afterwards and therefore remains perfectly sharp.
+		bool enableModernMotionBlur = false;
+		float motionBlurStrength = 0.45f;
+		float motionBlurShutter = 0.50f;
+		float motionBlurMaxPixels = 24.0f;
 
 		// Experimental body-worn digital camera emulation. Disabled by default.
 		bool experimentalBodycam = false;
@@ -171,6 +193,8 @@ public:
 	void ApplyPlayerPostProcessing() const;
 	/** @brief Hard-disables both PIXL and native Skyrim DOF while Director owns the camera. */
 	void SetPhotoModeDofIsolation(bool enabled);
+	/** @brief Adds a confirmed player-hit elemental optical pulse (0..1). */
+	void TriggerElementalLens(float fireAmount, float frostAmount);
 	[[nodiscard]] bool IsPhotoModeDofIsolated() const { return photoModeDofIsolation; }
 	/** @brief Sets the swap chain color space to HDR10 (PQ/BT.2020) or SDR (sRGB) based on settings. */
 	void UpdateSwapChainColorSpace() const;
@@ -244,6 +268,14 @@ public:
 		UINT syncInterval,
 		UINT flags,
 		const std::function<HRESULT(IDXGISwapChain*, UINT, UINT)>& presentChain);
+	/**
+	 * @brief Draws and processes PIXL's ImGui overlay on the active D3D11
+	 * presentation target.
+	 *
+	 * The native D3D11 Present hook and the D3D12 frame-generation proxy must
+	 * both call this exactly once per presented game frame.
+	 */
+	void DrawRendererUIForPresent();
 
 	/** @brief Returns true while the Present bottom hook is suppressed during deferred compositing. */
 	bool IsPresentSuppressed() const { return presentSuppressed; }
@@ -338,10 +370,35 @@ public:
 		float cameraQuality;              ///< 0 Low .. 3 Ultra; reuses c15.w without changing the CB layout
 
 		float4 submergedWaterTint;
+
+		float dofEnabled;
+		float dofStrength;
+		float dofFocusDistance;
+		float dofFocusRange;
+
+		float dofBokehRadius;
+		float dofHighlightResponse;
+		float dofFocusEdgeProtection;
+		float dofForegroundCoverage;
+
+		float dofCatEye;
+		float dofAnamorphicRatio;
+		float dofQuality;
+		float dofAutoFocus;
+
+		float coldLensAmount;
+		float fireLensAmount;
+		float coldLensStrength;
+		float elementalLensStrength;
+
+		float motionBlurEnabled;
+		float motionBlurStrength;
+		float motionBlurShutter;
+		float motionBlurMaxPixels;
 	};
 
 	static_assert((sizeof(HDRDataCB) % 16) == 0, "CB size not padded correctly");
-	static_assert(sizeof(HDRDataCB) == 272, "HDRDataCB must match PhysicalCameraCommon.hlsli (17 float4 registers / 272 bytes).");
+	static_assert(sizeof(HDRDataCB) == 352, "HDRDataCB must match PhysicalCameraCommon.hlsli (22 float4 registers / 352 bytes).");
 	static_assert(offsetof(HDRDataCB, physicalCameraEnabled) == 48);
 	static_assert(offsetof(HDRDataCB, cameraHighlightProtection) == 76);
 	static_assert(offsetof(HDRDataCB, bodycamEnabled) == 100);
@@ -352,6 +409,11 @@ public:
 	static_assert(offsetof(HDRDataCB, surfaceBreakFilm) == 224);
 	static_assert(offsetof(HDRDataCB, cameraQuality) == 252);
 	static_assert(offsetof(HDRDataCB, submergedWaterTint) == 256);
+	static_assert(offsetof(HDRDataCB, dofEnabled) == 272);
+	static_assert(offsetof(HDRDataCB, dofBokehRadius) == 288);
+	static_assert(offsetof(HDRDataCB, dofCatEye) == 304);
+	static_assert(offsetof(HDRDataCB, coldLensAmount) == 320);
+	static_assert(offsetof(HDRDataCB, motionBlurEnabled) == 336);
 
 	// HDR data CB contents from current settings/game state (previewSDR=0).
 	HDRDataCB BuildHDRData() const;
@@ -371,6 +433,9 @@ public:
 	mutable float stormglassPreviousCameraYaw = 0.0f;
 	mutable bool stormglassCameraYawValid = false;
 	mutable bool wasPlayerUnderwater = false;
+	mutable float coldLensState = 0.0f;
+	mutable float fireLensState = 0.0f;
+	mutable float frostImpactLensState = 0.0f;
 
 	// Director photo mode deliberately captures a sharp scene and applies its
 	// own offline lens model afterwards. This gate prevents both the PIXL
@@ -389,8 +454,11 @@ public:
 
 	ID3D11ComputeShader* hdrOutputCS = nullptr;
 	winrt::com_ptr<ID3D11ShaderResourceView> lookTextureView;
+	winrt::com_ptr<ID3D11ShaderResourceView> frostLensTextureView;
+	winrt::com_ptr<ID3D11ShaderResourceView> fireLensTextureView;
 	winrt::com_ptr<ID3D11SamplerState> lookSampler;
 	void LoadLookTexture();
+	void LoadElementalLensTextures();
 	/** @brief Returns the HDR/physical-camera output compute shader, compiling it on first use. */
 	ID3D11ComputeShader* GetHDROutputCS();
 

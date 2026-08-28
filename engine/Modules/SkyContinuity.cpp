@@ -1,5 +1,6 @@
 #include "SkyContinuity.h"
 #include "../I18n/I18n.h"
+#include "State.h"
 #include "RE/B/BSVolumetricLightingRenderData.h"
 
 #define I18N_KEY_PREFIX "feature.sky_continuity."
@@ -96,7 +97,7 @@ void SkyContinuity::DrawSettings()
 	ImGui::SliderFloat(T(TKEY("crescent_intensity"), "Crescent Intensity"), &settings.CrescentMoonIntensity, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 	ImGui::SliderFloat(T(TKEY("full_moon_intensity"), "Full Moon Intensity"), &settings.FullMoonIntensity, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 
-	if (ImGui::TreeNodeEx("Debug", ImGuiTreeNodeFlags_None)) {
+	if (globals::state->IsDeveloperMode() && ImGui::TreeNodeEx("Debug", ImGuiTreeNodeFlags_None)) {
 		static constexpr const char* CasterNames[] = { "Sun", "Masser", "Secunda", "None" };
 		static constexpr const char* PhaseNames[] = { "Full", "Waning Gibbous", "Waning Quarter", "Waning Crescent", "New", "Waxing Crescent", "Waxing Quarter", "Waxing Gibbous" };
 

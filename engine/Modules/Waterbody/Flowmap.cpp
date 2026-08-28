@@ -2,7 +2,166 @@
 
 #include <DDSTextureLoader.h>
 #include <DirectXTex.h>
+#include <array>
 #include <charconv>
+#include <cmath>
+#include <cstring>
+
+namespace
+{
+	constexpr uint32_t FLOW_CELL_SIZE = 64;
+	constexpr size_t FLOWMAP_MIP_LEVELS = 6;
+	constexpr std::wstring_view FLOWMAP_CACHE_PREFIX = L"Tamriel-Flowmap-v2";
+	constexpr std::wstring_view LEGACY_FLOWMAP_CACHE_PREFIX = L"Tamriel-Flowmap";
+
+	struct FlowPixel
+	{
+		uint8_t b;
+		uint8_t g;
+		uint8_t r;
+		uint8_t a;
+	};
+
+	static_assert(sizeof(FlowPixel) == 4);
+
+	bool IsEmptyFlowSample(const FlowPixel& sample)
+	{
+		return sample.r == 0 && sample.g == 0 && sample.b == 0 && sample.a == 0;
+	}
+
+	bool IsPIXLFlowmapCache(const std::filesystem::path& path)
+	{
+		if (path.extension() != L".dds")
+			return false;
+
+		const auto name = path.filename().wstring();
+		return name.starts_with(FLOWMAP_CACHE_PREFIX) || name.starts_with(LEGACY_FLOWMAP_CACHE_PREFIX);
+	}
+
+	FlowPixel BlendFlowSamples(std::span<const FlowPixel* const> samples, bool includeEmptyCoverage)
+	{
+		float directionX = 0.0f;
+		float directionY = 0.0f;
+		float decodedStrength = 0.0f;
+		float alpha = 0.0f;
+		uint32_t authoredCount = 0;
+		const FlowPixel* strongest = nullptr;
+
+		for (const auto* sample : samples) {
+			alpha += sample->a;
+			if (IsEmptyFlowSample(*sample))
+				continue;
+
+			const float x = static_cast<float>(sample->r) * (2.0f / 255.0f) - 1.0f;
+			const float y = static_cast<float>(sample->g) * (2.0f / 255.0f) - 1.0f;
+			const float strength = std::sqrt(std::max(1.01f - static_cast<float>(sample->b) / 255.0f, 0.0f));
+			const float lengthSquared = x * x + y * y;
+			if (lengthSquared > 1.0e-8f) {
+				const float inverseLength = 1.0f / std::sqrt(lengthSquared);
+				directionX += x * inverseLength * strength;
+				directionY += y * inverseLength * strength;
+			}
+
+			decodedStrength += strength;
+			++authoredCount;
+			if (!strongest || sample->a > strongest->a)
+				strongest = sample;
+		}
+
+		if (authoredCount == 0)
+			return {};
+
+		float directionLengthSquared = directionX * directionX + directionY * directionY;
+		if (directionLengthSquared <= 1.0e-8f) {
+			directionX = static_cast<float>(strongest->r) * (2.0f / 255.0f) - 1.0f;
+			directionY = static_cast<float>(strongest->g) * (2.0f / 255.0f) - 1.0f;
+			directionLengthSquared = directionX * directionX + directionY * directionY;
+		}
+
+		if (directionLengthSquared > 1.0e-8f) {
+			const float inverseLength = 1.0f / std::sqrt(directionLengthSquared);
+			directionX *= inverseLength;
+			directionY *= inverseLength;
+		}
+
+		auto encodeDirection = [](float value) {
+			return static_cast<uint8_t>(std::clamp(std::lround((value * 0.5f + 0.5f) * 255.0f), 0l, 255l));
+		};
+
+		FlowPixel result{};
+		result.r = encodeDirection(directionX);
+		result.g = encodeDirection(directionY);
+		const auto coverageDivisor = includeEmptyCoverage ? samples.size() : authoredCount;
+		const float averageStrength = decodedStrength / static_cast<float>(coverageDivisor);
+		const float encodedInverseStrength = std::clamp(1.01f - averageStrength * averageStrength, 0.0f, 1.0f);
+		result.b = static_cast<uint8_t>(std::clamp(std::lround(encodedInverseStrength * 255.0f), 0l, 255l));
+		result.a = static_cast<uint8_t>(std::clamp(std::lround(alpha / static_cast<float>(coverageDivisor)), 0l, 255l));
+		return result;
+	}
+
+	void ReconcileFlowmapBoundaries(DirectX::ScratchImage& atlas, uint32_t cellsWide, uint32_t cellsHigh)
+	{
+		auto* image = atlas.GetImage(0, 0, 0);
+		if (!image)
+			return;
+
+		auto pixelAt = [&](size_t x, size_t y) -> FlowPixel& {
+			return reinterpret_cast<FlowPixel*>(image->pixels + y * image->rowPitch)[x];
+		};
+
+		for (uint32_t cellX = 1; cellX < cellsWide; ++cellX) {
+			const size_t rightX = static_cast<size_t>(cellX) * FLOW_CELL_SIZE;
+			for (size_t y = 0; y < image->height; ++y) {
+				auto& left = pixelAt(rightX - 1, y);
+				auto& right = pixelAt(rightX, y);
+				if (IsEmptyFlowSample(left) || IsEmptyFlowSample(right))
+					continue;
+				const std::array<const FlowPixel*, 2> pair{ &left, &right };
+				left = right = BlendFlowSamples(pair, false);
+			}
+		}
+
+		for (uint32_t cellY = 1; cellY < cellsHigh; ++cellY) {
+			const size_t bottomY = static_cast<size_t>(cellY) * FLOW_CELL_SIZE;
+			for (size_t x = 0; x < image->width; ++x) {
+				auto& top = pixelAt(x, bottomY - 1);
+				auto& bottom = pixelAt(x, bottomY);
+				if (IsEmptyFlowSample(top) || IsEmptyFlowSample(bottom))
+					continue;
+				const std::array<const FlowPixel*, 2> pair{ &top, &bottom };
+				top = bottom = BlendFlowSamples(pair, false);
+			}
+		}
+	}
+
+	bool GenerateVectorAwareMips(DirectX::ScratchImage& atlas)
+	{
+		const auto& metadata = atlas.GetMetadata();
+		for (size_t mip = 1; mip < metadata.mipLevels; ++mip) {
+			const auto* source = atlas.GetImage(mip - 1, 0, 0);
+			auto* destination = atlas.GetImage(mip, 0, 0);
+			if (!source || !destination)
+				return false;
+
+			for (size_t y = 0; y < destination->height; ++y) {
+				auto* destinationRow = reinterpret_cast<FlowPixel*>(destination->pixels + y * destination->rowPitch);
+				for (size_t x = 0; x < destination->width; ++x) {
+					std::array<const FlowPixel*, 4> footprint{};
+					for (size_t sampleY = 0; sampleY < 2; ++sampleY) {
+						const size_t sourceY = std::min(y * 2 + sampleY, source->height - 1);
+						const auto* sourceRow = reinterpret_cast<const FlowPixel*>(source->pixels + sourceY * source->rowPitch);
+						for (size_t sampleX = 0; sampleX < 2; ++sampleX) {
+							const size_t sourceX = std::min(x * 2 + sampleX, source->width - 1);
+							footprint[sampleY * 2 + sampleX] = &sourceRow[sourceX];
+						}
+					}
+					destinationRow[x] = BlendFlowSamples(footprint, true);
+				}
+			}
+		}
+		return true;
+	}
+}
 
 bool Flowmap::TryGetFlowmap(RE::NiPointer<RE::NiSourceTexture>& outFlowmapTex) const
 {
@@ -56,7 +215,7 @@ bool Flowmap::RegenerateAndLoadFlowmap(bool useMips)
 			continue;
 
 		const auto& path = entry.path();
-		if (path.extension() != ".dds")
+		if (!IsPIXLFlowmapCache(path))
 			continue;
 
 		std::error_code rec;
@@ -95,7 +254,7 @@ bool Flowmap::LoadFlowmap()
 			}
 
 			const std::wstring name = entry.path().filename().wstring();
-			if (name.rfind(L"Tamriel-Flowmap", 0) == 0) {
+			if (name.starts_with(FLOWMAP_CACHE_PREFIX)) {
 				file = entry;
 				break;
 			}
@@ -152,6 +311,11 @@ bool Flowmap::LoadFlowmap()
 	if (!parse_int(tokens[1], width) || !parse_int(tokens[2], height) || !parse_int(tokens[3], offsetX) || !parse_int(tokens[4], offsetY)) {
 		return false;
 	}
+	if (tokens[0] != "Tamriel-Flowmap-v2" || width <= 0 || height <= 0) {
+		logger::error("[Waterbody] [Flowmap] Invalid cache identity or dimensions in {}", file.path().filename().string());
+		Reset();
+		return false;
+	}
 
 	invWidth = 1.0f / static_cast<float>(width);
 	invHeight = 1.0f / static_cast<float>(height);
@@ -163,43 +327,6 @@ bool Flowmap::LoadFlowmap()
 bool Flowmap::GenerateFlowmap(bool useMips)
 {
 	const auto t0 = std::chrono::steady_clock::now();
-
-	auto dvc = globals::d3d::device;
-	auto ctx = globals::d3d::context;
-	if (!dvc || !ctx) {
-		logger::error("[Waterbody] [Flowmap] D3D device/context not available");
-		return false;
-	}
-
-	winrt::com_ptr<ID3D11DeviceContext> deferredCtx;
-	if (FAILED(dvc->CreateDeferredContext(0, deferredCtx.put()))) {
-		logger::error("[Waterbody] [Flowmap] Failed to create deferred context");
-		return false;
-	}
-
-	static winrt::com_ptr<REX::W32::ID3D11Multithread> multithread;
-	if (SUCCEEDED(ctx->QueryInterface(multithread.put()))) {
-		multithread->SetMultithreadProtected(TRUE);
-	} else {
-		logger::error("[Waterbody] [Flowmap] ID3D11Multithread not available");
-		return false;
-	}
-
-	multithread->Enter();
-
-	struct MultithreadGuard
-	{
-		winrt::com_ptr<REX::W32::ID3D11Multithread> mt;
-		MultithreadGuard(winrt::com_ptr<REX::W32::ID3D11Multithread> m) :
-			mt(m) {}
-		~MultithreadGuard()
-		{
-			if (mt) {
-				mt->Leave();
-				mt->SetMultithreadProtected(FALSE);
-			}
-		}
-	} guard(multithread);
 
 	const auto tamriel = RE::TESForm::LookupByEditorID<RE::TESWorldSpace>("Tamriel");
 	if (!tamriel) {
@@ -217,7 +344,7 @@ bool Flowmap::GenerateFlowmap(bool useMips)
 	{
 		int32_t x;
 		int32_t y;
-		winrt::com_ptr<ID3D11Texture2D> tex;
+		DirectX::ScratchImage image;
 	};
 
 	int32_t mapMinX = INT_MAX;
@@ -266,23 +393,8 @@ bool Flowmap::GenerateFlowmap(bool useMips)
 					conv = std::move(src);
 				}
 
-				winrt::com_ptr<ID3D11Resource> res;
-				hr = DirectX::CreateTexture(dvc, conv.GetImages(), conv.GetImageCount(), conv.GetMetadata(), res.put());
-				if (FAILED(hr) || !res) {
-					logger::warn("[Waterbody] [Flowmap] Flow texture at {},{} creation failed", x, y);
-					continue;
-				}
-
-				winrt::com_ptr<ID3D11Texture2D> tex;
-				hr = res->QueryInterface(IID_PPV_ARGS(tex.put()));
-				if (FAILED(hr)) {
-					logger::warn("[Waterbody] [Flowmap] Flow texture at {},{} is not a Texture2D", x, y);
-					continue;
-				}
-
-				D3D11_TEXTURE2D_DESC d{};
-				tex->GetDesc(&d);
-				if (d.Width != 64 || d.Height != 64 || d.Format != DXGI_FORMAT_B8G8R8A8_UNORM || d.MipLevels < 6) {
+				const auto* baseImage = conv.GetImage(0, 0, 0);
+				if (!baseImage || baseImage->width != FLOW_CELL_SIZE || baseImage->height != FLOW_CELL_SIZE || baseImage->format != DXGI_FORMAT_B8G8R8A8_UNORM) {
 					logger::warn("[Waterbody] [Flowmap] Flow texture at {},{} is invalid", x, y);
 					continue;
 				}
@@ -292,7 +404,7 @@ bool Flowmap::GenerateFlowmap(bool useMips)
 				mapMaxX = std::max(mapMaxX, x);
 				mapMaxY = std::max(mapMaxY, y);
 
-				cells.emplace_back(FlowCell{ x, y, tex });
+				cells.emplace_back(FlowCell{ x, y, std::move(conv) });
 			}
 		}
 	}
@@ -309,66 +421,62 @@ bool Flowmap::GenerateFlowmap(bool useMips)
 
 	logger::debug("[Waterbody] [Flowmap] Loaded {} flow textures, creating a {}x{} flow map...", cells.size(), width, height);
 
-	D3D11_TEXTURE2D_DESC desc{};
-	desc.Width = width * 64;
-	desc.Height = height * 64;
-	desc.MipLevels = 6;
-	desc.ArraySize = 1;
-	desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-	desc.SampleDesc = { 1, 0 };
-	desc.Usage = D3D11_USAGE_DEFAULT;
-	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-	desc.MiscFlags = 0;
-
-	winrt::com_ptr<ID3D11Texture2D> flowmap;
-	if (FAILED(dvc->CreateTexture2D(&desc, nullptr, flowmap.put()))) {
-		logger::error("[Waterbody] [Flowmap] Failed to create texture");
+	const size_t pixelWidth = static_cast<size_t>(width) * FLOW_CELL_SIZE;
+	const size_t pixelHeight = static_cast<size_t>(height) * FLOW_CELL_SIZE;
+	const size_t mipLevels = useMips ? FLOWMAP_MIP_LEVELS : 1;
+	DirectX::ScratchImage flowmap;
+	if (FAILED(flowmap.Initialize2D(DXGI_FORMAT_B8G8R8A8_UNORM, pixelWidth, pixelHeight, 1, mipLevels))) {
+		logger::error("[Waterbody] [Flowmap] Failed to allocate CPU atlas");
 		return false;
 	}
+	std::memset(flowmap.GetPixels(), 0, flowmap.GetPixelsSize());
 
-	for (const auto& [x, y, flowTex] : cells) {
-		D3D11_TEXTURE2D_DESC srcDesc{};
-		flowTex->GetDesc(&srcDesc);
+	auto* destination = flowmap.GetImage(0, 0, 0);
+	for (const auto& [x, y, sourceImage] : cells) {
+		const auto* source = sourceImage.GetImage(0, 0, 0);
+		const size_t cellX = static_cast<size_t>(x + offsetX);
+		const size_t cellY = static_cast<size_t>(y + offsetY);
+		const size_t destinationX = cellX * FLOW_CELL_SIZE;
+		const size_t destinationY = pixelHeight - (cellY + 1) * FLOW_CELL_SIZE;
 
-		const UINT sx = static_cast<UINT>(x + offsetX);
-		const UINT sy = static_cast<UINT>(y + offsetY);
-		const UINT dstX0 = sx * 64;
-
-		const UINT maxMipLevel = useMips ? 6u : 1u;
-		for (UINT mipLevel = 0; mipLevel < maxMipLevel; ++mipLevel) {
-			const UINT srcSub = D3D11CalcSubresource(mipLevel, 0, srcDesc.MipLevels);
-			const UINT dstSub = D3D11CalcSubresource(mipLevel, 0, desc.MipLevels);
-			const UINT tileSize = std::max(1u, 64u >> mipLevel);
-			const UINT flowmapHeight = std::max(1u, desc.Height >> mipLevel);
-			const UINT dstX = dstX0 >> mipLevel;
-			const UINT dstY = flowmapHeight - (sy + 1) * tileSize;
-
-			deferredCtx->CopySubresourceRegion(flowmap.get(), dstSub, dstX, dstY, 0, flowTex.get(), srcSub, nullptr);
+		for (size_t row = 0; row < FLOW_CELL_SIZE; ++row) {
+			auto* destinationRow = destination->pixels + (destinationY + row) * destination->rowPitch + destinationX * sizeof(FlowPixel);
+			const auto* sourceRow = source->pixels + row * source->rowPitch;
+			std::memcpy(destinationRow, sourceRow, FLOW_CELL_SIZE * sizeof(FlowPixel));
 		}
 	}
 
-	winrt::com_ptr<ID3D11CommandList> commandList;
-	if (deferredCtx && FAILED(deferredCtx->FinishCommandList(FALSE, commandList.put()))) {
-		logger::error("[Waterbody] [Flowmap] FinishCommandList failed");
+	ReconcileFlowmapBoundaries(flowmap, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+	if (useMips && !GenerateVectorAwareMips(flowmap)) {
+		logger::error("[Waterbody] [Flowmap] Failed to generate vector-aware mip chain");
 		return false;
 	}
 
-	{
-		ctx->ExecuteCommandList(commandList.get(), TRUE);
+	const auto filename = std::format(L"{}.{}.{}.{}.{}.dds", FLOWMAP_CACHE_PREFIX, width, height, offsetX, offsetY);
+	const auto path = Util::PathHelpers::GetDataPath() / "textures" / "water" / "flowmaps" / filename;
+	auto temporaryPath = path;
+	temporaryPath += L".tmp";
+	std::error_code ec;
+	std::filesystem::create_directories(path.parent_path(), ec);
+	std::filesystem::remove(temporaryPath, ec);
+	const auto hr = DirectX::SaveToDDSFile(flowmap.GetImages(), flowmap.GetImageCount(), flowmap.GetMetadata(), DirectX::DDS_FLAGS_NONE, temporaryPath.c_str());
+	if (FAILED(hr)) {
+		logger::error("[Waterbody] [Flowmap] Failed to save flowmap to {}: hr={:08X}", temporaryPath.string(), static_cast<uint32_t>(hr));
+		return false;
+	}
 
-		const auto filename = std::format(L"Tamriel-Flowmap.{}.{}.{}.{}.dds", width, height, offsetX, offsetY);
-		const auto path = Util::PathHelpers::GetDataPath() / "textures" / "water" / "flowmaps" / filename;
-		const auto hr = Util::SaveTextureToFile(dvc, ctx, path, flowmap.get());
-
-		if (FAILED(hr)) {
-			logger::error("[Waterbody] [Flowmap] Failed to save flowmap to {}: hr={:08X}", path.string().c_str(), static_cast<uint32_t>(hr));
-			return false;
-		}
+	std::filesystem::remove(path, ec);
+	ec.clear();
+	std::filesystem::rename(temporaryPath, path, ec);
+	if (ec) {
+		logger::error("[Waterbody] [Flowmap] Failed to publish {}: {}", path.string(), ec.message());
+		std::filesystem::remove(temporaryPath, ec);
+		return false;
 	}
 
 	const auto t1 = std::chrono::steady_clock::now();
 	const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-	logger::info("[Waterbody] [Flowmap] Generated in {} ms", ms);
+	logger::info("[Waterbody] [Flowmap] Generated vector-aware CPU atlas in {} ms", ms);
 
 	return true;
 }

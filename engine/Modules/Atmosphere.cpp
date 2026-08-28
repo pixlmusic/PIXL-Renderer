@@ -141,7 +141,7 @@ void Atmosphere::DrawSettings()
 	}
 	Util::UIntCheckbox(T(TKEY("use_dynamic_cubemaps"), "Use World Probes for Inscattering"), &settings.useWorldProbes);
 	Util::WeatherUI::ColorEdit4(T(TKEY("inscattering_cubemap_tint"), "Inscattering Cubemap Tint"), this, "inscatteringTint", (float*)&settings.inscatteringTint);
-	ImGui::SliderFloat(T(TKEY("cubemap_mip_level"), "Cubemap Mip Level"), &settings.cubemapMipLevel, 1.0f, 7.0f, "%.1f");
+	ImGui::SliderFloat(T(TKEY("cubemap_mip_level"), "Environment Blur"), &settings.cubemapMipLevel, 1.0f, 7.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 
 	ImGui::SeparatorText(T(TKEY("volumetric_fog"), "Volumetric Fog"));
 	Util::WeatherUI::UIntCheckbox(T(TKEY("enable_volumetric_fog"), "Enable Volumetric Fog"), this, "volumetricFogEnabled", &settings.volumetricFogEnabled);
@@ -156,7 +156,7 @@ void Atmosphere::DrawSettings()
 		Util::WeatherUI::SliderFloat(T(TKEY("directional_scattering_intensity"), "Directional Scattering Intensity"), this, "volumetricDirectionalScatteringIntensity", &settings.volumetricDirectionalScatteringIntensity, 0.0f, 10.0f, "%.2f");
 		Util::WeatherUI::SliderFloat(T(TKEY("sky_lighting_scattering_intensity"), "Sky Lighting Scattering Intensity"), this, "volumetricSkyLightingIntensity", &settings.volumetricSkyLightingIntensity, 0.0f, 10.0f, "%.2f");
 		Util::WeatherUI::SliderFloat(T(TKEY("local_light_scattering_intensity"), "Local Light Scattering Intensity"), this, "volumetricLocalLightScatteringIntensity", &settings.volumetricLocalLightScatteringIntensity, 0.0f, 10.0f, "%.2f");
-		if (ImGui::TreeNode(T(TKEY("debug"), "Debug"))) {
+		if (ImGui::TreeNode(T(TKEY("advanced_volumetric_quality"), "Advanced Volumetric Quality"))) {
 			uint32_t minGridPixelSize = 4;
 			uint32_t maxGridPixelSize = 64;
 			uint32_t minGridSizeZ = 16;

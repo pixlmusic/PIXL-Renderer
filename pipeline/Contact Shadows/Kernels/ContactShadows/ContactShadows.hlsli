@@ -16,25 +16,44 @@ namespace ContactShadows
 		float r = ContactShadowsTexture.Load(int3(clamp(p + int2( 1, 0), 0, maxP), 0)).x;
 		float u = ContactShadowsTexture.Load(int3(clamp(p + int2( 0,-1), 0, maxP), 0)).x;
 		float d = ContactShadowsTexture.Load(int3(clamp(p + int2( 0, 1), 0, maxP), 0)).x;
-
-		// Small cross-Gaussian, applied only where the shadow field has a gradient.
-		// Fully lit and fully shadowed cores remain sharp; only the transition receives
-		// the soft blur/falloff expected from a finite light source.
-		float filtered = (c * 4.0f + l + r + u + d) * 0.125f;
-		float edge = saturate(abs(filtered - c) * 5.0f);
+		float2 texelSize = rcp(float2(max(width, 1u), max(height, 1u)));
 		float viewDepth = abs(SharedData::GetScreenDepth(screenPosition.z));
+		float depthL = abs(SharedData::GetScreenDepth(saturate(uv + float2(-texelSize.x, 0.0f))));
+		float depthR = abs(SharedData::GetScreenDepth(saturate(uv + float2( texelSize.x, 0.0f))));
+		float depthU = abs(SharedData::GetScreenDepth(saturate(uv + float2(0.0f, -texelSize.y))));
+		float depthD = abs(SharedData::GetScreenDepth(saturate(uv + float2(0.0f,  texelSize.y))));
+		float depthSigma = max(viewDepth * 0.0035f, 5.0f);
+		float4 bilateralWeight = exp2(-abs(float4(depthL, depthR, depthU, depthD) - viewDepth) / depthSigma * 2.25f);
+
+		// Small depth-bilateral cross filter, applied only where the shadow field
+		// has a gradient. Unlike the former unweighted cross, this cannot pull a
+		// shadow across an actor, roofline or distant depth discontinuity.
+		float filtered =
+			(c * 4.0f + dot(float4(l, r, u, d), bilateralWeight)) /
+			max(4.0f + dot(bilateralWeight, 1.0f.xxxx), 1.0e-4f);
+		float edge = saturate(abs(filtered - c) * 5.0f);
 		float depthFootprint =
 			max(abs(ddx(viewDepth)), abs(ddy(viewDepth))) /
 			max(viewDepth, 1.0f);
-		float discontinuity = smoothstep(0.0025f, 0.022f, depthFootprint);
+		float neighborhoodDepthSpan =
+			max(max(abs(depthL - viewDepth), abs(depthR - viewDepth)),
+				max(abs(depthU - viewDepth), abs(depthD - viewDepth))) /
+			max(viewDepth, 1.0f);
+		float discontinuity = smoothstep(
+			0.0025f, 0.022f, max(depthFootprint, neighborhoodDepthSpan));
 		float blur = edge * edge * 0.72f * (1.0f - discontinuity);
-		float shadow = saturate(lerp(c, filtered, blur));
+		// Screen-space shadows refine the authoritative shadow map; they must not
+		// erase every photon when the ray field becomes temporarily under-resolved.
+		float shadow = max(saturate(lerp(c, filtered, blur)), 0.12f);
 
-		// At long range a one-pixel depth edge has insufficient precision for a
-		// trustworthy receiver/caster classification. Fade only those discontinuity
-		// pixels, retaining stable contact on continuous distant surfaces.
-		float distanceRisk = smoothstep(3072.0f, 8192.0f, viewDepth);
-		float receiverConfidence = 1.0f - discontinuity * distanceRisk;
+		// Contact shadows are a near-field detail technique. At long range even a
+		// continuous one-pixel receiver has insufficient depth precision to keep
+		// receiver/caster ordering stable while the camera moves. Retire the complete
+		// screen-space term before that range, with additional early rejection at
+		// discontinuities. The ordinary shadow maps remain authoritative there.
+		float rangeConfidence = 1.0f - smoothstep(2048.0f, 5120.0f, viewDepth);
+		float receiverConfidence =
+			rangeConfidence * (1.0f - discontinuity * (1.0f - rangeConfidence));
 		return lerp(1.0f, shadow, receiverConfidence);
 	}
 
@@ -61,7 +80,7 @@ namespace ContactShadows
 		float3 originVS = FrameBuffer::WorldToView(originWS);
 		float viewDistance = abs(originVS.z);
 		float distanceConfidence =
-			1.0f - smoothstep(3072.0f, 8192.0f, viewDistance);
+			1.0f - smoothstep(2048.0f, 5120.0f, viewDistance);
 		strength *= distanceConfidence;
 		if (strength <= 1e-3f)
 			return 1.0f;

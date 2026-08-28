@@ -84,6 +84,31 @@ cbuffer PerFrame : register(b0)
 	float cameraQuality : packoffset(c15.w);
 
 	float4 submergedWaterTint : packoffset(c16);
+
+	float dofEnabled : packoffset(c17.x);
+	float dofStrength : packoffset(c17.y);
+	float dofFocusDistance : packoffset(c17.z);
+	float dofFocusRange : packoffset(c17.w);
+
+	float dofBokehRadius : packoffset(c18.x);
+	float dofHighlightResponse : packoffset(c18.y);
+	float dofFocusEdgeProtection : packoffset(c18.z);
+	float dofForegroundCoverage : packoffset(c18.w);
+
+	float dofCatEye : packoffset(c19.x);
+	float dofAnamorphicRatio : packoffset(c19.y);
+	float dofQuality : packoffset(c19.z);
+	float dofAutoFocus : packoffset(c19.w);
+
+	float coldLensAmount : packoffset(c20.x);
+	float fireLensAmount : packoffset(c20.y);
+	float coldLensStrength : packoffset(c20.z);
+	float elementalLensStrength : packoffset(c20.w);
+
+	float motionBlurEnabled : packoffset(c21.x);
+	float motionBlurStrength : packoffset(c21.y);
+	float motionBlurShutter : packoffset(c21.z);
+	float motionBlurMaxPixels : packoffset(c21.w);
 };
 
 static const float PIXL_HISTOGRAM_LOG_MIN = -12.0f;

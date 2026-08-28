@@ -60,6 +60,7 @@ PS_OUTPUT main(PS_INPUT input)
 #else
 
 #	include "Common/FrameBuffer.hlsli"
+#	include "Common/Game.hlsli"
 #	include "Common/MotionBlur.hlsli"
 #	include "Common/Permutation.hlsli"
 #	include "Common/Random.hlsli"

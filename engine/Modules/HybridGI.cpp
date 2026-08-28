@@ -627,6 +627,15 @@ void HybridGI::DrawSettings()
 					BeginSettingRow("Steps Per Direction", "Number of horizon samples along each direction. More steps improve spatial accuracy and large-radius stability.");
 					Util::UIntSlider("##num_steps", &settings.NumSteps, 1, 20, "%d", ImGuiSliderFlags_AlwaysClamp);
 
+					BeginSettingRow("Experimental Adaptive Ray Tiles", "Compiles an experimental 8x8 tile classifier that reduces horizon directions and steps only in stable, low-frequency tiles. Disabled by default pending live image-quality and GPU-profiler validation.");
+					recompileFlag |= DrawPixlToggleField("##adaptive_ray_tiles", &settings.EnableAdaptiveRayAllocation);
+
+					BeginSettingRow("Adaptive Minimum Work", "Lowest fraction of configured directions and steps retained in a stable tile. This is applied independently to both loop dimensions; 50% can therefore approach one quarter of the horizon samples in qualifying tiles.");
+					{
+						auto adaptiveGuard = Util::DisableGuard(!settings.EnableAdaptiveRayAllocation);
+						ImGui::SliderFloat("##adaptive_ray_minimum", &settings.AdaptiveRayMinimum, 0.35f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+					}
+
 					BeginSettingRow("Minimum Screen Radius", "Prevents the far-field effect radius collapsing below this fraction of the display width.");
 					ImGui::SliderFloat("##min_screen_radius", &settings.MinScreenRadius, 0.0f, 0.05f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 
@@ -683,8 +692,10 @@ void HybridGI::DrawSettings()
 	// -------------------------------------------------------------------------
 	// DIAGNOSTICS
 	// -------------------------------------------------------------------------
-	ImGui::SeparatorText("Diagnostics");
-	if (ImGui::CollapsingHeader("Developer & Debug Tools")) {
+	if (globals::state->IsDeveloperMode()) {
+		ImGui::SeparatorText("Diagnostics");
+	}
+	if (globals::state->IsDeveloperMode() && ImGui::CollapsingHeader("Developer & Debug Tools")) {
 		static constexpr const char* debugViews[] = {
 			"Composite",
 			"AO Occlusion",
@@ -938,6 +949,7 @@ void HybridGI::WriteDiagnosticManifest(bool complete) const
 		{ "legacyMetalInferenceThreshold", globals::pipeline::materialForge.settings.LegacyMetalInferenceThreshold },
 		{ "legacyMetalInferenceMaximum", globals::pipeline::materialForge.settings.LegacyMetalInferenceMaximum },
 		{ "physicalLocalLightFalloff", globals::pipeline::materialForge.settings.EnablePhysicalLocalLightFalloff },
+		{ "physicalLocalLightFalloffStrength", globals::pipeline::materialForge.settings.PhysicalLocalLightFalloffStrength },
 		{ "localLightMinimumDistance", globals::pipeline::materialForge.settings.LocalLightMinimumDistance },
 		{ "localContactShadows", globals::pipeline::materialForge.settings.EnableLocalContactShadows },
 		{ "localContactShadowLightCount", globals::pipeline::materialForge.settings.LocalContactShadowLightCount },
@@ -1136,6 +1148,8 @@ void HybridGI::LoadSettings(json& o_json)
 	settings.ContactDepthStrength = o_json.value("ContactDepthStrength", 0.35f);
 	settings.ContactDepthRadius = o_json.value("ContactDepthRadius", 96.0f);
 	settings.ContactDepthBias = o_json.value("ContactDepthBias", 0.08f);
+	settings.EnableAdaptiveRayAllocation = o_json.value("EnableAdaptiveRayAllocation", false);
+	settings.AdaptiveRayMinimum = o_json.value("AdaptiveRayMinimum", 0.50f);
 	settings.ResolutionMode = std::clamp(settings.ResolutionMode, 0, 2);
 	settings.DebugView = std::min(settings.DebugView, 13u);
 	settings.WorldCacheTraceSteps = std::clamp(settings.WorldCacheTraceSteps, 2u, 6u);
@@ -1160,6 +1174,7 @@ void HybridGI::LoadSettings(json& o_json)
 	settings.ContactDepthStrength = std::clamp(settings.ContactDepthStrength, 0.0f, 0.75f);
 	settings.ContactDepthRadius = std::clamp(settings.ContactDepthRadius, 24.0f, 256.0f);
 	settings.ContactDepthBias = std::clamp(settings.ContactDepthBias, 0.0f, 0.35f);
+	settings.AdaptiveRayMinimum = std::clamp(settings.AdaptiveRayMinimum, 0.35f, 1.0f);
 	settings.DepthFadeRange.y = std::clamp(settings.DepthFadeRange.y, 1.01e4f, 5e4f);
 	settings.DepthFadeRange.x = std::clamp(settings.DepthFadeRange.x, 1e4f, settings.DepthFadeRange.y - 100.f);
 
@@ -1173,6 +1188,8 @@ void HybridGI::SaveSettings(json& o_json)
 	o_json["ContactDepthStrength"] = settings.ContactDepthStrength;
 	o_json["ContactDepthRadius"] = settings.ContactDepthRadius;
 	o_json["ContactDepthBias"] = settings.ContactDepthBias;
+	o_json["EnableAdaptiveRayAllocation"] = settings.EnableAdaptiveRayAllocation;
+	o_json["AdaptiveRayMinimum"] = settings.AdaptiveRayMinimum;
 }
 
 RE::BSEventNotifyControl HybridGI::MenuOpenCloseEventHandler::ProcessEvent(
@@ -1539,6 +1556,8 @@ void HybridGI::CompileComputeShaders()
 			info.defines.push_back({ "GI_SPECULAR", "" });
 			info.defines.push_back({ "HYBRID_REFLECTIONS", "" });
 		}
+		if (settings.EnableAdaptiveRayAllocation)
+			info.defines.push_back({ "ADAPTIVE_RAY_ALLOCATION", "" });
 	}
 
 	for (auto& info : shaderInfos) {
@@ -1650,6 +1669,7 @@ void HybridGI::UpdateSB()
 		data.ContactDepthStrength = std::clamp(settings.ContactDepthStrength, 0.0f, 0.75f);
 		data.ContactDepthRadius = std::clamp(settings.ContactDepthRadius, 24.0f, 256.0f);
 		data.ContactDepthBias = std::clamp(settings.ContactDepthBias, 0.0f, 0.35f);
+		data.AdaptiveRayMinimum = std::clamp(settings.AdaptiveRayMinimum, 0.35f, 1.0f);
 	}
 
 	ssgiCB->Update(data);

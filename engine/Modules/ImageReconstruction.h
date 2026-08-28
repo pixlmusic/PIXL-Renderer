@@ -23,7 +23,7 @@ private:
 public:
 	// RenderModule interface
 	virtual inline std::string GetName() override { return "ImageReconstruction"; }
-	virtual std::string GetDisplayName() override { return T("feature.image_reconstruction.name", "ImageReconstruction"); }
+	virtual std::string GetDisplayName() override { return T("feature.image_reconstruction.name", "Image Reconstruction"); }
 	virtual inline std::string GetShortName() override { return "ImageReconstruction"; }
 	virtual inline std::string GetModuleSupportLink() override { return MakeNexusModURL(MOD_ID); }
 	virtual inline bool IsCore() const override { return false; }

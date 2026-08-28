@@ -14,7 +14,7 @@
  */
 namespace PhysicalMaterial
 {
-	inline constexpr std::uint32_t SchemaVersion = 2;
+	inline constexpr std::uint32_t SchemaVersion = 3;
 	inline constexpr std::size_t MaxTextureBindings = 9;
 
 	using MaterialID = std::uint64_t;
@@ -46,6 +46,8 @@ namespace PhysicalMaterial
 		HairMarschner = 1u << 6,
 		Glint = 1u << 7,
 		ProjectedGlint = 1u << 8,
+		/** MaterialForge classified this surface as layered animal/fabric fur. */
+		FurShell = 1u << 9,
 	};
 
 	/** @brief Semantic textures available to a physical material. */
@@ -92,6 +94,9 @@ namespace PhysicalMaterial
 		HairMarschner = 1u << 10,
 		Glint = 1u << 11,
 		ProjectedGlint = 1u << 12,
+		// Reserved by the semantic contract. Raster shell emission is intentionally
+		// gated until its dedicated geometry path is installed and live-tested.
+		FurShell = 1u << 13,
 	};
 
 	/** @brief Parameters for stochastic microfacet glints. */
@@ -124,7 +129,8 @@ namespace PhysicalMaterial
 		float emissiveStrength = 0.f;
 
 		std::array<float, 3> f0Factor = { 0.04f, 0.04f, 0.04f };
-		float reserved = 0.f;
+		/** Normalized authored shell length hint for a future shell-fur backend. */
+		float furShellLength = 0.f;
 
 		float roughnessScale = 1.f;
 		float metallicScale = 1.f;
@@ -149,9 +155,12 @@ namespace PhysicalMaterial
 		float projectedRoughness = 1.f;
 
 		float projectedSpecularLevel = 0.04f;
-		float reserved0 = 0.f;
-		float reserved1 = 0.f;
-		float reserved2 = 0.f;
+		/** Confidence that the source material represents fur rather than cloth/hair. */
+		float furConfidence = 0.f;
+		/** Suggested strand occupancy used when a shell backend is available. */
+		float furDensity = 0.f;
+		/** Suggested fiber softness/broad forward scatter. */
+		float furSoftness = 0.f;
 
 		Glint glint;
 		Glint projectedGlint;
@@ -194,7 +203,8 @@ namespace PhysicalMaterial
 
 	static_assert(static_cast<std::uint32_t>(RasterFlag::HasEmissive) == (1u << 0));
 	static_assert(static_cast<std::uint32_t>(RasterFlag::ProjectedGlint) == (1u << 12));
-	static_assert(sizeof(Descriptor) == 208, "Descriptor schema 2 layout changed without a schema-version update.");
+	static_assert(static_cast<std::uint32_t>(RasterFlag::FurShell) == (1u << 13));
+	static_assert(sizeof(Descriptor) == 208, "Descriptor schema 3 layout changed without a schema-version update.");
 	static_assert(sizeof(TextureBinding) == 16, "TextureBinding must retain its backend upload layout.");
 	static_assert(std::is_standard_layout_v<Descriptor>);
 	static_assert(std::is_trivially_copyable_v<Descriptor>);

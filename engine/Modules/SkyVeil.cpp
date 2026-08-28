@@ -22,7 +22,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 
 void SkyVeil::DrawSettings()
 {
-	ImGui::SliderFloat(T(TKEY("opacity"), "Opacity"), &settings.Opacity, 0.0f, 4.0f, "%.1f");
+	ImGui::SliderFloat(T(TKEY("opacity"), "Sky Haze Strength"), &settings.Opacity, 0.0f, 4.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("opacity_tooltip"),
 							  "Higher values make cloud shadows darker."));
@@ -37,28 +37,28 @@ void SkyVeil::DrawSettings()
 		}
 
 		ImGui::BeginDisabled(settings.EnableVolumetricClouds == 0);
-		ImGui::SliderFloat(T(TKEY("cloud_density"), "Optical Density"), &settings.CloudDensity, 0.25f, 2.5f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("cloud_density"), "Optical Density"), &settings.CloudDensity, 0.25f, 2.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("cloud_density_tooltip"), "Controls cloud extinction and perceived body. Higher values produce denser storm clouds."));
-		ImGui::SliderFloat(T(TKEY("cloud_depth"), "Layer Depth"), &settings.CloudDepth, 0.0f, 1.0f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("cloud_depth"), "Layer Depth"), &settings.CloudDepth, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("cloud_depth_tooltip"), "Controls parallax separation between density strata without changing the cloud mesh."));
-		ImGui::SliderFloat(T(TKEY("cloud_self_shadow"), "Self-Shadow Strength"), &settings.SelfShadowStrength, 0.0f, 1.5f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("cloud_self_shadow"), "Self-Shadow Strength"), &settings.SelfShadowStrength, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("cloud_self_shadow_tooltip"), "Darkens dense cloud interiors according to the sun direction."));
-		ImGui::SliderFloat(T(TKEY("cloud_silver_lining"), "Silver Lining"), &settings.SilverLining, 0.0f, 2.0f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("cloud_silver_lining"), "Silver Lining"), &settings.SilverLining, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("cloud_silver_lining_tooltip"), "Strength of forward-scattered sunlight around thin cloud edges."));
-		ImGui::SliderFloat(T(TKEY("cloud_ambient"), "Ambient Fill"), &settings.AmbientLighting, 0.0f, 1.0f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("cloud_ambient"), "Ambient Fill"), &settings.AmbientLighting, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("cloud_ambient_tooltip"), "Minimum multiple-scattering fill inside dense clouds. Raise this if overcast clouds become too dark."));
-		ImGui::SliderFloat(T(TKEY("cloud_detail"), "Density Detail"), &settings.DetailStrength, 0.0f, 1.0f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("cloud_detail"), "Density Detail"), &settings.DetailStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("cloud_detail_tooltip"), "Blends additional offset density strata to reduce the flat-card appearance."));
-		ImGui::SliderFloat(T(TKEY("cloud_phase"), "Forward Scattering"), &settings.PhaseEccentricity, 0.0f, 0.85f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("cloud_phase"), "Forward Scattering"), &settings.PhaseEccentricity, 0.0f, 0.85f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("cloud_phase_tooltip"), "Anisotropy of sunlight through clouds. High values create a tighter glow near the sun."));
-		ImGui::SliderFloat(T(TKEY("cloud_horizon_fade"), "Horizon Stability"), &settings.HorizonFade, 0.0f, 1.0f, "%.2f");
+		ImGui::SliderFloat(T(TKEY("cloud_horizon_fade"), "Horizon Stability"), &settings.HorizonFade, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("cloud_horizon_fade_tooltip"), "Reduces texture stretching and excessive layer separation near the horizon."));
 		ImGui::EndDisabled();

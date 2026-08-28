@@ -7,8 +7,11 @@
 struct RCASConfig
 {
 	float sharpness;
-	float3 pad;
+	uint32_t useConfidence;
+	float2 inputDimensions;
 };
+
+static_assert(sizeof(RCASConfig) == 16, "RCASConfig ABI mismatch");
 
 RCAS::~RCAS()
 {
@@ -32,7 +35,14 @@ void RCAS::CreateComputeShader()
 	rcasComputeShader.attach((ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\ImageReconstruction\\RCAS\\RCAS.hlsl", defines, "cs_5_0"));
 }
 
-void RCAS::ApplySharpen(ID3D11ShaderResourceView* inputSRV, ID3D11UnorderedAccessView* outputUAV, float sharpness)
+void RCAS::ApplySharpen(
+	ID3D11ShaderResourceView* inputSRV,
+	ID3D11UnorderedAccessView* outputUAV,
+	float sharpness,
+	ID3D11ShaderResourceView* reactiveMask,
+	ID3D11ShaderResourceView* transparencyMask,
+	ID3D11ShaderResourceView* motionVectors,
+	float2 inputDimensions)
 {
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "RCAS Sharpening");
@@ -53,6 +63,8 @@ void RCAS::ApplySharpen(ID3D11ShaderResourceView* inputSRV, ID3D11UnorderedAcces
 
 	RCASConfig config{};
 	config.sharpness = sharpness;
+	config.useConfidence = reactiveMask && transparencyMask && motionVectors && inputDimensions.x > 0.0f && inputDimensions.y > 0.0f;
+	config.inputDimensions = config.useConfidence ? inputDimensions : float2{};
 
 	rcasConfigCB->Update(config);
 	auto bufferArray = rcasConfigCB->CB();
@@ -60,8 +72,8 @@ void RCAS::ApplySharpen(ID3D11ShaderResourceView* inputSRV, ID3D11UnorderedAcces
 	context->CSSetShader(rcasComputeShader.get(), nullptr, 0);
 	context->CSSetConstantBuffers(0, 1, &bufferArray);
 
-	ID3D11ShaderResourceView* srvs[] = { inputSRV };
-	context->CSSetShaderResources(0, 1, srvs);
+	ID3D11ShaderResourceView* srvs[] = { inputSRV, reactiveMask, transparencyMask, motionVectors };
+	context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
 
 	ID3D11UnorderedAccessView* uavs[] = { outputUAV };
 	context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
@@ -70,8 +82,8 @@ void RCAS::ApplySharpen(ID3D11ShaderResourceView* inputSRV, ID3D11UnorderedAcces
 	uint32_t dispatchY = (screenHeight + 7) / 8;
 	context->Dispatch(dispatchX, dispatchY, 1);
 
-	ID3D11ShaderResourceView* nullSRVs[] = { nullptr };
-	context->CSSetShaderResources(0, 1, nullSRVs);
+	ID3D11ShaderResourceView* nullSRVs[] = { nullptr, nullptr, nullptr, nullptr };
+	context->CSSetShaderResources(0, ARRAYSIZE(nullSRVs), nullSRVs);
 
 	ID3D11UnorderedAccessView* nullUAVs[] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);

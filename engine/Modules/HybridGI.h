@@ -90,6 +90,10 @@ public:
 		uint NumSlices = 4u;
 		uint NumSteps = 8u;
 		int ResolutionMode = 0;  // PIXL production invariant: full game-render resolution
+		// Experimental Task 09 foundation. Disabled by default so the known-good
+		// fixed-work GI permutation remains the shipped behaviour until live-tested.
+		bool EnableAdaptiveRayAllocation = false;
+		float AdaptiveRayMinimum = 0.50f;
 		// visual
 		float MinScreenRadius = 0.01f;
 		float AORadius = 256.f;
@@ -251,9 +255,14 @@ public:
 		float ContactDepthStrength;
 		float ContactDepthRadius;
 		float ContactDepthBias;
+
+		// Append-only 8x8 adaptive ray-classification controls. Enablement is a
+		// shader permutation; the CB only carries the retained-work floor.
+		float AdaptiveRayMinimum;
+		float3 pad3;
 	};
 	STATIC_ASSERT_ALIGNAS_16(HybridGICB);
-	static_assert(sizeof(HybridGICB) == 384, "HybridGICB must match the PIXL Rendering vNext Shader Model 5 layout.");
+	static_assert(sizeof(HybridGICB) == 400, "HybridGICB must match the PIXL Rendering vNext Shader Model 5 layout.");
 	static_assert(offsetof(HybridGICB, WorldCacheEnabled) == 216);
 	static_assert(offsetof(HybridGICB, WorldCacheTraceSteps) == 228);
 	static_assert(offsetof(HybridGICB, WorldCacheDirectionalOcclusionEnabled) == 256);
@@ -264,6 +273,7 @@ public:
 	static_assert(offsetof(HybridGICB, ReflectionIntensity) == 328);
 	static_assert(offsetof(HybridGICB, ReflectionFireflyClamp) == 352);
 	static_assert(offsetof(HybridGICB, ContactDepthEnabled) == 368);
+	static_assert(offsetof(HybridGICB, AdaptiveRayMinimum) == 384);
 	eastl::unique_ptr<ConstantBuffer> ssgiCB;
 
 	eastl::unique_ptr<Texture2D> texNoise = nullptr;

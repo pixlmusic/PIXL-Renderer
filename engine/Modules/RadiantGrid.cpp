@@ -36,15 +36,16 @@ void RadiantGrid::DrawSettings()
 
 	ImGui::Spacing();
 
-	if (ImGui::TreeNodeEx(T(TKEY("statistics"), "Statistics"), ImGuiTreeNodeFlags_DefaultOpen)) {
+	if (globals::state->IsDeveloperMode() && ImGui::TreeNodeEx(T(TKEY("statistics"), "Statistics"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		ImGui::Text(std::format("Clustered Light Count : {}", lightCount).c_str());
 
 		ImGui::TreePop();
 	}
 
-	ImGui::SeparatorText(T(TKEY("debug"), "Debug"));
+	if (globals::state->IsDeveloperMode())
+		ImGui::SeparatorText(T(TKEY("debug"), "Debug"));
 
-	if (ImGui::TreeNode(T(TKEY("light_limit_vis"), "Light Limit Visualization"))) {
+	if (globals::state->IsDeveloperMode() && ImGui::TreeNode(T(TKEY("light_limit_vis"), "Light Limit Visualization"))) {
 		ImGui::Checkbox(T(TKEY("enable_lights_vis"), "Enable Lights Visualisation"), &settings.EnableLightsVisualisation);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("%s", T(TKEY("enable_lights_vis_tooltip"), "Enables a clustered-light diagnostic overlay. Changing this clears and automatically recompiles affected lighting shaders."));
@@ -673,6 +674,35 @@ namespace
 		std::transform(stem.begin(), stem.end(), stem.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 		return stem;
 	}
+
+	struct IncandescentParticleProfile
+	{
+		float radiusScale;
+		float minimumRadius;
+		float intensityScale;
+	};
+
+	std::optional<IncandescentParticleProfile> GetIncandescentParticleProfile(std::string_view a_stem)
+	{
+		// This is deliberately restricted to practical incandescent emitters.
+		// The existing soft-effect/billboard/depth-test checks still apply, and
+		// an attached Skyrim light remains authoritative (GetParticleLightConfig
+		// rejects shader properties which already own lightData).
+		auto contains = [&](std::string_view token) {
+			return a_stem.find(token) != std::string_view::npos;
+		};
+
+		if (contains("candle") || contains("wick"))
+			return IncandescentParticleProfile{ 8.0f, 280.0f, 0.90f };
+		if (contains("torch") || contains("sconce"))
+			return IncandescentParticleProfile{ 10.0f, 420.0f, 1.05f };
+		if (contains("brazier") || contains("bonfire") || contains("campfire") || contains("hearth"))
+			return IncandescentParticleProfile{ 12.0f, 620.0f, 1.15f };
+		if (contains("fire") || contains("flame") || contains("ember") || contains("burn"))
+			return IncandescentParticleProfile{ 9.0f, 380.0f, 1.00f };
+
+		return std::nullopt;
+	}
 }
 
 void RadiantGrid::ParticleLightConfigStore::Load()
@@ -774,16 +804,22 @@ RadiantGrid::VertexColorCacheEntry RadiantGrid::GetParticleLightConfig(RE::BSRen
 
 	auto& configs = particleLightConfigs.configs;
 	auto configIt = configs.find(*textureName);
-	if (configIt == configs.end())
+	const auto incandescentProfile = GetIncandescentParticleProfile(*textureName);
+	if (configIt == configs.end() && !incandescentProfile)
 		return cacheInvalid(node);
 
-	ParticleLightConfig config = configIt->second;
+	ParticleLightConfig config = configIt != configs.end() ? configIt->second : ParticleLightConfig{};
 
 	VertexColorCacheEntry entry{};
 	entry.valid = true;
 	entry.applyEffectMaterialTint = true;
 	entry.config = config;
 	entry.baseColor = { 1, 1, 1, 1 };
+	if (incandescentProfile) {
+		entry.radiusScale = incandescentProfile->radiusScale;
+		entry.minimumRadius = incandescentProfile->minimumRadius;
+		entry.intensityScale = incandescentProfile->intensityScale;
+	}
 	bool hasVertexTint = false;
 	if (auto rendererData = a_pass->geometry->GetGeometryRuntimeData().rendererData) {
 		if (auto triShape = a_pass->geometry->AsTriShape()) {
@@ -844,11 +880,17 @@ bool RadiantGrid::QueueParticleLight(RE::BSRenderPass* a_pass, VertexColorCacheE
 			color.blue *= emittance->blue;
 		}
 	}
+	color.red *= a_reference.intensityScale;
+	color.green *= a_reference.intensityScale;
+	color.blue *= a_reference.intensityScale;
 
 	ResolvedParticleLight resolved;
 	resolved.position = a_pass->geometry->world.translate;
 	resolved.color = color;
-	resolved.radius = a_pass->geometry->worldBound.radius;
+	resolved.radius = std::clamp(
+		std::max(a_pass->geometry->worldBound.radius * a_reference.radiusScale, a_reference.minimumRadius),
+		1.0f,
+		1600.0f);
 
 	std::unique_lock lock{ particleLightsMutex };
 	queuedParticleLights.push_back(resolved);
@@ -901,7 +943,10 @@ void RadiantGrid::AddParticleLightsToBuffer(eastl::vector<LightData>& a_lightsDa
 		light.color.z = pl.color.blue * invPI;
 		light.color *= pl.color.alpha;
 
-		light.radius = pl.radius * 0.5f;
+		// ResolvedParticleLight already carries its final conservative world
+		// radius. Configured emitters preserve the historic 0.5x default while
+		// named flames/candles/torches use their bounded practical-light profile.
+		light.radius = pl.radius;
 
 		light.lightFlags.set(LightFlags::Simple);
 		SetLightPosition(light, pl.position);

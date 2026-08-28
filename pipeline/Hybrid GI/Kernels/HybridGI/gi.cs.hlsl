@@ -330,15 +330,88 @@ uint QuantizeAngularMask(float2 normalizedRange)
 	return SafeBitMask(last - first, first);
 }
 
+#if defined(ADAPTIVE_RAY_ALLOCATION)
+// First-stage Task 09 classifier. It deliberately shares one conservative
+// maximum across the existing 8x8 GI group: a single disocclusion or geometric
+// edge keeps the whole tile at high quality, while stable, low-frequency tiles
+// may reduce both horizon-loop dimensions. No queue, indirect dispatch or new
+// texture is introduced until this classification has live profiler proof.
+groupshared uint gAdaptiveTileDemand;
+
+float AdaptiveWorldCacheConfidence(float3 viewspacePosition)
+{
+	if (WorldCacheEnabled == 0u)
+		return 1.0f;
+
+	float3 cameraWS = ViewToWorldPosition(0.0f, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
+	float3 positionWS = ViewToWorldPosition(viewspacePosition, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
+	uint cascade = WorldCacheCascadeBlend(positionWS, cameraWS) >= 0.5f ? 1u : 0u;
+	int3 cell = int3(floor(positionWS / WorldCacheCellSize(cascade)));
+	uint2 atlasCoord = WorldCacheAtlasCoord(cell, cascade);
+	uint metadata = srcWorldMetadata.Load(int3(atlasCoord, 0));
+	if ((metadata & 0x00ffffffu) != WorldCacheHash(cell, cascade))
+		return 0.0f;
+
+	uint age = ((FrameIndex & 255u) - (metadata >> 24)) & 255u;
+	float ageFade = WorldCacheAgeFade(age, WorldCacheMaxAge);
+	uint surface = srcWorldNormal.Load(int3(atlasCoord, 0));
+	return saturate(UnpackWorldConfidence(surface) * UnpackWorldOccupancy(surface) * ageFade);
+}
+
+float ClassifyAdaptiveRayDemand(
+	uint2 dtid, float2 uv, float2 frameScale, float viewspaceZ, float3 viewspaceNormal)
+{
+	const bool validSurface = viewspaceZ > FP_Z && viewspaceZ < DepthFadeRange.y;
+	if (!validSurface)
+		return 0.0f;
+
+	const float coarseMip = min((float)RES_MIP + 1.0f, 4.0f);
+	float coarseZ = srcWorkingDepth.SampleLevel(samplerPointClamp, uv * frameScale, coarseMip);
+	float depthDemand = saturate(abs(coarseZ - viewspaceZ) / max(abs(viewspaceZ), 64.0f) * 24.0f);
+
+	float3 coarseNormal = GBuffer::DecodeNormal(srcNormal.SampleLevel(samplerPointClamp, uv * frameScale, coarseMip));
+	float normalDemand = saturate((1.0f - abs(dot(viewspaceNormal, coarseNormal))) * 6.0f);
+
+	float accumulatedFrames = srcAccumFrames[dtid] * 255.0f;
+	// radianceDisocc already converts motion, depth/normal rejection and
+	// disocclusion into a reduced history count, so this consumes all four
+	// signals without adding another motion-vector binding to the GI pass.
+	float temporalDemand = 1.0f - saturate(accumulatedFrames * (1.0f / 8.0f));
+
+	const float fineRadianceMip = min((float)RES_MIP, 4.0f);
+	const float coarseRadianceMip = min(fineRadianceMip + 2.0f, 4.0f);
+	float fineLuminance = Luminance(srcRadiance.SampleLevel(samplerPointClamp, uv * frameScale, fineRadianceMip));
+	float coarseLuminance = Luminance(srcRadiance.SampleLevel(samplerPointClamp, uv * frameScale, coarseRadianceMip));
+	float luminanceDemand = saturate(abs(fineLuminance - coarseLuminance) /
+		max(max(fineLuminance, coarseLuminance), 0.05f) * 1.5f);
+
+	float4 normalRoughness = FULLRES_LOAD(srcNormalRoughness, dtid, uv * frameScale, samplerLinearClamp);
+	float roughness = saturate(1.0f - normalRoughness.z);
+	float3 reflectance = FULLRES_LOAD(srcReflectance, dtid, uv * frameScale, samplerLinearClamp);
+	float specularDemand = saturate((1.0f - roughness) * 1.5f) * saturate(Luminance(reflectance) * 4.0f);
+
+	float3 viewspacePosition = ScreenToViewPosition(uv, viewspaceZ);
+	float cacheDemand = 1.0f - AdaptiveWorldCacheConfidence(viewspacePosition);
+
+	float demand = max(depthDemand, normalDemand);
+	demand = max(demand, temporalDemand * 0.90f);
+	demand = max(demand, luminanceDemand * 0.80f);
+	demand = max(demand, specularDemand);
+	demand = max(demand, cacheDemand * 0.60f);
+	return saturate(demand);
+}
+#endif
+
 void CalculateGI(
 	uint2 dtid, float2 uv, float viewspaceZ, float3 viewspaceNormal,
+	uint effectiveNumSlices, uint effectiveNumSteps,
 	out float o_ao, out sh2 o_currY, out float2 o_currCoCg, out float4 o_currGIAOSpecular, out float4 o_bentVisibility)
 {
 	const float2 frameScale = FrameDim * RcpTexDim;
 	float2 normalizedScreenPos = uv;
 
-	const float rcpNumSlices = rcp((float)NumSlices);
-	const float rcpNumSteps = rcp((float)NumSteps);
+	const float rcpNumSlices = rcp((float)effectiveNumSlices);
+	const float rcpNumSteps = rcp((float)effectiveNumSteps);
 
 	const float pixelTooCloseThreshold = 1.3;
 	const float2 pixelDirRBViewspaceSizeAtCenterZ = viewspaceZ.xx * NDCToViewMul.xy * RCP_OUT_FRAME_DIM;
@@ -402,7 +475,7 @@ void CalculateGI(
 		receiverNormalWS = normalize(ViewToWorldVector(viewspaceNormal, FrameBuffer::CameraViewInverse));
 	}
 
-	for (uint slice = 0; slice < NumSlices; slice++) {
+	for (uint slice = 0; slice < effectiveNumSlices; slice++) {
 		float phi = (Math::PI * rcpNumSlices) * (slice + noiseSlice);
 		float3 directionVec = 0;
 		sincos(phi, directionVec.y, directionVec.x);
@@ -435,7 +508,7 @@ void CalculateGI(
 
 		[unroll] for (int sideSign = -1; sideSign <= 1; sideSign += 2)
 		{
-			[loop] for (uint step = 0; step < NumSteps; step++)
+			[loop] for (uint step = 0; step < effectiveNumSteps; step++)
 			{
 				float s = (step + stepNoise) * rcpNumSteps;
 				s *= s;
@@ -447,7 +520,9 @@ void CalculateGI(
 
 				[branch] if (any(sampleUV > 1.0) || any(sampleUV < 0.0)) continue;
 
-				float mipLevel = clamp(log2(s) + logLenOmega - 3.3, 0, 5);
+				// SetupResources allocates exactly five levels (indices 0..4). Keep
+				// traversal explicit instead of relying on implicit sampler clamping.
+				float mipLevel = clamp(log2(s) + logLenOmega - 3.3, 0, 4);
 				float mipLevelRadiance = mipLevel;
 #if defined(HALF_RES)
 				mipLevel = max(mipLevel, 1);
@@ -762,18 +837,52 @@ void CalculateGI(
 	o_currGIAOSpecular = float4(radianceSpecular, visibilitySpecular);
 }
 
-[numthreads(8, 8, 1)] void main(const uint2 dtid : SV_DispatchThreadID) {
-	if (any(dtid >= uint2(OUT_FRAME_DIM)))
+[numthreads(8, 8, 1)] void main(
+	const uint2 dtid : SV_DispatchThreadID
+#if defined(ADAPTIVE_RAY_ALLOCATION)
+	, const uint3 groupThreadID : SV_GroupThreadID
+#endif
+) {
+	const bool insideFrame = !any(dtid >= uint2(OUT_FRAME_DIM));
+#if !defined(ADAPTIVE_RAY_ALLOCATION)
+	if (!insideFrame)
 		return;
+#endif
 
 	const float2 frameScale = FrameDim * RcpTexDim;
 	uint2 pxCoord = dtid;
 	float2 uv = (pxCoord + .5) * RCP_OUT_FRAME_DIM;
 
-	float viewspaceZ = READ_DEPTH(srcWorkingDepth, pxCoord);
+	float viewspaceZ = 0.0f;
+	float3 viewspaceNormal = float3(0.0f, 0.0f, 1.0f);
+	if (insideFrame) {
+		viewspaceZ = READ_DEPTH(srcWorkingDepth, pxCoord);
+		float2 normalSample = FULLRES_LOAD(srcNormal, pxCoord, uv * frameScale, samplerLinearClamp);
+		viewspaceNormal = GBuffer::DecodeNormal(normalSample);
+	}
 
-	float2 normalSample = FULLRES_LOAD(srcNormal, pxCoord, uv * frameScale, samplerLinearClamp);
-	float3 viewspaceNormal = GBuffer::DecodeNormal(normalSample);
+	uint effectiveNumSlices = NumSlices;
+	uint effectiveNumSteps = NumSteps;
+#if defined(ADAPTIVE_RAY_ALLOCATION)
+	if (groupThreadID.x == 0u && groupThreadID.y == 0u && groupThreadID.z == 0u)
+		gAdaptiveTileDemand = 0u;
+	GroupMemoryBarrierWithGroupSync();
+
+	float localDemand = insideFrame ?
+		ClassifyAdaptiveRayDemand(pxCoord, uv, frameScale, viewspaceZ, viewspaceNormal) : 0.0f;
+	uint quantizedDemand = (uint)round(saturate(localDemand) * 65535.0f);
+	InterlockedMax(gAdaptiveTileDemand, quantizedDemand);
+	GroupMemoryBarrierWithGroupSync();
+
+	if (!insideFrame)
+		return;
+
+	float tileDemand = (float)gAdaptiveTileDemand * (1.0f / 65535.0f);
+	float minimumWork = clamp(AdaptiveRayMinimum, 0.35f, 1.0f);
+	float workFraction = lerp(minimumWork, 1.0f, smoothstep(0.10f, 0.75f, tileDemand));
+	effectiveNumSlices = max(1u, min(NumSlices, (uint)ceil((float)NumSlices * workFraction)));
+	effectiveNumSteps = max(1u, min(NumSteps, (uint)ceil((float)NumSteps * workFraction)));
+#endif
 
 	half2 encodedWorldNormal = GBuffer::EncodeNormal(ViewToWorldVector(viewspaceNormal, FrameBuffer::CameraViewInverse));
 	outPrevGeo[pxCoord] = half3(viewspaceZ, encodedWorldNormal);
@@ -797,6 +906,7 @@ void CalculateGI(
 
 		CalculateGI(
 			pxCoord, uv, viewspaceZ, viewspaceNormal,
+			effectiveNumSlices, effectiveNumSteps,
 			currAo, tempY, tempCoCg, tempSpec, tempBentVisibility);
 
 		currY = (half4)tempY;

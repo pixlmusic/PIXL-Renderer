@@ -78,6 +78,12 @@ private:
 	static constexpr float DefaultShadowCasterCutoff = 0.022f;
 
 	static constexpr float Scale = 0.8f;
+	// PIXL keeps the physically-derived inverse-square response, but lets its
+	// imperceptible tail reach beyond Skyrim's very short authored cut-off.  The
+	// attenuation at a given distance is unchanged; only the smooth retirement
+	// radius is extended so candles, torches, and other practicals do not vanish
+	// abruptly in larger interiors.
+	static constexpr float InverseSquareRangeScale = 2.4f;
 	static constexpr float MetresToUnits = 70.f;
 	static constexpr float MetresToUnitsSq = MetresToUnits * MetresToUnits;
 	static constexpr float ScaledUnitsSq = Scale * MetresToUnitsSq;

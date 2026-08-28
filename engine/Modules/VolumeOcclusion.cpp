@@ -317,6 +317,11 @@ void VolumeOcclusion::SetSharedShadowMapSRV(ID3D11DeviceContext* a_context, ID3D
 
 void VolumeOcclusion::DrawSettings()
 {
+	if (!globals::state->IsDeveloperMode()) {
+		ImGui::TextWrapped("Volume shadow resources are managed automatically by PIXL's lighting pipeline.");
+		return;
+	}
+
 	ImGui::SeparatorText("Debug");
 
 	if (ImGui::TreeNode("Buffer Viewer")) {

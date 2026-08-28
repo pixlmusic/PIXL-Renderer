@@ -100,6 +100,9 @@ namespace
 		float cameraBoundaryRadius = 8192.0f;
 		float cameraBoundaryUsage = 0.0f;
 		bool cameraBoundaryHit = false;
+		bool cameraMotionValid = false;
+		RE::NiPoint3 cameraMotionPosition{};
+		RE::NiPoint3 cameraMotionVelocity{};
 
 		// UI-safe delayed capture. The HUD disappears before the request and
 		// stays suppressed through the temporal sample window.
@@ -114,9 +117,8 @@ namespace
 
 		CameraSuite::Settings originalCamera{};
 
-		// The player remains available for normal third-person compositions, but
-		// fades out before the free camera can intersect the body.  Preserve the
-		// actor's incoming alpha so stealth/fade state is restored exactly.
+		// Preserve the actor's incoming alpha so Photo Mode never inherits Skyrim's
+		// close-camera fade and stealth/fade state is restored exactly on exit.
 		bool playerAlphaSnapshotValid = false;
 		float originalPlayerAlpha = 1.0f;
 	};
@@ -227,26 +229,10 @@ namespace
 		if (!player)
 			return;
 
-		const auto& cameraPosition =
-			playerCamera->cameraRoot->world.translate;
-		const auto playerPosition =
-			player->GetPosition();
-		const float dx = cameraPosition.x - playerPosition.x;
-		const float dy = cameraPosition.y - playerPosition.y;
-		const float dz = cameraPosition.z - playerPosition.z;
-		const float distance =
-			std::sqrt(dx * dx + dy * dy + dz * dz);
-
-		// Fully hide inside the character capsule, then ease back to the exact
-		// incoming alpha.  The hysteresis-sized transition avoids a hard pop while
-		// still preventing first-/third-person body intersections in the lens.
-		const float visibility =
-			std::clamp((distance - 72.0f) / 104.0f, 0.0f, 1.0f);
-		const float smoothVisibility =
-			visibility * visibility * (3.0f - 2.0f * visibility);
-
-		player->SetAlpha(
-			g_directorPhotoMode.originalPlayerAlpha * smoothVisibility);
+		// Character photography is a primary Director use case. The earlier
+		// capsule fade made close portraits impossible, so keep the exact incoming
+		// alpha even if the free camera approaches or intersects the player.
+		player->SetAlpha(g_directorPhotoMode.originalPlayerAlpha);
 	}
 
 	std::string DirectorLower(
@@ -514,6 +500,9 @@ namespace
 		g_directorPhotoMode.cameraAnchor = {};
 		g_directorPhotoMode.cameraBoundaryUsage = 0.0f;
 		g_directorPhotoMode.cameraBoundaryHit = false;
+		g_directorPhotoMode.cameraMotionValid = false;
+		g_directorPhotoMode.cameraMotionPosition = {};
+		g_directorPhotoMode.cameraMotionVelocity = {};
 		g_directorPhotoMode.captureDelayFrames = 0;
 		g_directorPhotoMode.captureHideFrames = 0;
 
@@ -546,6 +535,10 @@ namespace
 					freeCameraState->translation;
 				g_directorPhotoMode.cameraAnchorValid =
 					true;
+				g_directorPhotoMode.cameraMotionPosition =
+					freeCameraState->translation;
+				g_directorPhotoMode.cameraMotionVelocity = {};
+				g_directorPhotoMode.cameraMotionValid = true;
 			}
 		}
 
@@ -639,6 +632,9 @@ namespace
 		g_directorPhotoMode.cameraAnchor = {};
 		g_directorPhotoMode.cameraBoundaryUsage = 0.0f;
 		g_directorPhotoMode.cameraBoundaryHit = false;
+		g_directorPhotoMode.cameraMotionValid = false;
+		g_directorPhotoMode.cameraMotionPosition = {};
+		g_directorPhotoMode.cameraMotionVelocity = {};
 		g_directorPhotoMode.captureDelayFrames = 0;
 		g_directorPhotoMode.captureHideFrames = 0;
 		g_directorPhotoMode.playerAlphaSnapshotValid = false;
@@ -1786,6 +1782,60 @@ namespace
 	}
 
 
+	void SmoothDirectorCameraMotion(RE::FreeCameraState* freeCameraState)
+	{
+		if (!freeCameraState || !g_directorPhotoMode.active)
+			return;
+
+		auto& motion = g_directorPhotoMode;
+		if (!motion.cameraMotionValid) {
+			motion.cameraMotionPosition = freeCameraState->translation;
+			motion.cameraMotionVelocity = {};
+			motion.cameraMotionValid = true;
+			return;
+		}
+
+		const float dt = std::clamp(
+			static_cast<float>(RE::GetSecondsSinceLastFrame()),
+			1.0f / 240.0f,
+			1.0f / 20.0f);
+		const bool shiftHeld =
+			(GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0 ||
+			freeCameraState->useRunSpeed;
+		// Native TFC remains the input source, but ordinary movement is deliberately
+		// slowed for precise framing. Shift restores a fast traversal gear.
+		const float speedScale = shiftHeld ? 0.82f : 0.30f;
+
+		const RE::NiPoint3 proposed = freeCameraState->translation;
+		RE::NiPoint3 rawDelta{
+			proposed.x - motion.cameraMotionPosition.x,
+			proposed.y - motion.cameraMotionPosition.y,
+			proposed.z - motion.cameraMotionPosition.z
+		};
+		const float rawDistanceSq =
+			rawDelta.x * rawDelta.x + rawDelta.y * rawDelta.y + rawDelta.z * rawDelta.z;
+		if (rawDistanceSq > 512.0f * 512.0f) {
+			// Teleports/cell transitions are discontinuities, not camera input.
+			motion.cameraMotionPosition = proposed;
+			motion.cameraMotionVelocity = {};
+			return;
+		}
+
+		RE::NiPoint3 desiredVelocity{
+			rawDelta.x * speedScale / dt,
+			rawDelta.y * speedScale / dt,
+			rawDelta.z * speedScale / dt
+		};
+		const float response = 1.0f - std::exp(-dt * (shiftHeld ? 14.0f : 10.0f));
+		motion.cameraMotionVelocity.x = std::lerp(motion.cameraMotionVelocity.x, desiredVelocity.x, response);
+		motion.cameraMotionVelocity.y = std::lerp(motion.cameraMotionVelocity.y, desiredVelocity.y, response);
+		motion.cameraMotionVelocity.z = std::lerp(motion.cameraMotionVelocity.z, desiredVelocity.z, response);
+		motion.cameraMotionPosition.x += motion.cameraMotionVelocity.x * dt;
+		motion.cameraMotionPosition.y += motion.cameraMotionVelocity.y * dt;
+		motion.cameraMotionPosition.z += motion.cameraMotionVelocity.z * dt;
+		freeCameraState->translation = motion.cameraMotionPosition;
+	}
+
 	void EnforceDirectorCameraBoundary(
 		RE::PlayerCamera* playerCamera)
 	{
@@ -1801,6 +1851,8 @@ namespace
 
 		if (!freeCameraState)
 			return;
+
+		SmoothDirectorCameraMotion(freeCameraState);
 
 		if (!g_directorPhotoMode
 				 .cameraAnchorValid) {
@@ -1858,6 +1910,8 @@ namespace
 				1.0f;
 			g_directorPhotoMode.cameraBoundaryHit =
 				true;
+			g_directorPhotoMode.cameraMotionPosition = position;
+			g_directorPhotoMode.cameraMotionVelocity = {};
 			return;
 		}
 
@@ -1872,6 +1926,7 @@ namespace
 				1.0f);
 		g_directorPhotoMode.cameraBoundaryHit =
 			false;
+		g_directorPhotoMode.cameraMotionPosition = position;
 	}
 
 	void DrawDirectorViewfinder(
@@ -3159,6 +3214,24 @@ bool TuningWorkspaceRenderer::IsDirectorPhotoModeAvailable(
 	std::string* reason)
 {
 	return EvaluateDirectorPhotoModeEligibility(reason);
+}
+
+bool TuningWorkspaceRenderer::OpenDirectorPhotoMode()
+{
+	// If the user reopened PIXL while composing, this is simply a return to the
+	// existing viewfinder. Otherwise use the same guarded entry path as HOME.
+	if (g_directorPhotoMode.active) {
+		if (globals::menu)
+			globals::menu->IsEnabled = false;
+		return true;
+	}
+
+	if (!EnterDirectorPhotoMode())
+		return false;
+
+	if (globals::menu)
+		globals::menu->IsEnabled = false;
+	return true;
 }
 
 bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(

@@ -16,13 +16,13 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 
 void DistanceBlend::DrawSettings()
 {
-	ImGui::SliderFloat(T(TKEY("lod_terrain_brightness"), "LOD Terrain Brightness"), &settings.LODTerrainBrightness, 0.01f, 5.f, "%.2f");
-	ImGui::SliderFloat(T(TKEY("lod_object_brightness"), "LOD Object Brightness"), &settings.LODObjectBrightness, 0.01f, 5.f, "%.2f");
-	ImGui::SliderFloat(T(TKEY("lod_object_snow_brightness"), "LOD Object Snow Brightness"), &settings.LODObjectSnowBrightness, 0.01f, 5.f, "%.2f");
-	ImGui::SliderFloat(T(TKEY("lod_terrain_gamma"), "LOD Terrain Gamma"), &settings.LODTerrainGamma, 0.1f, 3.f, "%.2f");
-	ImGui::SliderFloat(T(TKEY("lod_object_gamma"), "LOD Object Gamma"), &settings.LODObjectGamma, 0.1f, 3.f, "%.2f");
-	ImGui::SliderFloat(T(TKEY("lod_object_snow_gamma"), "LOD Object Snow Gamma"), &settings.LODObjectSnowGamma, 0.1f, 3.f, "%.2f");
-	ImGui::Checkbox(T(TKEY("disable_terrain_vertex_colors"), "Disable Terrain Vertex Colors"), (bool*)&settings.DisableTerrainVertexColors);
+	ImGui::SliderFloat(T(TKEY("lod_terrain_brightness"), "Distant Terrain Brightness"), &settings.LODTerrainBrightness, 0.01f, 5.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::SliderFloat(T(TKEY("lod_object_brightness"), "Distant Object Brightness"), &settings.LODObjectBrightness, 0.01f, 5.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::SliderFloat(T(TKEY("lod_object_snow_brightness"), "Distant Snow Brightness"), &settings.LODObjectSnowBrightness, 0.01f, 5.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::SliderFloat(T(TKEY("lod_terrain_gamma"), "Distant Terrain Tone"), &settings.LODTerrainGamma, 0.1f, 3.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::SliderFloat(T(TKEY("lod_object_gamma"), "Distant Object Tone"), &settings.LODObjectGamma, 0.1f, 3.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::SliderFloat(T(TKEY("lod_object_snow_gamma"), "Distant Snow Tone"), &settings.LODObjectSnowGamma, 0.1f, 3.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	Util::UIntCheckbox(T(TKEY("disable_terrain_vertex_colors"), "Disable Terrain Vertex Colors"), &settings.DisableTerrainVertexColors);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("disable_terrain_vertex_colors_tooltip"),
 							  "Disables vertex coloring on nearby terrain. Best combined with terrain LOD generated in xLODGen with Vertex Color Intensity set to 0."));

@@ -35,5 +35,10 @@ void main(uint2 dispatchID : SV_DispatchThreadID)
     low *= (1.0f / 16.0f);
 
     float3 high = HighResolutionTex.Load(int3(dispatchID, 0));
-    OutputTex[dispatchID] = high + low;
+	// Do not add every octave at equal energy. Equal accumulation turns the
+	// sixteenth-resolution lobe into the flat, screen-wide "2011 bloom" veil.
+	// Radius is allowed to broaden that lobe, but never to dominate the compact
+	// highlight structure from the current level.
+	float broadEnergy = lerp(0.52f, 0.70f, saturate((radius - 0.5f) / 3.0f));
+    OutputTex[dispatchID] = high + low * broadEnergy;
 }

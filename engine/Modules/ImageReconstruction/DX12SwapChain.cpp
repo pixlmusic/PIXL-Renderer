@@ -165,6 +165,15 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 {
 	auto& imageReconstruction = globals::pipeline::imageReconstruction;
 
+	// The proxy swap chain bypasses PIXL's native D3D11 Present detour. Draw the
+	// renderer overlay here so its input queue, compiler panel and settings menu
+	// remain alive whenever DLSS/FSR frame generation owns presentation.
+	globals::pipeline::cameraSuite.DrawRendererUIForPresent();
+	static std::once_flag overlayPathLogged;
+	std::call_once(overlayPathLogged, []() {
+		logger::info("[DX12SwapChain] PIXL overlay/input routed through frame-generation Present");
+	});
+
 	// Scale UI brightness BEFORE fence sync so the D3D11 UIBrightnessCS dispatch
 	// is covered by the D3D11→D3D12 fence. Without this, FidelityFX may read
 	// uiBufferWrapped on D3D12 before the PQ encoding completes on D3D11.

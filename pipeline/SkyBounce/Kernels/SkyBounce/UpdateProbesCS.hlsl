@@ -61,12 +61,20 @@ static const float3 noise3D[32] = {
 	const float fadeInThreshold = 15;
 	const static sh2 unitSH = SkyBounce::UNIT_SH;
 	const SharedData::SkyBounceSettings settings = SharedData::skyBounceSettings;
-	// Probe dimensions are powers of two (256, 256, 128), so wrapping with a
-	// bit-mask is exactly equivalent to modulo for the non-negative coordinates.
-	uint3 cellID = uint3(max(int3(dtid) - settings.ArrayOrigin.xyz, 0)) & SkyBounce::ARRAY_MASK;
-	uint3 validMin = (uint3)max(0, settings.ValidMargin.xyz);
-	uint3 validMax = SkyBounce::ARRAY_DIM - 1 + (uint3)min(0, settings.ValidMargin.xyz);
-	bool isValid = all(cellID >= validMin) && all(cellID <= validMax);  // check if the cell is newly added
+	// ArrayOrigin maps logical cells into the physical toroidal texture. Undo that
+	// mapping with unsigned modular subtraction: every dimension is a power of two,
+	// so the mask is exactly equivalent to modulo even when subtraction wraps.
+	uint3 cellID = (dtid - settings.ArrayOrigin.xyz) & SkyBounce::ARRAY_MASK;
+
+	// Keep validity bounds signed. Casting a negative movement margin to uint can
+	// underflow validMax and incorrectly preserve stale probes after a large move.
+	// Clamping to one full volume also makes teleports deterministically invalidate
+	// every cell while ordinary one-cell scrolling retains the overlapping slab.
+	const int3 arrayDim = int3(SkyBounce::ARRAY_DIM);
+	int3 validMargin = clamp(settings.ValidMargin.xyz, -arrayDim, arrayDim);
+	int3 validMin = max(int3(0, 0, 0), validMargin);
+	int3 validMax = arrayDim - 1 + min(int3(0, 0, 0), validMargin);
+	bool isValid = all(int3(cellID) >= validMin) && all(int3(cellID) <= validMax);  // check if the cell is newly added
 	float3 cellCentreMS = (float3(cellID) + 0.5f - float3(SkyBounce::ARRAY_DIM) * 0.5f) *
 		SkyBounce::CELL_SIZE + settings.PosOffset.xyz;
 
@@ -75,7 +83,10 @@ static const float3 noise3D[32] = {
 	float2 occlusionUV = cellCentreOS.xy * 0.5 + 0.5;
 
 	if (all(occlusionUV > 0) && all(occlusionUV < 1)) {
-		uint accumFrames = isValid ? (outAccumFramesArray[dtid] + 1) : 1;
+		// The history counter is R8_UINT. Saturate instead of wrapping from 255 to
+		// zero, which would periodically discard confidence and destabilize a fully
+		// converged probe during long stationary scenes.
+		uint accumFrames = isValid ? min(outAccumFramesArray[dtid] + 1u, 255u) : 1u;
 		float visibility = srcOcclusionDepth.SampleCmpLevelZero(comparisonSampler, occlusionUV, cellCentreOS.z);
 
 		sh2 occlusionSH = SphericalHarmonics::Scale(SphericalHarmonics::Evaluate(settings.OcclusionDir.xyz), visibility * 4.0 * Math::PI);  // 4 pi from monte carlo
