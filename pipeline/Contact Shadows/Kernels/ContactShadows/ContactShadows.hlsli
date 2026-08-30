@@ -62,10 +62,16 @@ namespace ContactShadows
 	 * shadow map only over its least reliable near-surface range; it is deliberately
 	 * bounded to six taps and is called only for the most influential local lights.
 	 */
-	float GetLocalContactShadow(float3 positionWS, float3 normalWS, float3 lightDirectionWS, float lightDistance)
+	float GetLocalContactShadow(
+		float3 positionWS,
+		float3 normalWS,
+		float3 lightDirectionWS,
+		float lightDistance,
+		float minimumRayLength)
 	{
 		float strength = saturate(SharedData::materialForgeSettings.LocalContactShadowStrength);
-		float rayLength = min(lightDistance, max(SharedData::materialForgeSettings.LocalContactShadowLength, 0.0f));
+		float configuredRayLength = max(SharedData::materialForgeSettings.LocalContactShadowLength, 0.0f);
+		float rayLength = min(lightDistance, max(configuredRayLength, minimumRayLength));
 		float NdotL = saturate(dot(normalWS, lightDirectionWS));
 		if (strength <= 0.0f || rayLength <= 4.0f || NdotL <= 0.02f)
 			return 1.0f;

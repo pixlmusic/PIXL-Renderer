@@ -35,6 +35,14 @@ void FidelityFX::LoadFFX()
 		logger::info("[FidelityFX] Loader DLL loaded successfully from plugin directory");
 
 		ffxLoadFunctions(&ffxModule, module);
+		if (!ffxModule.CreateContext || !ffxModule.DestroyContext || !ffxModule.Configure ||
+		    !ffxModule.Query || !ffxModule.Dispatch) {
+			logger::error("[FidelityFX] Loader DLL is missing required API exports; frame generation has been disabled safely");
+			featureFSR3FG = false;
+			FreeLibrary(module);
+			module = nullptr;
+			return;
+		}
 
 		if (featureFSR3FG) {
 			logger::info("[FidelityFX] Frame generation DLL found and available");
@@ -60,8 +68,13 @@ void FidelityFX::SetupFrameGeneration()
 	ffx::CreateBackendDX12Desc backendDesc{};
 	backendDesc.device = swapChain.d3d12Device.get();
 
-	if (ffx::CreateContext(frameGenContext, nullptr, createFg, backendDesc) != ffx::ReturnCode::Ok)
-		logger::critical("[FidelityFX] Failed to create frame generation context!");
+	frameGenerationRuntimeFault = false;
+	frameGenerationFailureLogged = false;
+	if (ffx::CreateContext(frameGenContext, nullptr, createFg, backendDesc) != ffx::ReturnCode::Ok) {
+		logger::critical("[FidelityFX] Failed to create frame generation context; generated frames are disabled for this session");
+		frameGenerationRuntimeFault = true;
+		frameGenerationFailureLogged = true;
+	}
 }
 
 /**
@@ -75,6 +88,16 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 {
 	auto& imageReconstruction = globals::pipeline::imageReconstruction;
 	auto& swapChain = globals::pipeline::imageReconstruction.dx12SwapChain;
+	a_useFrameGeneration = a_useFrameGeneration && !frameGenerationRuntimeFault;
+	bool frameGenerationSucceeded = a_useFrameGeneration;
+	auto latchFrameGenerationFailure = [&](std::string_view a_stage) {
+		frameGenerationSucceeded = false;
+		frameGenerationRuntimeFault = true;
+		if (!frameGenerationFailureLogged) {
+			logger::critical("[FidelityFX] Frame generation {} failed; generated frames are disabled for this session", a_stage);
+			frameGenerationFailureLogged = true;
+		}
+	};
 
 	// Cache peak nits first since we need HDR feature access
 	auto* hdr = globals::pipeline::cameraSuite.loaded ? &globals::pipeline::cameraSuite : nullptr;
@@ -96,7 +119,10 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 	// Use seq_cst for both to ensure the callback sees both values consistently
 	hdrPeakNits.store(peakNits, std::memory_order_seq_cst);
 	isHDRActive.store(a_isHDR, std::memory_order_seq_cst);
-	needsReset.store(hdrParamsChanged, std::memory_order_seq_cst);
+	// Do not clear a reset requested by a loading/camera discontinuity merely
+	// because HDR parameters happened to remain unchanged this frame.
+	if (hdrParamsChanged)
+		needsReset.store(true, std::memory_order_seq_cst);
 
 	ffx::ConfigureDescFrameGeneration configParameters{};
 
@@ -160,7 +186,8 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 	configParameters.generationRect.height = swapChain.swapChainDesc.Height;
 
 	if (ffx::Configure(frameGenContext, configParameters) != ffx::ReturnCode::Ok) {
-		logger::critical("[FidelityFX] Failed to configure frame generation!");
+		if (a_useFrameGeneration)
+			latchFrameGenerationFailure("configuration");
 	}
 
 	// Register UI buffer with FidelityFX only when FG is active
@@ -178,10 +205,11 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 	}
 
 	if (ffx::Configure(swapChainContext, uiConfig) != ffx::ReturnCode::Ok) {
-		logger::critical("[FidelityFX] Failed to configure UI composition!");
+		if (a_useFrameGeneration)
+			latchFrameGenerationFailure("UI composition");
 	}
 
-	if (a_useFrameGeneration) {
+	if (a_useFrameGeneration && frameGenerationSucceeded) {
 		ffx::DispatchDescFrameGenerationPrepare dispatchParameters{};
 
 		dispatchParameters.commandList = swapChain.commandLists[swapChain.frameIndex].get();
@@ -229,14 +257,14 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 		cameraConfig.cameraPosition[2] = globals::game::frameBufferCached.GetCameraPosAdjust().z;
 
 		if (ffx::Dispatch(frameGenContext, dispatchParameters, cameraConfig) != ffx::ReturnCode::Ok) {
-			logger::critical("[FidelityFX] Failed to dispatch frame generation!");
+			latchFrameGenerationFailure("dispatch");
 		}
 	}
 
 	frameID++;
 
 	// Set isFrameGenActive based on whether FSR3 frame generation is enabled
-	isFrameGenActive = a_useFrameGeneration;
+	isFrameGenActive = a_useFrameGeneration && frameGenerationSucceeded;
 }
 
 void FidelityFX::CreateFSRResources()
@@ -333,12 +361,10 @@ FfxResource ffxGetResource(ID3D11Resource* dx11Resource,
 	return resource;
 }
 
-void FidelityFX::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_reactiveMask, ID3D11Resource* a_transparencyCompositionMask, ID3D11Resource* a_motionVectors, float a_sharpness)
+void FidelityFX::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_depth, ID3D11Resource* a_reactiveMask, ID3D11Resource* a_transparencyCompositionMask, ID3D11Resource* a_motionVectors, float a_sharpness, bool a_resetHistory)
 {
-	auto renderer = globals::game::renderer;
 	auto context = globals::d3d::context;
 	auto state = globals::state;
-	auto& depthTexture = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 
 	float2 screenSize{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight };
 	auto renderSize = Util::ConvertToDynamic(screenSize);
@@ -352,7 +378,7 @@ void FidelityFX::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_r
 	FfxFsr3DispatchUpscaleDescription dispatchParameters{};
 	dispatchParameters.commandList = ffxGetCommandListDX11(context);
 	dispatchParameters.color = ffxGetResource(a_upscalingTexture, L"FSR3_Input_OutputColor");
-	dispatchParameters.depth = ffxGetResource(depthTexture.texture, L"FSR3_InputDepth");
+	dispatchParameters.depth = ffxGetResource(a_depth, L"FSR3_InputDepth");
 	dispatchParameters.motionVectors = ffxGetResource(a_motionVectors, L"FSR3_InputMotionVectors");
 	dispatchParameters.exposure = ffxGetResource(nullptr, L"FSR3_InputExposure");
 	dispatchParameters.upscaleOutput = ffxGetResource(a_upscalingTexture, L"FSR3_OutputColor");
@@ -374,7 +400,7 @@ void FidelityFX::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_r
 	dispatchParameters.sharpness = a_sharpness;
 	dispatchParameters.cameraFovAngleVertical = Util::GetVerticalFOVRad();
 	dispatchParameters.viewSpaceToMetersFactor = 0.01428222656f;
-	dispatchParameters.reset = false;
+	dispatchParameters.reset = a_resetHistory;
 	dispatchParameters.preExposure = 1.0f;
 	dispatchParameters.flags = 0;
 

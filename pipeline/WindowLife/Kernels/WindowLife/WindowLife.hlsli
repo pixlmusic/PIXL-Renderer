@@ -25,8 +25,17 @@ namespace WindowLife
 		// x room contrast, y room emission, z occupant opacity,
 		// w automatic room-art scale
 		float4 Presentation0;
+		// x stable instance salt, y cached material layout policy,
+		// z night blend, w snow-weather state
+		float4 Layout0;
+		// x environment reflection, y interior lighting response,
+		// z weather glass response, w sun glint
+		float4 Fidelity0;
+		// x directional reveal, y room variation, z close cutout feather
+		float4 Fidelity1;
     };
 
+    Texture2D<float4> WindowLifeGlassGrime : register(t122);
     Texture2D<float4> WindowLifeOccupantAtlas : register(t123);
     Texture2D<float4> WindowLifeCurtainAtlas : register(t124);
     Texture2D<float4> WindowLifeAuthoredPaneMask : register(t125);
@@ -45,6 +54,9 @@ namespace WindowLife
     float4 GetGeometry0() { return WindowLifePerDraw[0].Geometry0; }
     float4 GetAsset0() { return WindowLifePerDraw[0].Asset0; }
 	float4 GetPresentation0() { return WindowLifePerDraw[0].Presentation0; }
+	float4 GetLayout0() { return WindowLifePerDraw[0].Layout0; }
+	float4 GetFidelity0() { return WindowLifePerDraw[0].Fidelity0; }
+	float4 GetFidelity1() { return WindowLifePerDraw[0].Fidelity1; }
 
     struct SurfaceResult
     {
@@ -306,6 +318,29 @@ namespace WindowLife
         return roomTile;
     }
 
+    float2 GetFamilyFallbackRoomSize(float family)
+    {
+        float2 roomSize = float2(110.0f, 140.0f); // Nordic / farmhouse
+        if (family >= 0.5f) roomSize = float2(132.0f, 174.0f); // noble
+        if (family >= 1.5f) roomSize = float2(118.0f, 138.0f); // Riften
+        if (family >= 2.5f) roomSize = float2(104.0f, 154.0f); // Windhelm
+        if (family >= 3.5f) roomSize = float2(128.0f, 128.0f); // Dwemer
+        if (family >= 4.5f) roomSize = float2(126.0f, 146.0f); // trade
+        return roomSize;
+    }
+
+    float SelectCurtainTile(float roomSeed, float family, float warmthBand)
+    {
+        float selector = Hash11(roomSeed * 47.91f + warmthBand * 13.7f + 19.7f);
+        float tile = PickRoomTile(selector, 7.0f, 9.0f, 11.0f, 13.0f, 15.0f);
+        if (family >= 0.5f) tile = PickRoomTile(selector, 0.0f, 4.0f, 6.0f, 10.0f, 15.0f);
+        if (family >= 1.5f) tile = PickRoomTile(selector, 3.0f, 7.0f, 9.0f, 13.0f, 14.0f);
+        if (family >= 2.5f) tile = PickRoomTile(selector, 2.0f, 5.0f, 8.0f, 11.0f, 12.0f);
+        if (family >= 3.5f) tile = PickRoomTile(selector, 1.0f, 5.0f, 8.0f, 12.0f, 14.0f);
+        if (family >= 4.5f) tile = PickRoomTile(selector, 3.0f, 7.0f, 9.0f, 13.0f, 15.0f);
+        return tile;
+    }
+
     float SelectFloorComponent(float4 values, float column)
     {
         float result = values.w;
@@ -346,13 +381,10 @@ namespace WindowLife
         float sourceFloorV = RoomFloorSourceV(roomTile);
         floorLocalY = 1.0f - sourceFloorV;
 
-        // Manual mode remains the exact owner-preferred grid/crop path. Automatic
-        // mode keeps its stable detected aperture but treats it as a viewport into
-        // the room art rather than stretching the complete square tile to fit.
-        if (GetInterior0().z < 0.5f)
-            return sourceUV;
-
-        float magnification = clamp(GetPresentation0().w, 1.0f, 1.80f);
+		// Keep aperture detection and room identity stable, but allow the same art
+		// framing control in both automatic and manual sizing modes. Increasing the
+		// value crops/magnifies the authored interior without atlas-edge bleed.
+		float magnification = clamp(GetPresentation0().w, 1.0f, 2.50f);
         float baseSpan = rcp(magnification);
         float apertureAspect = clamp(
             roomSize.x / max(roomSize.y, 1.0f), 0.72f, 1.45f);
@@ -813,7 +845,7 @@ namespace WindowLife
         // Automatic mode is deliberately independent of stale/manual UI values.
         // This is the owner-validated medium-window calibration and is the stable
         // basis from which dedicated geometry can scale up or down.
-        const float2 referenceRoom = float2(110.0f, 140.0f);
+        const float2 referenceRoom = GetFamilyFallbackRoomSize(GetAsset0().x);
 
         float radius = max(GetGeometry0().w, 0.0f);
         if (radius <= 0.0f)
@@ -921,19 +953,46 @@ namespace WindowLife
         float2 plane;
         BuildPlane(worldPosition, N, horizontalAxis, plane);
 
+        uint grimeWidth = 0u;
+        uint grimeHeight = 0u;
+        uint grimeMipCount = 0u;
+        WindowLifeGlassGrime.GetDimensions(0, grimeWidth, grimeHeight, grimeMipCount);
+        float grimeReady = grimeWidth > 0u && grimeHeight > 0u ? 1.0f : 0.0f;
+        float2 grimeUV = plane * float2(0.0065f, 0.0045f) + GetLayout0().xx * float2(7.17f, 3.91f);
+        float2 grimeDx = ddx_coarse(grimeUV);
+        float2 grimeDy = ddy_coarse(grimeUV);
+        float3 filteredGrime = WindowLifeGlassGrime.SampleGrad(
+            SampGlowSampler, grimeUV, grimeDx, grimeDy).rgb;
+        float grimeTexture = dot(filteredGrime, float3(0.299f, 0.587f, 0.114f));
+
+        // Missing assets remain non-fatal. This fallback is deliberately lower
+        // frequency than the former three-octave analytic dirt, avoiding shimmer.
         float coarse = ValueNoise2(plane * 0.014f + GetRuntime0().yy * 17.0f);
-        float fine = ValueNoise2(plane * 0.051f + float2(13.7f, 4.9f));
-        float streak = 0.5f + 0.5f * sin(plane.y * 0.062f + coarse * 5.1f + fine * 1.7f);
-        streak = pow(saturate(streak), 5.0f);
-        float dirt = saturate(coarse * 0.58f + fine * 0.28f + streak * 0.14f);
+        float fine = ValueNoise2(plane * 0.031f + float2(13.7f, 4.9f));
+        float analyticDirt = saturate(coarse * 0.68f + fine * 0.32f);
+        float dirt = lerp(analyticDirt, grimeTexture, grimeReady);
+
+        float weatherResponse = saturate(GetFidelity0().z);
+        float rain = saturate(SharedData::rainResponseSettings.Raining) * weatherResponse;
+        float rainFlow = frac(grimeUV.y * 1.73f - SharedData::Timer * 0.085f + filteredGrime.r * 0.31f);
+        float rainStreak = pow(saturate(1.0f - rainFlow), 12.0f) * rain;
+        float cold = saturate(GetLayout0().w) * weatherResponse;
+        float frostEdge = smoothstep(0.48f, 0.82f, filteredGrime.g) * cold;
+        dirt = saturate(dirt + rainStreak * 0.30f + frostEdge * 0.24f);
 
         r.roughness = saturate(GetGlass0().z + (dirt - 0.35f) * GetGlass1().x * 0.34f);
         r.f0 = saturate(0.040f + GetGlass0().y * 0.034f);
-        r.transmission = saturate(GetGlass0().w * (1.0f - dirt * GetGlass1().x * 0.075f));
+        r.transmission = saturate(GetGlass0().w *
+            (1.0f - dirt * GetGlass1().x * 0.075f) *
+            (1.0f - frostEdge * 0.16f));
         r.normalRetention = lerp(1.0f, GetGlass1().z, r.glassWeight);
 
-        float warpX = ValueNoise2(plane * 0.022f + float2(41.3f, 9.1f)) - 0.5f;
-        float warpY = ValueNoise2(plane * 0.027f + float2(6.7f, 31.9f)) - 0.5f;
+        float warpX = filteredGrime.r - filteredGrime.g;
+        float warpY = filteredGrime.g - filteredGrime.b;
+        if (grimeReady < 0.5f) {
+            warpX = ValueNoise2(plane * 0.022f + float2(41.3f, 9.1f)) - 0.5f;
+            warpY = ValueNoise2(plane * 0.027f + float2(6.7f, 31.9f)) - 0.5f;
+        }
         r.normalWarp = float2(warpX, warpY) * GetGlass1().y * r.glassWeight * fresnelVisibility;
 
         r.debugMask = distanceFade * pane;
@@ -992,7 +1051,7 @@ namespace WindowLife
         float2 roomSize = GetAdaptiveRoomSize();
         float2 baseRoomGrid = localPlane / roomSize + 0.5f;
         float2 sizingReference = GetInterior0().z > 0.5f
-            ? float2(110.0f, 140.0f)
+            ? GetFamilyFallbackRoomSize(GetAsset0().x)
             : max(GetRuntime1().yz, float2(48.0f, 72.0f));
         float referenceRadius = max(length(sizingReference) * 0.50f, 1.0f);
         bool singleAperture = GetAsset0().w > 0.5f ||
@@ -1004,11 +1063,15 @@ namespace WindowLife
         float2 absoluteRoomCell = singleAperture
             ? floor(centerPlane / max(roomSize, 1.0f.xx))
             : floor(centerPlane / roomSize) + roomCell;
-        float roomSeed = Hash21(absoluteRoomCell + GetRuntime0().yy * 41.0f);
+        float instanceSalt = GetLayout0().x;
+        float roomSeed = Hash21(
+            absoluteRoomCell + GetRuntime0().yy * 41.0f +
+            float2(instanceSalt * 311.7f, instanceSalt * 173.3f));
         result.authoredLayoutState = 0.0f;
         bool roomLayoutSafe = true;
         bool allowOccupants = fullInteriorTier;
         bool allowCurtains = true;
+        float nativeLayerWeight = 1.0f;
 
         // A native texture-derived guide is not an authored dependency: it follows
         // whatever compatible window/glow texture is actually installed. At a
@@ -1018,15 +1081,27 @@ namespace WindowLife
         // geometry fallback but moving foreground layers are disabled so they can
         // never expose a bad fit.
         PaneLayout paneLayout = ResolveAuthoredPaneLayout(materialUV, plane);
-        bool attemptedNativeLayout = GetInterior0().z > 0.5f && HasGameGlowTexture();
-        bool useNativeBackground = attemptedNativeLayout && paneLayout.backgroundConfidence > 0.5f;
-        bool useNativeLayers = attemptedNativeLayout && paneLayout.confidence > 0.5f;
+        bool attemptedNativeLayout = GetInterior0().z > 0.5f &&
+            HasGameGlowTexture() && GetLayout0().y > 0.5f;
+        // Fixed guide-mip evidence is converted through a wide dead zone. The
+        // resolved room transitions continuously instead of flipping at 0.5, and
+        // foreground layers are admitted only after clearing the upper boundary.
+        float nativeBackgroundWeight = attemptedNativeLayout
+            ? smoothstep(0.35f, 0.65f, paneLayout.backgroundConfidence)
+            : 0.0f;
+        nativeLayerWeight = attemptedNativeLayout
+            ? smoothstep(0.35f, 0.65f, paneLayout.confidence)
+            : 1.0f;
+        bool useNativeBackground = nativeBackgroundWeight > 1.0e-4f;
+        bool useNativeLayers = nativeLayerWeight > 1.0e-4f;
         if (attemptedNativeLayout) {
-            result.authoredLayoutState = useNativeLayers ? 3.0f : (useNativeBackground ? 2.0f : 1.0f);
+            result.authoredLayoutState = nativeLayerWeight >= 0.65f
+                ? 3.0f
+                : (nativeBackgroundWeight >= 0.35f ? 2.0f : 1.0f);
             if (useNativeBackground) {
-                roomSize = paneLayout.roomSize;
-                centerPlane = paneLayout.centerPlane;
-                baseRoomLocal = saturate(paneLayout.local);
+                roomSize = lerp(roomSize, paneLayout.roomSize, nativeBackgroundWeight);
+                centerPlane = lerp(centerPlane, paneLayout.centerPlane, nativeBackgroundWeight);
+                baseRoomLocal = saturate((plane - centerPlane) / max(roomSize, 1.0f.xx) + 0.5f);
                 singleAperture = true;
 
                 // Quantize only the seed anchor, not the visible coordinates. This
@@ -1035,7 +1110,9 @@ namespace WindowLife
                 // therefore selects the same room, curtain and activity sequence.
                 float2 stableApertureCell = floor(centerPlane / 32.0f + 0.5f.xx);
                 float familySalt = GetAsset0().x * 37.0f;
-                roomSeed = Hash21(stableApertureCell + float2(familySalt, familySalt * 1.73f));
+                roomSeed = Hash21(
+                    stableApertureCell + float2(familySalt, familySalt * 1.73f) +
+                    float2(instanceSalt * 311.7f, instanceSalt * 173.3f));
             }
             allowOccupants = allowOccupants && useNativeLayers;
             allowCurtains = allowCurtains && useNativeLayers;
@@ -1064,6 +1141,8 @@ namespace WindowLife
                 roomSize, float2(0.035f, 0.030f)));
         float curtainSeed = Hash11(roomSeed * 67.13f + 4.7f);
         float curtainPresent = curtainSeed > 0.20f ? 1.0f : 0.0f;
+        float roomWarmthBand = saturate(
+            GetLayout0().z * 0.78f + Hash11(roomSeed * 23.17f + 1.9f) * 0.22f);
 
         // Prefer the authored 4x4 cloth atlas. Querying dimensions makes an
         // unbound optional texture deterministic (0x0), preserving the analytic
@@ -1076,7 +1155,7 @@ namespace WindowLife
         float curtainAtlasReady = curtainAtlasWidth > 0u && curtainAtlasHeight > 0u
             ? 1.0f
             : 0.0f;
-        float curtainTile = floor(Hash11(roomSeed * 47.91f + 19.7f) * 15.999f);
+        float curtainTile = SelectCurtainTile(roomSeed, GetAsset0().x, roomWarmthBand);
         float curtainTileY = floor(curtainTile * 0.25f);
         float curtainTileX = curtainTile - curtainTileY * 4.0f;
         float curtainMaximumMip = min(
@@ -1091,7 +1170,9 @@ namespace WindowLife
             0.0f,
             curtainMaximumMip);
         float curtainInset = min(
-            max(3.0f, exp2(curtainMip) * 1.20f) / 512.0f, 0.12f);
+            max(3.0f, exp2(curtainMip) * 1.20f) / 512.0f +
+            (1.0f - facing) * 0.025f,
+            0.18f);
         float2 curtainTileLocal = float2(curtainLocal.x, 1.0f - curtainLocal.y);
         curtainTileLocal = lerp(
             curtainInset.xx,
@@ -1125,16 +1206,23 @@ namespace WindowLife
         float analyticCurtainMask =
             saturate(max(leftCurtain, rightCurtain)) *
             curtainVertical * curtainPleat * curtainPresent;
+        float curtainAlpha = saturate(curtainAtlasSample.a);
+        float curtainCloseWeight = 1.0f - saturate(curtainMip * 0.50f);
+        float curtainFeather = max(
+            fwidth(curtainAlpha) * GetFidelity1().z * curtainCloseWeight,
+            1.0f / 255.0f);
+        float filteredCurtainAlpha = smoothstep(
+            0.50f - curtainFeather, 0.50f + curtainFeather, curtainAlpha);
         float curtainMask = lerp(
             analyticCurtainMask,
-            saturate(curtainAtlasSample.a) * curtainPresent,
+            filteredCurtainAlpha * curtainPresent,
             curtainAtlasReady);
         // An installed curtain atlas is composited as real colour/alpha below.
         // Applying its alpha again as transmission made the cutout look like a
         // second black shadow. Keep occlusion only for the no-asset fallback.
         result.curtainOcclusion =
             curtainMask * interiorPane * verticalSurface * grazingFade * distanceFade *
-            GetInterior0().x * (allowCurtains ? 1.0f : 0.0f) *
+            GetInterior0().x * (allowCurtains ? nativeLayerWeight : 0.0f) *
             (SharedData::InInterior ? 0.0f : 1.0f) * (1.0f - curtainAtlasReady);
 
         // Anchor the reveal to the aperture itself. The old independently shifted
@@ -1142,6 +1230,12 @@ namespace WindowLife
         // followed the camera after the authored room had already been composited.
         float2 depthEdgeCoord = abs(baseRoomLocal - 0.5f) * 2.0f;
         float roomEdge = smoothstep(0.78f, 1.02f, max(depthEdgeCoord.x, depthEdgeCoord.y));
+        float3 sunDirection = normalize(SharedData::DirLightDirection.xyz + float3(1.0e-5f, 0.0f, 0.0f));
+        float2 sunPlane = float2(dot(sunDirection, horizontalAxis), sunDirection.z);
+        sunPlane *= rsqrt(max(dot(sunPlane, sunPlane), 1.0e-4f));
+        float revealSide = dot((baseRoomLocal - 0.5f) * 2.0f, sunPlane);
+        float directionalRoomEdge = roomEdge *
+            (1.0f + clamp(-revealSide, -1.0f, 1.0f) * GetFidelity1().x);
         float paneGradient = max(fwidth(pane), 1.0e-4f);
         float paneInterior = smoothstep(paneGradient * 0.75f, paneGradient * 2.75f, pane);
         float paneReveal = pane * (1.0f - paneInterior);
@@ -1151,7 +1245,7 @@ namespace WindowLife
             interiorPane * verticalSurface * grazingFade * distanceFade *
             GetInterior0().y * (SharedData::InInterior ? 0.0f : 1.0f) *
             (roomLayoutSafe ? 1.0f : 0.0f) *
-            saturate(roomEdge * 0.72f + paneReveal * 0.30f) *
+            saturate(directionalRoomEdge * 0.72f + paneReveal * 0.30f) *
             (1.0f - authoredRoomAvailable);
 
         // The authored atlas is a true recessed back plane behind procedural
@@ -1195,7 +1289,10 @@ namespace WindowLife
                 0.0f,
                 maximumAtlasMip);
             float atlasCellInset =
-                min(max(2.5f, exp2(atlasMip) * 1.15f) / 512.0f, 0.12f);
+                min(
+                    max(2.5f, exp2(atlasMip) * 1.15f) / 512.0f +
+                    (1.0f - facing) * 0.025f,
+                    0.18f);
 
             // World-up room coordinates become top-down texture V. The inset grows
             // with the selected mip so filtered samples cannot borrow a neighbouring
@@ -1217,21 +1314,27 @@ namespace WindowLife
             // The installed cloth atlas is a genuine RGBA cutout. Analytic colour
             // exists only for a missing-asset fallback; atlas alpha is the exact
             // user-facing Curtain Opacity coverage over the shared aperture fit.
-            float curtainPalette = Hash11(roomSeed * 29.17f + 2.3f);
+            float curtainPalette = saturate(
+                roomWarmthBand * 0.74f + Hash11(roomSeed * 29.17f + 2.3f) * 0.26f);
             float3 analyticCurtainTint = curtainPalette < 0.34f
-                ? float3(0.34f, 0.055f, 0.035f)
+                ? float3(0.13f, 0.16f, 0.20f)
                 : (curtainPalette < 0.67f
                     ? float3(0.10f, 0.19f, 0.105f)
-                    : float3(0.105f, 0.115f, 0.22f));
+                    : float3(0.34f, 0.075f, 0.040f));
             float3 curtainTint = lerp(
                 analyticCurtainTint,
                 max(curtainAtlasSample.rgb, 0.0f.xxx),
                 curtainAtlasReady);
+            curtainTint *= lerp(
+                float3(0.91f, 0.98f, 1.06f),
+                float3(1.10f, 0.94f, 0.78f),
+                roomWarmthBand);
             float roomIllumination = max(
                 dot(max(layeredRoomColor, 0.0f), float3(0.2126f, 0.7152f, 0.0722f)),
                 0.035f);
             float curtainColorWeight = saturate(
-                curtainMask * GetInterior0().x * (allowCurtains ? 1.0f : 0.0f));
+                curtainMask * GetInterior0().x *
+                (allowCurtains ? nativeLayerWeight : 0.0f));
             layeredRoomColor = lerp(
                 layeredRoomColor,
                 curtainTint * (roomIllumination * 1.20f + 0.035f),
@@ -1239,7 +1342,41 @@ namespace WindowLife
 
             // Darkening the ray-clamped room edge turns the parallax boundary into
             // a readable side reveal, completing the window-box depth cue.
-            layeredRoomColor *= 1.0f - roomEdge * 0.18f;
+            layeredRoomColor *= 1.0f - saturate(directionalRoomEdge) * 0.18f;
+
+            // One shared time-of-day state controls room warmth and curtain
+            // selection. Live ambient/sun/rain then provide a restrained exterior
+            // response without turning season or weather into a fake light source.
+            float nightBlend = saturate(GetLayout0().z);
+            float lightingResponse = saturate(GetFidelity0().y);
+            float3 timeTint = lerp(
+                float3(0.95f, 0.99f, 1.04f),
+                float3(1.12f, 0.91f, 0.72f),
+                nightBlend);
+            float3 ambientLight = max(SharedData::GetAmbient(N), 0.0f.xxx);
+            float3 exteriorLight = ambientLight + max(SharedData::DirLightColor.xyz, 0.0f.xxx) * 0.18f;
+            float exteriorLuma = max(
+                dot(exteriorLight, float3(0.2126f, 0.7152f, 0.0722f)),
+                0.025f);
+            float3 exteriorTint = clamp(exteriorLight / exteriorLuma, 0.72f.xxx, 1.28f.xxx);
+            float overcastDim = 1.0f - saturate(SharedData::rainResponseSettings.Raining) * 0.16f;
+            layeredRoomColor *= lerp(
+                1.0f.xxx,
+                timeTint * lerp(1.0f.xxx, exteriorTint, 0.22f) * overcastDim,
+                lightingResponse);
+
+            // Stable per-aperture variation and a gentle ceiling-to-floor falloff
+            // break the repeated lightbox read without changing room identity.
+            float roomVariation = GetFidelity1().y;
+            float brightnessJitter = (Hash11(roomSeed * 193.7f + 4.1f) - 0.5f) * 2.0f;
+            float colorJitter = (Hash11(roomSeed * 211.3f + 9.7f) - 0.5f) * 2.0f;
+            float verticalBounce = lerp(1.06f, 0.82f, saturate(authoredRoomLocal.y));
+            layeredRoomColor *=
+                (1.0f + brightnessJitter * roomVariation) * verticalBounce;
+            layeredRoomColor *= lerp(
+                1.0f.xxx,
+                float3(1.0f + colorJitter * 0.08f, 1.0f, 1.0f - colorJitter * 0.06f),
+                roomVariation);
 
 			// User-facing presentation controls operate only on the recessed room.
 			// Pane classification, masks, glass response and silhouettes remain
@@ -1345,7 +1482,9 @@ namespace WindowLife
             0.0f,
             occupantMaximumMip);
         float occupantInset = min(
-            max(3.0f, exp2(occupantMip) * 1.25f) / 512.0f, 0.12f);
+            max(3.0f, exp2(occupantMip) * 1.25f) / 512.0f +
+            (1.0f - facing) * 0.025f,
+            0.18f);
         float2 safeOccupantLocal = lerp(
             occupantInset.xx,
             (1.0f - occupantInset).xx,
@@ -1354,7 +1493,15 @@ namespace WindowLife
             (float2(occupantTileX, occupantTileY) + safeOccupantLocal) * 0.25f;
         float4 occupantAtlasSample = WindowLifeOccupantAtlas.SampleLevel(
             SampGlowSampler, occupantAtlasUV, occupantMip);
-        float authoredPerson = saturate(occupantAtlasSample.a) * occupantInside;
+        float occupantAlpha = saturate(occupantAtlasSample.a);
+        float occupantCloseWeight = 1.0f - saturate(occupantMip * 0.50f);
+        float occupantFeather = max(
+            fwidth(occupantAlpha) * GetFidelity1().z * occupantCloseWeight,
+            1.0f / 255.0f);
+        float authoredPerson = smoothstep(
+            0.50f - occupantFeather,
+            0.50f + occupantFeather,
+            occupantAlpha) * occupantInside;
         float person = lerp(analyticPerson, authoredPerson, occupantAtlasReady);
 
         float pairSelector = Hash11(eventSeed * 143.1f + 1.9f);
@@ -1378,7 +1525,7 @@ namespace WindowLife
         float authoredOpacity =
             authoredPerson * occupantAtlasReady * envelope * interiorPane *
             verticalSurface * grazingFade * distanceFade *
-            saturate(GetPresentation0().z);
+            saturate(GetPresentation0().z) * nativeLayerWeight;
         bool authoredComposited =
             authoredOpacity > 1.0e-4f && result.roomColorWeight > 1.0e-4f;
         if (authoredComposited) {

@@ -149,7 +149,13 @@ public:
 				return false;
 			}
 
-			ui->GetEventSource<RE::MenuOpenCloseEvent>()->AddEventSink(&singleton);
+			auto* eventSource = ui->GetEventSource<RE::MenuOpenCloseEvent>();
+			if (!eventSource) {
+				logger::error("[SkyBounce] Menu event source not found");
+				return false;
+			}
+
+			eventSource->AddEventSink(&singleton);
 
 			logger::info("Registered {}", typeid(singleton).name());
 

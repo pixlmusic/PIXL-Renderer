@@ -8,6 +8,7 @@
 #include "Modules/MaterialLayers.h"
 #include "Modules/ThinSurface.h"
 #include "Modules/GroundResponse.h"
+#include "Modules/ActorSurfaceEffects.h"
 #include "Modules/FoliageDynamics.h"
 #include "Modules/CameraSuite.h"
 #include "Modules/StrandShading.h"
@@ -155,8 +156,11 @@ void RenderModule::Load(json& o_json)
 			logger::info("Loading {} settings", GetName());
 			try {
 				LoadSettings(o_json[GetName()]);
+			} catch (const std::exception& e) {
+				logger::warn("Invalid settings for {} ({}); using defaults.", GetName(), e.what());
+				RestoreDefaultSettings();
 			} catch (...) {
-				logger::warn("Invalid settings for {}, using default.", GetName());
+				logger::warn("Invalid settings for {} (unknown error); using defaults.", GetName());
 				RestoreDefaultSettings();
 			}
 		} else {
@@ -220,6 +224,7 @@ const std::vector<RenderModule*>& RenderModule::GetModuleList()
 		&globals::pipeline::volumeOcclusion,
 		&globals::pipeline::foliageDynamics,
 		&globals::pipeline::groundResponse,
+		&globals::pipeline::actorSurfaceEffects,
 		&globals::pipeline::contactShadows,
 		&globals::pipeline::materialLayers,
 		&globals::pipeline::rainResponse,
@@ -364,7 +369,7 @@ void RenderModule::DrawUnloadedUI()
 	if (!failedLoadedMessage.empty()) {
 		// Use error color for all failure messages
 		auto& themeSettings = Menu::GetSingleton()->GetTheme();
-		ImGui::TextColored(themeSettings.StatusPalette.Error, failedLoadedMessage.c_str());
+		ImGui::TextColored(themeSettings.StatusPalette.Error, "%s", failedLoadedMessage.c_str());
 		return;
 	}
 
@@ -375,7 +380,7 @@ void RenderModule::DrawUnloadedUI()
 	std::string requiredVersion = RenderModule::GetModuleRequiredVersion(GetShortName());
 
 	auto missingFileMessage = std::format("The {} file is missing. This feature is not installed! Version required: {}", ini_filename, requiredVersion);
-	ImGui::TextColored(themeSettings.StatusPalette.Error, missingFileMessage.c_str());
+	ImGui::TextColored(themeSettings.StatusPalette.Error, "%s", missingFileMessage.c_str());
 
 	// Also show feature summary if available
 	auto [description, keyFeatures] = GetModuleSummary();

@@ -101,6 +101,55 @@ void Atmosphere::RestoreDefaultSettings()
 void Atmosphere::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	auto finiteOr = [](float value, float fallback) {
+		return std::isfinite(value) ? value : fallback;
+	};
+	settings.enabled = settings.enabled ? 1u : 0u;
+	settings.useWorldProbes = settings.useWorldProbes ? 1u : 0u;
+	settings.startDistance = std::clamp(finiteOr(settings.startDistance, 0.0f), 0.0f, 100000.0f);
+	settings.fogHeight = std::clamp(finiteOr(settings.fogHeight, 0.0f), -22000.0f, 22000.0f);
+	settings.fogHeightFalloff = std::clamp(finiteOr(settings.fogHeightFalloff, 0.2f), 0.001f, 2.0f);
+	settings.fogDensity = std::clamp(finiteOr(settings.fogDensity, 0.005f), 0.0f, 1.0f);
+	settings.directionalInscatteringMultiplier = std::clamp(finiteOr(settings.directionalInscatteringMultiplier, 1.0f), 0.0f, 10.0f);
+	settings.directionalInscatteringAnisotropy = std::clamp(finiteOr(settings.directionalInscatteringAnisotropy, 0.2f), -0.99f, 0.99f);
+	settings.cubemapMipLevel = std::clamp(finiteOr(settings.cubemapMipLevel, 7.0f), 1.0f, 7.0f);
+	settings.sunlightAttenuationAmount = std::clamp(finiteOr(settings.sunlightAttenuationAmount, 1.0f), 0.0f, 1.0f);
+	settings.respectVanillaFogFade = settings.respectVanillaFogFade ? 1u : 0u;
+	settings.disableVanillaFog = settings.disableVanillaFog ? 1u : 0u;
+	settings.originalFogColorAmount = std::clamp(finiteOr(settings.originalFogColorAmount, 0.0f), 0.0f, 1.0f);
+	settings.volumetricFogEnabled = settings.volumetricFogEnabled ? 1u : 0u;
+	settings.volumetricGridPixelSize = std::clamp(settings.volumetricGridPixelSize, 4u, 64u);
+	settings.volumetricGridSizeZ = std::clamp(settings.volumetricGridSizeZ, 16u, 160u);
+	settings.volumetricFogDistance = std::clamp(finiteOr(settings.volumetricFogDistance, 60000.0f), 1000.0f, 200000.0f);
+	settings.volumetricFogStartDistance = std::clamp(finiteOr(settings.volumetricFogStartDistance, 0.0f), 0.0f, 200000.0f);
+	settings.volumetricFogNearFadeInDistance = std::clamp(finiteOr(settings.volumetricFogNearFadeInDistance, 1000.0f), 0.0f, 20000.0f);
+	settings.volumetricFogExtinctionScale = std::clamp(finiteOr(settings.volumetricFogExtinctionScale, 1.0f), 0.0f, 10.0f);
+	settings.volumetricDirectionalScatteringIntensity = std::clamp(finiteOr(settings.volumetricDirectionalScatteringIntensity, 1.0f), 0.0f, 10.0f);
+	settings.volumetricShadowBias = std::clamp(finiteOr(settings.volumetricShadowBias, 0.002f), 0.0f, 0.05f);
+	settings.volumetricDepthDistributionScale = std::clamp(finiteOr(settings.volumetricDepthDistributionScale, 8.0f), 1.0f, 128.0f);
+	settings.volumetricSkyLightingIntensity = std::clamp(finiteOr(settings.volumetricSkyLightingIntensity, 1.0f), 0.0f, 10.0f);
+	settings.volumetricFogScatteringDistribution = std::clamp(finiteOr(settings.volumetricFogScatteringDistribution, 0.2f), -0.9f, 0.9f);
+	settings.volumetricHistoryWeight = std::clamp(finiteOr(settings.volumetricHistoryWeight, 0.96f), 0.0f, 0.99f);
+	settings.volumetricHistoryMissSampleCount = std::clamp(settings.volumetricHistoryMissSampleCount, 1u, 16u);
+	settings.volumetricSampleJitterMultiplier = std::clamp(finiteOr(settings.volumetricSampleJitterMultiplier, 0.0f), 0.0f, 1.0f);
+	settings.volumetricUpsampleJitterMultiplier = std::clamp(finiteOr(settings.volumetricUpsampleJitterMultiplier, 0.0f), 0.0f, 1.0f);
+	settings.volumetricLocalLightScatteringIntensity = std::clamp(finiteOr(settings.volumetricLocalLightScatteringIntensity, 1.0f), 0.0f, 100.0f);
+	settings.volumetricUseDisplayResolutionGrid = settings.volumetricUseDisplayResolutionGrid ? 1u : 0u;
+	settings.volumetricDepthAwareUpsampling = settings.volumetricDepthAwareUpsampling ? 1u : 0u;
+	settings.volumetricDepthAwareUpsamplingStrength = std::clamp(finiteOr(settings.volumetricDepthAwareUpsamplingStrength, 8.0f), 0.0f, 32.0f);
+	settings.volumetricHistoryRadianceClamp = std::clamp(finiteOr(settings.volumetricHistoryRadianceClamp, 4.0f), 1.0f, 12.0f);
+	settings.volumetricHistoryDepthRejection = std::clamp(finiteOr(settings.volumetricHistoryDepthRejection, 8.0f), 0.0f, 32.0f);
+	settings.mapAtmosphereEnabled = settings.mapAtmosphereEnabled ? 1u : 0u;
+	settings.mapDisableVolumetricFog = settings.mapDisableVolumetricFog ? 1u : 0u;
+	settings.mapDisableVanillaFog = settings.mapDisableVanillaFog ? 1u : 0u;
+	settings.mapFogDensityMultiplier = std::clamp(finiteOr(settings.mapFogDensityMultiplier, 0.18f), 0.0f, 1.0f);
+	settings.mapFogHeightFalloffMultiplier = std::clamp(finiteOr(settings.mapFogHeightFalloffMultiplier, 1.5f), 0.05f, 2.0f);
+	settings.mapStartDistance = std::clamp(finiteOr(settings.mapStartDistance, 2500.0f), 0.0f, 50000.0f);
+	settings.mapMinimumTransmittance = std::clamp(finiteOr(settings.mapMinimumTransmittance, 0.55f), 0.0f, 1.0f);
+	settings.mapAmbientInscatteringMultiplier = std::clamp(finiteOr(settings.mapAmbientInscatteringMultiplier, 0.65f), 0.0f, 2.0f);
+	settings.mapDirectionalInscatteringMultiplier = std::clamp(finiteOr(settings.mapDirectionalInscatteringMultiplier, 0.35f), 0.0f, 2.0f);
+	settings.mapSunlightAttenuationMultiplier = std::clamp(finiteOr(settings.mapSunlightAttenuationMultiplier, 0.25f), 0.0f, 1.0f);
+	settings.mapWorldProbeMultiplier = std::clamp(finiteOr(settings.mapWorldProbeMultiplier, 0.35f), 0.0f, 1.0f);
 }
 
 void Atmosphere::SaveSettings(json& o_json)
@@ -215,6 +264,11 @@ void Atmosphere::DrawSettings()
 
 void Atmosphere::SetupResources()
 {
+	if (!globals::d3d::device || !globals::d3d::context) {
+		logger::error("[PIXL Atmosphere] D3D11 device/context unavailable; volumetric resources were not created");
+		return;
+	}
+
 	D3D11_SAMPLER_DESC samplerDesc = {};
 	samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
 	samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -256,6 +310,9 @@ void Atmosphere::ClearShaderCache()
 
 void Atmosphere::CaptureDirectionalShadowMap()
 {
+	if (!globals::d3d::context)
+		return;
+
 	ID3D11ShaderResourceView* shadowMap = nullptr;
 	globals::d3d::context->PSGetShaderResources(4, 1, &shadowMap);
 	directionalShadowMap.copy_from(shadowMap);
@@ -265,6 +322,9 @@ void Atmosphere::CaptureDirectionalShadowMap()
 
 void Atmosphere::EnsureVolumetricResources()
 {
+	if (!globals::d3d::device || !globals::game::graphicsState)
+		return;
+
 	uint32_t pixelSize = std::clamp(settings.volumetricGridPixelSize, 4u, 64u);
 	const uint32_t gridZ = std::clamp(settings.volumetricGridSizeZ, 16u, 160u);
 	float2 screenSz{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight };
@@ -376,12 +436,17 @@ void Atmosphere::ReleaseVolumetricResources()
 	hasSceneClassHistory = false;
 	lastPrepassFrame = UINT32_MAX;
 	ID3D11ShaderResourceView* nullSRV = nullptr;
-	globals::d3d::context->PSSetShaderResources(kIntegratedFogPSSlot, 1, &nullSRV);
-	globals::d3d::context->PSSetShaderResources(kDepthRangePSSlot, 1, &nullSRV);
+	if (globals::d3d::context) {
+		globals::d3d::context->PSSetShaderResources(kIntegratedFogPSSlot, 1, &nullSRV);
+		globals::d3d::context->PSSetShaderResources(kDepthRangePSSlot, 1, &nullSRV);
+	}
 }
 
 void Atmosphere::BindIntegratedLightScattering()
 {
+	if (!globals::d3d::context)
+		return;
+
 	ID3D11ShaderResourceView* integratedFogSRV = integratedLightScattering ? integratedLightScattering->srv.get() : nullptr;
 	ID3D11ShaderResourceView* depthRangeSRV = conservativeDepth ? conservativeDepth->srv.get() : nullptr;
 	globals::d3d::context->PSSetShaderResources(kIntegratedFogPSSlot, 1, &integratedFogSRV);
@@ -435,6 +500,14 @@ ID3D11ComputeShader* Atmosphere::GetIntegrationCS()
 
 void Atmosphere::Prepass()
 {
+	if (!globals::d3d::context || !globals::state || !globals::game::graphicsState ||
+		!volumetricFogCB || !linearSampler || !shadowSampler ||
+		!globals::state->sharedDataCB || !globals::state->featureDataCB ||
+		!*globals::game::perFrame.get()) {
+		ReleaseVolumetricResources();
+		return;
+	}
+
 	if (!settings.enabled || !settings.volumetricFogEnabled || settings.volumetricFogExtinctionScale <= 0.0f) {
 		ReleaseVolumetricResources();
 		return;
@@ -464,6 +537,11 @@ void Atmosphere::Prepass()
 	}
 
 	EnsureVolumetricResources();
+	if (!vBufferA || !conservativeDepth || !conservativeDepthHistory ||
+		!lightScattering || !lightScatteringHistory || !integratedLightScattering ||
+		currentGridSize.x == 0u || currentGridSize.y == 0u || currentGridSize.z == 0u) {
+		return;
+	}
 
 	if (settings.fogDensity <= 0.0f) {
 		hasLightScatteringHistory = false;
@@ -546,7 +624,12 @@ void Atmosphere::Prepass()
 		static_cast<double>(settings.volumetricDepthDistributionScale),
 		static_cast<double>(currentGridSize.z) / 120.0);
 	const double farExp = std::exp2(std::min(static_cast<double>(currentGridSize.z) / depthDistributionScale, 120.0));
-	const double gridZOffset = (farPlane - nearWithOffset * farExp) / (farPlane - nearWithOffset);
+	const double depthDenominator = farPlane - nearWithOffset;
+	const double safeDepthDenominator =
+		std::abs(depthDenominator) >= 1.0e-6
+			? depthDenominator
+			: std::copysign(1.0e-6, depthDenominator == 0.0 ? 1.0 : depthDenominator);
+	const double gridZOffset = (farPlane - nearWithOffset * farExp) / safeDepthDenominator;
 	const double gridZScale = (1.0 - gridZOffset) / nearWithOffset;
 	cb.gridZParams = {
 		static_cast<float>(gridZScale),
@@ -578,6 +661,17 @@ void Atmosphere::Prepass()
 		0.0f,
 		0.0f
 	};
+	auto* conservativeDepthShader = depthSrv ? GetConservativeDepthCS() : nullptr;
+	auto* materialSetupShader = GetMaterialSetupCS();
+	auto* lightScatteringShader = GetLightScatteringCS();
+	auto* integrationShader = GetIntegrationCS();
+	if ((depthSrv && !conservativeDepthShader) || !materialSetupShader ||
+		!lightScatteringShader || !integrationShader) {
+		hasLightScatteringHistory = false;
+		hasConservativeDepthHistory = false;
+		return;
+	}
+
 	volumetricFogCB->Update(cb);
 
 	auto context = globals::d3d::context;
@@ -609,7 +703,7 @@ void Atmosphere::Prepass()
 	if (depthSrv) {
 		ID3D11UnorderedAccessView* uavs[1]{ conservativeDepth->uav.get() };
 		context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
-		context->CSSetShader(GetConservativeDepthCS(), nullptr, 0);
+		context->CSSetShader(conservativeDepthShader, nullptr, 0);
 		context->Dispatch(groupX, groupY, 1);
 		uavs[0] = nullptr;
 		context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
@@ -618,7 +712,7 @@ void Atmosphere::Prepass()
 	{
 		ID3D11UnorderedAccessView* uavs[1]{ vBufferA->uav.get() };
 		context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
-		context->CSSetShader(GetMaterialSetupCS(), nullptr, 0);
+		context->CSSetShader(materialSetupShader, nullptr, 0);
 		context->Dispatch(groupX, groupY, groupZ);
 		uavs[0] = nullptr;
 		context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
@@ -642,7 +736,7 @@ void Atmosphere::Prepass()
 		context->CSSetShaderResources(35, 3, localLightSrvs);
 		context->CSSetShaderResources(98, 1, &directionalShadowLightData);
 		context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
-		context->CSSetShader(GetLightScatteringCS(), nullptr, 0);
+		context->CSSetShader(lightScatteringShader, nullptr, 0);
 		context->Dispatch(groupX, groupY, groupZ);
 		uavs[0] = nullptr;
 		context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
@@ -653,7 +747,7 @@ void Atmosphere::Prepass()
 		ID3D11UnorderedAccessView* uavs[1]{ integratedLightScattering->uav.get() };
 		context->CSSetShaderResources(0, 1, srvs);
 		context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
-		context->CSSetShader(GetIntegrationCS(), nullptr, 0);
+		context->CSSetShader(integrationShader, nullptr, 0);
 		context->Dispatch(groupX, groupY, 1);
 	}
 
@@ -662,6 +756,7 @@ void Atmosphere::Prepass()
 	ID3D11UnorderedAccessView* nullUav[1]{ nullptr };
 	ID3D11SamplerState* nullSamplers[2]{ nullptr, nullptr };
 	ID3D11Buffer* nullCb[1]{ nullptr };
+	ID3D11Buffer* nullSharedCbs[2]{ nullptr, nullptr };
 	context->CSSetShaderResources(0, 5, nullSrvs);
 	context->CSSetShaderResources(17, 1, nullDepthSrv);
 	context->CSSetShaderResources(35, 3, nullSrvs);
@@ -671,6 +766,8 @@ void Atmosphere::Prepass()
 	context->CSSetUnorderedAccessViews(0, 1, nullUav, nullptr);
 	context->CSSetSamplers(0, 2, nullSamplers);
 	context->CSSetConstantBuffers(0, 1, nullCb);
+	context->CSSetConstantBuffers(5, 2, nullSharedCbs);
+	context->CSSetConstantBuffers(12, 1, nullCb);
 	context->CSSetShader(nullptr, nullptr, 0);
 
 	if (temporalReprojection) {

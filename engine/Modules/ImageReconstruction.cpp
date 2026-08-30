@@ -3,6 +3,7 @@
 #include "../I18n/I18n.h"
 #include "Deferred.h"
 #include "CameraSuite.h"
+#include "HybridGI.h"
 #include "Hooks.h"
 #include "State.h"
 #include "ImageReconstruction/DX12SwapChain.h"
@@ -305,9 +306,10 @@ void ImageReconstruction::DrawSettings()
 				T(TKEY("dlss_model_preset_j"), "Preset J"),
 				T(TKEY("dlss_model_preset_k"), "Preset K"),
 				T(TKEY("dlss_model_preset_l"), "Preset L"),
-				T(TKEY("dlss_model_preset_m"), "Preset M")
+				T(TKEY("dlss_model_preset_m"), "Preset M"),
+				T(TKEY("dlss_model_preset_f"), "Preset F (DLAA / Ultra Performance)")
 			};
-			ImGui::Combo(T(TKEY("dlss_model_preset"), "DLSS Model Preset"), (int*)&settings.presetDLSS, presets, 5);
+			ImGui::Combo(T(TKEY("dlss_model_preset"), "DLSS Model Preset"), (int*)&settings.presetDLSS, presets, 6);
 			if (auto _tt = Util::HoverTooltipWrapper()) {
 				ImGui::Text("%s", T(TKEY("dlss_model_preset_tooltip"),
 									  "Choose which DLSS AI model preset to use.\n"
@@ -375,6 +377,31 @@ void ImageReconstruction::DrawSettings()
 		bool fgEnabled = settings.frameGenerationMode != 0;
 		if (ImGui::Checkbox(T(TKEY("frame_generation"), "Frame Generation"), &fgEnabled))
 			settings.frameGenerationMode = fgEnabled ? 1 : 0;
+
+		switch (GetFrameGenerationState()) {
+		case FrameGenerationState::Active:
+			ImGui::TextColored(ImVec4(0.42f, 0.82f, 0.64f, 1.0f), "ON - GENERATING FRAMES");
+			break;
+		case FrameGenerationState::TemporarilySuspended:
+			ImGui::TextColored(ImVec4(0.92f, 0.72f, 0.30f, 1.0f), "ON - TEMPORARILY PAUSED WHILE THIS MENU IS OPEN");
+			break;
+		case FrameGenerationState::Starting:
+			ImGui::TextColored(ImVec4(0.42f, 0.82f, 0.64f, 1.0f), "ON - FRAME-GENERATION PATH READY");
+			break;
+		case FrameGenerationState::RestartRequired:
+			ImGui::TextColored(ImVec4(0.92f, 0.72f, 0.30f, 1.0f), "RESTART REQUIRED TO APPLY THE SWITCH ABOVE");
+			break;
+		case FrameGenerationState::Unavailable:
+			ImGui::TextColored(ImVec4(0.92f, 0.42f, 0.36f, 1.0f), "OFF - CURRENT DISPLAY OR RUNTIME REQUIREMENTS ARE NOT MET");
+			break;
+		case FrameGenerationState::RuntimeFault:
+			ImGui::TextColored(ImVec4(0.92f, 0.42f, 0.36f, 1.0f), "OFF - BACKEND ERROR (SEE PIXLRENDERER.LOG)");
+			break;
+		case FrameGenerationState::Off:
+		default:
+			ImGui::TextDisabled("OFF");
+			break;
+		}
 
 		if (!frameGenerationDx12PathActive)
 			ImGui::BeginDisabled();
@@ -522,7 +549,7 @@ void ImageReconstruction::LoadSettings(json& o_json)
 		logger::warn("[ImageReconstruction] Loaded upscaleMethodNoDLSS {} out of range, clamping to {}", settings.upscaleMethodNoDLSS, enumCount ? enumCount - 1 : 0);
 		settings.upscaleMethodNoDLSS = enumCount ? enumCount - 1 : 0;
 	}
-	if (settings.presetDLSS > 4) {
+	if (settings.presetDLSS > 5) {
 		logger::warn("[ImageReconstruction] Loaded presetDLSS {} out of range, resetting to 0 (Default)", settings.presetDLSS);
 		settings.presetDLSS = 0;
 	}
@@ -609,7 +636,39 @@ void ImageReconstruction::PostPostLoad()
 	// Forces FXAA off
 	stl::detour_thunk<BSImageSpace_Init_FXAA>(REL::RelocationID(98974, 105626));
 
+	MenuOpenCloseEventHandler::Register();
+
 	logger::info("[ImageReconstruction] Installed hooks");
+}
+
+RE::BSEventNotifyControl ImageReconstruction::MenuOpenCloseEventHandler::ProcessEvent(
+	const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*)
+{
+	if (a_event && a_event->menuName == RE::LoadingMenu::MENU_NAME && !a_event->opening) {
+		auto& reconstruction = globals::pipeline::imageReconstruction;
+		reconstruction.pendingDLSSReset.store(true, std::memory_order_release);
+		// Frame generation owns separate temporal state and may be active even when
+		// the selected image reconstruction method is not FSR.
+		FidelityFX::needsReset.store(true, std::memory_order_release);
+	}
+	return RE::BSEventNotifyControl::kContinue;
+}
+
+bool ImageReconstruction::MenuOpenCloseEventHandler::Register()
+{
+	static MenuOpenCloseEventHandler singleton;
+	auto* ui = globals::game::ui;
+	if (!ui) {
+		logger::error("[PIXL Image Reconstruction] UI event source unavailable; loading-transition history reset disabled");
+		return false;
+	}
+	auto* eventSource = ui->GetEventSource<RE::MenuOpenCloseEvent>();
+	if (!eventSource) {
+		logger::error("[PIXL Image Reconstruction] Menu event source unavailable; loading-transition history reset disabled");
+		return false;
+	}
+	eventSource->AddEventSink(&singleton);
+	return true;
 }
 
 #undef I18N_KEY_PREFIX
@@ -653,6 +712,35 @@ void ImageReconstruction::CreateUpscalingTextureResources(UpscaleMethod a_upscal
 			transparencyCompositionMaskTexture->CreateSRV(srvDesc);
 			transparencyCompositionMaskTexture->CreateUAV(uavDesc);
 		}
+	}
+
+	// Skyrim exposes the main depth buffer as R24G8_TYPELESS. FidelityFX's DX11
+	// backend describes that resource as integer color rather than depth, so FSR
+	// receives an explicitly encoded R32_FLOAT copy of the same raw device depth.
+	if (a_upscalemethod == UpscaleMethod::kFSR && !fsrDepthTexture) {
+		main.texture->GetDesc(&texDesc);
+		texDesc.Format = DXGI_FORMAT_R32_FLOAT;
+		texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+		texDesc.MipLevels = 1;
+		texDesc.ArraySize = 1;
+		texDesc.SampleDesc.Count = 1;
+		texDesc.SampleDesc.Quality = 0;
+
+		srvDesc = {};
+		srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Texture2D.MostDetailedMip = 0;
+		srvDesc.Texture2D.MipLevels = 1;
+
+		uavDesc = {};
+		uavDesc.Format = DXGI_FORMAT_R32_FLOAT;
+		uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+		uavDesc.Texture2D.MipSlice = 0;
+
+		fsrDepthTexture = new Texture2D(texDesc);
+		fsrDepthTexture->CreateSRV(srvDesc);
+		fsrDepthTexture->CreateUAV(uavDesc);
+		Util::SetResourceName(fsrDepthTexture->resource.get(), "PIXL FSR Typed Depth");
 	}
 
 	// Motion vector copy texture is only needed for DLSS
@@ -740,6 +828,14 @@ void ImageReconstruction::DestroyUpscalingTextureResources(UpscaleMethod a_upsca
 			sharpenerTexture = nullptr;
 		}
 	}
+
+	if (a_upscalemethod != UpscaleMethod::kFSR && fsrDepthTexture) {
+		fsrDepthTexture->srv = nullptr;
+		fsrDepthTexture->uav = nullptr;
+		fsrDepthTexture->resource = nullptr;
+		delete fsrDepthTexture;
+		fsrDepthTexture = nullptr;
+	}
 }
 
 void ImageReconstruction::CheckResources(UpscaleMethod a_upscalemethod)
@@ -799,6 +895,7 @@ ID3D11ComputeShader* ImageReconstruction::GetEncodeTexturesCS()
 			break;
 		case UpscaleMethod::kFSR:
 			defines.push_back({ "FSR", "" });
+			defines.push_back({ "DEPTH_OUTPUT", "" });
 			break;
 		default:
 			// No define for NONE or TAA
@@ -1332,15 +1429,44 @@ bool ImageReconstruction::IsFrameGenerationDx12PathActive() const
 
 bool ImageReconstruction::IsFrameGenerationActive() const
 {
-	return IsFrameGenerationDx12PathActive() && settings.frameGenerationMode && fidelityFX.isFrameGenActive;
+	return IsFrameGenerationDx12PathActive() && settings.frameGenerationMode &&
+	       !fidelityFX.frameGenerationRuntimeFault && fidelityFX.isFrameGenActive;
 }
 
-bool ImageReconstruction::ShouldUseFrameGenerationThisFrame() const
+bool ImageReconstruction::IsFrameGenerationTemporarilySuspended() const
 {
 	auto* ui = globals::game::ui;
 	auto* state = globals::state;
 	const bool menuOpen = (ui && ui->GameIsPaused()) || (state && state->IsMainOrLoadingMenuOpen(ui));
-	return IsFrameGenerationDx12PathActive() && settings.frameGenerationMode && (settings.frameGenerationAllowInMenus || !menuOpen);
+	return IsFrameGenerationDx12PathActive() && settings.frameGenerationMode &&
+	       !fidelityFX.frameGenerationRuntimeFault && menuOpen && !settings.frameGenerationAllowInMenus;
+}
+
+bool ImageReconstruction::ShouldUseFrameGenerationThisFrame() const
+{
+	return IsFrameGenerationDx12PathActive() && settings.frameGenerationMode &&
+	       !fidelityFX.frameGenerationRuntimeFault && !IsFrameGenerationTemporarilySuspended();
+}
+
+ImageReconstruction::FrameGenerationState ImageReconstruction::GetFrameGenerationState() const
+{
+	const bool requested = settings.frameGenerationMode != 0;
+	const bool pathActive = IsFrameGenerationDx12PathActive();
+
+	if (fidelityFX.frameGenerationRuntimeFault)
+		return FrameGenerationState::RuntimeFault;
+	if (!requested)
+		return pathActive ? FrameGenerationState::RestartRequired : FrameGenerationState::Off;
+	if (!pathActive) {
+		if (!isWindowed || fidelityFXMissing || (lowRefreshRate && !settings.frameGenerationForceEnable))
+			return FrameGenerationState::Unavailable;
+		return FrameGenerationState::RestartRequired;
+	}
+	if (IsFrameGenerationTemporarilySuspended())
+		return FrameGenerationState::TemporarilySuspended;
+	if (IsFrameGenerationActive())
+		return FrameGenerationState::Active;
+	return FrameGenerationState::Starting;
 }
 
 bool ImageReconstruction::IsUpscalingActive() const
@@ -1411,12 +1537,14 @@ void ImageReconstruction::CheckBackendFeatures(IDXGIAdapter* adapter)
 
 void ImageReconstruction::UpgradeBackendInterface(void** ppInterface)
 {
-	streamline.slUpgradeInterface(ppInterface);
+	if (streamline.initialized && streamline.slUpgradeInterface && ppInterface)
+		streamline.slUpgradeInterface(ppInterface);
 }
 
 void ImageReconstruction::SetBackendD3DDevice(ID3D11Device* device)
 {
-	streamline.slSetD3DDevice(device);
+	if (streamline.initialized && streamline.slSetD3DDevice && device)
+		streamline.slSetD3DDevice(device);
 }
 
 void ImageReconstruction::PostBackendDevice()
@@ -1473,6 +1601,37 @@ void ImageReconstruction::Upscale()
 	auto context = globals::d3d::context;
 	auto renderer = globals::game::renderer;
 
+	// Temporal reconstruction must not reuse history across discontinuous camera,
+	// projection, or render-resolution state. The same signals already protect
+	// PIXL volumetrics; consume them here before either reconstruction backend.
+	const auto& frameBuffer = globals::game::frameBufferCached;
+	const auto& cameraPos = frameBuffer.GetCameraPosAdjust();
+	const auto& previousCameraPos = frameBuffer.GetCameraPreviousPosAdjust();
+	const float dx = cameraPos.x - previousCameraPos.x;
+	const float dy = cameraPos.y - previousCameraPos.y;
+	const float dz = cameraPos.z - previousCameraPos.z;
+	constexpr float kCameraCutDistance = 4096.0f;
+	const bool cameraCut = dx * dx + dy * dy + dz * dz > kCameraCutDistance * kCameraCutDistance;
+	const auto& dynamicResolution = frameBuffer.GetDynamicResolutionParams1();
+	const bool dynamicResolutionChanged =
+		std::abs(dynamicResolution.x - dynamicResolution.z) > 0.01f ||
+		std::abs(dynamicResolution.y - dynamicResolution.w) > 0.01f;
+	const float currentFov = Util::GetVerticalFOVRad();
+	const bool fovChanged = hasPreviousReconstructionFov &&
+		std::abs(currentFov - previousReconstructionFov) > 1e-4f;
+	previousReconstructionFov = currentFov;
+	hasPreviousReconstructionFov = true;
+
+	if (cameraCut || dynamicResolutionChanged || fovChanged) {
+		pendingDLSSReset.store(true, std::memory_order_release);
+		FidelityFX::needsReset.store(true, std::memory_order_release);
+		if (cameraCut)
+			globals::pipeline::hybridGI.queuedResetHistory.store(true, std::memory_order_release);
+		else
+			globals::pipeline::hybridGI.queuedResetTemporalHistory.store(true, std::memory_order_release);
+	}
+	const bool resetReconstructionHistory = pendingDLSSReset.exchange(false, std::memory_order_acq_rel);
+
 	context->OMSetRenderTargets(0, nullptr, nullptr);  // Unbind all bound render targets
 
 	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
@@ -1506,7 +1665,7 @@ void ImageReconstruction::Upscale()
 			reactiveMaskTexture->uav.get(),
 			transparencyCompositionMaskTexture->uav.get(),
 			(upscaleMethod == UpscaleMethod::kDLSS) ? motionVectorCopyTexture->uav.get() : nullptr,
-			nullptr
+			(upscaleMethod == UpscaleMethod::kFSR && fsrDepthTexture) ? fsrDepthTexture->uav.get() : nullptr
 		};
 		context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 
@@ -1534,9 +1693,9 @@ void ImageReconstruction::Upscale()
 		TracyD3D11Zone(globals::state->tracyCtx, "ImageReconstruction Dispatch");
 
 		if (upscaleMethod == UpscaleMethod::kDLSS) {
-			streamline.Upscale(main.texture, reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVectorCopyTexture->resource.get());
+			streamline.Upscale(main.texture, reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVectorCopyTexture->resource.get(), resetReconstructionHistory);
 		} else if (upscaleMethod == UpscaleMethod::kFSR) {
-			fidelityFX.Upscale(main.texture, reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVector.texture, settings.sharpnessFSR);
+			fidelityFX.Upscale(main.texture, fsrDepthTexture->resource.get(), reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVector.texture, settings.sharpnessFSR, resetReconstructionHistory);
 		}
 
 		state->EndPerfEvent();

@@ -9,7 +9,7 @@ float LoadRunoffMask(int2 pixel, int2 size)
 	float rawMask = saturate((float)RunoffMask.Load(int3(pixel, 0)) / 65535.0f);
 	// Reject only the faint quantised halo. The bright bead remains intact while
 	// its optical falloff reads tighter and less fuzzy after TAA/DLSS.
-	return smoothstep(0.055f, 0.86f, rawMask);
+	return smoothstep(0.10f, 0.90f, rawMask);
 }
 
 [numthreads(8, 8, 1)]
@@ -28,7 +28,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
 	uint encoded = RunoffMask.Load(int3(dispatchID.xy, 0));
 	float rawMask = saturate((float)encoded / 65535.0f);
-	float mask = smoothstep(0.055f, 0.86f, rawMask);
+	float mask = smoothstep(0.10f, 0.90f, rawMask);
 	float rain = saturate(SharedData::rainResponseSettings.Raining);
 	float strength = max(SharedData::rainResponseSettings.RainRunoffStrength, 0.0f);
 	const bool debugMode = strength >= 1.49f;
@@ -75,7 +75,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 	// 0.8-1.0 is already strong, while keeping 1.50 reserved for debug mode.
 	float normalizedStrength = saturate(strength / 1.25f);
 	float opticalGain =
-		0.30f + pow(normalizedStrength, 0.62f) * 1.52f;
+		0.28f + pow(normalizedStrength, 0.62f) * 1.46f;
 	float a = saturate(mask * rain * opticalGain);
 	if (a <= 1e-4f)
 		return;
@@ -88,7 +88,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 	float maskUp = LoadRunoffMask(p + int2(0, -1), runoffSize);
 	float maskDown = LoadRunoffMask(p + int2(0, 1), runoffSize);
 	float2 lensGradient = float2(maskRight - maskLeft, maskDown - maskUp);
-	float lensEdge = saturate(length(lensGradient) * 1.65f);
+	float lensEdge = saturate(length(lensGradient) * 1.40f);
 	float lensCore = saturate(mask - max(max(maskLeft, maskRight), max(maskUp, maskDown)) * 0.32f);
 
 	float directionalLuma = dot(
@@ -104,13 +104,13 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 	// a convex water-lens cue. The effect stays in the active pre-upscale render
 	// space, allowing DLSS to reconstruct it together with the scene instead of
 	// magnifying a display-space overlay.
-	float rimDarkening = a * lensEdge * 0.075f;
+	float rimDarkening = a * lensEdge * 0.060f;
 	scene.xyz *= 1.0f - rimDarkening;
 
 	float3 waterTarget = max(
 		scene.xyz * (1.035f + lensCore * 0.045f),
 		lerp(0.36f.xxx, float3(0.72f, 0.80f, 0.86f), optical));
-	float highlight = a * (0.48f + lensCore * 0.36f) * (1.0f - lensEdge * 0.22f);
+	float highlight = a * (0.43f + lensCore * 0.32f) * (1.0f - lensEdge * 0.24f);
 	scene.xyz = lerp(scene.xyz, waterTarget, highlight);
 
 	MainRW[dispatchID.xy] = scene;

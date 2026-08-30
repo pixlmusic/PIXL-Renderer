@@ -23,6 +23,9 @@ RE::NiPointLight* NaturalLighting::CreatePointLight::thunk(RE::TESObjectLIGH* li
 
 void NaturalLighting::SetExtLightData(RE::NiLight* niLight, const RE::TESObjectLIGH* ligh)
 {
+	if (!niLight || !ligh)
+		return;
+
 	const auto runtimeData = ISLCommon::RuntimeLightDataExt::Get(niLight);
 	runtimeData->flags.set(RadiantGrid::LightFlags::Initialised);
 	if (ligh->data.flags.any(static_cast<RE::TES_LIGHT_FLAGS>(ISLCommon::TES_LIGHT_FLAGS_EXT::kInverseSquare)))
@@ -37,6 +40,9 @@ void NaturalLighting::SetExtLightData(RE::NiLight* niLight, const RE::TESObjectL
 
 void NaturalLighting::ProcessLight(RadiantGrid::LightData& light, RE::BSLight* bsLight, RE::NiLight* niLight) const
 {
+	if (!bsLight || !niLight)
+		return;
+
 	const auto runtimeData = ISLCommon::RuntimeLightDataExt::Get(niLight);
 
 	if (light.lightFlags.none(RadiantGrid::LightFlags::Initialised)) {
@@ -93,7 +99,13 @@ float NaturalLighting::GetAttenuation(const float distance, const float radius, 
 
 float NaturalLighting::BSLight_GetLuminance::thunk(RE::BSLight* bsLight, RE::NiPoint3* targetPosition, RE::NiLight* refLight)
 {
+	if (!bsLight || !targetPosition)
+		return 0.0f;
+
 	auto* niLight = bsLight->light.get();
+	if (!niLight)
+		return 0.0f;
+
 	const auto runtimeData = ISLCommon::RuntimeLightDataExt::Get(niLight);
 
 	if (refLight == niLight || runtimeData->flags.any(RadiantGrid::LightFlags::Disabled))

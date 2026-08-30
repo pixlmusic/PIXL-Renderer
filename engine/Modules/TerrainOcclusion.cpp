@@ -38,18 +38,18 @@ void TerrainOcclusion::DrawSettings()
 				curr_worldspace_name = worldspace->GetName();
 			}
 		}
-		ImGui::Text(fmt::format("Current worldspace: {} ({})", curr_worldspace, curr_worldspace_name).c_str());
-		ImGui::Text(fmt::format("Has height map: {}", heightmaps.contains(curr_worldspace)).c_str());
+		ImGui::Text("Current worldspace: %s (%s)", curr_worldspace.c_str(), curr_worldspace_name.c_str());
+		ImGui::Text("Has height map: %s", heightmaps.contains(curr_worldspace) ? "yes" : "no");
 
 		ImGui::Separator();
 
 		ImGui::BulletText("shadowUpdateCBData");
 		ImGui::Indent();
 		{
-			ImGui::Text(fmt::format("LightPxDir: ({}, {})", shadowUpdateCBData.LightPxDir.x, shadowUpdateCBData.LightPxDir.y).c_str());
-			ImGui::Text(fmt::format("LightDeltaZ: ({}, {})", shadowUpdateCBData.LightDeltaZ.x, shadowUpdateCBData.LightDeltaZ.y).c_str());
-			ImGui::Text(fmt::format("StartPxCoord: {}", shadowUpdateCBData.StartPxCoord).c_str());
-			ImGui::Text(fmt::format("PxSize: ({}, {})", shadowUpdateCBData.PxSize.x, shadowUpdateCBData.PxSize.y).c_str());
+			ImGui::Text("LightPxDir: (%g, %g)", shadowUpdateCBData.LightPxDir.x, shadowUpdateCBData.LightPxDir.y);
+			ImGui::Text("LightDeltaZ: (%g, %g)", shadowUpdateCBData.LightDeltaZ.x, shadowUpdateCBData.LightDeltaZ.y);
+			ImGui::Text("StartPxCoord: %u", shadowUpdateCBData.StartPxCoord);
+			ImGui::Text("PxSize: (%g, %g)", shadowUpdateCBData.PxSize.x, shadowUpdateCBData.PxSize.y);
 		}
 		ImGui::Unindent();
 

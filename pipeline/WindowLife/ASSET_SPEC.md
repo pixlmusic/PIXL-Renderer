@@ -15,7 +15,10 @@ Author room variations as separate lossless `1024 x 1024` PNG or TGA files. Ten 
 - avoid readable text, recognizable copyrighted characters, modern objects, and hard white highlights;
 - retain some neutral wall/floor area so shader parallax does not look like a flat collage.
 
-PIXL will build a full mip chain and encode the runtime atlas as BC7 sRGB. A 4096-square BC7 atlas with mips is about 21 MiB. A 2048-square atlas (512 pixels per room cell) is the performance package option, but 1024-pixel room sources preserve enough detail for close promo shots and future higher-quality presets.
+The release runtime prefers the precompressed, pre-mipped `RoomAtlas_2k.dds`
+(2048-square BC1 sRGB). `RoomAtlas.png` remains a compatibility fallback only.
+Keeping the DDS authored mip chain avoids startup mip generation and uses about
+2.67 MiB of GPU memory for the room layer.
 
 ## Curtains
 
@@ -27,9 +30,10 @@ Curtains are a separate nearer parallax layer. Supply up to sixteen `512 x 512` 
 - curtain pairs should remain open through the centre and must not include a window frame;
 - leave at least 16 transparent pixels around each source edge for atlas padding/mips.
 
-WindowLife v0.6 ships `Kernels/WindowLife/CurtainAtlas.png`, a 2048-square
-4x4 straight-alpha atlas. The existing analytic curtain remains the no-asset
-fallback.
+The release runtime prefers `Kernels/WindowLife/CurtainAtlas_high-fidelity-2k.dds`,
+a 2048-square 4x4 BC3 sRGB/alpha atlas with authored mips. `CurtainAtlas.png`
+remains the compatibility fallback and the analytic curtain remains the
+no-asset fallback.
 
 ## Occupants
 
@@ -51,7 +55,7 @@ one combined decal.
 
 ## Runtime sampling contract
 
-An installed `*_mask.dds` pane atlas is bound only to the matching real window material at Lighting PS `t125`; helper/proxy geometry that directly uses a mask texture remains rejected. The mask is sampled in the real material's UV space and is never copied into the PIXL package. This keeps third-party asset provenance separate while allowing exact pane/frame/mullion clipping when the user has supplied compatible masks. `t123` and `t124` contain PIXL's occupant and curtain atlases, `t126` remains the PIXL room atlas, and `t127` remains the 176-byte per-draw structured payload.
+An installed `*_mask.dds` pane atlas is bound only to the matching real window material at Lighting PS `t125`; helper/proxy geometry that directly uses a mask texture remains rejected. The mask is sampled in the real material's UV space and is never copied into the PIXL package. This keeps third-party asset provenance separate while allowing exact pane/frame/mullion clipping when the user has supplied compatible masks. `t122` contains PIXL's mip-filtered glass-grime texture, `t123` and `t124` contain PIXL's occupant and curtain atlases, `t126` remains the PIXL room atlas, and `t127` is the 240-byte per-draw structured payload.
 
 The packed atlases use a fixed `4 x 4` grid. Shader UVs are clamped inside the selected cell with a mip-dependent inset so neighbouring rooms, curtains, and occupants never bleed at distance.
 
@@ -65,10 +69,17 @@ Active v0.6 layer order from glass inward:
 
 Authored room colour replaces most of the flat source emission only where a trusted glass mask and recessed room are active. Missing or failed assets leave the procedural WindowLife result intact.
 
-## Integrated v0.5 room atlas
+## Integrated room atlas
 
-WindowLife v0.5 ships `Kernels/WindowLife/RoomAtlas.png`, a `2048 x 2048` sRGB atlas containing sixteen `512 x 512` room cells. It is loaded at runtime from `Data/Shaders/WindowLife/RoomAtlas.png`, bound to Lighting PS `t126`, and sampled as a recessed level-0 back plane. WindowLife's structured per-draw payload remains immediately adjacent at `t127`; the optional per-material pane mask occupies `t125`.
+WindowLife ships a `2048 x 2048` atlas containing sixteen `512 x 512` room
+cells. Runtime loading prefers `Data/Shaders/WindowLife/RoomAtlas_2k.dds`, then
+falls back to `RoomAtlas.png`. It is bound to Lighting PS `t126` and sampled as
+a recessed back plane. WindowLife's structured per-draw payload remains at
+`t127`; the optional per-material pane mask occupies `t125`.
 
 The generated rooms are curated into regional selection families rather than selected uniformly: general Nordic/Whiterun, Solitude/castle/noble, Riften/canal timber, Windhelm/dark stone, Markarth/Dwemer, and inn/shop/trade. Selection is deterministic per resolved logical window. The full-resolution external pane mask or native glow mask still clips the room to authored glass and mullions.
 
-This 2048 atlas is the active first-party PIXL asset. A later 4096 BC7 replacement can preserve the exact 4x4 layout and shader contract when independently authored 1024x1024 source rooms are available. Any replacement must retain opaque alpha and be validated against the loader contract.
+The two preferred DDS atlases contain complete mip chains and are validated by
+the loader for 2048-square, compressed, single-texture 2D layout. Invalid or
+missing DDS files degrade safely to the PNG path without changing shader slots
+or the per-draw ABI.

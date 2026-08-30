@@ -1277,7 +1277,7 @@ RainResponse::PerFrame RainResponse::GetCommonBufferData() const
 	}
 
 	static size_t rainTimer = 0;  // size_t for precision
-	if (!globals::game::ui->GameIsPaused())
+	if (!globals::game::ui || !globals::game::ui->GameIsPaused())
 		rainTimer += (size_t)(RE::GetSecondsSinceLastFrame() * 1000);  // BSTimer::delta is always 0 for some reason
 	data.Time = rainTimer / 1000.f;
 
@@ -1325,12 +1325,13 @@ RainResponse::PerFrame RainResponse::GetCommonBufferData() const
 
 void RainResponse::Prepass()
 {
-	static auto renderer = globals::game::renderer;
-	static auto& precipOcclusionTexture =
+	auto* renderer = globals::game::renderer;
+	auto* context = globals::d3d::context;
+	if (!renderer || !context)
+		return;
+	auto& precipOcclusionTexture =
 		renderer->GetDepthStencilData().depthStencils[
 			RE::RENDER_TARGETS_DEPTHSTENCIL::kPRECIPITATION_OCCLUSION_MAP];
-
-	auto* context = globals::d3d::context;
 	context->PSSetShaderResources(70, 1, &precipOcclusionTexture.depthSRV);
 
 	if (!g_worldPrecipitationCB) {
@@ -1552,7 +1553,9 @@ void RainResponse::DrawRoofRunoff()
 	auto* context = globals::d3d::context;
 	auto* state = globals::state;
 	auto* deferred = globals::deferred;
-	if (!renderer || !context || !state || !deferred)
+	if (!renderer || !context || !state || !deferred ||
+		!state->sharedDataCB || !state->featureDataCB ||
+		!*globals::game::perFrame.get())
 		return;
 
 	auto& main = renderer->GetRuntimeData().renderTargets[deferred->forwardRenderTargets[0]];
@@ -1721,8 +1724,10 @@ void RainResponse::DrawRoofRunoff()
 		ID3D11ShaderResourceView* nullSrv = nullptr;
 		ID3D11UnorderedAccessView* nullUav = nullptr;
 		ID3D11Buffer* nullBuffer = nullptr;
+		ID3D11Buffer* nullSharedBuffers[2]{ nullptr, nullptr };
 		context->CSSetShaderResources(0, 1, &nullSrv);
 		context->CSSetUnorderedAccessViews(0, 1, &nullUav, nullptr);
+		context->CSSetConstantBuffers(5, 2, nullSharedBuffers);
 		context->CSSetConstantBuffers(12, 1, &nullBuffer);
 		context->CSSetConstantBuffers(13, 1, &nullBuffer);
 		context->CSSetShader(nullptr, nullptr, 0);
@@ -1734,8 +1739,58 @@ void RainResponse::DrawRoofRunoff()
 void RainResponse::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	auto finiteOr = [](float value, float fallback) {
+		return std::isfinite(value) ? value : fallback;
+	};
+	auto clampFinite = [&finiteOr](float value, float fallback, float minimum, float maximum) {
+		return std::clamp(finiteOr(value, fallback), minimum, maximum);
+	};
+	settings.EnableRainResponse = settings.EnableRainResponse ? 1u : 0u;
+	settings.MaxRainWetness = clampFinite(settings.MaxRainWetness, 1.0f, 0.0f, 2.5f);
+	settings.MaxPuddleWetness = clampFinite(settings.MaxPuddleWetness, 1.5f, 0.0f, 6.0f);
+	settings.MaxShoreWetness = clampFinite(settings.MaxShoreWetness, 1.0f, 0.0f, 1.0f);
+	settings.ShoreRange = std::clamp(settings.ShoreRange, 1u, 64u);
+	settings.PuddleRadius = clampFinite(settings.PuddleRadius, 1.0f, 0.3f, 3.0f);
+	settings.PuddleMaxAngle = clampFinite(settings.PuddleMaxAngle, 0.95f, 0.6f, 1.0f);
+	settings.PuddleMinWetness = clampFinite(settings.PuddleMinWetness, 0.85f, 0.0f, 1.0f);
+	settings.MinRainWetness = clampFinite(settings.MinRainWetness, 0.65f, 0.0f, 0.9f);
+	settings.SkinWetness = clampFinite(settings.SkinWetness, 0.95f, 0.0f, 1.0f);
+	settings.WeatherTransitionSpeed = clampFinite(settings.WeatherTransitionSpeed, 3.0f, 0.2f, 8.0f);
+	settings.EnableRaindropFx = settings.EnableRaindropFx ? 1u : 0u;
+	settings.EnableSplashes = settings.EnableSplashes ? 1u : 0u;
+	settings.EnableRipples = settings.EnableRipples ? 1u : 0u;
+	settings.EnableVanillaRipples = settings.EnableVanillaRipples ? 1u : 0u;
+	settings.RaindropFxRange = clampFinite(settings.RaindropFxRange, 1000.0f, 100.0f, 2000.0f);
+	settings.RaindropGridSize = clampFinite(settings.RaindropGridSize, 4.0f, 1.0f, 10.0f);
+	settings.RaindropInterval = clampFinite(settings.RaindropInterval, 1.0f, 0.1f, 2.0f);
+	settings.RaindropChance = clampFinite(settings.RaindropChance, 1.0f, 0.0f, 1.0f);
+	settings.SplashesLifetime = clampFinite(settings.SplashesLifetime, 10.0f, 0.1f, 20.0f);
+	settings.SplashesStrength = clampFinite(settings.SplashesStrength, 1.05f, 0.0f, 2.0f);
+	settings.SplashesMinRadius = clampFinite(settings.SplashesMinRadius, 0.3f, 0.0f, 1.0f);
+	settings.SplashesMaxRadius = clampFinite(settings.SplashesMaxRadius, 0.5f, settings.SplashesMinRadius, 1.0f);
+	settings.RippleStrength = clampFinite(settings.RippleStrength, 1.0f, 0.0f, 2.0f);
+	settings.RippleRadius = clampFinite(settings.RippleRadius, 1.0f, 0.0f, 1.0f);
+	settings.RippleBreadth = clampFinite(settings.RippleBreadth, 0.5f, 0.0f, 1.0f);
+	settings.RippleLifetime = clampFinite(settings.RippleLifetime, 0.5f, 0.0f, settings.RaindropInterval);
+	settings.EnableRainParticleEnhancement = settings.EnableRainParticleEnhancement ? 1u : 0u;
+	settings.RainClumpStrength = clampFinite(settings.RainClumpStrength, 0.55f, 0.0f, 1.0f);
+	settings.RainClumpSize = clampFinite(settings.RainClumpSize, 1800.0f, 400.0f, 6000.0f);
+	settings.RainStreakVariation = clampFinite(settings.RainStreakVariation, 0.35f, 0.0f, 1.0f);
+	settings.RainGustStrength = clampFinite(settings.RainGustStrength, 0.8f, 0.0f, 2.0f);
+	settings.RainGustFrequency = clampFinite(settings.RainGustFrequency, 0.18f, 0.03f, 0.8f);
+	settings.RainGustChance = clampFinite(settings.RainGustChance, 0.22f, 0.0f, 0.75f);
+	settings.RainSecondaryLayerStrength = clampFinite(settings.RainSecondaryLayerStrength, 0.32f, 0.0f, 1.0f);
+	settings.RainDepthStart = clampFinite(settings.RainDepthStart, 650.0f, 100.0f, 6000.0f);
+	settings.RainDepthEnd = clampFinite(settings.RainDepthEnd, 12000.0f, std::max(1000.0f, settings.RainDepthStart + 1.0f), 20000.0f);
+	settings.RainDistanceBoost = clampFinite(settings.RainDistanceBoost, 0.75f, 0.0f, 1.5f);
+	settings.RainImpactSplashStrength = clampFinite(settings.RainImpactSplashStrength, 0.65f, 0.0f, 1.5f);
+	settings.RainMistStrength = clampFinite(settings.RainMistStrength, 0.55f, 0.0f, 2.0f);
+	settings.RainMistScale = clampFinite(settings.RainMistScale, 0.0008f, 0.00015f, 0.003f);
+	settings.RainMistHeight = clampFinite(settings.RainMistHeight, 520.0f, 100.0f, 1800.0f);
+	settings.RainLightingBoost = clampFinite(settings.RainLightingBoost, 0.5f, 0.0f, 1.5f);
+	settings.RainRunoffStrength = clampFinite(settings.RainRunoffStrength, 0.7f, 0.0f, 1.5f);
 	g_roofRunoffDistance = std::clamp(
-		o_json.value("RainRunoffDistance", 5200.0f),
+		finiteOr(o_json.value("RainRunoffDistance", 5200.0f), 5200.0f),
 		600.0f,
 		16000.0f);
 
@@ -1780,6 +1835,12 @@ void RainResponse::LoadSettings(json& o_json)
 
 	if (o_json.contains("DebugSettings")) {
 		debugSettings = o_json["DebugSettings"].get<DebugSettings>();
+		debugSettings.WetnessOverride.x = clampFinite(debugSettings.WetnessOverride.x, 0.0f, 0.0f, 2.0f);
+		debugSettings.WetnessOverride.y = clampFinite(debugSettings.WetnessOverride.y, 0.0f, 0.0f, 2.0f);
+		debugSettings.PuddleWetnessOverride.x = clampFinite(debugSettings.PuddleWetnessOverride.x, 0.0f, 0.0f, 2.0f);
+		debugSettings.PuddleWetnessOverride.y = clampFinite(debugSettings.PuddleWetnessOverride.y, 0.0f, 0.0f, 2.0f);
+		debugSettings.RainOverride.x = clampFinite(debugSettings.RainOverride.x, 0.0f, 0.0f, 1.0f);
+		debugSettings.RainOverride.y = clampFinite(debugSettings.RainOverride.y, 0.0f, 0.0f, 1.0f);
 	}
 }
 

@@ -4,8 +4,8 @@ The original five PIXL looks (`NordicNeutral`, `Saga`, `Dramatic`,
 `Hearthfire`, and `Bleak`) predate the 2026-08-26 Ultra expansion.
 
 The following 32x32x32 strip LUTs were supplied directly by the project owner
-in `C:\Users\PIXL STUDIO PC\Desktop\LUT.rar` on 2026-08-26 and renamed for the
-PIXL user interface:
+from the project's redistribution-source archive on 2026-08-26 and renamed for
+the PIXL user interface:
 
 | PIXL file | Archive member | SHA-256 |
 | --- | --- | --- |

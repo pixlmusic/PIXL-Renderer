@@ -184,7 +184,7 @@ PS_OUTPUT main(PS_INPUT input)
 		discard;
 	}
 
-	psout.Diffuse.xyz = input.Depth.xxx / input.Depth.yyy;
+	psout.Diffuse.xyz = input.Depth.xxx / max(abs(input.Depth.yyy), 1e-6f.xxx);
 	psout.Diffuse.w = 0;
 #	else
 	float4 baseColor = TexDiffuse.SampleBias(SampDiffuse, input.TexCoord.xy, SharedData::MipBias);
@@ -219,7 +219,9 @@ PS_OUTPUT main(PS_INPUT input)
 
 	float3 ddx = ddx_coarse(input.WorldPosition.xyz);
 	float3 ddy = ddy_coarse(input.WorldPosition.xyz);
-	float3 normal = -normalize(cross(ddx, ddy));
+	float3 geometricNormal = cross(ddx, ddy);
+	float geometricNormalLengthSq = dot(geometricNormal, geometricNormal);
+	float3 normal = geometricNormalLengthSq > 1e-10f ? -geometricNormal * rsqrt(geometricNormalLengthSq) : float3(0, 0, 1);
 
 	float3 directionalAmbientColor = max(0, Color::Ambient(SharedData::GetAmbient(normal)));
 #			if defined(AMBIENT_PROBE)
@@ -259,7 +261,9 @@ PS_OUTPUT main(PS_INPUT input)
 
 	float3 ddx = ddx_coarse(input.WorldPosition.xyz);
 	float3 ddy = ddy_coarse(input.WorldPosition.xyz);
-	float3 normal = normalize(cross(ddx, ddy));
+	float3 geometricNormal = cross(ddx, ddy);
+	float geometricNormalLengthSq = dot(geometricNormal, geometricNormal);
+	float3 normal = geometricNormalLengthSq > 1e-10f ? geometricNormal * rsqrt(geometricNormalLengthSq) : float3(0, 0, 1);
 
 	float3 directionalAmbientColor = Color::Ambient(SharedData::GetAmbient(normal));
 #			if defined(AMBIENT_PROBE)

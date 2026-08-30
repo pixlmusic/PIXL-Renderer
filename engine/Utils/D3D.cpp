@@ -93,42 +93,68 @@ namespace Util
 
 	void SetResourceName(ID3D11DeviceChild* Resource, const char* Format, ...)
 	{
-		if (!Resource)
+		if (!Resource || !Format)
 			return;
 
 		char buffer[1024];
 		va_list va;
 
 		va_start(va, Format);
-		int len = _vsnprintf_s(buffer, _TRUNCATE, Format, va);
+		const int len = _vsnprintf_s(buffer, _TRUNCATE, Format, va);
 		va_end(va);
 
-		Resource->SetPrivateData(WKPDID_D3DDebugObjectNameT, len, buffer);
+		// _vsnprintf_s returns a negative value on truncation/encoding failure.
+		// Never reinterpret that as a multi-gigabyte SetPrivateData byte count.
+		if (len > 0)
+			Resource->SetPrivateData(WKPDID_D3DDebugObjectNameT, static_cast<UINT>(len), buffer);
 	}
 
 	struct CustomInclude : public ID3DInclude
 	{
 		HRESULT Open([[maybe_unused]] D3D_INCLUDE_TYPE IncludeType, LPCSTR pFileName, [[maybe_unused]] LPCVOID pParentData, LPCVOID* ppData, UINT* pBytes) override
 		{
-			std::filesystem::path filePath = pFileName;
-			filePath = L"Data\\Shaders" / filePath;
+			if (!pFileName || !ppData || !pBytes)
+				return E_INVALIDARG;
+
+			*ppData = nullptr;
+			*pBytes = 0;
+
+			std::error_code ec;
+			const auto shaderRoot = std::filesystem::weakly_canonical(L"Data\\Shaders", ec);
+			if (ec)
+				return E_FAIL;
+
+			const auto filePath = std::filesystem::weakly_canonical(shaderRoot / std::filesystem::path(pFileName), ec);
+			if (ec)
+				return E_FAIL;
+
+			const auto relativePath = filePath.lexically_relative(shaderRoot);
+			if (relativePath.empty() || (*relativePath.begin() == L"..")) {
+				logger::error("Rejected shader include outside Data\\Shaders: {}", pFileName);
+				return E_ACCESSDENIED;
+			}
 
 			std::ifstream file(filePath, std::ios::binary);
 			if (!file.is_open()) {
-				*ppData = NULL;
-				*pBytes = 0;
 				return E_FAIL;
 			}
 
-			// Get filesize
+			// Shader includes should remain small source files. Bound the allocation
+			// and reject failed/overflowing stream positions before casting to UINT.
 			file.seekg(0, std::ios::end);
-			UINT size = static_cast<UINT>(file.tellg());
+			const auto endPosition = file.tellg();
+			constexpr std::streamoff kMaxShaderIncludeBytes = 16ll * 1024ll * 1024ll;
+			if (endPosition < 0 || endPosition > kMaxShaderIncludeBytes)
+				return E_FAIL;
+
+			const UINT size = static_cast<UINT>(endPosition);
 			file.seekg(0, std::ios::beg);
 
-			// Create buffer and read file
-			char* data = new char[size];
-			file.read(data, size);
-			*ppData = data;
+			auto data = std::make_unique<char[]>(std::max<UINT>(size, 1u));
+			if (size > 0 && !file.read(data.get(), size))
+				return E_FAIL;
+
+			*ppData = data.release();
 			*pBytes = size;
 			return S_OK;
 		}
@@ -144,6 +170,10 @@ namespace Util
 	ID3D11DeviceChild* CompileShader(const wchar_t* FilePath, const std::vector<std::pair<const char*, const char*>>& Defines, const char* ProgramType, const char* Program)
 	{
 		auto device = globals::d3d::device;
+		if (!device || !globals::state || !FilePath || !ProgramType || !Program) {
+			logger::error("Cannot compile shader: renderer/device/compiler input is unavailable");
+			return nullptr;
+		}
 
 		CustomInclude include;
 
@@ -199,18 +229,18 @@ namespace Util
 		// Disk cache on = user is running shipped, known-good shaders — skip the fxc
 		// validation pass to trim compile time. Disk cache off = dev workflow, keep
 		// validation so malformed source produces a clean error instead of UB.
-		if (globals::shaderCache->IsDiskCache())
+		if (globals::shaderCache && globals::shaderCache->IsDiskCache())
 			flags |= D3DCOMPILE_SKIP_VALIDATION;
 
-		ID3DBlob* shaderBlob;
-		ID3DBlob* shaderErrors;
+		winrt::com_ptr<ID3DBlob> shaderBlob;
+		winrt::com_ptr<ID3DBlob> shaderErrors;
 
 		if (!std::filesystem::exists(FilePath)) {
 			logger::error("Failed to compile shader; {} does not exist", str);
 			return nullptr;
 		}
 		logger::debug("Compiling {} with {}", str, DefinesToString(macros));
-		if (FAILED(D3DCompileFromFile(FilePath, macros.data(), &include, Program, ProgramType, flags, 0, &shaderBlob, &shaderErrors))) {
+		if (FAILED(D3DCompileFromFile(FilePath, macros.data(), &include, Program, ProgramType, flags, 0, shaderBlob.put(), shaderErrors.put()))) {
 			logger::warn("Shader compilation failed:\n\n{}", shaderErrors ? static_cast<char*>(shaderErrors->GetBufferPointer()) : "Unknown error");
 			return nullptr;
 		}

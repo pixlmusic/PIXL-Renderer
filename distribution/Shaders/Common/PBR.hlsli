@@ -35,7 +35,7 @@ namespace PBR
 
 		float cosThetaL = sqrt(max(0, 1 - NdotL * NdotL));
 		float cosThetaV = sqrt(max(0, 1 - NdotV * NdotV));
-		float cosThetaD = sqrt((1 + cosThetaL * cosThetaV + NdotV * NdotL) / 2.0);
+		float cosThetaD = max(sqrt(saturate((1 + cosThetaL * cosThetaV + NdotV * NdotL) / 2.0)), EPSILON_DOT_CLAMP);
 
 		const float3 Lp = L - NdotL * N;
 		const float3 Vp = V - NdotV * N;
@@ -74,7 +74,7 @@ namespace PBR
 		h = cosHalfPhi * (1 + a * (0.6 - 0.8 * cosPhi));
 		f = BRDF::F_Schlick(F0, cosThetaD * sqrt(saturate(1 - h * h))).x;
 		Fp = (1 - f) * (1 - f);
-		Tp = pow(abs(material.BaseColor), 0.5 * sqrt(1 - (h * a) * (h * a)) / cosThetaD);
+		Tp = pow(abs(material.BaseColor), 0.5 * sqrt(saturate(1 - (h * a) * (h * a))) / cosThetaD);
 		Np = exp(-3.65 * cosPhi - 3.98);
 		S += (Mp * Np) * (Fp * Tp) * backlit;
 

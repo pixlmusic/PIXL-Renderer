@@ -191,8 +191,13 @@ void I18n::Reload()
 void I18n::DiscoverLocales()
 {
 	auto translationsPath = Util::PathHelpers::GetTranslationsPath();
+	std::error_code ec;
 
-	if (!std::filesystem::exists(translationsPath)) {
+	if (!std::filesystem::exists(translationsPath, ec) || ec) {
+		if (ec) {
+			logger::warn("[I18n] Could not inspect translations directory '{}': {}",
+				translationsPath.string(), ec.message());
+		}
 		logger::info("[I18n] Translations directory not found: {}",
 			translationsPath.string());
 		// At minimum, register English as available
@@ -200,16 +205,23 @@ void I18n::DiscoverLocales()
 		return;
 	}
 
-	for (const auto& entry : std::filesystem::directory_iterator(translationsPath)) {
-		if (!entry.is_regular_file())
+	for (std::filesystem::directory_iterator it(translationsPath, ec), end; !ec && it != end; it.increment(ec)) {
+		const auto& entry = *it;
+		if (!entry.is_regular_file(ec))
 			continue;
 		auto ext = entry.path().extension().string();
 		// Case-insensitive extension check
-		std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+		std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+			return static_cast<char>(std::tolower(c));
+		});
 		if (ext != ".json")
 			continue;
 
 		auto locale = entry.path().stem().string();
+		if (!IsValidLocaleCode(locale)) {
+			logger::warn("[I18n] Ignoring translation with invalid locale filename: {}", entry.path().filename().string());
+			continue;
+		}
 		std::string displayName = locale;  // default to code
 
 		// Try to read _meta.language for a friendly display name
@@ -228,6 +240,10 @@ void I18n::DiscoverLocales()
 		}
 
 		availableLocales_.emplace_back(locale, displayName);
+	}
+	if (ec) {
+		logger::warn("[I18n] Translation discovery stopped early in '{}': {}",
+			translationsPath.string(), ec.message());
 	}
 
 	// Sort with "en" (English) first, then alphabetically by display name

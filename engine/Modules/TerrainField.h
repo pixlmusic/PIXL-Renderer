@@ -65,4 +65,7 @@ public:
 	 * @param material The lighting shader material to look up cached parallax textures for.
 	 */
 	void BSLightingShader_SetupMaterial(RE::BSLightingShaderMaterialBase const* material);
+
+	/** Drops material-hash entries whose texture interpretation may have changed with the season. */
+	void InvalidateSeasonalMaterialCache(std::uint32_t a_generation);
 };

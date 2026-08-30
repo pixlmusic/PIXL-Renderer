@@ -2,6 +2,7 @@
 
 #include "Buffer.h"
 
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -32,6 +33,8 @@ public:
 
 	/** @brief Dispatches the persistent absolute-world XY snow/mud surface deformation update. */
 	void UpdateSurfaceDeformationTexture();
+	/** Keeps the normal third-person camera above PIXL's shader-raised snow shell. */
+	void ApplyCameraSurfaceClearance(RE::NiPoint3& a_translation) const;
 
 	struct Settings
 	{
@@ -285,6 +288,9 @@ public:
 	Texture2D* surfaceDeformationTexture = nullptr;
 	Texture2D* surfaceDisplacementTexture = nullptr;  // t102 displaced snow
 	Texture2D* surfaceElementalTexture = nullptr;     // t103 signed frost/fire height + heat smoothing
+	std::uint32_t observedSeasonGeneration = 0;
+	std::atomic<std::uint32_t> pendingSeasonHistoryGeneration{ 0 };
+	std::uint32_t appliedSeasonHistoryGeneration = 0;
 	// User-supplied, redistribution-cleared snow microsurface atlas. This is a
 	// read-only optional detail resource; a missing file leaves the procedural
 	// GroundResponse snow path intact.
@@ -407,6 +413,8 @@ public:
 	 * MAX_COLLISIONS_PER_BOUNDING_BOX shapes each.
 	 */
 	void QueueCollisions();
+	/** Applies a newly published Seasons generation to CPU classifiers and render history. */
+	void ObserveSeasonContext();
 	/**
 	 * @brief Uploads queued collision data to GPU buffers and dispatches the collision texture update.
 	 *
@@ -460,6 +468,12 @@ public:
 		struct MainUpdate_QueueCollisions
 		{
 			static void thunk();
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct ThirdPersonState_GetTranslation
+		{
+			static void thunk(RE::ThirdPersonState* a_this, RE::NiPoint3& a_translation);
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
@@ -537,6 +551,10 @@ public:
 		{
 			stl::write_vfunc<0x6, BSGrassShader_SetupGeometry>(RE::VTABLE_BSGrassShader[0]);
 			stl::write_thunk_call<MainUpdate_QueueCollisions>(REL::RelocationID(35565, 36564).address() + REL::Relocate(0x748, 0xC26));
+			if (REL::Module::IsVR())
+				stl::write_vfunc<0x6, ThirdPersonState_GetTranslation>(RE::VTABLE_ThirdPersonState[0]);
+			else
+				stl::write_vfunc<0x5, ThirdPersonState_GetTranslation>(RE::VTABLE_ThirdPersonState[0]);
 #ifndef SKYRIM_CROSS_VR
 			// 13BH: ProcessImpacts (AC) is later and more authoritative than AddImpact
 			// for this PIXL/Skyrim stack. Hook the base plus every concrete projectile

@@ -131,8 +131,8 @@ struct Waterbody : OverlayFeature
 private:
 	RE::NiPointer<RE::BSTriShape> waterMesh;
 	RE::NiPointer<RE::BSTriShape> optimisedWaterMesh;
-	Flowmap* flowmap = nullptr;
-	WaterCache* waterCache = nullptr;
+	std::unique_ptr<Flowmap> flowmap;
+	std::unique_ptr<WaterCache> waterCache;
 
 	RE::NiNode** gWaterLOD = nullptr;
 	RE::NiPointer<RE::NiSourceTexture>* gFlowMapSourceTex = nullptr;

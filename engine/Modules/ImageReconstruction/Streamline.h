@@ -104,7 +104,8 @@ public:
 	void EvaluateDLSS(sl::ViewportHandle vp,
 		ID3D11Resource* colorIn, ID3D11Resource* colorOut, ID3D11Resource* depth,
 		ID3D11Resource* mvec, ID3D11Resource* reactiveMask, ID3D11Resource* transparencyMask,
-		const sl::Extent& extentIn, const sl::Extent& extentOut, uint32_t outputWidth);
+		const sl::Extent& extentIn, const sl::Extent& extentOut, uint32_t outputWidth,
+		bool resetHistory);
 
 	// Cached DLL version info for Streamline plugin directory
 	static std::vector<std::pair<std::string, std::string>> dllVersions;
@@ -128,7 +129,7 @@ public:
 	 * @param p_viewport The viewport handle to configure.
 	 * @return True if constants were set successfully.
 	 */
-	bool CheckFrameConstants(sl::ViewportHandle p_viewport);
+	bool CheckFrameConstants(sl::ViewportHandle p_viewport, bool resetHistory);
 
 	/**
 	 * @brief Detects whether the GPU is an NVIDIA RTX card below the 40-series generation.
@@ -151,7 +152,7 @@ public:
 	 * @param a_transparencyCompositionMask Mask for transparency handling.
 	 * @param a_motionVectors Per-pixel motion vectors for temporal reprojection.
 	 */
-	void Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_reactiveMask, ID3D11Resource* a_transparencyCompositionMask, ID3D11Resource* a_motionVectors);
+	void Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_reactiveMask, ID3D11Resource* a_transparencyCompositionMask, ID3D11Resource* a_motionVectors, bool resetHistory);
 	/** @brief Updates Reflex latency reduction state and performs the Reflex sleep call. */
 	void UpdateReflex();
 

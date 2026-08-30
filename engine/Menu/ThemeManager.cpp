@@ -880,11 +880,12 @@ bool ThemeManager::LoadTheme(const std::string& themeName, json& themeSettings)
 bool ThemeManager::SaveTheme(const std::string& themeName, const json& themeSettings,
 	const std::string& displayName, const std::string& description)
 {
-	if (themeName.empty()) {
+	const std::string safeFileName = Util::FileHelpers::SanitizeFileName(themeName);
+	if (safeFileName.empty()) {
 		logger::warn("Cannot save theme with empty name");
 		return false;
 	}
-	if (IsPresetTheme(themeName)) {
+	if (IsPresetTheme(safeFileName)) {
 		logger::warn("Cannot overwrite preset theme: {}", themeName);
 		return false;
 	}
@@ -898,7 +899,6 @@ bool ThemeManager::SaveTheme(const std::string& themeName, const json& themeSett
 		{ "Theme", themeSettings }
 	};
 
-	std::string safeFileName = Util::FileHelpers::SanitizeFileName(themeName);
 	auto themesDir = GetThemesDirectory();
 	auto filePath = themesDir / (safeFileName + ".json");
 
@@ -954,7 +954,7 @@ std::filesystem::path ThemeManager::GetThemesDirectory() const
 bool ThemeManager::IsPresetTheme(const std::string& themeName) const
 {
 	for (const char* preset : ThemePresets::names) {
-		if (themeName == preset)
+		if (Util::IEquals(themeName, preset))
 			return true;
 	}
 	return false;

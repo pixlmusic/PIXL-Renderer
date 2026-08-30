@@ -34,6 +34,9 @@ void SkyBounce::RestoreDefaultSettings()
 void SkyBounce::ResetSkyBounce()
 {
 	auto context = globals::d3d::context;
+	if (!context || !texAccumFramesArray || !texShadowBitmask || !texShadowVisibility)
+		return;
+
 	UINT clr[1] = { 0 };
 	context->ClearUnorderedAccessViewUint(texAccumFramesArray->uav.get(), clr);
 	context->ClearUnorderedAccessViewUint(texShadowBitmask->uav.get(), clr);
@@ -163,7 +166,7 @@ void SkyBounce::ClearShaderCache()
 	};
 
 	for (auto shader : shaderPtrs)
-		shader = nullptr;
+		*shader = nullptr;
 
 	CompileComputeShaders();
 }
@@ -239,7 +242,7 @@ SkyBounce::SkyBounceCB SkyBounce::GetCommonBufferData([[maybe_unused]] bool a_in
 
 void SkyBounce::Prepass()
 {
-	if (globals::state->isMapMenuOpen)
+	if (!globals::state || globals::state->isMapMenuOpen)
 		return;
 
 	bool interior = true;
@@ -253,15 +256,20 @@ void SkyBounce::Prepass()
 	TracyD3D11Zone(globals::state->tracyCtx, "SkyBounce - Update Probes");
 
 	auto context = globals::d3d::context;
+	auto renderer = globals::game::renderer;
+	if (!context || !renderer || !probeUpdateCompute || !comparisonSampler ||
+		!texOcclusion || !texProbeArray || !texAccumFramesArray || !texShadowBitmask || !texShadowVisibility)
+		return;
 
 	{
-		auto renderer = globals::game::renderer;
 		auto& esramDepthStencil = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kVOLUMETRIC_LIGHTING_SHADOWMAPS_ESRAM];
+		auto* directionalShadowSRV = shadowCascadeSRV && globals::deferred && globals::deferred->directionalShadowLights ?
+			globals::deferred->directionalShadowLights->srv.get() : nullptr;
 
 		std::array<ID3D11ShaderResourceView*, 4> srvs = {
 			texOcclusion->srv.get(),
 			shadowCascadeSRV ? shadowCascadeSRV : nullptr,
-			shadowCascadeSRV ? globals::deferred->directionalShadowLights->srv.get() : nullptr,
+			directionalShadowSRV,
 			shadowCascadeSRV ? esramDepthStencil.depthSRV : nullptr
 		};
 		std::array<ID3D11UnorderedAccessView*, 4> uavs = {
@@ -403,16 +411,21 @@ RE::BSShaderProperty::RenderPassArray* SkyBounce::BSLightingShaderProperty_GetPr
 	[[maybe_unused]] RE::BSGraphics::BSShaderAccumulator* accumulator)
 {
 	auto& skyBounce = globals::pipeline::skyBounce;
+	if (!property)
+		return nullptr;
+
+	auto* precipitationOcclusionMapRenderPassList = &property->occlusionPasses;
+	precipitationOcclusionMapRenderPassList->Clear();
+	if (!geometry || !accumulator)
+		return precipitationOcclusionMapRenderPassList;
 
 	auto batch = accumulator->GetRuntimeData().batchRenderer;
-	batch->geometryGroups[14]->flags &= ~1;
+	if (batch && batch->geometryGroups[14])
+		batch->geometryGroups[14]->flags &= ~1;
 
 	using enum RE::BSShaderProperty::EShaderPropertyFlag;
 	using enum RE::BSUtilityShader::Flags;
 
-	auto* precipitationOcclusionMapRenderPassList = &property->occlusionPasses;
-
-	precipitationOcclusionMapRenderPassList->Clear();
 	if (skyBounce.inOcclusion) {
 		if (property->flags.any(kSkinned) && property->flags.none(kTreeAnim))
 			return precipitationOcclusionMapRenderPassList;
@@ -497,7 +510,7 @@ void SkyBounce::SetViewFrustum::thunk(RE::NiCamera* a_camera, RE::NiFrustum* a_f
 {
 	auto& skyBounce = globals::pipeline::skyBounce;
 
-	if (skyBounce.inOcclusion) {
+	if (skyBounce.inOcclusion && a_frustum) {
 		uint corner = skyBounce.frameCount % 4;
 
 		float frustumSize = a_frustum->fTop;
@@ -518,6 +531,11 @@ void SkyBounce::RenderOcclusion()
 	auto state = globals::state;
 	auto renderer = globals::game::renderer;
 	auto sky = globals::game::sky;
+	if (!shaderCache || !state || !renderer) {
+		logger::error("[SkyBounce] Required renderer state is unavailable; using the game precipitation path");
+		Main_Precipitation_RenderOcclusion::func();
+		return;
+	}
 
 	if (!shaderCache->IsEnabled()) {
 		TracyD3D11Zone(globals::state->tracyCtx, "Precipitation Mask");
@@ -532,6 +550,10 @@ void SkyBounce::RenderOcclusion()
 			static bool doPrecip = false;
 
 			auto precip = sky->precip;
+			if (!precip) {
+				Main_Precipitation_RenderOcclusion::func();
+				return;
+			}
 
 			{
 				TracyD3D11Zone(globals::state->tracyCtx, "Precipitation Mask");
@@ -548,11 +570,13 @@ void SkyBounce::RenderOcclusion()
 					auto& effect = precipObject->GetGeometryRuntimeData().shaderProperty;
 					auto shaderProp = effect.get();
 					auto particleShaderProperty = netimmerse_cast<RE::BSParticleShaderProperty*>(shaderProp);
-					auto rain = (RE::BSParticleShaderRainEmitter*)(particleShaderProperty->particleEmitter);
+					if (particleShaderProperty && particleShaderProperty->particleEmitter) {
+						auto rain = static_cast<RE::BSParticleShaderRainEmitter*>(particleShaderProperty->particleEmitter);
 
-					globals::profiler->BeginPass("SkyBounce::PrecipMask");
-					precip->RenderMask(rain);
-					globals::profiler->EndPass();
+						globals::profiler->BeginPass("SkyBounce::PrecipMask");
+						precip->RenderMask(rain);
+						globals::profiler->EndPass();
+					}
 				}
 
 				state->EndPerfEvent();
@@ -610,7 +634,7 @@ void SkyBounce::RenderOcclusion()
 					vPoint = { vPoint.x * cos(vPoint.y), vPoint.x * sin(vPoint.y) };
 				}
 
-				float3 PrecipitationShaderDirectionF = -float3{ vPoint.x, vPoint.y, sqrt(1 - vPoint.LengthSquared()) };
+				float3 PrecipitationShaderDirectionF = -float3{ vPoint.x, vPoint.y, sqrt(std::max(1.0f - vPoint.LengthSquared(), 0.0f)) };
 				PrecipitationShaderDirectionF.Normalize();
 
 				PrecipitationShaderDirection = { PrecipitationShaderDirectionF.x, PrecipitationShaderDirectionF.y, PrecipitationShaderDirectionF.z };
@@ -657,6 +681,9 @@ void SkyBounce::RenderOcclusion()
 void SkyBounce::CaptureShadowCascadeSRV()
 {
 	auto context = globals::d3d::context;
+	if (!context)
+		return;
+
 	ID3D11ShaderResourceView* srv = nullptr;
 	context->PSGetShaderResources(4, 1, &srv);
 	if (shadowCascadeSRV)
@@ -671,6 +698,9 @@ void SkyBounce::Main_Precipitation_RenderOcclusion::thunk()
 
 RE::BSEventNotifyControl SkyBounce::MenuOpenCloseEventHandler::ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*)
 {
+	if (!a_event)
+		return RE::BSEventNotifyControl::kContinue;
+
 	// When entering a new cell through a loadscreen, update every frame until completion
 	if (a_event->menuName == RE::LoadingMenu::MENU_NAME) {
 		if (!a_event->opening)

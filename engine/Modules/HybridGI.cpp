@@ -1195,6 +1195,9 @@ void HybridGI::SaveSettings(json& o_json)
 RE::BSEventNotifyControl HybridGI::MenuOpenCloseEventHandler::ProcessEvent(
 	const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*)
 {
+	if (!a_event)
+		return RE::BSEventNotifyControl::kContinue;
+
 	if (a_event->menuName == RE::LoadingMenu::MENU_NAME && !a_event->opening)
 		globals::pipeline::hybridGI.queuedResetHistory = true;
 	return RE::BSEventNotifyControl::kContinue;
@@ -1208,7 +1211,12 @@ bool HybridGI::MenuOpenCloseEventHandler::Register()
 		logger::error("UI event source not found");
 		return false;
 	}
-	ui->GetEventSource<RE::MenuOpenCloseEvent>()->AddEventSink(&singleton);
+	auto* eventSource = ui->GetEventSource<RE::MenuOpenCloseEvent>();
+	if (!eventSource) {
+		logger::error("[PIXL Hybrid GI] Menu event source not found");
+		return false;
+	}
+	eventSource->AddEventSink(&singleton);
 	return true;
 }
 
@@ -1221,6 +1229,11 @@ void HybridGI::SetupResources()
 {
 	auto renderer = globals::game::renderer;
 	auto device = globals::d3d::device;
+	auto context = globals::d3d::context;
+	if (!renderer || !device || !context) {
+		logger::error("[PIXL Hybrid GI] Renderer/device/context unavailable; module will remain disabled");
+		return;
+	}
 
 	logger::debug("Creating buffers...");
 	{
@@ -1571,7 +1584,16 @@ void HybridGI::CompileComputeShaders()
 
 bool HybridGI::ShadersOK() const
 {
-	return texNoise && prefilterDepthsCompute && prefilterRadianceCompute && prefilterNormalCompute &&
+	const bool coreResources = ssgiCB && linearClampSampler && pointClampSampler && texNoise && texWorkingDepth &&
+		texPrevGeo && texRadiance && texRadianceTemp && texNormal &&
+		texAccumFrames[0] && texAccumFrames[1] && texAo[0] && texAo[1] &&
+		texIlY[0] && texIlY[1] && texIlCoCg[0] && texIlCoCg[1] &&
+		texGiSpecular[0] && texGiSpecular[1] && texBentVisibility[0] && texBentVisibility[1] &&
+		texWorldCacheMetadata && texWorldCacheSH0 && texWorldCacheSH1 && texWorldCacheSH2 && texWorldCacheNormal &&
+		texWorldCachePreviousMetadata && texWorldCachePreviousSH0 && texWorldCachePreviousSH1 &&
+		texWorldCachePreviousSH2 && texWorldCachePreviousNormal;
+
+	return coreResources && prefilterDepthsCompute && prefilterRadianceCompute && prefilterNormalCompute &&
 	       radianceDisoccCompute && giCompute && blurCompute && blurAtrousCompute && upsampleCompute &&
 	       worldCacheInjectCompute && worldCacheDecayCompute &&
 	       (!settings.EnableExperimentalSpecularGI || (hybridReflectionCompute && (!settings.EnableBlur || hybridReflectionDenoiseCompute)));
@@ -1579,9 +1601,12 @@ bool HybridGI::ShadersOK() const
 
 void HybridGI::UpdateSB()
 {
+	if (!texRadiance || !ssgiCB || !globals::game::shadowState || !globals::state)
+		return;
+
 	float2 res = { (float)texRadiance->desc.Width, (float)texRadiance->desc.Height };
 	float2 dynres = Util::ConvertToDynamic(res);
-	dynres = { floor(dynres.x), floor(dynres.y) };
+	dynres = { std::max(floor(dynres.x), 1.0f), std::max(floor(dynres.y), 1.0f) };
 
 	static float4x4 prevInvView = {};
 
@@ -1589,10 +1614,12 @@ void HybridGI::UpdateSB()
 	{
 		{
 			auto eye = globals::game::shadowState->GetRuntimeData().cameraData.getEye();
+			const float projectionX = std::abs(eye.projMat(0, 0)) > 1e-6f ? eye.projMat(0, 0) : 1.0f;
+			const float projectionY = std::abs(eye.projMat(1, 1)) > 1e-6f ? eye.projMat(1, 1) : 1.0f;
 
 			data.PrevInvViewMat = prevInvView;
-			data.NDCToViewMul = { 2.0f / eye.projMat(0, 0), -2.0f / eye.projMat(1, 1), 0.0f, 0.0f };
-			data.NDCToViewAdd = { -1.0f / eye.projMat(0, 0), 1.0f / eye.projMat(1, 1), 0.0f, 0.0f };
+			data.NDCToViewMul = { 2.0f / projectionX, -2.0f / projectionY, 0.0f, 0.0f };
+			data.NDCToViewAdd = { -1.0f / projectionX, 1.0f / projectionY, 0.0f, 0.0f };
 
 			prevInvView = eye.viewMat.Invert();
 		}
@@ -1605,44 +1632,46 @@ void HybridGI::UpdateSB()
 
 		data.NumSlices = std::clamp(settings.NumSlices, 1u, 10u);
 		data.NumSteps = std::clamp(settings.NumSteps, 1u, 20u);
-		data.MinScreenRadius = settings.MinScreenRadius * dynres.x;
+		data.MinScreenRadius = std::clamp(settings.MinScreenRadius, 0.0f, 1.0f) * dynres.x;
 
-		data.EffectRadius = std::max(std::max(settings.AORadius, settings.GIRadius),
-			settings.EnableContactDepth ? settings.ContactDepthRadius : 0.0f);
-		data.AORadius = settings.AORadius / data.EffectRadius;
-		data.GIRadius = settings.GIRadius / data.EffectRadius;
-		data.Thickness = settings.Thickness;
+		const float aoRadius = std::clamp(settings.AORadius, 0.0f, 1024.0f);
+		const float giRadius = std::clamp(settings.GIRadius, 0.0f, 1024.0f);
+		const float contactRadius = settings.EnableContactDepth ? std::clamp(settings.ContactDepthRadius, 0.0f, 256.0f) : 0.0f;
+		data.EffectRadius = std::max(std::max(aoRadius, giRadius), std::max(contactRadius, 1.0f));
+		data.AORadius = aoRadius / data.EffectRadius;
+		data.GIRadius = giRadius / data.EffectRadius;
+		data.Thickness = std::clamp(settings.Thickness, 0.0f, 128.0f);
 		data.DepthFadeRange.y = std::clamp(settings.DepthFadeRange.y, 1.01e4f, 5e4f);
 		data.DepthFadeRange.x = std::clamp(settings.DepthFadeRange.x, 1e4f, data.DepthFadeRange.y - 100.f);
 		data.DepthFadeScaleConst = 1.0f / std::max(data.DepthFadeRange.y - data.DepthFadeRange.x, 100.f);
 
-		data.GISaturation = settings.GISaturation;
-		data.GIDistanceCompensation = settings.GIDistanceCompensation;
-		data.GICompensationMaxDist = settings.AORadius;
+		data.GISaturation = std::clamp(settings.GISaturation, 0.0f, 2.0f);
+		data.GIDistanceCompensation = std::clamp(settings.GIDistanceCompensation, -5.0f, 5.0f);
+		data.GICompensationMaxDist = aoRadius;
 
-		data.AOPower = settings.AOPower;
-		data.GIStrength = settings.GIStrength;
+		data.AOPower = std::clamp(settings.AOPower, 0.0f, 4.0f);
+		data.GIStrength = std::clamp(settings.GIStrength, 0.0f, 4.0f);
 
-		data.DepthDisocclusion = settings.DepthDisocclusion;
-		data.NormalDisocclusion = settings.NormalDisocclusion;
-		data.MaxAccumFrames = settings.MaxAccumFrames;
-		data.BlurRadius = settings.BlurRadius;
-		data.DistanceNormalisation = settings.DistanceNormalisation;
+		data.DepthDisocclusion = std::clamp(settings.DepthDisocclusion, 0.0f, 0.2f);
+		data.NormalDisocclusion = std::clamp(settings.NormalDisocclusion, 0.0f, 1.0f);
+		data.MaxAccumFrames = std::clamp(settings.MaxAccumFrames, 1u, 64u);
+		data.BlurRadius = std::clamp(settings.BlurRadius, 0.0f, 30.0f);
+		data.DistanceNormalisation = std::clamp(settings.DistanceNormalisation, 0.0f, 5.0f);
 
 		data.WorldCacheEnabled = settings.EnableWorldCache ? 1u : 0u;
 		data.WorldCacheMaxAge = std::clamp(settings.WorldCacheMaxAge, 1u, 120u);
 		data.WorldCacheSampleCount = std::clamp(settings.WorldCacheSampleCount, 1u, 8u);
 		data.WorldCacheTraceSteps = std::clamp(settings.WorldCacheTraceSteps, 2u, 6u);
-		data.WorldCacheStrength = settings.WorldCacheStrength;
-		data.WorldCacheCellSizeNear = settings.WorldCacheCellSizeNear;
-		data.WorldCacheCellSizeFar = std::max(settings.WorldCacheCellSizeFar, settings.WorldCacheCellSizeNear);
-		data.WorldCacheRadius = settings.WorldCacheRadius;
-		data.WorldCacheLeakReduction = settings.WorldCacheLeakReduction;
+		data.WorldCacheStrength = std::clamp(settings.WorldCacheStrength, 0.0f, 1.5f);
+		data.WorldCacheCellSizeNear = std::clamp(settings.WorldCacheCellSizeNear, 64.0f, 256.0f);
+		data.WorldCacheCellSizeFar = std::max(std::clamp(settings.WorldCacheCellSizeFar, 256.0f, 1024.0f), data.WorldCacheCellSizeNear);
+		data.WorldCacheRadius = std::clamp(settings.WorldCacheRadius, 256.0f, 4096.0f);
+		data.WorldCacheLeakReduction = std::clamp(settings.WorldCacheLeakReduction, 0.0f, 1.0f);
 		data.WorldCacheInjectionStride = std::clamp(settings.WorldCacheInjectionStride, 1u, 8u);
 		data.WorldCacheDirectionalOcclusionEnabled = settings.EnableDirectionalOcclusion ? 1u : 0u;
-		data.WorldCacheDirectionalOcclusionStrength = settings.DirectionalOcclusionStrength;
-		data.DebugView = settings.DebugView;
-		data.DebugGain = settings.DebugGain;
+		data.WorldCacheDirectionalOcclusionStrength = std::clamp(settings.DirectionalOcclusionStrength, 0.0f, 1.0f);
+		data.DebugView = std::min(settings.DebugView, 13u);
+		data.DebugGain = std::clamp(settings.DebugGain, 0.1f, 16.0f);
 		data.WorldCacheTemporalResponse = std::clamp(settings.WorldCacheTemporalResponse, 0.02f, 1.0f);
 		data.WorldCacheReflectionEnabled = settings.EnableVoxelReflections ? 1u : 0u;
 		data.WorldCacheReflectionStrength = std::clamp(settings.VoxelReflectionStrength, 0.0f, 1.5f);
@@ -1678,13 +1707,19 @@ void HybridGI::UpdateSB()
 void HybridGI::DrawHybridGI()
 {
 	auto context = globals::d3d::context;
+	if (!context)
+		return;
 
 	auto imageSpaceManager = globals::game::imageSpaceManager;
-	auto& BSImagespaceShaderISSAOBlurH = imageSpaceManager->GetRuntimeData().BSImagespaceShaderISSAOBlurH;
-
-	// Toggle vanilla SSAO
-	static bool* enableSSAO = reinterpret_cast<bool*>(reinterpret_cast<uintptr_t>(BSImagespaceShaderISSAOBlurH.get()) + 0x50LL);
-	*enableSSAO = settings.EnableVanillaSSAO;
+	if (imageSpaceManager) {
+		auto& ssaoBlur = imageSpaceManager->GetRuntimeData().BSImagespaceShaderISSAOBlurH;
+		// Toggle vanilla SSAO only when Skyrim has materialized the image-space
+		// shader object.  The pointer can be recreated across display transitions.
+		if (auto* shader = ssaoBlur.get()) {
+			auto* enableSSAO = reinterpret_cast<bool*>(reinterpret_cast<uintptr_t>(shader) + 0x50LL);
+			*enableSSAO = settings.EnableVanillaSSAO;
+		}
+	}
 	UpdateDiagnosticCapture();
 	const uint materialDebugMode = globals::pipeline::materialForge.settings.LegacyPhysicalDebugMode;
 	if ((lastRuntimeDebugView != 0u && settings.DebugView == 0u) ||
@@ -1695,13 +1730,22 @@ void HybridGI::DrawHybridGI()
 
 	if (!(settings.Enabled && ShadersOK())) {
 		FLOAT clr[4] = { 0.f, 0.f, 0.f, 0.f };
-		context->ClearUnorderedAccessViewFloat(texAo[outputAoIdx]->uav.get(), clr);
-		context->ClearUnorderedAccessViewFloat(texIlY[outputIlIdx]->uav.get(), clr);
-		context->ClearUnorderedAccessViewFloat(texIlCoCg[outputIlIdx]->uav.get(), clr);
-		context->ClearUnorderedAccessViewFloat(texGiSpecular[outputSpecIdx]->uav.get(), clr);
-		context->ClearUnorderedAccessViewFloat(texBentVisibility[outputBentIdx]->uav.get(), clr);
+		if (texAo[outputAoIdx])
+			context->ClearUnorderedAccessViewFloat(texAo[outputAoIdx]->uav.get(), clr);
+		if (texIlY[outputIlIdx])
+			context->ClearUnorderedAccessViewFloat(texIlY[outputIlIdx]->uav.get(), clr);
+		if (texIlCoCg[outputIlIdx])
+			context->ClearUnorderedAccessViewFloat(texIlCoCg[outputIlIdx]->uav.get(), clr);
+		if (texGiSpecular[outputSpecIdx])
+			context->ClearUnorderedAccessViewFloat(texGiSpecular[outputSpecIdx]->uav.get(), clr);
+		if (texBentVisibility[outputBentIdx])
+			context->ClearUnorderedAccessViewFloat(texBentVisibility[outputBentIdx]->uav.get(), clr);
 		return;
 	}
+
+	if (!globals::state || !globals::state->sharedDataCB || !globals::game::renderer ||
+		!globals::game::graphicsState || !globals::deferred || !globals::profiler)
+		return;
 
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "HybridGI");
@@ -1756,11 +1800,17 @@ void HybridGI::DrawHybridGI()
 	auto deferred = globals::deferred;
 
 	float2 size = Util::ConvertToDynamic(float2{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight });
-	auto resolution = std::array{ (uint)size.x, (uint)size.y };
-	auto resChoices = std::array{
-		resolution, std::array{ resolution[0] >> 1, resolution[1] >> 1 }, std::array{ resolution[0] >> 2, resolution[1] >> 2 }
+	auto resolution = std::array{
+		(uint)std::max(std::isfinite(size.x) ? floor(size.x) : 1.0f, 1.0f),
+		(uint)std::max(std::isfinite(size.y) ? floor(size.y) : 1.0f, 1.0f)
 	};
-	auto internalRes = resChoices[settings.ResolutionMode];
+	auto resChoices = std::array{
+		resolution,
+		std::array{ std::max(resolution[0] >> 1, 1u), std::max(resolution[1] >> 1, 1u) },
+		std::array{ std::max(resolution[0] >> 2, 1u), std::max(resolution[1] >> 2, 1u) }
+	};
+	const int resolutionMode = std::clamp(settings.ResolutionMode, 0, 2);
+	auto internalRes = resChoices[resolutionMode];
 
 	std::array<ID3D11ShaderResourceView*, 17> srvs = { nullptr };
 	std::array<ID3D11UnorderedAccessView*, 7> uavs = { nullptr };

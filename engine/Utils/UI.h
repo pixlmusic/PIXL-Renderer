@@ -48,7 +48,7 @@ class RenderModule;
 		ImGui::SetClipboardText(std::format("{0:x}", reinterpret_cast<uintptr_t>(a_value)).c_str()); \
 	}                                                                                                \
 	if (ImGui::IsItemHovered())                                                                      \
-		ImGui::SetTooltip(std::format("Copy {} Address to Clipboard", #a_value).c_str());
+		ImGui::SetTooltip("Copy %s Address to Clipboard", #a_value);
 
 namespace Util
 {

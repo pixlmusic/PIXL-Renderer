@@ -218,7 +218,7 @@ float SampleDirectionalWorldShadow(float3 positionWS)
 float3 ComputeSkyLightScattering(float3 positionWS, float3 viewDirection)
 {
 	float phaseG = SharedData::atmosphereSettings.volumetricFogScatteringDistribution;
-	float3 skyDirection = abs(phaseG) > 0.001f ? normalize(-viewDirection * phaseG) : 0.0f.xxx;
+	float3 skyDirection = abs(phaseG) > 0.001f ? Atmosphere::SafeNormalize(-viewDirection * phaseG, float3(0.0f, 0.0f, 1.0f)) : 0.0f.xxx;
 	float3 skyVisibilityDirection = abs(phaseG) > 0.001f ? skyDirection : float3(0.0f, 0.0f, 1.0f);
 	float skyVisibility = 1.0f;
 	if (VolumetricFogHasSkyBounce && !SharedData::InInterior && !SharedData::HideSky) {
@@ -330,9 +330,9 @@ float4 ComputeLightScattering(uint3 coord, float3 cellOffset)
 	float4 materialScatteringAndExtinction = VBufferA[coord];
 	float extinction = materialScatteringAndExtinction.w;
 
-	float3 viewDirection = normalize(positionWS);
+	float3 viewDirection = Atmosphere::SafeNormalize(positionWS, float3(0.0f, 0.0f, 1.0f));
 	float phase = Atmosphere::PIXLPhaseFunction(
-		dot(normalize(SharedData::DirLightDirection.xyz), viewDirection),
+		dot(Atmosphere::SafeNormalize(SharedData::DirLightDirection.xyz, float3(0.0f, 0.0f, 1.0f)), viewDirection),
 		SharedData::atmosphereSettings.volumetricFogScatteringDistribution);
 
 	float3 directionalScattering = 0.0f.xxx;

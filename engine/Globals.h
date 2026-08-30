@@ -7,6 +7,7 @@ struct WorldProbes;
 struct VolumeOcclusion;
 struct MaterialLayers;
 struct GroundResponse;
+struct ActorSurfaceEffects;
 struct FoliageDynamics;
 struct StrandShading;
 struct HorizonBlend;
@@ -93,6 +94,7 @@ namespace globals
 		extern VolumeOcclusion volumeOcclusion;
 		extern MaterialLayers materialLayers;
 		extern GroundResponse groundResponse;
+		extern ActorSurfaceEffects actorSurfaceEffects;
 		extern FoliageDynamics foliageDynamics;
 		extern StrandShading strandShading;
 		extern HorizonBlend horizonBlend;

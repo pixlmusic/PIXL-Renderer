@@ -10,8 +10,16 @@ namespace Atmosphere
 	#	define USE_PIXL_VOLUMETRIC_FOG 1
 	#endif
 
+	float3 SafeNormalize(float3 value, float3 fallback)
+	{
+		float lengthSq = dot(value, value);
+		return lengthSq > 1.0e-8f ? value * rsqrt(lengthSq) : fallback;
+	}
+
 	float HenyeyGreenstein(float cosTheta, float g)
 	{
+		g = clamp(g, -0.99f, 0.99f);
+		cosTheta = clamp(cosTheta, -1.0f, 1.0f);
 		float g2 = g * g;
 		float denom = 1.0f + g2 - 2.0f * g * cosTheta;
 		return (1.0f - g2) / (4.0f * Math::PI * pow(max(denom, 1e-5f), 1.5f));
@@ -116,8 +124,13 @@ namespace Atmosphere
 		float farPlane = max(nearPlane + 1.0f, GetVolumetricEndDistance());
 		float nearWithOffset = nearPlane + 0.095f * 100.0f;
 		float farExp = exp2(min(gridSizeZ / GetVolumetricDepthDistributionScale(), 120.0f));
-		float gridZOffset = (farPlane - nearWithOffset * farExp) / (farPlane - nearWithOffset);
-		float gridZScale = (1.0f - gridZOffset) / nearWithOffset;
+		float depthDenominator = farPlane - nearWithOffset;
+		float safeDepthDenominator =
+			abs(depthDenominator) >= 1e-6f
+				? depthDenominator
+				: (depthDenominator < 0.0f ? -1e-6f : 1e-6f);
+		float gridZOffset = (farPlane - nearWithOffset * farExp) / safeDepthDenominator;
+		float gridZScale = (1.0f - gridZOffset) / max(nearWithOffset, 1e-4f);
 		return float3(gridZScale, gridZOffset, GetVolumetricDepthDistributionScale());
 #endif
 	}

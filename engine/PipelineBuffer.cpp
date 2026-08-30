@@ -1,6 +1,8 @@
 #include "PipelineBuffer.h"
 
 #include <array>
+#include <cstring>
+#include <type_traits>
 
 #include "Modules/SkyVeil.h"
 #include "Modules/WorldProbes.h"
@@ -25,18 +27,20 @@
 #include "MaterialForge.h"
 
 template <class... Ts>
-std::pair<unsigned char*, size_t> _GetPipelineBufferData(Ts... feat_datas)
+std::pair<unsigned char*, size_t> _GetPipelineBufferData(const Ts&... feat_datas)
 {
 	// The packed size is a compile-time constant, so reuse one aligned, thread-local buffer
 	// instead of allocating/freeing every UpdateSharedData call. The returned pointer is
 	// non-owning and must NOT be deleted by the caller.
+	static_assert((std::is_trivially_copyable_v<Ts> && ...),
+		"FeatureData blocks must remain trivially copyable across the CPU/GPU ABI");
 	constexpr size_t totalSize = (... + sizeof(Ts));
 	alignas(16) static thread_local std::array<unsigned char, totalSize> storage;
 	size_t offset = 0;
 
 	([&] {
-		*reinterpret_cast<decltype(feat_datas)*>(storage.data() + offset) = feat_datas;
-		offset += sizeof(decltype(feat_datas));
+		std::memcpy(storage.data() + offset, &feat_datas, sizeof(Ts));
+		offset += sizeof(Ts);
 	}(),
 		...);
 

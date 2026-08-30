@@ -190,15 +190,24 @@ LinearLightCore::PerFrameData LinearLightCore::GetCommonBufferData()
 
 RE::NiColor LinearLightCore::ColorToLinear(RE::NiColor inColor, float gamma)
 {
+	const auto linearizeChannel = [gamma](float channel) {
+		// Skyrim light colours are expected to be non-negative.  Guard malformed
+		// data here so a fractional gamma cannot seed NaNs into every downstream
+		// lighting calculation.
+		return std::pow(std::max(std::isfinite(channel) ? channel : 0.0f, 0.0f), gamma);
+	};
 	RE::NiColor outColor;
-	outColor.red = std::pow(inColor.red, gamma);
-	outColor.green = std::pow(inColor.green, gamma);
-	outColor.blue = std::pow(inColor.blue, gamma);
+	outColor.red = linearizeChannel(inColor.red);
+	outColor.green = linearizeChannel(inColor.green);
+	outColor.blue = linearizeChannel(inColor.blue);
 	return outColor;
 }
 
 void LinearLightCore::BSLightingShader_SetupGeometry(RE::BSRenderPass* a_pass)
 {
+	if (!a_pass || !a_pass->geometry || !PerGeometryCB || !globals::d3d::context)
+		return;
+
 	auto& property1 = a_pass->geometry->GetGeometryRuntimeData().shaderProperty;
 	auto lightProperty = property1 && property1->GetRTTI() == globals::rtti::BSLightingShaderPropertyRTTI.get() ? static_cast<RE::BSLightingShaderProperty*>(property1.get()) : nullptr;
 

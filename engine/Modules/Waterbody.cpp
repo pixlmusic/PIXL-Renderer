@@ -263,8 +263,8 @@ void Waterbody::DataLoaded()
 		return;
 	}
 
-	flowmap = new Flowmap();
-	waterCache = new WaterCache();
+	flowmap = std::make_unique<Flowmap>();
+	waterCache = std::make_unique<WaterCache>();
 
 	if (LoadOrderChanged()) {
 		logger::info("[Waterbody] Load order or plugin version changed, regenerating flowmap and caches");
@@ -802,7 +802,8 @@ void Waterbody::BSWaterShader_SetupGeometry::thunk(RE::BSShader* waterShader, RE
 {
 	const auto& singleton = globals::pipeline::waterbody;
 
-	if (singleton.IsExteriorWorldspaceActive() && singleton.flowmap && pass && pass->geometry) {
+	if (singleton.IsExteriorWorldspaceActive() && singleton.flowmap && pass && pass->geometry &&
+		singleton.gFlowMapSize && singleton.gDisplacementMeshFlowCellOffset) {
 		// ObjectUV.xyz below, xy contains width and height, z contains mesh scale
 		// Previously flowmap size was in x, yz contained flowmap offset for water displacement mesh
 		*singleton.gFlowMapSize = singleton.flowmap->GetWidth();                                            // ObjectUV.x
@@ -834,7 +835,8 @@ void Waterbody::TESWaterSystem_UpdateDisplacementMeshPosition::thunk(RE::TESWate
 	const auto& singleton = globals::pipeline::waterbody;
 	singleton.UpdateWaterLODCull();
 
-	if (!singleton.flowmap || !singleton.IsExteriorWorldspaceActive())
+	if (!singleton.flowmap || !singleton.IsExteriorWorldspaceActive() ||
+		!singleton.gDisplacementMeshPos || !singleton.gDisplacementCellTexCoordOffset)
 		return;
 
 	const float posX = singleton.gDisplacementMeshPos->x / 4096.0f;

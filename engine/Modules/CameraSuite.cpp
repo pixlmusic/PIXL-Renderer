@@ -323,6 +323,7 @@ bool CameraSuite::DetectHDR()
 	X(coldAltitudeFull) \
 	X(enableElementalDamageLens) \
 	X(elementalLensStrength) \
+	X(enableSkyrimDepthOfField) \
 	X(enableEnhancedDepthOfField) \
 	X(dofAutoFocus) \
 	X(dofStrength) \
@@ -836,31 +837,9 @@ void CameraSuite::DrawSettings()
 			ImGui::EndDisabled();
 		}
 
-		if (ImGui::CollapsingHeader("Cinematic Depth of Field", ImGuiTreeNodeFlags_DefaultOpen)) {
-			changed |= ImGui::Checkbox("Enable PIXL Depth of Field", &settings.enableEnhancedDepthOfField);
-			DrawSettingsTooltip("Enables PIXL's depth-aware photographic aperture. The legacy Skyrim blur is bypassed so CameraSuite exclusively owns the visible depth-of-field result.");
-			ImGui::BeginDisabled(!settings.enableEnhancedDepthOfField);
-			changed |= ImGui::Checkbox("Gameplay Auto Focus", &settings.dofAutoFocus);
-			DrawSettingsTooltip("Focuses on valid geometry at the centre of the view. Disable this for a locked manual focus plane.");
-			changed |= ImGui::SliderFloat("DOF Strength", &settings.dofStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			DrawSettingsTooltip("Controls the photographic circle-of-confusion strength around the PIXL focus plane.");
-			ImGui::BeginDisabled(settings.dofAutoFocus);
-			changed |= ImGui::SliderFloat("Focus Distance", &settings.dofFocusDistance, 100.0f, 20000.0f, "%.0f units", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
-			ImGui::EndDisabled();
-			changed |= ImGui::SliderFloat("Focus Range", &settings.dofFocusRange, 100.0f, 20000.0f, "%.0f units", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
-			changed |= ImGui::SliderFloat("Bokeh Radius", &settings.dofBokehRadius, 0.5f, 2.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
-			DrawSettingsTooltip("Scales the aperture footprint. Larger values create broader bokeh; the sample budget is selected by Camera quality.");
-			changed |= ImGui::SliderFloat("Highlight Response", &settings.dofHighlightResponse, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			DrawSettingsTooltip("Preserves bright points inside the defocused aperture. The response is soft-clamped to prevent fireflies.");
-			changed |= ImGui::SliderFloat("Focus Edge Protection", &settings.dofFocusEdgeProtection, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			DrawSettingsTooltip("Rejects samples across large depth changes to reduce background colour bleeding around characters, weapons and foliage.");
-			changed |= ImGui::SliderFloat("Foreground Coverage", &settings.dofForegroundCoverage, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			DrawSettingsTooltip("Controls how strongly nearby out-of-focus objects spread over the focused background, approximating real foreground occlusion.");
-			changed |= ImGui::SliderFloat("Cat-Eye Bokeh", &settings.dofCatEye, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			DrawSettingsTooltip("Compresses bokeh toward the frame edges to mimic mechanical lens vignetting. Keep low for a neutral photographic look.");
-			changed |= ImGui::SliderFloat("Anamorphic Ratio", &settings.dofAnamorphicRatio, 0.5f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			DrawSettingsTooltip("Shapes the aperture vertically versus horizontally. 1.0 is round; values above 1.0 create a restrained horizontal anamorphic oval.");
-			ImGui::EndDisabled();
+		if (ImGui::CollapsingHeader("Skyrim Depth of Field", ImGuiTreeNodeFlags_DefaultOpen)) {
+			changed |= ImGui::Checkbox("Enable Skyrim Depth of Field", &settings.enableSkyrimDepthOfField);
+			DrawSettingsTooltip("Enables Skyrim's native image-space depth of field in real time. PIXL's experimental replacement is retired for this release, so weather, interiors and authored image spaces remain in control of focus and blur.");
 		}
 
 		if (ImGui::CollapsingHeader("Modern Motion Blur", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -912,6 +891,9 @@ void CameraSuite::LoadSettings(json& o_json)
 	bool oldEnableHDR = settings.enableHDR;
 
 	settings = o_json;
+	// PIXL's experimental realtime DOF is retired for release. Preserve its old
+	// JSON keys for backwards compatibility but never reactivate the compute path.
+	settings.enableEnhancedDepthOfField = false;
 	settings.enableColdLens = o_json.value("enableColdLens", settings.enableColdLens);
 	settings.coldLensStrength = o_json.value("coldLensStrength", settings.coldLensStrength);
 	settings.coldAltitudeStart = o_json.value("coldAltitudeStart", settings.coldAltitudeStart);
@@ -1054,6 +1036,7 @@ void CameraSuite::RestoreDefaultSettings()
 	settings.coldAltitudeFull = 60000.0f;
 	settings.enableElementalDamageLens = true;
 	settings.elementalLensStrength = 0.45f;
+	settings.enableSkyrimDepthOfField = true;
 	settings.enableEnhancedDepthOfField = false;
 	settings.dofAutoFocus = true;
 	settings.dofStrength = 0.24f;
@@ -1563,9 +1546,8 @@ bool CameraSuite::NeedsPresentationComposite() const
 	const bool look = settings.lookPreset > 0u && settings.lookOpacity > 1e-4f;
 	const bool environment = settings.enableStormglass || settings.enableSubmergedOptics ||
 		settings.enableColdLens || settings.enableElementalDamageLens;
-	const bool depthOfField = settings.enableEnhancedDepthOfField && settings.dofStrength > 1e-4f;
 	const bool motionBlur = settings.enableModernMotionBlur && settings.motionBlurStrength > 1e-4f;
-	return settings.enableHDR || settings.enablePhysicalCamera || bloom || look || environment || depthOfField || motionBlur;
+	return settings.enableHDR || settings.enablePhysicalCamera || bloom || look || environment || motionBlur;
 }
 
 void CameraSuite::SyncFramebufferUIRedirect()
@@ -2727,15 +2709,8 @@ CameraSuite::PostProcessSettings CameraSuite::GetPostProcessData() const
 	// native pass is scheduled instead of receiving its strength one frame late.
 	ApplyPlayerPostProcessing();
 
-	auto* state = globals::state;
-	auto* ui = globals::game::ui;
-	// inWorld is not authoritative for the presented scene and can remain false
-	// during ordinary exterior or interior gameplay. Menu/pause ownership is the
-	// reliable guard for an image-space effect that must work in both cell types.
-	const bool gameplay = state && !state->isMapMenuOpen &&
-		!(ui && ui->GameIsPaused()) && !state->IsDisplayReferredModelMenuOpen(ui);
 	return {
-		loaded && settings.enableEnhancedDepthOfField && gameplay && !photoModeDofIsolation ? 1u : 0u,
+		0u,
 		std::clamp(settings.dofBokehRadius, 0.5f, 2.0f),
 		std::clamp(settings.dofHighlightResponse, 0.0f, 1.0f),
 		std::clamp(settings.dofFocusEdgeProtection, 0.0f, 2.0f),
@@ -3058,14 +3033,12 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 		data.submergedFogAmount = std::clamp(waterData.underwaterFogAmount, 0.0f, 1.0f);
 	}
 
-	// PIXL DOF executes in HDROutputCS, which is a guaranteed CameraSuite pass.
-	// Gameplay/menu ownership and a valid depth SRV are resolved here so a null
-	// depth binding always degrades to the sharp baseline instead of smearing it.
+	// PIXL's experimental realtime DOF is retired. Keep the legacy ABI payload
+	// neutral so old shader caches and settings remain compatible while Skyrim's
+	// native image-space pass owns the visible depth-of-field result.
 	const bool dofGameplay = globals::state && !globals::state->isMapMenuOpen &&
 		!(ui && ui->GameIsPaused()) && !isMainOrLoadingMenu;
-	data.dofEnabled = settings.enableEnhancedDepthOfField &&
-		settings.dofStrength > 1e-4f && dofGameplay && !photoModeDofIsolation &&
-		Util::GetCurrentSceneDepthSRV(true) ? 1.0f : 0.0f;
+	data.dofEnabled = 0.0f;
 	data.dofStrength = std::clamp(settings.dofStrength, 0.0f, 1.0f);
 	data.dofFocusDistance = std::clamp(settings.dofFocusDistance, 100.0f, 20000.0f);
 	data.dofFocusRange = std::clamp(settings.dofFocusRange, 100.0f, 20000.0f);
@@ -3115,11 +3088,20 @@ void CameraSuite::ApplyPlayerPostProcessing() const
 	if (settings.enableBloom)
 		hdr.bloomScale = 0.0f;
 
-	// CameraSuite now owns the entire visible depth-of-field result in its final
-	// depth-aware compute composite. Keep Bethesda's legacy pass disabled in every
-	// state so the two lenses can never stack or fight over focus parameters.
-	auto& dof = globals::game::imageSpaceManager->GetRuntimeData().data.baseData.depthOfField;
-	dof.strength = 0.0f;
+	// Skyrim owns DOF again. Its Imagespace INI switch is live, so the PIXL toggle
+	// can enable/disable the native pass without rewriting SkyrimPrefs.ini.
+	const auto applyNativeDofSetting = [&](RE::INISettingCollection* collection) {
+		if (!collection)
+			return false;
+		if (auto* setting = collection->GetSetting("bDoDepthOfField:Imagespace");
+			setting && setting->GetType() == RE::Setting::Type::kBool) {
+			setting->data.b = settings.enableSkyrimDepthOfField;
+			return true;
+		}
+		return false;
+	};
+	if (!applyNativeDofSetting(globals::game::iniPrefSettingCollection))
+		applyNativeDofSetting(globals::game::iniSettingCollection);
 }
 
 void CameraSuite::SetPhotoModeDofIsolation(bool enabled)
@@ -3128,25 +3110,6 @@ void CameraSuite::SetPhotoModeDofIsolation(bool enabled)
 		return;
 
 	photoModeDofIsolation = enabled;
-
-	if (globals::game::imageSpaceManager) {
-		auto& dof =
-			globals::game::imageSpaceManager->GetRuntimeData().data.baseData.depthOfField;
-
-		if (enabled) {
-			photoModeNativeDofStrength = dof.strength;
-			photoModeNativeDofDistance = dof.distance;
-			photoModeNativeDofRange = dof.range;
-			photoModeNativeDofSnapshotValid = true;
-			dof.strength = 0.0f;
-		} else if (photoModeNativeDofSnapshotValid) {
-			dof.strength = photoModeNativeDofStrength;
-			dof.distance = photoModeNativeDofDistance;
-			dof.range = photoModeNativeDofRange;
-			photoModeNativeDofSnapshotValid = false;
-		}
-	}
-
 	UpdateHDRData();
 }
 

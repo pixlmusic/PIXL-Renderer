@@ -680,7 +680,7 @@ namespace
 				"Camera",
 				&settings.CameraQuality,
 				QualityGroup::Camera,
-				"Depth of field, motion blur and lens-effect sampling quality; camera exposure stays user-authored." }
+				"Bloom, processed motion finish and lens-effect sampling quality; camera exposure and Skyrim DOF stay user-authored." }
 		};
 
 		std::array<int, static_cast<size_t>(QualityGroup::Count)>
@@ -1043,25 +1043,46 @@ namespace
 			ImGui::PopID();
 		}
 
+		const auto frameGenerationState =
+			imageReconstruction.GetFrameGenerationState();
 		const bool frameGenerationPendingRestart =
-			frameGeneration !=
-				imageReconstruction
-					.IsFrameGenerationDx12PathActive();
+			frameGenerationState == ImageReconstruction::FrameGenerationState::RestartRequired;
 
-		if (restartNeeded ||
-			frameGenerationPendingRestart) {
+		if (restartNeeded || frameGenerationPendingRestart) {
 			ImGui::TextColored(
 				PIXLUI::ToVec4(
 					PIXLUI::Colors::Warning),
 				"RESTART SKYRIM TO APPLY DISPLAY PATH CHANGES");
 		} else {
-			ImGui::TextColored(
-				PIXLUI::ToVec4(
-					PIXLUI::Colors::TextDim),
-				showExperimentalDisplayOptions &&
-						frameGeneration
-					? "FRAME GENERATION PATH READY"
-					: "DISPLAY PATH READY");
+			const char* statusText = "DISPLAY PATH READY";
+			auto statusColour = PIXLUI::Colors::TextDim;
+			switch (frameGenerationState) {
+			case ImageReconstruction::FrameGenerationState::Active:
+				statusText = "FRAME GENERATION ON - GENERATING FRAMES";
+				statusColour = PIXLUI::Colors::Success;
+				break;
+			case ImageReconstruction::FrameGenerationState::TemporarilySuspended:
+				statusText = "FRAME GENERATION ON - PAUSED WHILE MENU IS OPEN";
+				statusColour = PIXLUI::Colors::Warning;
+				break;
+			case ImageReconstruction::FrameGenerationState::Starting:
+				statusText = "FRAME GENERATION ON - PATH READY";
+				statusColour = PIXLUI::Colors::Success;
+				break;
+			case ImageReconstruction::FrameGenerationState::Unavailable:
+				statusText = "FRAME GENERATION OFF - REQUIREMENTS NOT MET";
+				statusColour = PIXLUI::Colors::Danger;
+				break;
+			case ImageReconstruction::FrameGenerationState::RuntimeFault:
+				statusText = "FRAME GENERATION OFF - BACKEND ERROR";
+				statusColour = PIXLUI::Colors::Danger;
+				break;
+			case ImageReconstruction::FrameGenerationState::Off:
+			default:
+				statusText = "FRAME GENERATION OFF";
+				break;
+			}
+			ImGui::TextColored(PIXLUI::ToVec4(statusColour), "%s", statusText);
 		}
 
 		if (changed)
@@ -1636,85 +1657,10 @@ namespace
 
 			changed |=
 				ToggleControl(
-					"Depth of field enabled",
+					"Skyrim depth of field",
 					&camera.settings
-						.enableEnhancedDepthOfField);
-
-			ImGui::BeginDisabled(
-				!camera.settings
-					.enableEnhancedDepthOfField);
-
-			changed |=
-				SliderControl(
-					"DOF strength",
-					&camera.settings
-						.dofStrength,
-					0.0f,
-					1.0f,
-					"%.2f",
-					false);
-
-			changed |=
-				SliderControl(
-					"Focus distance",
-					&camera.settings
-						.dofFocusDistance,
-					100.0f,
-					20000.0f,
-					"%.0f units",
-					true);
-
-			changed |=
-				SliderControl(
-					"Focus range",
-					&camera.settings
-						.dofFocusRange,
-					100.0f,
-					20000.0f,
-					"%.0f units",
-					true);
-
-			changed |=
-				SliderControl(
-					"Bokeh size",
-					&camera.settings
-						.dofBokehRadius,
-					0.5f,
-					2.0f,
-					"%.2fx",
-					false);
-
-			changed |=
-				SliderControl(
-					"Highlight response",
-					&camera.settings
-						.dofHighlightResponse,
-					0.0f,
-					1.0f,
-					"%.2f",
-					false);
-
-			changed |=
-				SliderControl(
-					"Focus edge protection",
-					&camera.settings
-						.dofFocusEdgeProtection,
-					0.0f,
-					2.0f,
-					"%.2f",
-					false);
-
-			changed |=
-				SliderControl(
-					"Foreground coverage",
-					&camera.settings
-						.dofForegroundCoverage,
-					0.0f,
-					1.5f,
-					"%.2f",
-					false);
-
-			ImGui::EndDisabled();
+						.enableSkyrimDepthOfField,
+					"Uses Skyrim's native image-space depth of field. PIXL's experimental full-screen DOF path is disabled for this release.");
 			ImGui::PopID();
 
 			// -------------------------------------------------------------

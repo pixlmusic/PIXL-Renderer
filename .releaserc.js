@@ -38,7 +38,7 @@ module.exports = {
     [
       '@semantic-release/git',
       {
-        assets: ['CMakeLists.txt', 'features/**/Shaders/Features/*.ini'],
+        assets: ['CMakeLists.txt'],
         message: 'chore(release): ${nextRelease.version} [skip ci]',
       },
     ],

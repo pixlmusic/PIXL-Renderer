@@ -49,10 +49,11 @@ float2 sampleHammersley(uint i)
 // For derivation see: http://blog.tobias-franke.eu/2014/03/30/notes_on_importance_sampling.html
 float3 sampleGGX(float u1, float u2, float roughness)
 {
-	float alpha = roughness * roughness;
+	float alpha = max(saturate(roughness) * saturate(roughness), Epsilon);
 
-	float cosTheta = sqrt((1.0 - u2) / (1.0 + (alpha * alpha - 1.0) * u2));
-	float sinTheta = sqrt(1.0 - cosTheta * cosTheta);  // Trig. identity
+	float denominator = max(1.0 + (alpha * alpha - 1.0) * saturate(u2), Epsilon);
+	float cosTheta = sqrt(saturate((1.0 - saturate(u2)) / denominator));
+	float sinTheta = sqrt(saturate(1.0 - cosTheta * cosTheta));  // Trig. identity
 	float phi = Math::TAU * u1;
 
 	// Convert to Cartesian upon return.
@@ -63,10 +64,10 @@ float3 sampleGGX(float u1, float u2, float roughness)
 // Uses Disney's reparametrization of alpha = roughness^2.
 float ndfGGX(float cosLh, float roughness)
 {
-	float alpha = roughness * roughness;
+	float alpha = max(saturate(roughness) * saturate(roughness), Epsilon);
 	float alphaSq = alpha * alpha;
 
-	float denom = (cosLh * cosLh) * (alphaSq - 1.0) + 1.0;
+	float denom = max((cosLh * cosLh) * (alphaSq - 1.0) + 1.0, Epsilon);
 	return alphaSq / (Math::PI * denom * denom);
 }
 

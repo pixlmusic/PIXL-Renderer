@@ -230,7 +230,7 @@ VS_OUTPUT main(VS_INPUT input)
 
 #	if !defined(MOTIONVECTORS_NORMALS)
 	float fogColorParam = min(FogParam.w,
-		exp2(FogParam.z * log2(saturate(length(viewPos.xyz) * FogParam.y - FogParam.x))));
+		exp2(FogParam.z * log2(max(saturate(length(viewPos.xyz) * FogParam.y - FogParam.x), 1e-6f))));
 
 	vsout.FogParam.xyz = lerp(FogNearColor.xyz, FogFarColor.xyz, fogColorParam);
 	vsout.FogParam.w = fogColorParam;

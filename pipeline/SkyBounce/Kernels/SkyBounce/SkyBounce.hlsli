@@ -27,10 +27,18 @@ namespace SkyBounce
 
 	float GetFadeOutFactor(float3 positionMS)
 	{
-		float3 uvw = saturate(positionMS / ARRAY_SIZE + .5);
+		// The probe volume scrolls around PosOffset.  The old fade evaluated raw
+		// model-space coordinates and saturated before measuring the edge, which
+		// exposed a camera-following strip where SkyBounce abruptly appeared.
+		// Evaluate the same scrolled coordinate used by Sample() and retire the
+		// contribution over a broad inner band so the finite volume is invisible.
+		float3 positionMSAdjusted = positionMS - SharedData::skyBounceSettings.PosOffset.xyz;
+		float3 uvw = positionMSAdjusted / ARRAY_SIZE + .5;
+		if (any(uvw <= 0.0f) || any(uvw >= 1.0f))
+			return 0.0f;
 		float3 dists = min(uvw, 1 - uvw);
 		float edgeDist = min(dists.x, min(dists.y, dists.z));
-		return saturate(edgeDist * 20);
+		return smoothstep(0.0f, 0.18f, edgeDist);
 	}
 
 	float MixDiffuse(float visibility)

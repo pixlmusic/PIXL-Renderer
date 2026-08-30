@@ -96,7 +96,8 @@ void FoliageDynamics::BindGrassTuning() const
 		return;
 
 	auto* buffer = tuningCB->CB();
-	globals::d3d::context->PSSetConstantBuffers(13, 1, &buffer);
+	if (auto* context = globals::d3d::context; context && buffer)
+		context->PSSetConstantBuffers(13, 1, &buffer);
 }
 
 void FoliageDynamics::DrawSettings()
@@ -279,6 +280,49 @@ void FoliageDynamics::LoadSettings(json& o_json)
 	settings = o_json;
 	if (auto it = o_json.find("PIXLGrassTuning"); it != o_json.end() && it->is_object())
 		tuningSettings = *it;
+
+	settings.Glossiness = std::clamp(settings.Glossiness, 1.0f, 100.0f);
+	settings.SpecularStrength = std::clamp(settings.SpecularStrength, 0.0f, 2.0f);
+	settings.TissueDiffusionAmount = std::clamp(settings.TissueDiffusionAmount, 0.0f, 1.0f);
+	settings.OverrideComplexGrassSettings = settings.OverrideComplexGrassSettings ? 1u : 0u;
+	settings.BasicGrassBrightness = std::clamp(settings.BasicGrassBrightness, 0.0f, 1.0f);
+	settings.ComplexGrassThreshold = std::clamp(settings.ComplexGrassThreshold, 0.001f, 0.1f);
+	settings.TreeFlipNormalY = settings.TreeFlipNormalY ? 1u : 0u;
+	settings.GrassMacroSpecular = std::clamp(settings.GrassMacroSpecular, 0.0f, 1.0f);
+	settings.EnableEnhancedVegetation = settings.EnableEnhancedVegetation ? 1u : 0u;
+	settings.EnableEnhancedWind = settings.EnableEnhancedWind ? 1u : 0u;
+	settings.LeafTransmission = std::clamp(settings.LeafTransmission, 0.0f, 2.0f);
+	settings.LeafDiffuseWrap = std::clamp(settings.LeafDiffuseWrap, 0.0f, 1.0f);
+	settings.WindStrength = std::clamp(settings.WindStrength, 0.0f, 2.0f);
+	settings.GustStrength = std::clamp(settings.GustStrength, 0.0f, 1.5f);
+	settings.FlutterStrength = std::clamp(settings.FlutterStrength, 0.0f, 1.0f);
+	settings.WindSpatialScale = std::clamp(settings.WindSpatialScale, 0.25f, 3.0f);
+	settings.GustSpeed = std::clamp(settings.GustSpeed, 0.25f, 2.5f);
+	settings.FlutterSpeed = std::clamp(settings.FlutterSpeed, 0.25f, 3.0f);
+	settings.SpecularAA = std::clamp(settings.SpecularAA, 0.0f, 1.5f);
+	settings.ComplexGrassMode = std::min(settings.ComplexGrassMode, 3u);
+
+	tuningSettings.Magic = TuningMagic;
+	tuningSettings.Version = TuningVersion;
+	tuningSettings.EnableGrassAlphaControl = tuningSettings.EnableGrassAlphaControl ? 1u : 0u;
+	tuningSettings.GrassFlipNormalX = tuningSettings.GrassFlipNormalX ? 1u : 0u;
+	tuningSettings.GrassFlipNormalY = tuningSettings.GrassFlipNormalY ? 1u : 0u;
+	tuningSettings.GrassNormalStrength = std::clamp(tuningSettings.GrassNormalStrength, 0.0f, 2.0f);
+	tuningSettings.GrassCardNormalBlend = std::clamp(tuningSettings.GrassCardNormalBlend, 0.0f, 1.0f);
+	tuningSettings.GrassAlphaCoverage = std::clamp(tuningSettings.GrassAlphaCoverage, 0.25f, 2.0f);
+	tuningSettings.GrassCutoutBias = std::clamp(tuningSettings.GrassCutoutBias, -0.35f, 0.35f);
+	tuningSettings.GrassAlphaPower = std::clamp(tuningSettings.GrassAlphaPower, 0.25f, 4.0f);
+	tuningSettings.GrassEdgeDither = std::clamp(tuningSettings.GrassEdgeDither, 0.0f, 1.0f);
+	tuningSettings.GrassSaturation = std::clamp(tuningSettings.GrassSaturation, 0.0f, 1.5f);
+	tuningSettings.GrassContrast = std::clamp(tuningSettings.GrassContrast, 0.5f, 1.5f);
+	tuningSettings.GrassWetSpecularBoost = std::clamp(tuningSettings.GrassWetSpecularBoost, 0.0f, 2.0f);
+	tuningSettings.GrassTransmissionBoost = std::clamp(tuningSettings.GrassTransmissionBoost, 0.0f, 2.0f);
+	tuningSettings.GrassLocalLightBoost = std::clamp(tuningSettings.GrassLocalLightBoost, 0.0f, 2.0f);
+	tuningSettings.GrassDetailDistanceScale = std::clamp(tuningSettings.GrassDetailDistanceScale, 0.5f, 2.0f);
+	tuningSettings.GrassDetailTransitionSoftness = std::clamp(tuningSettings.GrassDetailTransitionSoftness, 0.5f, 2.0f);
+	tuningSettings.GrassSpecularNormalization = std::clamp(tuningSettings.GrassSpecularNormalization, 0.0f, 4.0f);
+	tuningSettings.GrassComplexSpecularMapInfluence = std::clamp(tuningSettings.GrassComplexSpecularMapInfluence, 0.0f, 1.0f);
+	tuningSettings.GrassMirrorSpecularY = tuningSettings.GrassMirrorSpecularY ? 1u : 0u;
 }
 
 void FoliageDynamics::SaveSettings(json& o_json)

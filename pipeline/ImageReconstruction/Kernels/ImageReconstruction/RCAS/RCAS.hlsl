@@ -36,6 +36,20 @@ Texture2D<float> TransparencyMask : register(t2);
 Texture2D<float2> MotionVectors : register(t3);
 RWTexture2D<float4> Dest : register(u0);
 
+// RCAS contains several reciprocal limiters whose mathematical inputs can be
+// exactly zero for flat black/white regions.  The reference implementation
+// relies on implementation-specific reciprocal behaviour; explicit guards
+// keep a single non-finite value from contaminating HDR output.
+float SafeRcpPositive(float value)
+{
+	return rcp(max(value, 1.0e-6));
+}
+
+float SafeRcpSigned(float value)
+{
+	return rcp(abs(value) >= 1.0e-6 ? value : (value < 0.0 ? -1.0e-6 : 1.0e-6));
+}
+
 float GetSharpenConfidence(uint2 outputPixel, uint2 outputDimensions)
 {
 	if (useConfidence == 0)
@@ -66,16 +80,22 @@ float GetSharpenConfidence(uint2 outputPixel, uint2 outputDimensions)
 	if (DTid.x >= texDim.x || DTid.y >= texDim.y)
 		return;
 
-	// Algorithm uses minimal 3x3 pixel neighborhood.
+	// Algorithm uses minimal 3x3 pixel neighborhood. Clamp explicitly because
+	// Texture2D.Load returns zero for out-of-range coordinates, which otherwise
+	// creates a dark sharpening seam along the display edge.
 	//    b
 	//  d e f
 	//    h
 	int2 sp = int2(DTid.xy);
-	float3 b = Source.Load(int3(sp + int2(0, -1), 0)).rgb;
-	float3 d = Source.Load(int3(sp + int2(-1, 0), 0)).rgb;
+	uint sourceWidth;
+	uint sourceHeight;
+	Source.GetDimensions(sourceWidth, sourceHeight);
+	int2 sourceMax = int2(max(uint2(sourceWidth, sourceHeight), 1u.xx) - 1u.xx);
+	float3 b = Source.Load(int3(clamp(sp + int2(0, -1), int2(0, 0), sourceMax), 0)).rgb;
+	float3 d = Source.Load(int3(clamp(sp + int2(-1, 0), int2(0, 0), sourceMax), 0)).rgb;
 	float3 e = Source.Load(int3(sp, 0)).rgb;
-	float3 f = Source.Load(int3(sp + int2(1, 0), 0)).rgb;
-	float3 h = Source.Load(int3(sp + int2(0, 1), 0)).rgb;
+	float3 f = Source.Load(int3(clamp(sp + int2(1, 0), int2(0, 0), sourceMax), 0)).rgb;
+	float3 h = Source.Load(int3(clamp(sp + int2(0, 1), int2(0, 0), sourceMax), 0)).rgb;
 
 	// Rename (32-bit) or regroup (16-bit).
 	float bR = b.r;
@@ -103,7 +123,8 @@ float GetSharpenConfidence(uint2 outputPixel, uint2 outputDimensions)
 
 	// Noise detection.
 	float nz = 0.25 * bL + 0.25 * dL + 0.25 * fL + 0.25 * hL - eL;
-	nz = saturate(abs(nz) * rcp(max(max(max(bL, dL), max(eL, fL)), hL) - min(min(min(bL, dL), min(eL, fL)), hL)));
+	float lumaRange = max(max(max(bL, dL), max(eL, fL)), hL) - min(min(min(bL, dL), min(eL, fL)), hL);
+	nz = saturate(abs(nz) * SafeRcpPositive(lumaRange));
 	nz = -0.5 * nz + 1.0;
 
 	// Min and max of ring.
@@ -118,12 +139,12 @@ float GetSharpenConfidence(uint2 outputPixel, uint2 outputDimensions)
 	float2 peakC = float2(1.0, -1.0 * 4.0);
 
 	// Limiters, these need to be high precision RCPs.
-	float hitMinR = min(mn4R, eR) * rcp(4.0 * mx4R);
-	float hitMinG = min(mn4G, eG) * rcp(4.0 * mx4G);
-	float hitMinB = min(mn4B, eB) * rcp(4.0 * mx4B);
-	float hitMaxR = (peakC.x - max(mx4R, eR)) * rcp(4.0 * mn4R + peakC.y);
-	float hitMaxG = (peakC.x - max(mx4G, eG)) * rcp(4.0 * mn4G + peakC.y);
-	float hitMaxB = (peakC.x - max(mx4B, eB)) * rcp(4.0 * mn4B + peakC.y);
+	float hitMinR = min(mn4R, eR) * SafeRcpPositive(4.0 * mx4R);
+	float hitMinG = min(mn4G, eG) * SafeRcpPositive(4.0 * mx4G);
+	float hitMinB = min(mn4B, eB) * SafeRcpPositive(4.0 * mx4B);
+	float hitMaxR = (peakC.x - max(mx4R, eR)) * SafeRcpSigned(4.0 * mn4R + peakC.y);
+	float hitMaxG = (peakC.x - max(mx4G, eG)) * SafeRcpSigned(4.0 * mn4G + peakC.y);
+	float hitMaxB = (peakC.x - max(mx4B, eB)) * SafeRcpSigned(4.0 * mn4B + peakC.y);
 	float lobeR = max(-hitMinR, hitMaxR);
 	float lobeG = max(-hitMinG, hitMaxG);
 	float lobeB = max(-hitMinB, hitMaxB);

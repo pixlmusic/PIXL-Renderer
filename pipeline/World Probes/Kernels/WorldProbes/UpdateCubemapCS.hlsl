@@ -65,6 +65,11 @@ float smoothbumpstep(float edge0, float edge1, float x)
 }
 
 [numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
+	uint outputWidth, outputHeight, outputDepth;
+	DynamicCubemap.GetDimensions(outputWidth, outputHeight, outputDepth);
+	if (ThreadID.x >= outputWidth || ThreadID.y >= outputHeight || ThreadID.z >= outputDepth)
+		return;
+
 	float3 captureDirection = -GetSamplingVector(ThreadID, DynamicCubemap);
 	float3 viewDirection = FrameBuffer::WorldToView(captureDirection, false);
 	float2 uv = FrameBuffer::ViewToUV(viewDirection, false);
@@ -86,7 +91,9 @@ float smoothbumpstep(float edge0, float edge1, float x)
 #endif
 			half4 positionCS = half4(2 * half2(uv.x, -uv.y + 1) - 1, depth, 1);
 			positionCS = mul(FrameBuffer::CameraViewProjInverse, positionCS);
-			positionCS.xyz = positionCS.xyz / positionCS.w;
+			if (abs(positionCS.w) <= 1e-6f)
+				return;
+			positionCS.xyz *= rcp(positionCS.w);
 
 			position += positionCS.xyz;
 

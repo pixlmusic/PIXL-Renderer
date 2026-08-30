@@ -224,6 +224,21 @@ void TerrainField::BSLightingShader_SetupMaterial(RE::BSLightingShaderMaterialBa
 	}
 }
 
+void TerrainField::InvalidateSeasonalMaterialCache(std::uint32_t a_generation)
+{
+	std::size_t removed = 0;
+	{
+		const std::unique_lock lock(extendedSlotsMutex);
+		removed = extendedSlots.size();
+		extendedSlots.clear();
+	}
+
+	logger::info(
+		"[PIXL][TerrainField] Invalidated {} season-dependent material entries (generation {}).",
+		removed,
+		a_generation);
+}
+
 struct TH_TESObjectLAND_SetupMaterial
 {
 	static bool thunk(RE::TESObjectLAND* land)

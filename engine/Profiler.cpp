@@ -35,23 +35,40 @@ void Profiler::Initialize(ID3D11Device* device, ID3D11DeviceContext* a_context)
 {
 	Release();
 
+	if (!device || !a_context) {
+		logger::warn("[PIXL Profiler] D3D11 device/context unavailable; GPU timing disabled");
+		return;
+	}
+
 	context = a_context;
 
-	LARGE_INTEGER freq;
-	QueryPerformanceFrequency(&freq);
+	LARGE_INTEGER freq{};
+	if (!QueryPerformanceFrequency(&freq) || freq.QuadPart <= 0) {
+		logger::warn("[PIXL Profiler] High-resolution CPU timer unavailable; profiling disabled");
+		Release();
+		return;
+	}
 	cpuTicksToMs = 1000.0 / static_cast<double>(freq.QuadPart);
 
 	for (auto& frame : frames) {
 		D3D11_QUERY_DESC disjointDesc{};
 		disjointDesc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
-		device->CreateQuery(&disjointDesc, frame.disjoint.put());
+		if (FAILED(device->CreateQuery(&disjointDesc, frame.disjoint.put())) || !frame.disjoint) {
+			logger::warn("[PIXL Profiler] Could not allocate a timestamp-disjoint query; profiling disabled");
+			Release();
+			return;
+		}
 
 		frame.timers.resize(kMaxTimers);
 		for (auto& timer : frame.timers) {
 			D3D11_QUERY_DESC tsDesc{};
 			tsDesc.Query = D3D11_QUERY_TIMESTAMP;
-			device->CreateQuery(&tsDesc, timer.begin.put());
-			device->CreateQuery(&tsDesc, timer.end.put());
+			if (FAILED(device->CreateQuery(&tsDesc, timer.begin.put())) || !timer.begin ||
+				FAILED(device->CreateQuery(&tsDesc, timer.end.put())) || !timer.end) {
+				logger::warn("[PIXL Profiler] Could not allocate timestamp queries; profiling disabled");
+				Release();
+				return;
+			}
 		}
 		frame.activeCount = 0;
 		frame.inFlight = false;
@@ -76,6 +93,11 @@ void Profiler::Release()
 	knownTimerIndex.clear();
 	totalTimeMs = 0.0f;
 	cpuTotalTimeMs = 0.0f;
+	writeFrame = 0;
+	readFrame = 0;
+	framesSinceInit = 0;
+	frameActive = false;
+	cpuTicksToMs = 0.0;
 	initialized = false;
 	context = nullptr;
 }

@@ -1765,9 +1765,9 @@ void PixelCapture::LoadSettings(json& a_json)
 				0.0f,
 				1.0f);
 
-	if (a_json.contains("PhotoLensDofEnabled"))
-		photoLensDofEnabled =
-			a_json["PhotoLensDofEnabled"];
+	// Keep the legacy fields readable, but never reactivate the experimental
+	// depth resolve from an older configuration.
+	photoLensDofEnabled = false;
 	if (a_json.contains("PhotoLensDofQuality"))
 		photoLensDofQuality =
 			std::clamp<unsigned int>(
@@ -1811,6 +1811,31 @@ void PixelCapture::LoadSettings(json& a_json)
 				-180.0f,
 				180.0f);
 
+	if (auto it = a_json.find("DirectorPhotoPresets");
+		it != a_json.end() && it->is_array()) {
+		const std::size_t count = std::min(it->size(), directorPhotoPresets.size());
+		for (std::size_t index = 0; index < count; ++index) {
+			const auto& source = (*it)[index];
+			if (!source.is_object())
+				continue;
+			auto& preset = directorPhotoPresets[index];
+			preset.valid = source.value("Valid", false);
+			preset.lookPreset = std::clamp(source.value("LookPreset", 0u), 0u, 5u);
+			preset.lookOpacity = std::clamp(source.value("LookOpacity", 0.35f), 0.0f, 1.0f);
+			preset.exposure = std::clamp(source.value("Exposure", 0.0f), -2.0f, 2.0f);
+			preset.contrast = std::clamp(source.value("Contrast", 1.0f), 0.75f, 1.25f);
+			preset.saturation = std::clamp(source.value("Saturation", 1.0f), 0.75f, 1.25f);
+			preset.highlightProtection = std::clamp(source.value("HighlightProtection", 0.0f), 0.0f, 1.0f);
+			preset.shadowDetail = std::clamp(source.value("ShadowDetail", 0.0f), 0.0f, 0.4f);
+			preset.bloomEnabled = source.value("BloomEnabled", false);
+			preset.bloomStrength = std::clamp(source.value("BloomStrength", 0.0f), 0.0f, 2.0f);
+			preset.fieldOfView = std::clamp(source.value("FieldOfView", 75.0f), 20.0f, 110.0f);
+			preset.motionEnabled = source.value("MotionEnabled", false);
+			preset.motionStrength = std::clamp(source.value("MotionStrength", 0.18f), 0.0f, 1.0f);
+			preset.motionAngleDegrees = std::clamp(source.value("MotionAngleDegrees", 0.0f), -180.0f, 180.0f);
+		}
+	}
+
 	subrect.LoadSettings(a_json);
 }
 
@@ -1845,6 +1870,25 @@ void PixelCapture::SaveSettings(json& a_json)
 		photoFinishMotionStrength;
 	a_json["PhotoFinishMotionAngleDegrees"] =
 		photoFinishMotionAngleDegrees;
+	a_json["DirectorPhotoPresets"] = json::array();
+	for (const auto& preset : directorPhotoPresets) {
+		a_json["DirectorPhotoPresets"].push_back({
+			{ "Valid", preset.valid },
+			{ "LookPreset", preset.lookPreset },
+			{ "LookOpacity", preset.lookOpacity },
+			{ "Exposure", preset.exposure },
+			{ "Contrast", preset.contrast },
+			{ "Saturation", preset.saturation },
+			{ "HighlightProtection", preset.highlightProtection },
+			{ "ShadowDetail", preset.shadowDetail },
+			{ "BloomEnabled", preset.bloomEnabled },
+			{ "BloomStrength", preset.bloomStrength },
+			{ "FieldOfView", preset.fieldOfView },
+			{ "MotionEnabled", preset.motionEnabled },
+			{ "MotionStrength", preset.motionStrength },
+			{ "MotionAngleDegrees", preset.motionAngleDegrees }
+		});
+	}
 	subrect.SaveSettings(a_json);
 }
 
@@ -2297,8 +2341,7 @@ void PixelCapture::StartPhotoFinishCapture()
 			0.0f,
 			1.0f);
 
-	burst.photoLensDofEnabled =
-		photoLensDofEnabled;
+	burst.photoLensDofEnabled = false;
 	burst.photoLensDofQuality =
 		std::min(
 			photoLensDofQuality,

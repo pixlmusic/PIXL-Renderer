@@ -116,6 +116,16 @@ struct WindowLife : RenderModule
         float GlassDirtStrength = 0.42f;
         float GlassDistortion = 0.034f;
         float GlassNormalRetention = 0.26f;
+        // High-level fidelity controls. Defaults preserve the current response
+        // while enabling real probe reflection, weather coupling and restrained
+        // architectural variation without exposing implementation internals.
+        float EnvironmentReflectionStrength = 0.42f;
+        float InteriorLightingResponse = 0.34f;
+        float WeatherGlassResponse = 0.36f;
+        float SunGlintStrength = 0.24f;
+        float DirectionalRevealStrength = 0.22f;
+        float RoomVariationStrength = 0.12f;
+        float CloseLayerFeather = 0.65f;
         bool SuppressWindowAutoPOM = true;
 
         // First-stage physical eligibility guard. Geometry radius catches dedicated
@@ -155,8 +165,17 @@ struct WindowLife : RenderModule
 		// c11: x authored-room contrast, y authored-room emission,
 		//      z authored-occupant opacity, w automatic room-art scale
 		float4 Presentation0{};
+		// c12: x stable per-instance salt, y cached material layout policy,
+		//      z day/night blend, w active snow-weather state
+		float4 Layout0{};
+		// c13: x environment reflection, y interior lighting response,
+		//      z weathered glass response, w sun glint strength
+		float4 Fidelity0{};
+		// c14: x directional reveal, y per-room variation,
+		//      z close cutout feather, w reserved
+		float4 Fidelity1{};
     };
-	static_assert(sizeof(PerGeometryData) == 192, "WindowLife per-draw payload must be exactly 192 bytes.");
+	static_assert(sizeof(PerGeometryData) == 240, "WindowLife per-draw payload must be exactly 240 bytes.");
     static_assert(sizeof(PerGeometryData) % 16 == 0, "WindowLife constant-buffer payload must remain 16-byte sized.");
 
     virtual void DrawSettings() override;
@@ -179,6 +198,7 @@ private:
         int materialTier = 0;  // 1 glass only, 2 shallow interior, 3 full candidate
         int roomFamily = 0;    // 0 Nordic, 1 noble, 2 Riften, 3 Windhelm, 4 Dwemer, 5 trade
         int score = 0;
+        std::uint32_t materialIdentity = 0;
         std::string authoredMaskKey;
         std::string evidence;
     };
@@ -198,6 +218,7 @@ private:
     // layer atlases intentionally occupy the two slots immediately before the
     // accepted pane-mask/room/per-draw bindings so the public per-draw ABI does
     // not change.
+    static constexpr UINT kGlassGrimeSRVSlot = 122;
     static constexpr UINT kOccupantAtlasSRVSlot = 123;
     static constexpr UINT kCurtainAtlasSRVSlot = 124;
     static constexpr UINT kAuthoredMaskSRVSlot = 125;
@@ -208,6 +229,7 @@ private:
     winrt::com_ptr<ID3D11Buffer> neutralBuffer;
     winrt::com_ptr<ID3D11ShaderResourceView> activeSRV;
     winrt::com_ptr<ID3D11ShaderResourceView> neutralSRV;
+    winrt::com_ptr<ID3D11ShaderResourceView> glassGrimeSRV;
     winrt::com_ptr<ID3D11ShaderResourceView> occupantAtlasSRV;
     winrt::com_ptr<ID3D11ShaderResourceView> curtainAtlasSRV;
     winrt::com_ptr<ID3D11ShaderResourceView> roomAtlasSRV;
@@ -231,7 +253,8 @@ private:
         {
             stl::write_vfunc<0x6, BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
             logger::info(
-                "[WindowLife] Installed BSLightingShader geometry hook on PS t{} occupant atlas + t{} curtain atlas + t{} optional exact glass mask + t{} room atlas + t{} structured SRV.",
+                "[WindowLife] Installed BSLightingShader geometry hook on PS t{} filtered grime + t{} occupant atlas + t{} curtain atlas + t{} optional exact glass mask + t{} room atlas + t{} 240-byte structured SRV.",
+                kGlassGrimeSRVSlot,
                 kOccupantAtlasSRVSlot,
                 kCurtainAtlasSRVSlot,
                 kAuthoredMaskSRVSlot,

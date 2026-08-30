@@ -34,16 +34,22 @@ For more information, please refer to <http://unlicense.org/>
 
 #include "Common/Math.hlsli"
 
+float3 SafeNormalizeGGX(float3 value, float3 fallback)
+{
+	float lengthSq = dot(value, value);
+	return lengthSq > 1e-8f ? value * rsqrt(lengthSq) : fallback;
+}
+
 float G1V(float dotNV, float k)
 {
-	return 1.0f / (dotNV * (1.0f - k) + k);
+	return rcp(max(dotNV * (1.0f - k) + k, 1e-6f));
 }
 
 float LightingFuncGGX_REF(float3 N, float3 V, float3 L, float roughness, float F0)
 {
 	float alpha = roughness * roughness;
 
-	float3 H = normalize(V + L);
+	float3 H = SafeNormalizeGGX(V + L, N);
 
 	float dotNL = saturate(dot(N, L));
 	float dotNV = saturate(dot(N, V));
@@ -55,7 +61,7 @@ float LightingFuncGGX_REF(float3 N, float3 V, float3 L, float roughness, float F
 	// D
 	float alphaSqr = alpha * alpha;
 	float denom = dotNH * dotNH * (alphaSqr - 1.0) + 1.0f;
-	D = alphaSqr / (Math::PI * denom * denom);
+	D = alphaSqr / max(Math::PI * denom * denom, 1e-8f);
 
 	// F
 	float dotLH5 = pow(1.0f - dotLH, 5);
@@ -73,7 +79,7 @@ float LightingFuncGGX_OPT1(float3 N, float3 V, float3 L, float roughness, float 
 {
 	float alpha = roughness * roughness;
 
-	float3 H = normalize(V + L);
+	float3 H = SafeNormalizeGGX(V + L, N);
 
 	float dotNL = saturate(dot(N, L));
 	float dotLH = saturate(dot(L, H));
@@ -84,7 +90,7 @@ float LightingFuncGGX_OPT1(float3 N, float3 V, float3 L, float roughness, float 
 	// D
 	float alphaSqr = alpha * alpha;
 	float denom = dotNH * dotNH * (alphaSqr - 1.0) + 1.0f;
-	D = alphaSqr / (Math::PI * denom * denom);
+	D = alphaSqr / max(Math::PI * denom * denom, 1e-8f);
 
 	// F
 	float dotLH5 = pow(1.0f - dotLH, 5);
@@ -102,7 +108,7 @@ float LightingFuncGGX_OPT2(float3 N, float3 V, float3 L, float roughness, float 
 {
 	float alpha = roughness * roughness;
 
-	float3 H = normalize(V + L);
+	float3 H = SafeNormalizeGGX(V + L, N);
 
 	float dotNL = saturate(dot(N, L));
 
@@ -114,7 +120,7 @@ float LightingFuncGGX_OPT2(float3 N, float3 V, float3 L, float roughness, float 
 	// D
 	float alphaSqr = alpha * alpha;
 	float denom = dotNH * dotNH * (alphaSqr - 1.0) + 1.0f;
-	D = alphaSqr / (Math::PI * denom * denom);
+	D = alphaSqr / max(Math::PI * denom * denom, 1e-8f);
 
 	// F
 	float dotLH5 = pow(1.0f - dotLH, 5);
@@ -124,7 +130,7 @@ float LightingFuncGGX_OPT2(float3 N, float3 V, float3 L, float roughness, float 
 	float k = alpha / 2.0f;
 	float k2 = k * k;
 	float invK2 = 1.0f - k2;
-	vis = rcp(dotLH * dotLH * invK2 + k2);
+	vis = rcp(max(dotLH * dotLH * invK2 + k2, 1e-6f));
 
 	float specular = dotNL * D * F * vis;
 	return specular;
@@ -145,7 +151,7 @@ float2 LightingFuncGGX_FV(float dotLH, float roughness)
 	float k = alpha / 2.0f;
 	float k2 = k * k;
 	float invK2 = 1.0f - k2;
-	vis = rcp(dotLH * dotLH * invK2 + k2);
+	vis = rcp(max(dotLH * dotLH * invK2 + k2, 1e-6f));
 
 	return float2(F_a * vis, F_b * vis);
 }
@@ -156,13 +162,13 @@ float LightingFuncGGX_D(float dotNH, float roughness)
 	float alphaSqr = alpha * alpha;
 	float denom = dotNH * dotNH * (alphaSqr - 1.0) + 1.0f;
 
-	float D = alphaSqr / (Math::PI * denom * denom);
+	float D = alphaSqr / max(Math::PI * denom * denom, 1e-8f);
 	return D;
 }
 
 float LightingFuncGGX_OPT3(float3 N, float3 V, float3 L, float roughness, float F0)
 {
-	float3 H = normalize(V + L);
+	float3 H = SafeNormalizeGGX(V + L, N);
 
 	float dotNL = saturate(dot(N, L));
 	float dotLH = saturate(dot(L, H));

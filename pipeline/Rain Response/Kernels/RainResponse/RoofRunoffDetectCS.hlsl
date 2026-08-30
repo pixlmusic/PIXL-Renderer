@@ -48,7 +48,8 @@ float3 ReconstructCameraRelativePosition(int2 pixel, float depth)
 		depth,
 		1.0f);
 	float4 positionWS = mul(FrameBuffer::CameraViewProjInverse, positionCS);
-	return positionWS.xyz / max(abs(positionWS.w), 1e-6f);
+	float safeW = abs(positionWS.w) > 1e-6f ? positionWS.w : (positionWS.w < 0.0f ? -1e-6f : 1e-6f);
+	return positionWS.xyz / safeW;
 }
 
 float GetPrecipitationBlockerConfidence(float3 cameraRelativePosition)

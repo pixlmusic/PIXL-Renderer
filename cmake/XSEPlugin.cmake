@@ -89,10 +89,14 @@ if(MSVC)
 	# loop) and /Gy to pair with the incremental linker below.
 	# /Ob3 comes from the preset's CMAKE_CXX_FLAGS_RELEASE (single source,
 	# applies to externs too); repeating an /Ob here would emit D9025.
+	# Keep CFG disabled: SKSE/CommonLib legitimately dispatch through runtime-
+	# generated trampoline targets that are not present in the linker's CFG table.
+	# Stack cookies and SDL diagnostics are compatible with those hooks and remain
+	# enabled for the public Release binary.
 	if(SC_DEVFAST_OPTS)
-		set(SC_RELEASE_OPTS "/fp:fast;/Gy;/Gm-;/Gw;/sdl-;/GS-;/guard:cf-;/Od;/Ob1;/fp:except-")
+		set(SC_RELEASE_OPTS "/fp:fast;/Gy;/Gm-;/Gw;/sdl;/GS;/guard:cf-;/Od;/Ob1;/fp:except-")
 	else()
-		set(SC_RELEASE_OPTS "/fp:fast;/Gy-;/Gm-;/Gw;/sdl-;/GS-;/guard:cf-;/O2;/Oi;/Ot;/Oy;/fp:except-")
+		set(SC_RELEASE_OPTS "/fp:fast;/Gy-;/Gm-;/Gw;/sdl;/GS;/guard:cf-;/O2;/Oi;/Ot;/Oy;/fp:except-")
 	endif()
 
 	# Shipping: /Zi + /GL. Dev: /Z7 (no mspdbsrv PDB-lock contention across
@@ -146,6 +150,9 @@ if(MSVC)
 			${PROJECT_NAME}
 			PRIVATE
 			/WX
+			/DYNAMICBASE
+			/NXCOMPAT
+			/HIGHENTROPYVA
 			"$<$<CONFIG:DEBUG>:/INCREMENTAL;/OPT:NOREF;/OPT:NOICF>"
 			"$<$<CONFIG:RELEASE>:/LTCG;/INCREMENTAL:NO;/OPT:REF;/OPT:ICF;/DEBUG:FULL>"
 		)
@@ -158,6 +165,9 @@ if(MSVC)
 			${PROJECT_NAME}
 			PRIVATE
 			/WX
+			/DYNAMICBASE
+			/NXCOMPAT
+			/HIGHENTROPYVA
 			"$<$<CONFIG:DEBUG>:/INCREMENTAL;/OPT:NOREF;/OPT:NOICF>"
 			"$<$<CONFIG:RELEASE>:/INCREMENTAL;/OPT:NOREF;/OPT:NOICF;/DEBUG:FULL>"
 		)
@@ -174,6 +184,9 @@ if(MSVC)
 			${PROJECT_NAME}
 			PRIVATE
 			/WX
+			/DYNAMICBASE
+			/NXCOMPAT
+			/HIGHENTROPYVA
 			"$<$<CONFIG:DEBUG>:/INCREMENTAL;/OPT:NOREF;/OPT:NOICF>"
 			"$<$<CONFIG:RELEASE>:/INCREMENTAL:NO;/OPT:REF;/OPT:ICF;/DEBUG:FULL>"
 		)

@@ -19,6 +19,11 @@ namespace
 
 void LoggingCallback(sl::LogType type, const char* msg)
 {
+	if (!msg) {
+		logger::warn("[StreamlineSDK] Received an empty log message");
+		return;
+	}
+
 	// Remove trailing newlines from the raw message
 	std::string rawMsg(msg);
 	while (!rawMsg.empty() && (rawMsg.back() == '\n' || rawMsg.back() == '\r'))
@@ -156,6 +161,38 @@ void Streamline::LoadInterposer()
 	slGetNewFrameToken = (PFun_slGetNewFrameToken*)GetProcAddress(interposer, "slGetNewFrameToken");
 	slSetD3DDevice = (PFun_slSetD3DDevice*)GetProcAddress(interposer, "slSetD3DDevice");
 
+	std::string missingExports;
+	const auto requireExport = [&](auto function, std::string_view name) {
+		if (function)
+			return;
+		if (!missingExports.empty())
+			missingExports += ", ";
+		missingExports += name;
+	};
+	requireExport(slInit, "slInit");
+	requireExport(slShutdown, "slShutdown");
+	requireExport(slIsFeatureSupported, "slIsFeatureSupported");
+	requireExport(slIsFeatureLoaded, "slIsFeatureLoaded");
+	requireExport(slSetFeatureLoaded, "slSetFeatureLoaded");
+	requireExport(slEvaluateFeature, "slEvaluateFeature");
+	requireExport(slAllocateResources, "slAllocateResources");
+	requireExport(slFreeResources, "slFreeResources");
+	requireExport(slSetTagForFrame, "slSetTagForFrame");
+	requireExport(slGetFeatureRequirements, "slGetFeatureRequirements");
+	requireExport(slGetFeatureVersion, "slGetFeatureVersion");
+	requireExport(slUpgradeInterface, "slUpgradeInterface");
+	requireExport(slSetConstants, "slSetConstants");
+	requireExport(slGetNativeInterface, "slGetNativeInterface");
+	requireExport(slGetFeatureFunction, "slGetFeatureFunction");
+	requireExport(slGetNewFrameToken, "slGetNewFrameToken");
+	requireExport(slSetD3DDevice, "slSetD3DDevice");
+	if (!missingExports.empty()) {
+		logger::error("[Streamline] Interposer is missing required exports: {}", missingExports);
+		FreeLibrary(interposer);
+		interposer = nullptr;
+		return;
+	}
+
 	if (SL_FAILED(res, slInit(pref, sl::kSDKVersion))) {
 		logger::critical("[Streamline] Failed to initialize Streamline");
 	} else {
@@ -234,11 +271,22 @@ void Streamline::CheckFeatures(IDXGIAdapter* a_adapter)
 void Streamline::PostDevice()
 {
 	// Hook up all of the feature functions using the sl function slGetFeatureFunction
+	const auto bindFeatureFn = [&](sl::Feature feature, const char* functionName, void*& fn) {
+		fn = nullptr;
+		const sl::Result bindResult = slGetFeatureFunction(feature, functionName, fn);
+		if (bindResult != sl::Result::eOk)
+			logger::warn("[Streamline] {} bind failed with {}", functionName, magic_enum::enum_name(bindResult));
+		return bindResult == sl::Result::eOk && fn != nullptr;
+	};
 
 	if (featureDLSS) {
-		slGetFeatureFunction(sl::kFeatureDLSS, "slDLSSGetOptimalSettings", (void*&)slDLSSGetOptimalSettings);
-		slGetFeatureFunction(sl::kFeatureDLSS, "slDLSSGetState", (void*&)slDLSSGetState);
-		slGetFeatureFunction(sl::kFeatureDLSS, "slDLSSSetOptions", (void*&)slDLSSSetOptions);
+		bool dlssFunctionsBound = true;
+		dlssFunctionsBound &= bindFeatureFn(sl::kFeatureDLSS, "slDLSSGetOptimalSettings", (void*&)slDLSSGetOptimalSettings);
+		dlssFunctionsBound &= bindFeatureFn(sl::kFeatureDLSS, "slDLSSGetState", (void*&)slDLSSGetState);
+		dlssFunctionsBound &= bindFeatureFn(sl::kFeatureDLSS, "slDLSSSetOptions", (void*&)slDLSSSetOptions);
+		featureDLSS = dlssFunctionsBound;
+		if (!featureDLSS)
+			logger::error("[Streamline] DLSS exports are incomplete; DLSS has been disabled safely");
 	}
 
 	slReflexGetState = nullptr;
@@ -260,14 +308,6 @@ void Streamline::PostDevice()
 			requestFeatureLoad(sl::kFeatureReflex, "Reflex");
 			requestFeatureLoad(sl::kFeaturePCL, "PCL");
 		}
-
-		const auto bindFeatureFn = [&](sl::Feature feature, const char* functionName, void*& fn) {
-			fn = nullptr;
-			const sl::Result bindResult = slGetFeatureFunction(feature, functionName, fn);
-			if (bindResult != sl::Result::eOk)
-				logger::warn("[Streamline] {} bind failed with {}", functionName, magic_enum::enum_name(bindResult));
-			return bindResult == sl::Result::eOk && fn != nullptr;
-		};
 
 		// Keep runtime controls strict: only advertise Reflex/PCL as available when required entry points bind.
 		bool reflexFnsBound = true;
@@ -319,7 +359,7 @@ bool Streamline::EnsureFrameToken()
 	return frameToken != nullptr;
 }
 
-bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport)
+bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport, bool resetHistory)
 {
 	if (!globals::pipeline::imageReconstruction.streamline.initialized)
 		return false;
@@ -352,7 +392,7 @@ bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport)
 	auto& imageReconstruction = globals::pipeline::imageReconstruction;
 	auto jitter = imageReconstruction.jitter;
 	slConstants.jitterOffset = { -jitter.x, -jitter.y };
-	slConstants.reset = sl::Boolean::eFalse;
+	slConstants.reset = resetHistory ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 
 	slConstants.mvecScale = { 1.0f, 1.0f };
 	slConstants.motionVectors3D = sl::Boolean::eFalse;
@@ -445,6 +485,9 @@ void Streamline::SetDLSSOptions(sl::ViewportHandle p_viewport, uint32_t width)
 	case 4:
 		customPreset = sl::DLSSPreset::ePresetM;
 		break;
+	case 5:
+		customPreset = sl::DLSSPreset::ePresetF;
+		break;
 	}
 
 	if (customPreset.has_value()) {
@@ -481,8 +524,14 @@ void Streamline::SetDLSSOptions(sl::ViewportHandle p_viewport, uint32_t width)
 void Streamline::EvaluateDLSS(sl::ViewportHandle vp,
 	ID3D11Resource* colorIn, ID3D11Resource* colorOut, ID3D11Resource* depth,
 	ID3D11Resource* mvec, ID3D11Resource* reactiveMask, ID3D11Resource* transparencyMask,
-	const sl::Extent& extentIn, const sl::Extent& extentOut, uint32_t outputWidth)
+	const sl::Extent& extentIn, const sl::Extent& extentOut, uint32_t outputWidth,
+	bool resetHistory)
 {
+	if (!initialized || !featureDLSS || !slSetTagForFrame || !slEvaluateFeature || !slDLSSSetOptions) {
+		logger::error("[Streamline] DLSS evaluation skipped because its runtime interface is incomplete");
+		return;
+	}
+
 	auto context = globals::d3d::context;
 
 	sl::Resource colorInRes = { sl::ResourceType::eTex2d, colorIn, 0 };
@@ -492,7 +541,7 @@ void Streamline::EvaluateDLSS(sl::ViewportHandle vp,
 	sl::Resource reactiveMaskRes = { sl::ResourceType::eTex2d, reactiveMask, 0 };
 	sl::Resource transparencyMaskRes = { sl::ResourceType::eTex2d, transparencyMask, 0 };
 
-	if (!CheckFrameConstants(vp))
+	if (!CheckFrameConstants(vp, resetHistory))
 		return;
 
 	const bool emitPCLMarkers =
@@ -559,7 +608,7 @@ void Streamline::EvaluateDLSS(sl::ViewportHandle vp,
 	}
 }
 
-void Streamline::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_reactiveMask, ID3D11Resource* a_transparencyCompositionMask, ID3D11Resource* a_motionVectors)
+void Streamline::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_reactiveMask, ID3D11Resource* a_transparencyCompositionMask, ID3D11Resource* a_motionVectors, bool resetHistory)
 {
 	auto renderer = globals::game::renderer;
 	auto& depthTexture = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
@@ -579,7 +628,7 @@ void Streamline::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_r
 	EvaluateDLSS(viewport,
 		a_upscalingTexture, colorOut,
 		depthTexture.texture, a_motionVectors, a_reactiveMask, a_transparencyCompositionMask,
-		extentIn, extentOut, (uint)screenSize.x);
+		extentIn, extentOut, (uint)screenSize.x, resetHistory);
 }
 
 void Streamline::UpdateReflex()
@@ -666,6 +715,9 @@ void Streamline::UpdateReflex()
  */
 void Streamline::DestroyDLSSResources()
 {
+	if (!slDLSSSetOptions || !slFreeResources)
+		return;
+
 	sl::DLSSOptions dlssOptions{};
 	dlssOptions.mode = sl::DLSSMode::eOff;
 

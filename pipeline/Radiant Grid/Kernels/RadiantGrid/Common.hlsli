@@ -5,6 +5,9 @@
 #define NUMTHREAD_Y 16
 #define NUMTHREAD_Z 4
 #define GROUP_SIZE (NUMTHREAD_X * NUMTHREAD_Y * NUMTHREAD_Z)
+// Must match RadiantGrid.cpp::CLUSTER_MAX_LIGHTS. Dense interiors may exceed
+// 128 overlapping lights, so retain the original 256-light visual capacity and
+// allocate the matching physical storage on the CPU.
 #define MAX_CLUSTER_LIGHTS 256
 
 namespace LightFlags

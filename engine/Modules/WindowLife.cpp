@@ -52,6 +52,13 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
     GlassDirtStrength,
     GlassDistortion,
     GlassNormalRetention,
+    EnvironmentReflectionStrength,
+    InteriorLightingResponse,
+    WeatherGlassResponse,
+    SunGlintStrength,
+    DirectionalRevealStrength,
+    RoomVariationStrength,
+    CloseLayerFeather,
     SuppressWindowAutoPOM,
     MinShallowWindowRadius,
     MinFullWindowRadius,
@@ -112,6 +119,22 @@ namespace
             return x >= edge1 ? 1.0f : 0.0f;
         return Smooth01((x - edge0) / (edge1 - edge0));
     }
+
+    std::uint32_t StableHash32(std::string_view text, std::uint32_t seed = 2166136261u)
+    {
+        std::uint32_t hash = seed;
+        for (const unsigned char value : text) {
+            hash ^= value;
+            hash *= 16777619u;
+        }
+        return hash;
+    }
+
+    void HashCombine32(std::uint32_t& seed, std::uint32_t value)
+    {
+        seed ^= value + 0x9E3779B9u + (seed << 6u) + (seed >> 2u);
+        seed *= 16777619u;
+    }
 }
 
 void WindowLife::DrawSettings()
@@ -135,6 +158,11 @@ void WindowLife::DrawSettings()
     ImGui::SliderFloat(T("feature.window_life.glass_dirt", "Grime Variation"), &settings.GlassDirtStrength, 0.0f, 1.0f, "%.2f");
     ImGui::SliderFloat(T("feature.window_life.glass_distortion", "Old Glass Waviness"), &settings.GlassDistortion, 0.0f, 0.09f, "%.3f");
     ImGui::SliderFloat(T("feature.window_life.glass_normal", "Texture Normal Retention"), &settings.GlassNormalRetention, 0.0f, 1.0f, "%.2f");
+    ImGui::SliderFloat(T("feature.window_life.environment_reflection", "Environment Reflection"), &settings.EnvironmentReflectionStrength, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SliderFloat(T("feature.window_life.weather_glass", "Weathered Glass Response"), &settings.WeatherGlassResponse, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    if (auto _tt = Util::HoverTooltipWrapper()) {
+        ImGui::TextWrapped("Controls mip-filtered grime, rain streaks and cold-weather haze. The response uses live PIXL precipitation state and remains attached to the glass in world space.");
+    }
     ImGui::Checkbox(T("feature.window_life.suppress_autopom", "Keep Auto-POM Off Glass Panes"), &settings.SuppressWindowAutoPOM);
     if (auto _tt = Util::HoverTooltipWrapper()) {
         ImGui::TextWrapped("%s", T("feature.window_life.suppress_autopom_tooltip", "Suppresses synthetic Object Auto-POM only on detected pane pixels. Window frames and surrounding architecture keep their normal material depth."));
@@ -162,7 +190,7 @@ void WindowLife::DrawSettings()
 
     ImGui::Spacing();
     ImGui::Text("%s", T("feature.window_life.optics", "Interior Depth"));
-    ImGui::SliderFloat(T("feature.window_life.parallax", "Interior Parallax Depth"), &settings.ParallaxDepth, 0.0f, 72.0f, "%.1f");
+    ImGui::SliderFloat(T("feature.window_life.parallax", "Interior Parallax Depth"), &settings.ParallaxDepth, 0.0f, 216.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SliderFloat(T("feature.window_life.refraction", "Interior Refraction"), &settings.Refraction, 0.0f, 8.0f, "%.2f");
     ImGui::SliderFloat(T("feature.window_life.softness", "Silhouette Softness"), &settings.SilhouetteSoftness, 0.015f, 0.16f, "%.3f");
     ImGui::SliderFloat(T("feature.window_life.human_scale", "Human Scale"), &settings.HumanScale, 0.65f, 1.35f, "%.2f");
@@ -172,9 +200,10 @@ void WindowLife::DrawSettings()
     ImGui::SliderFloat(T("feature.window_life.authored_room_strength", "Authored Room Visibility"), &settings.AuthoredRoomStrength, 0.0f, 1.0f, "%.2f");
 	ImGui::SliderFloat(T("feature.window_life.interior_contrast", "Interior Contrast"), &settings.InteriorContrast, 0.50f, 2.0f, "%.2f");
 	ImGui::SliderFloat(T("feature.window_life.interior_emission", "Interior Emission"), &settings.InteriorEmission, 0.0f, 3.0f, "%.2fx");
-	ImGui::SliderFloat(T("feature.window_life.interior_scale", "Interior Scale"), &settings.InteriorScale, 1.0f, 1.80f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::SliderFloat(T("feature.window_life.interior_scale", "Interior Scale"), &settings.InteriorScale, 1.0f, 2.50f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+	ImGui::SliderFloat(T("feature.window_life.interior_lighting_response", "Interior Lighting Response"), &settings.InteriorLightingResponse, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextWrapped("Controls the recessed room artwork only. Scale crops and magnifies the interior inside Automatic Room Sizing without changing the detected window, room identity or pane mask. Contrast separates furniture and walls; emission controls readability through the original glass.");
+		ImGui::TextWrapped("Interior Scale crops or expands the room artwork in both manual and automatic sizing modes without changing the detected glass boundary or room identity. Contrast separates furniture and walls; emission controls readability through the original glass.");
 	}
     ImGui::Checkbox(T("feature.window_life.auto_room_sizing", "Automatic Room Sizing"), &settings.AutomaticRoomSizing);
     ImGui::Checkbox(T("feature.window_life.interior_passers", "Interior View Passers-by"), &settings.EnableInteriorPassers);
@@ -213,9 +242,13 @@ void WindowLife::DrawSettings()
             ImGui::TextWrapped("Used only if the authored occupant atlas is unavailable. Normal installations use Occupant Opacity above.");
         }
         ImGui::SliderFloat(T("feature.window_life.motion_speed", "Activity Speed"), &settings.MotionSpeed, 0.25f, 2.5f, "%.2f");
+        ImGui::SliderFloat(T("feature.window_life.sun_glint", "Sun Glint Strength"), &settings.SunGlintStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SliderFloat(T("feature.window_life.directional_reveal", "Directional Reveal Strength"), &settings.DirectionalRevealStrength, 0.0f, 0.60f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SliderFloat(T("feature.window_life.room_variation", "Neighbouring Room Variation"), &settings.RoomVariationStrength, 0.0f, 0.35f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SliderFloat(T("feature.window_life.layer_feather", "Close Cutout Feather"), &settings.CloseLayerFeather, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
         ImGui::Checkbox(T("feature.window_life.debug_detection", "Show Window Class Overlay"), &settings.DebugWindowDetection);
         if (auto _tt = Util::HoverTooltipWrapper()) {
-            ImGui::TextWrapped("Blue/amber/green show the material tier. Room sizing itself is procedural and independent of third-party pane-mask atlases.");
+            ImGui::TextWrapped("Blue/amber show glass/shallow tiers. Red means native layout rejected, cyan means native background only, and green means a full occupant-safe native layout. Procedural fallback remains independent of optional exact pane masks.");
         }
         if (ImGui::Button(T("feature.window_life.clear_classifier", "Re-scan Window Materials"))) {
             classificationCache.clear();
@@ -345,108 +378,112 @@ void WindowLife::SetupResources()
         failedMaskCount);
     classificationCache.clear();
 
-    roomAtlasSRV = nullptr;
-    const std::filesystem::path roomAtlasPath = "Data\\Shaders\\WindowLife\\RoomAtlas.png";
-    DirectX::TexMetadata roomMetadata{};
-    DirectX::ScratchImage roomImage;
-    DirectX::ScratchImage roomMipChain;
-    const HRESULT roomLoadResult = DirectX::LoadFromWICFile(
-        roomAtlasPath.c_str(),
-        DirectX::WIC_FLAGS_FORCE_SRGB,
-        &roomMetadata,
-        roomImage);
-    if (SUCCEEDED(roomLoadResult) && roomMetadata.width == 2048u && roomMetadata.height == 2048u) {
-        const HRESULT roomMipResult = DirectX::GenerateMipMaps(
-            roomImage.GetImages(),
-            roomImage.GetImageCount(),
-            roomMetadata,
-            static_cast<DirectX::TEX_FILTER_FLAGS>(
-                DirectX::TEX_FILTER_CUBIC | DirectX::TEX_FILTER_SEPARATE_ALPHA),
-            0u,
-            roomMipChain);
-
-        const bool hasGeneratedMips = SUCCEEDED(roomMipResult) && roomMipChain.GetImageCount() > 1u;
-        const DirectX::Image* uploadImages = hasGeneratedMips
-            ? roomMipChain.GetImages()
-            : roomImage.GetImages();
-        const std::size_t uploadImageCount = hasGeneratedMips
-            ? roomMipChain.GetImageCount()
-            : roomImage.GetImageCount();
-        const DirectX::TexMetadata& uploadMetadata = hasGeneratedMips
-            ? roomMipChain.GetMetadata()
-            : roomMetadata;
-
-        if (!hasGeneratedMips) {
-            logger::warn(
-                "[WindowLife] Authored room atlas mip generation failed (HRESULT 0x{:08X}); base-level fallback remains available.",
-                static_cast<std::uint32_t>(roomMipResult));
-        }
-
-        const HRESULT roomSRVResult = DirectX::CreateShaderResourceView(
-            globals::d3d::device,
-            uploadImages,
-            uploadImageCount,
-            uploadMetadata,
-            roomAtlasSRV.put());
-        if (FAILED(roomSRVResult)) {
-            logger::warn(
-                "[WindowLife] Authored room atlas SRV creation failed (HRESULT 0x{:08X}); procedural fallback remains active.",
-                static_cast<std::uint32_t>(roomSRVResult));
-        } else {
-            logger::info(
-                "[WindowLife] Authored room atlas uploaded with {} mip levels for stable street-distance interiors.",
-                uploadMetadata.mipLevels);
-        }
-    } else if (FAILED(roomLoadResult)) {
-        logger::warn(
-            "[WindowLife] Authored room atlas '{}' could not be loaded (HRESULT 0x{:08X}); procedural fallback remains active.",
-            roomAtlasPath.string(),
-            static_cast<std::uint32_t>(roomLoadResult));
-    } else {
-        logger::warn(
-            "[WindowLife] Authored room atlas must be 2048x2048 (found {}x{}); procedural fallback remains active.",
-            roomMetadata.width,
-            roomMetadata.height);
-    }
-
-    // The shallow curtain and mid-depth occupant layers use independent 4x4
-    // atlases. Their absence is deliberately non-fatal: the shader observes an
-    // unbound texture and retains the accepted analytic fallback.
-    const auto loadLayerAtlas = [&](const std::filesystem::path& path,
-                                    std::string_view label,
-                                    winrt::com_ptr<ID3D11ShaderResourceView>& target) {
+    // Prefer precompressed DDS atlases with authored mip chains. This avoids WIC
+    // decode plus runtime RGBA mip generation and keeps WindowLife's largest
+    // optional assets compressed in GPU memory. PNG remains a non-fatal fallback
+    // for older packages and for replacement authors who have not converted yet.
+    const auto loadAtlas = [&](const std::filesystem::path& ddsPath,
+                               const std::filesystem::path& pngFallbackPath,
+                               std::string_view label,
+                               winrt::com_ptr<ID3D11ShaderResourceView>& target,
+                               bool analyticFallback) {
         target = nullptr;
-        DirectX::TexMetadata metadata{};
-        DirectX::ScratchImage image;
-        DirectX::ScratchImage mipChain;
-        const HRESULT loadResult = DirectX::LoadFromWICFile(
-            path.c_str(),
+
+        if (!ddsPath.empty()) {
+            DirectX::ScratchImage ddsImage;
+            DirectX::TexMetadata ddsMetadata{};
+            const HRESULT ddsLoadResult = DirectX::LoadFromDDSFile(
+                ddsPath.c_str(),
+                DirectX::DDS_FLAGS_NONE,
+                &ddsMetadata,
+                ddsImage);
+            if (SUCCEEDED(ddsLoadResult) &&
+                ddsMetadata.width == 2048u &&
+                ddsMetadata.height == 2048u &&
+                ddsMetadata.dimension == DirectX::TEX_DIMENSION_TEXTURE2D &&
+                ddsMetadata.arraySize == 1u &&
+                ddsMetadata.mipLevels > 1u &&
+                DirectX::IsCompressed(ddsMetadata.format)) {
+                const DXGI_FORMAT srgbFormat = DirectX::MakeSRGB(ddsMetadata.format);
+                if (srgbFormat != DXGI_FORMAT_UNKNOWN && ddsImage.OverrideFormat(srgbFormat)) {
+                    ddsMetadata = ddsImage.GetMetadata();
+                    const HRESULT srvResult = DirectX::CreateShaderResourceView(
+                        globals::d3d::device,
+                        ddsImage.GetImages(),
+                        ddsImage.GetImageCount(),
+                        ddsMetadata,
+                        target.put());
+                    if (SUCCEEDED(srvResult) && target) {
+                        logger::info(
+                            "[WindowLife] {} DDS atlas '{}' uploaded as format {} with {} authored mip levels.",
+                            label,
+                            ddsPath.string(),
+                            static_cast<std::uint32_t>(ddsMetadata.format),
+                            ddsMetadata.mipLevels);
+                        return;
+                    }
+                    logger::warn(
+                        "[WindowLife] {} DDS atlas SRV creation failed (HRESULT 0x{:08X}); trying PNG fallback.",
+                        label,
+                        static_cast<std::uint32_t>(srvResult));
+                    target = nullptr;
+                } else {
+                    logger::warn(
+                        "[WindowLife] {} DDS atlas '{}' could not be exposed as sRGB; trying PNG fallback.",
+                        label,
+                        ddsPath.string());
+                }
+            } else if (SUCCEEDED(ddsLoadResult)) {
+                logger::warn(
+                    "[WindowLife] {} DDS atlas '{}' must be one compressed 2048x2048 2D texture with authored mips (found {}x{}, array {}, mips {}, format {}); trying PNG fallback.",
+                    label,
+                    ddsPath.string(),
+                    ddsMetadata.width,
+                    ddsMetadata.height,
+                    ddsMetadata.arraySize,
+                    ddsMetadata.mipLevels,
+                    static_cast<std::uint32_t>(ddsMetadata.format));
+            } else {
+                logger::info(
+                    "[WindowLife] Optional {} DDS atlas '{}' was not loaded (HRESULT 0x{:08X}); trying PNG compatibility fallback.",
+                    label,
+                    ddsPath.string(),
+                    static_cast<std::uint32_t>(ddsLoadResult));
+            }
+        }
+
+        DirectX::TexMetadata pngMetadata{};
+        DirectX::ScratchImage pngImage;
+        DirectX::ScratchImage pngMipChain;
+        const HRESULT pngLoadResult = DirectX::LoadFromWICFile(
+            pngFallbackPath.c_str(),
             DirectX::WIC_FLAGS_FORCE_SRGB,
-            &metadata,
-            image);
-        if (FAILED(loadResult) || metadata.width != 2048u || metadata.height != 2048u) {
+            &pngMetadata,
+            pngImage);
+        if (FAILED(pngLoadResult) || pngMetadata.width != 2048u || pngMetadata.height != 2048u) {
             logger::warn(
-                "[WindowLife] {} atlas '{}' unavailable or not 2048x2048 (HRESULT 0x{:08X}, {}x{}); analytic fallback remains active.",
+                "[WindowLife] {} PNG fallback '{}' unavailable or not 2048x2048 (HRESULT 0x{:08X}, {}x{}); {} fallback remains active.",
                 label,
-                path.string(),
-                static_cast<std::uint32_t>(loadResult),
-                metadata.width,
-                metadata.height);
+                pngFallbackPath.string(),
+                static_cast<std::uint32_t>(pngLoadResult),
+                pngMetadata.width,
+                pngMetadata.height,
+                analyticFallback ? "analytic" : "procedural");
             return;
         }
 
         const HRESULT mipResult = DirectX::GenerateMipMaps(
-            image.GetImages(),
-            image.GetImageCount(),
-            metadata,
+            pngImage.GetImages(),
+            pngImage.GetImageCount(),
+            pngMetadata,
             static_cast<DirectX::TEX_FILTER_FLAGS>(
                 DirectX::TEX_FILTER_CUBIC | DirectX::TEX_FILTER_SEPARATE_ALPHA),
             0u,
-            mipChain);
-        const bool hasMips = SUCCEEDED(mipResult) && mipChain.GetImageCount() > 1u;
-        const DirectX::Image* uploadImages = hasMips ? mipChain.GetImages() : image.GetImages();
-        const std::size_t uploadCount = hasMips ? mipChain.GetImageCount() : image.GetImageCount();
-        const DirectX::TexMetadata& uploadMetadata = hasMips ? mipChain.GetMetadata() : metadata;
+            pngMipChain);
+        const bool hasMips = SUCCEEDED(mipResult) && pngMipChain.GetImageCount() > 1u;
+        const DirectX::Image* uploadImages = hasMips ? pngMipChain.GetImages() : pngImage.GetImages();
+        const std::size_t uploadCount = hasMips ? pngMipChain.GetImageCount() : pngImage.GetImageCount();
+        const DirectX::TexMetadata& uploadMetadata = hasMips ? pngMipChain.GetMetadata() : pngMetadata;
         const HRESULT srvResult = DirectX::CreateShaderResourceView(
             globals::d3d::device,
             uploadImages,
@@ -455,29 +492,83 @@ void WindowLife::SetupResources()
             target.put());
         if (FAILED(srvResult)) {
             logger::warn(
-                "[WindowLife] {} atlas SRV creation failed (HRESULT 0x{:08X}); analytic fallback remains active.",
+                "[WindowLife] {} PNG fallback SRV creation failed (HRESULT 0x{:08X}); {} fallback remains active.",
                 label,
-                static_cast<std::uint32_t>(srvResult));
+                static_cast<std::uint32_t>(srvResult),
+                analyticFallback ? "analytic" : "procedural");
             target = nullptr;
             return;
         }
         logger::info(
-            "[WindowLife] {} atlas uploaded with {} mip levels.",
+            "[WindowLife] {} PNG compatibility atlas uploaded with {} mip levels.",
             label,
             uploadMetadata.mipLevels);
     };
 
-    loadLayerAtlas(
+    loadAtlas(
+        "Data\\Shaders\\WindowLife\\RoomAtlas_2k.dds",
+        "Data\\Shaders\\WindowLife\\RoomAtlas.png",
+        "Room",
+        roomAtlasSRV,
+        false);
+    loadAtlas(
+        {},
         "Data\\Shaders\\WindowLife\\OccupantAtlas.png",
         "Occupant",
-        occupantAtlasSRV);
-    loadLayerAtlas(
+        occupantAtlasSRV,
+        true);
+    loadAtlas(
+        "Data\\Shaders\\WindowLife\\CurtainAtlas_high-fidelity-2k.dds",
         "Data\\Shaders\\WindowLife\\CurtainAtlas.png",
         "Curtain",
-        curtainAtlasSRV);
+        curtainAtlasSRV,
+        true);
+
+    // Small neutral mask texture replacing per-pixel high-frequency analytic
+    // grime. Generate a filtered mip chain at load time; failure is non-fatal and
+    // the shader retains its restrained low-frequency analytic fallback.
+    glassGrimeSRV = nullptr;
+    {
+        const std::filesystem::path grimePath = "Data\\Shaders\\WindowLife\\GlassGrime_1k.png";
+        DirectX::TexMetadata grimeMetadata{};
+        DirectX::ScratchImage grimeImage;
+        DirectX::ScratchImage grimeMipChain;
+        const HRESULT grimeLoadResult = DirectX::LoadFromWICFile(
+            grimePath.c_str(),
+            DirectX::WIC_FLAGS_FORCE_RGB,
+            &grimeMetadata,
+            grimeImage);
+        if (SUCCEEDED(grimeLoadResult) && grimeMetadata.width == 1024u && grimeMetadata.height == 1024u) {
+            const HRESULT mipResult = DirectX::GenerateMipMaps(
+                grimeImage.GetImages(),
+                grimeImage.GetImageCount(),
+                grimeMetadata,
+                DirectX::TEX_FILTER_CUBIC,
+                0u,
+                grimeMipChain);
+            const bool hasMips = SUCCEEDED(mipResult) && grimeMipChain.GetImageCount() > 1u;
+            const auto* images = hasMips ? grimeMipChain.GetImages() : grimeImage.GetImages();
+            const std::size_t imageCount = hasMips ? grimeMipChain.GetImageCount() : grimeImage.GetImageCount();
+            const auto& metadata = hasMips ? grimeMipChain.GetMetadata() : grimeMetadata;
+            const HRESULT srvResult = DirectX::CreateShaderResourceView(
+                globals::d3d::device,
+                images,
+                imageCount,
+                metadata,
+                glassGrimeSRV.put());
+            if (FAILED(srvResult))
+                glassGrimeSRV = nullptr;
+        }
+        logger::info(
+            "[WindowLife] Mip-filtered glass grime texture '{}' {}.",
+            grimePath.string(),
+            glassGrimeSRV ? "ready" : "unavailable; analytic fallback active");
+    }
 
     logger::info(
-		"[WindowLife] Layered-window GPU resources ready (PS t{} occupants={}, t{} curtains={}, t{} optional exact pane clip, t{} room atlas={}, t{} structured SRV, 192-byte per-draw payload; FeatureData b6 unchanged).",
+		"[WindowLife] Layered-window GPU resources ready (PS t{} grime={}, t{} occupants={}, t{} curtains={}, t{} optional exact pane clip, t{} room atlas={}, t{} structured SRV, 240-byte per-draw payload; FeatureData b6 unchanged).",
+        kGlassGrimeSRVSlot,
+        glassGrimeSRV ? "ready" : "analytic",
         kOccupantAtlasSRVSlot,
         occupantAtlasSRV ? "ready" : "analytic",
         kCurtainAtlasSRVSlot,
@@ -554,7 +645,7 @@ void WindowLife::RefreshFrameBaseData()
         activity
     };
     frameBaseData.Optics0 = {
-        std::clamp(settings.ParallaxDepth, 0.0f, 96.0f),
+        std::clamp(settings.ParallaxDepth, 0.0f, 240.0f),
         std::clamp(settings.SilhouetteSoftness, 0.005f, 0.25f),
         std::clamp(settings.Refraction, 0.0f, 12.0f),
         std::clamp(settings.HumanScale, 0.5f, 1.6f)
@@ -605,8 +696,29 @@ void WindowLife::RefreshFrameBaseData()
 		std::clamp(settings.InteriorContrast, 0.50f, 2.0f),
 		std::clamp(settings.InteriorEmission, 0.0f, 3.0f),
 		std::clamp(settings.OccupantOpacity, 0.0f, 1.0f),
-		std::clamp(settings.InteriorScale, 1.0f, 1.8f)
+		std::clamp(settings.InteriorScale, 1.0f, 2.5f)
 	};
+    const bool snowing = globals::game::sky &&
+        globals::game::sky->mode.get() == RE::Sky::Mode::kFull &&
+        globals::game::sky->IsSnowing();
+    frameBaseData.Layout0 = {
+        0.0f,
+        0.0f,
+        night,
+        snowing ? 1.0f : 0.0f
+    };
+    frameBaseData.Fidelity0 = {
+        std::clamp(settings.EnvironmentReflectionStrength, 0.0f, 1.5f),
+        std::clamp(settings.InteriorLightingResponse, 0.0f, 1.0f),
+        std::clamp(settings.WeatherGlassResponse, 0.0f, 1.0f),
+        std::clamp(settings.SunGlintStrength, 0.0f, 1.0f)
+    };
+    frameBaseData.Fidelity1 = {
+        std::clamp(settings.DirectionalRevealStrength, 0.0f, 0.60f),
+        std::clamp(settings.RoomVariationStrength, 0.0f, 0.35f),
+        std::clamp(settings.CloseLayerFeather, 0.0f, 1.5f),
+        0.0f
+    };
 
     activeDataFrame = frame;
 }
@@ -626,14 +738,15 @@ void WindowLife::BindNeutral() const
 {
     if (!neutralSRV || !globals::d3d::context)
         return;
-    ID3D11ShaderResourceView* srvs[5] = {
+    ID3D11ShaderResourceView* srvs[6] = {
+        glassGrimeSRV.get(),
         occupantAtlasSRV.get(),
         curtainAtlasSRV.get(),
         nullptr,
         settings.EnableAuthoredRooms ? roomAtlasSRV.get() : nullptr,
         neutralSRV.get()
     };
-    globals::d3d::context->PSSetShaderResources(kOccupantAtlasSRVSlot, 5, srvs);
+    globals::d3d::context->PSSetShaderResources(kGlassGrimeSRVSlot, 6, srvs);
 }
 
 ID3D11ShaderResourceView* WindowLife::GetAuthoredMaskSRV(const Classification& classification) const
@@ -648,14 +761,15 @@ void WindowLife::BindActive(const Classification& classification) const
 {
     if (!activeSRV || !globals::d3d::context)
         return;
-    ID3D11ShaderResourceView* srvs[5] = {
+    ID3D11ShaderResourceView* srvs[6] = {
+        glassGrimeSRV.get(),
         occupantAtlasSRV.get(),
         curtainAtlasSRV.get(),
         GetAuthoredMaskSRV(classification),
         settings.EnableAuthoredRooms ? roomAtlasSRV.get() : nullptr,
         activeSRV.get()
     };
-    globals::d3d::context->PSSetShaderResources(kOccupantAtlasSRVSlot, 5, srvs);
+    globals::d3d::context->PSSetShaderResources(kGlassGrimeSRVSlot, 6, srvs);
 }
 
 WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShaderMaterialBase* material)
@@ -758,6 +872,12 @@ WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShad
     result.authoredMaskKey = result.hasAuthoredMask ? authoredMaskKey : std::string{};
     result.explicitWindow = strongWindow;
     result.namedGlass = glass;
+    // Cache the material side of the room identity once. The geometry instance
+    // contributes its own stable salt in UpdateAndBindActive; separating the two
+    // prevents per-pixel texture evidence from changing room identity.
+    result.materialIdentity = material->hashKey != 0
+        ? material->hashKey
+        : StableHash32(!diffusePath.empty() ? diffusePath : allPaths);
     if (ContainsAny(allPaths, { "markarth", "dwemer" }))
         result.roomFamily = 4;
     else if (ContainsAny(allPaths, { "solitude", "castle", "imperial", "palace", "noble" }))
@@ -840,6 +960,13 @@ void WindowLife::UpdateAndBindActive(const Classification& classification, const
         classification.explicitWindow ? 1.0f : 0.0f
     };
     data.Asset0.x = static_cast<float>(classification.roomFamily);
+    // Layout eligibility is a cached material property. 2 means an explicit
+    // window with a native glow guide, 1 is a generic architectural-glass glow
+    // guide, and 0 keeps the geometry fallback. Aperture bounds themselves still
+    // require the current draw's UV/world derivatives and are resolved in HLSL.
+    data.Layout0.y = classification.hasGlowTexture
+        ? (classification.explicitWindow ? 2.0f : 1.0f)
+        : 0.0f;
     if (geometry) {
         const auto& center = geometry->worldBound.center;
         data.Geometry0 = { center.x, center.y, center.z, geometryRadius };
@@ -849,15 +976,46 @@ void WindowLife::UpdateAndBindActive(const Classification& classification, const
         // walls/facades retain a repeating reference grid.
         const char* rawGeometryName = geometry->name.c_str();
         const std::string geometryName = rawGeometryName ? Lower(rawGeometryName) : std::string{};
-        const bool dedicatedAperture = ContainsAny(geometryName, {
+        const bool dedicatedNameHint = ContainsAny(geometryName, {
             "window", "glass", "pane", "glazing"
         });
-        const bool facadeGeometry = ContainsAny(geometryName, {
+        const bool facadeNameHint = ContainsAny(geometryName, {
             "facade", "wall", "house", "building", "exterior"
         });
-        data.Asset0.w = dedicatedAperture ? 1.0f : (facadeGeometry ? -1.0f : 0.0f);
+
+        const std::array<std::pair<float, float>, 6> familyRoomSizes{{
+            { 110.0f, 140.0f }, { 132.0f, 174.0f }, { 118.0f, 138.0f },
+            { 104.0f, 154.0f }, { 128.0f, 128.0f }, { 126.0f, 146.0f }
+        }};
+        const auto familyIndex = static_cast<std::size_t>(
+            std::clamp(classification.roomFamily, 0, 5));
+        const auto [familyWidth, familyHeight] = familyRoomSizes[familyIndex];
+        const float referenceRadius = std::max(
+            std::sqrt(familyWidth * familyWidth + familyHeight * familyHeight) * 0.5f,
+            1.0f);
+        const float radiusRatio = geometryRadius / referenceRadius;
+        // Geometry is authoritative. Names only resolve the deliberately wide
+        // ambiguous band, keeping vanilla and replacer meshes equivalent.
+        float apertureHint = 0.0f;
+        if (radiusRatio <= 2.75f)
+            apertureHint = 1.0f;
+        else if (radiusRatio >= 4.25f)
+            apertureHint = -1.0f;
+        else if (dedicatedNameHint != facadeNameHint)
+            apertureHint = dedicatedNameHint ? 1.0f : -1.0f;
+        data.Asset0.w = apertureHint;
+
+        std::uint32_t instanceIdentity = classification.materialIdentity;
+        HashCombine32(instanceIdentity, StableHash32(geometryName));
+        // Eighth-unit quantization absorbs harmless transform noise while keeping
+        // adjacent instances distinct even when they share the same NIF/material.
+        HashCombine32(instanceIdentity, static_cast<std::uint32_t>(std::lround(center.x * 8.0f)));
+        HashCombine32(instanceIdentity, static_cast<std::uint32_t>(std::lround(center.y * 8.0f)));
+        HashCombine32(instanceIdentity, static_cast<std::uint32_t>(std::lround(center.z * 8.0f)));
+        data.Layout0.x = static_cast<float>(instanceIdentity & 0x00FFFFFFu) / 16777216.0f;
     } else {
         data.Geometry0 = { 0.0f, 0.0f, 0.0f, geometryRadius };
+        data.Layout0.x = static_cast<float>(classification.materialIdentity & 0x00FFFFFFu) / 16777216.0f;
     }
 
     if (!activeDataValid || std::memcmp(&data, &currentActiveData, sizeof(data)) != 0) {

@@ -7,6 +7,7 @@
 #include "Menu.h"
 #include "Menu/ThemeManager.h"
 #include "SceneSettingsManager.h"
+#include "SeasonIntegration.h"
 #include "ShaderCache.h"
 #include "State.h"
 
@@ -152,6 +153,7 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 	case SKSE::MessagingInterface::kPostPostLoad:
 		{
 			if (errors.empty()) {
+				SeasonIntegration::GetSingleton().Initialize();
 				Deferred::Hooks::Install();
 				Hooks::Install();
 				EngineFix::InstallOnPostPostLoadFixes();
@@ -183,6 +185,7 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 
 			if (errors.empty()) {
 				globals::OnDataLoaded();
+				SeasonIntegration::GetSingleton().OnDataLoaded();
 				EngineFix::InstallOnDataLoadedFixes();
 				FrameAnnotations::OnDataLoaded();
 
@@ -193,6 +196,10 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 
 			break;
 		}
+	case SKSE::MessagingInterface::kPostLoadGame:
+	case SKSE::MessagingInterface::kNewGame:
+		SeasonIntegration::GetSingleton().RequestGameStateRefresh();
+		break;
 	}
 }
 
@@ -245,7 +252,16 @@ bool Load()
 	};
 
 	for (const auto dll : incompatibleDLLs) {
-		if (LoadLibrary(dll)) {
+		const std::filesystem::path dllPath{ dll };
+		std::error_code detectionError;
+		const bool isInstalled = std::filesystem::exists(dllPath, detectionError);
+		const bool isLoaded = GetModuleHandleW(dllPath.filename().c_str()) != nullptr;
+		if (detectionError) {
+			logger::debug("Could not inspect optional compatibility DLL {}: {}",
+				stl::utf16_to_utf8(dll).value_or("<unicode conversion error>"s),
+				detectionError.message());
+		}
+		if (isInstalled || isLoaded) {
 			auto errorMessage = std::format("Incompatible DLL {} detected", stl::utf16_to_utf8(dll).value_or("<unicode conversion error>"s));
 			logger::error("{}", errorMessage);
 			errors.push_back(errorMessage);

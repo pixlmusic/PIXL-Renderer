@@ -125,7 +125,7 @@ float3 VanillaSpecular(DirectContext context, float shininess, float2 uv, float2
 	float sparkleColor = ProcessSparkleColor(sparkleColor1) + ProcessSparkleColor(sparkleColor2) + ProcessSparkleColor(sparkleColor3);
 	float VdotN = dot(V, N);
 	V += N * -(2 * VdotN);
-	float sparkleMultiplier = exp2(SparkleParams.w * log2(saturate(dot(V, -L)))) * (SparkleParams.z * sparkleColor);
+	float sparkleMultiplier = exp2(SparkleParams.w * log2(max(saturate(dot(V, -L)), 1e-6f))) * (SparkleParams.z * sparkleColor);
 	sparkleMultiplier = sparkleMultiplier >= 0.5 ? 1 : 0;
 	lightColorMultiplier += sparkleMultiplier * HdotN;
 #endif

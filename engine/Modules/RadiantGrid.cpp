@@ -19,7 +19,12 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	EnableLightsVisualisation,
 	LightsVisualisationMode)
 
-static constexpr uint CLUSTER_MAX_LIGHTS = 128;
+// Keep synchronized with RadiantGrid/Common.hlsli::MAX_CLUSTER_LIGHTS. Dense
+// interiors and particle-heavy scenes can legitimately exceed 128 overlapping
+// lights; truncating the list there creates visible 64-pixel cluster boundaries.
+// Reserve the original 256 entries per cluster on the CPU as well so the GPU
+// never relies on the pre-audit undersized allocation.
+static constexpr uint CLUSTER_MAX_LIGHTS = 256;
 
 void RadiantGrid::DrawSettings()
 {
@@ -37,7 +42,7 @@ void RadiantGrid::DrawSettings()
 	ImGui::Spacing();
 
 	if (globals::state->IsDeveloperMode() && ImGui::TreeNodeEx(T(TKEY("statistics"), "Statistics"), ImGuiTreeNodeFlags_DefaultOpen)) {
-		ImGui::Text(std::format("Clustered Light Count : {}", lightCount).c_str());
+		ImGui::Text("Clustered Light Count: %u", lightCount);
 
 		ImGui::TreePop();
 	}
@@ -351,8 +356,9 @@ void RadiantGrid::SetLightPosition(RadiantGrid::LightData& a_light, RE::NiPoint3
 void RadiantGrid::Prepass()
 {
 	auto context = globals::d3d::context;
-
 	auto state = globals::state;
+	if (!context || !state || !lights || !lightIndexList || !lightGrid)
+		return;
 
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "RadiantGrid Prepass");
@@ -370,7 +376,7 @@ void RadiantGrid::Prepass()
 
 bool RadiantGrid::IsValidLight(RE::BSLight* a_light)
 {
-	return a_light && !a_light->light->GetFlags().any(RE::NiAVObject::Flag::kHidden);
+	return a_light && a_light->light && !a_light->light->GetFlags().any(RE::NiAVObject::Flag::kHidden);
 }
 
 bool RadiantGrid::IsGlobalLight(RE::BSLight* a_light)
@@ -387,8 +393,12 @@ void RadiantGrid::PostPostLoad()
 void RadiantGrid::DataLoaded()
 {
 	auto iMagicLightMaxCount = globals::game::gameSettingCollection->GetSetting("iMagicLightMaxCount");
-	iMagicLightMaxCount->data.i = MAXINT32;
-	logger::info("[LLF] Unlocked magic light limit");
+	if (iMagicLightMaxCount) {
+		iMagicLightMaxCount->data.i = MAXINT32;
+		logger::info("[RadiantGrid] Unlocked magic light limit");
+	} else {
+		logger::warn("[RadiantGrid] Could not find iMagicLightMaxCount; retaining the game default");
+	}
 }
 
 void RadiantGrid::ClearShaderCache()
@@ -410,8 +420,16 @@ void RadiantGrid::UpdateLights()
 {
 	auto smState = globals::game::smState;
 	auto& isl = globals::pipeline::naturalLighting;
+	if (!smState || !globals::d3d::context || !lights || !lights->resource) {
+		lightCount = 0;
+		return;
+	}
 
 	auto shadowSceneNode = smState->shadowSceneNode[0];
+	if (!shadowSceneNode) {
+		lightCount = 0;
+		return;
+	}
 
 	// Cache camera position from the FrameBuffer snapshot; shadowState::posAdjust can be stale in first-person
 
@@ -428,8 +446,15 @@ void RadiantGrid::UpdateLights()
 	roomNodes.clear();
 
 	auto addRoom = [&](RE::NiNode* node, LightData& light) {
+		if (!node)
+			return;
+
 		uint8_t roomIndex = 0;
 		if (auto it = roomNodes.find(node); it == roomNodes.cend()) {
+			// LightData stores a 128-bit room mask. Never let a wrapped index
+			// write beyond it in unusually complex or heavily modded interiors.
+			if (roomNodes.size() >= 128u)
+				return;
 			roomIndex = static_cast<uint8_t>(roomNodes.size());
 			roomNodes.insert_or_assign(node, roomIndex);
 		} else {
@@ -505,8 +530,9 @@ void RadiantGrid::UpdateLights()
 
 	D3D11_MAPPED_SUBRESOURCE mapped;
 	DX::ThrowIfFailed(context->Map(lights->resource.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
-	size_t bytes = sizeof(LightData) * lightCount;
-	memcpy_s(mapped.pData, bytes, lightsData.data(), bytes);
+	const size_t bytes = sizeof(LightData) * lightCount;
+	if (bytes > 0)
+		memcpy_s(mapped.pData, sizeof(LightData) * MAX_LIGHTS, lightsData.data(), bytes);
 	context->Unmap(lights->resource.get(), 0);
 
 	UpdateStructure();
@@ -515,6 +541,10 @@ void RadiantGrid::UpdateLights()
 void RadiantGrid::UpdateStructure()
 {
 	auto context = globals::d3d::context;
+	if (!context || !clusterBuildingCS || !clusterCullingCS || !lightBuildingCB || !lightCullingCB ||
+		!clusters || !lightIndexCounter || !lightIndexList || !lightGrid || !lights ||
+		!globals::game::cameraNear || !globals::game::cameraFar)
+		return;
 
 	lightsNear = *globals::game::cameraNear;
 	lightsFar = *globals::game::cameraFar;

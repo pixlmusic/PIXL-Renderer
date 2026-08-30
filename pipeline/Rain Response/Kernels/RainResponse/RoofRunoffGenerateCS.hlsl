@@ -46,7 +46,8 @@ float3 ReconstructCameraRelativePosition(int2 pixel, float depth)
 
 	float4 positionCS = float4(2.0f * float2(uv.x, 1.0f - uv.y) - 1.0f, depth, 1.0f);
 	float4 positionWS = mul(FrameBuffer::CameraViewProjInverse, positionCS);
-	return positionWS.xyz / max(abs(positionWS.w), 1e-6f);
+	float safeW = abs(positionWS.w) > 1e-6f ? positionWS.w : (positionWS.w < 0.0f ? -1e-6f : 1e-6f);
+	return positionWS.xyz / safeW;
 }
 
 bool ProjectWorldPoint(float3 cameraRelativePosition, out int2 pixel, out float deviceDepth)
@@ -117,27 +118,18 @@ void WriteDebugMarker(int2 pixel, float stage)
 
 void WriteProductionBead(int2 pixel, float intensity, float viewDistance)
 {
-	// Far/medium: one-pixel head + one faint vertical companion.
+	// Keep the authoritative footprint to one native render pixel. DLSS/TAA then
+	// reconstructs a compact bead instead of amplifying a cross-shaped mask into a
+	// fuzzy card. A very faint lower tail is allowed only for a genuinely bright,
+	// near droplet; no horizontal dilation is performed.
 	WriteMask(pixel, intensity);
-	if (intensity > 0.48f)
-		WriteMask(pixel + int2(0, 1), intensity * 0.50f);
-
-	// Close droplets were being visually destroyed by TAA/DLSS because the old
-	// footprint stayed one pixel at every physical distance. Add only a very faint
-	// horizontal shoulder near the camera. This is still dramatically smaller than
-	// the old Phase 4 half-resolution cards.
 	float nearWeight =
 		1.0f - smoothstep(
-			RunoffNearSizeDistance * 0.50f,
-			RunoffNearSizeDistance * 0.88f,
+			RunoffNearSizeDistance * 0.32f,
+			RunoffNearSizeDistance * 0.68f,
 			viewDistance);
-
-	if (nearWeight > 0.05f && intensity > 0.36f) {
-		float sideIntensity = intensity * nearWeight * 0.20f;
-		WriteMask(pixel + int2(-1, 0), sideIntensity);
-		WriteMask(pixel + int2( 1, 0), sideIntensity);
-		WriteMask(pixel + int2( 0, 2), sideIntensity * 0.34f);
-	}
+	if (nearWeight > 0.08f && intensity > 0.64f)
+		WriteMask(pixel + int2(0, 1), intensity * nearWeight * 0.18f);
 }
 
 float GetSurfaceUpness(int2 pixel, float centreDepth)
@@ -154,7 +146,9 @@ float GetSurfaceUpness(int2 pixel, float centreDepth)
 	float3 c = ReconstructCameraRelativePosition(pixel, centreDepth);
 	float3 x = ReconstructCameraRelativePosition(px, dxDepth);
 	float3 y = ReconstructCameraRelativePosition(py, dyDepth);
-	float3 n = normalize(cross(x - c, y - c));
+	float3 normalVector = cross(x - c, y - c);
+	float normalLengthSq = dot(normalVector, normalVector);
+	float3 n = normalLengthSq > 1e-8f ? normalVector * rsqrt(normalLengthSq) : float3(0.0f, 0.0f, 1.0f);
 	return abs(n.z);
 }
 
@@ -334,7 +328,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 		Hash11(bucket * 41.73f + state.y * 9.17f);
 
 	float primaryAperture =
-		lerp(0.070f, 0.135f, rain);
+		lerp(0.060f, 0.112f, rain);
 
 	bool usePrimary =
 		primaryDistance <= primaryAperture &&
@@ -352,7 +346,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 	float secondarySelector =
 		Hash11(bucket * 67.19f + state.y * 21.53f + 3.7f);
 	float secondaryAperture =
-		lerp(0.060f, 0.112f, rain);
+		lerp(0.052f, 0.094f, rain);
 
 	bool useSecondary =
 		secondaryDistance <= secondaryAperture &&
@@ -410,11 +404,12 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 		lerp(0.86f, 1.22f, rain);
 	float fallDistance = fallAcceleration * maximumFall;
 
-	// A few world units of stable lateral variation keeps parallel drops organic
-	// without making them screen-space or wind-blown billboards.
+	// A small world-stable lateral offset keeps parallel drops organic. Keep it
+	// below a native pixel for typical gameplay distances so camera motion cannot
+	// make a drop visibly hop between unrelated screen-space shoulders.
 	float2 tinyLateral =
 		float2(worldSelector - 0.5f, Hash11(worldSelector * 31.7f) - 0.5f) *
-		lerp(1.5f, 5.0f, rain);
+		lerp(0.75f, 2.25f, rain);
 
 	float3 headPosition =
 		sourceCameraRelative +

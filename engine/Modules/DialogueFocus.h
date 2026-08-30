@@ -364,6 +364,60 @@ public:
 	[[nodiscard]] float GetBlend() const noexcept { return focusBlend; }
 	[[nodiscard]] std::uint32_t GetFocusedFormID() const noexcept { return focusedFormID; }
 
+	/**
+	 * Builds the existing DialogueFocus v1 payload for one actor without binding it.
+	 * Character extensions use this to preserve the byte-identical b13 prefix when
+	 * appending their own actor-only data.
+	 */
+	void BuildGPUDataForActor(RE::Actor* a_actor, GPUData& a_out) const
+	{
+		a_out = {};
+		if (!a_actor || focusBlend <= 0.0f || focusedFormID == 0 ||
+			a_actor->GetFormID() != focusedFormID) {
+			return;
+		}
+
+		RE::NiPoint3 head{};
+		RE::NiPoint3 shoulders{};
+		GetActorAnchors(a_actor, head, shoulders);
+		const float4 cameraAdjust = globals::game::frameBufferCached.GetCameraPosAdjust();
+
+		a_out.Magic = kMagic;
+		a_out.Version = kVersion;
+		a_out.FocusBlend = focusBlend;
+		a_out.SessionActive = sessionLatched ? 1.0f : 0.0f;
+		a_out.HeadPositionRadius = {
+			head.x - cameraAdjust.x,
+			head.y - cameraAdjust.y,
+			head.z - cameraAdjust.z,
+			std::max(settings.HeadRadius, 1.0f)
+		};
+		a_out.ShoulderPositionRadius = {
+			shoulders.x - cameraAdjust.x,
+			shoulders.y - cameraAdjust.y,
+			shoulders.z - cameraAdjust.z,
+			std::max(settings.ShoulderRadius, 1.0f)
+		};
+		a_out.Quality = {
+			std::clamp(settings.SkinQuality, 0.0f, 1.0f),
+			std::clamp(settings.EyeQuality, 0.0f, 1.0f),
+			std::clamp(settings.HairQuality, 0.0f, 1.0f),
+			std::clamp(settings.TissueQuality, 0.0f, 1.0f)
+		};
+		a_out.Lighting = {
+			std::clamp(settings.ContactShadowQuality, 0.0f, 1.0f),
+			std::clamp(settings.LocalLightingQuality, 0.0f, 1.0f),
+			std::clamp(settings.MicroDetailQuality, 0.0f, 1.0f),
+			std::clamp(settings.EyeReflectionQuality, 0.0f, 1.0f)
+		};
+		a_out.Environment = {
+			std::clamp(settings.Coldness, 0.0f, 1.0f),
+			std::clamp(settings.Wetness, 0.0f, 1.0f),
+			std::clamp(settings.BreathStrength, 0.0f, 1.0f),
+			std::clamp(settings.SteamStrength, 0.0f, 1.0f)
+		};
+	}
+
 private:
 	DialogueFocus() = default;
 
@@ -457,48 +511,8 @@ private:
 
 		auto focusedActor = focusedHandle.get();
 		if (focusedActor && focusBlend > 0.0f) {
-			RE::NiPoint3 head{};
-			RE::NiPoint3 shoulders{};
-			GetActorAnchors(focusedActor.get(), head, shoulders);
-
-			const float4 cameraAdjust = globals::game::frameBufferCached.GetCameraPosAdjust();
-
-			data.Magic = kMagic;
-			data.Version = kVersion;
-			data.FocusBlend = focusBlend;
+			BuildGPUDataForActor(focusedActor.get(), data);
 			data.SessionActive = a_sessionActive ? 1.0f : 0.0f;
-
-			data.HeadPositionRadius = {
-				head.x - cameraAdjust.x,
-				head.y - cameraAdjust.y,
-				head.z - cameraAdjust.z,
-				std::max(settings.HeadRadius, 1.0f)
-			};
-			data.ShoulderPositionRadius = {
-				shoulders.x - cameraAdjust.x,
-				shoulders.y - cameraAdjust.y,
-				shoulders.z - cameraAdjust.z,
-				std::max(settings.ShoulderRadius, 1.0f)
-			};
-
-			data.Quality = {
-				std::clamp(settings.SkinQuality, 0.0f, 1.0f),
-				std::clamp(settings.EyeQuality, 0.0f, 1.0f),
-				std::clamp(settings.HairQuality, 0.0f, 1.0f),
-				std::clamp(settings.TissueQuality, 0.0f, 1.0f)
-			};
-			data.Lighting = {
-				std::clamp(settings.ContactShadowQuality, 0.0f, 1.0f),
-				std::clamp(settings.LocalLightingQuality, 0.0f, 1.0f),
-				std::clamp(settings.MicroDetailQuality, 0.0f, 1.0f),
-				std::clamp(settings.EyeReflectionQuality, 0.0f, 1.0f)
-			};
-			data.Environment = {
-				std::clamp(settings.Coldness, 0.0f, 1.0f),
-				std::clamp(settings.Wetness, 0.0f, 1.0f),
-				std::clamp(settings.BreathStrength, 0.0f, 1.0f),
-				std::clamp(settings.SteamStrength, 0.0f, 1.0f)
-			};
 		}
 
 		focusCB->Update(data);

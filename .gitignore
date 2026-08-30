@@ -4,6 +4,18 @@
 /dist/
 /Data/
 /PIXL_AUTONOMOUS/
+/checkpoints/
+
+# Local reference projects used for reverse engineering are not renderer source
+# and may retain their own licences/assets.
+/_REFERENCE/
+
+# Loose runtime/debug copies occasionally placed at the repository root.
+# Canonical equivalents live under engine/, pipeline/, or distribution/.
+/PIXLRenderer.dll
+/Lighting.hlsl
+/WindowLife.hlsli
+/GlassGrime_1k.png
 
 # Private neural-enhancement research is developed and licensed separately.
 # It is not compiled, linked, loaded, or packaged by PIXL Renderer.

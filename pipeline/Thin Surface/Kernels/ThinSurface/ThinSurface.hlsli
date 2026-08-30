@@ -53,7 +53,7 @@ namespace ThinSurface
 		float3 b = tbnTr[1];
 		float3 n = tbnTr[2];
 		float3 v = view;
-		float a0 = 1 - sqrt(1.0 - alpha);
+		float a0 = 1 - sqrt(1.0 - saturate(alpha));
 	#if USE_PIXL_THIN_TRANSMISSION
 		float weaveCoverage = max(length(cross(v, t)) + length(cross(v, b)) - a0, 0.0f);
 		float pathLength = weaveCoverage * rcp(max(abs(dot(v, n)), 0.08f));

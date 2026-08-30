@@ -172,7 +172,7 @@ namespace Atmosphere
 		float2 noise = float2(
 			Random::InterleavedGradientNoise(screenPixel, SharedData::FrameCount),
 			Random::InterleavedGradientNoise(screenPixel.yx + 19.19f, SharedData::FrameCount));
-		return (noise * 2.0f - 1.0f) * multiplier / volumeSize;
+		return (noise * 2.0f - 1.0f) * multiplier / max(volumeSize, 1.0f.xx);
 	}
 
 	float4 SampleVolumetricFog(float3 positionWS)
@@ -319,7 +319,10 @@ namespace Atmosphere
 		// Interior cells and HideSky worldspaces should not pull outdoor cubemap
 		// radiance into fog. Their incoming fogColor/ambient probe remains intact.
 		if (SharedData::atmosphereSettings.useWorldProbes > 0 && !SharedData::InInterior && !SharedData::HideSky) {
-			float3 cubemapColor = WorldProbes::EnvReflectionsTexture.SampleLevel(SampColorSampler, normalize(lerp(positionWS, float3(0, 0, 1), saturate((SharedData::atmosphereSettings.cubemapMipLevel + 1) / 8))), SharedData::atmosphereSettings.cubemapMipLevel).xyz;
+			float3 cubemapDirection = Atmosphere::SafeNormalize(
+				lerp(positionWS, float3(0, 0, 1), saturate((SharedData::atmosphereSettings.cubemapMipLevel + 1) / 8)),
+				float3(0.0f, 0.0f, 1.0f));
+			float3 cubemapColor = WorldProbes::EnvReflectionsTexture.SampleLevel(SampColorSampler, cubemapDirection, SharedData::atmosphereSettings.cubemapMipLevel).xyz;
 			float worldProbeMultiplier = IsMapAtmosphereActive() ? max(SharedData::atmosphereSettings.mapWorldProbeMultiplier, 0.0f) : 1.0f;
 			fogInscatteringColor += cubemapColor * SharedData::atmosphereSettings.inscatteringTint.rgb * SharedData::atmosphereSettings.inscatteringTint.a * worldProbeMultiplier;
 		}
@@ -335,7 +338,7 @@ namespace Atmosphere
 		// valid directional-shadow path. This preserves real daylight interiors while
 		// preventing fake unshadowed sun shafts in ordinary interiors/HideSky spaces.
 		if (SharedData::atmosphereSettings.directionalInscatteringMultiplier > 0 && SharedData::HasDirectionalShadows && !SharedData::HideSky) {
-			float3 lightDirection = normalize(SharedData::DirLightDirection.xyz);
+			float3 lightDirection = Atmosphere::SafeNormalize(SharedData::DirLightDirection.xyz, float3(0.0f, 0.0f, 1.0f));
 			float cosTheta = dot(lightDirection, viewDirection);
 			float phase = PIXLPhaseFunction(cosTheta, SharedData::atmosphereSettings.directionalInscatteringAnisotropy);
 			float3 directionalLightInscattering = SharedData::DirLightColor.xyz * phase;

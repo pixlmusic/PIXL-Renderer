@@ -2,6 +2,7 @@
 
 #include "RenderModule.h"
 #include "Utils/Subrect.h"
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <filesystem>
@@ -110,10 +111,9 @@ struct PixelCapture : public RenderModule
 	// C5E.3 multi-scale luma-guided detail recovery around the jitter-aware resolve.
 	float photoFinishDetailStrength = 0.35f;
 
-	// C5E.3 PIXL Photo Lens. This is a photo-only, offline depth-aware lens resolve
-	// driven by PIXL's current scene-depth hierarchy rather than Skyrim's legacy
-	// depth-of-field path. Live CameraSuite DOF remains a fast composition preview.
-	bool photoLensDofEnabled = true;
+	// Legacy Photo Lens data is retained for settings compatibility, but the
+	// experimental resolve is disabled until its depth edges are release-ready.
+	bool photoLensDofEnabled = false;
 	unsigned int photoLensDofQuality = 2;  // 0 Fast, 1 High, 2 Cinematic, 3 Ultra
 	float photoLensDofStrength = 0.62f;
 	unsigned int photoLensDofApertureBlades = 7;
@@ -123,6 +123,26 @@ struct PixelCapture : public RenderModule
 	bool photoFinishMotionEnabled = false;
 	float photoFinishMotionStrength = 0.18f;
 	float photoFinishMotionAngleDegrees = 0.0f;
+
+	struct DirectorPhotoPreset
+	{
+		bool valid = false;
+		unsigned int lookPreset = 0;
+		float lookOpacity = 0.35f;
+		float exposure = 0.0f;
+		float contrast = 1.0f;
+		float saturation = 1.0f;
+		float highlightProtection = 0.0f;
+		float shadowDetail = 0.0f;
+		bool bloomEnabled = false;
+		float bloomStrength = 0.0f;
+		float fieldOfView = 75.0f;
+		bool motionEnabled = false;
+		float motionStrength = 0.18f;
+		float motionAngleDegrees = 0.0f;
+	};
+
+	std::array<DirectorPhotoPreset, 3> directorPhotoPresets{};
 
 	std::atomic<bool> captureRequested{ false };
 

@@ -17,6 +17,11 @@ float3 GetPositionVS(float2 texcoord, float depth)
 	clipSpaceLocation.y *= -1;
 	clipSpaceLocation.z = depth;
 	clipSpaceLocation.w = 1.0f;
+	// Build clusters from the same current-frame projection contract used by the
+	// engine's screen-space cluster lookup. Substituting the separately cached
+	// unjittered inverse can put cluster bounds and querying pixels in different
+	// frusta while the camera rotates, causing whole 64-pixel lighting cells to
+	// pop on and off.
 	float4 homogenousLocation = mul(FrameBuffer::CameraProjInverse, clipSpaceLocation);
 	return homogenousLocation.xyz / homogenousLocation.w;
 }

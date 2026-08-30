@@ -26,7 +26,7 @@ float SpecularOcclusion(float NdotV, float alpha, float occlusion)
 // a contact shadow approximation, totally not physically correct; a riff on "Chan 2018, "Material Advances in Call of Duty: WWII" and "The Technical Art of Uncharted 4" http://advances.realtimerendering.com/other/2016/naughty_dog/NaughtyDog_TechArt_Final.pdf (microshadowing)"
 float ApproximateDirectOcculusion(float aoVisibility, float NdotL)
 {
-	float aperture = rsqrt(1.0000001 - aoVisibility);
+	float aperture = rsqrt(max(1.0000001 - saturate(aoVisibility), 1e-6f));
 	NdotL += 0.1;  // when using bent normals, avoids overshadowing - bent normals are just approximation anyhow
 	return saturate(NdotL * aperture);
 }
@@ -36,7 +36,7 @@ float ApproximateDirectOcculusion(float aoVisibility, float NdotL)
 float3 ReorientNormal(float3 u, float3 t, float3 s)
 {
 	// Build the shortest-arc quaternion
-	float4 q = float4(cross(s, t), dot(s, t) + 1) / sqrt(2 * (dot(s, t) + 1));
+	float4 q = float4(cross(s, t), dot(s, t) + 1) / sqrt(max(2 * (dot(s, t) + 1), 1e-6f));
 
 	// Rotate the normal
 	return u * (q.w * q.w - dot(q.xyz, q.xyz)) + 2 * q.xyz * dot(q.xyz, u) + 2 * q.w * cross(q.xyz, u);

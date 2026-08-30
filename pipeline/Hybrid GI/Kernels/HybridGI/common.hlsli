@@ -318,11 +318,12 @@ float specularLobeHalfAngle(float roughness)
 // https://www.gdcvault.com/play/1026701/Fast-Denoising-With-Self-Stabilizing
 float3 getSpecularDominantDirection(float3 N, float3 V, float roughness)
 {
+	roughness = saturate(roughness);
 	float f = (1 - roughness) * (sqrt(1 - roughness) + roughness);
 	float3 R = reflect(-V, N);
 	float3 D = lerp(N, R, f);
 
-	return normalize(D);
+	return D * rsqrt(max(dot(D, D), EPSILON_LENGTH_SQ));
 }
 
 #endif

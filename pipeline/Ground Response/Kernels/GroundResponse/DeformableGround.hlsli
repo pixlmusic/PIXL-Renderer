@@ -387,13 +387,17 @@ namespace DeformableGround
 			safeDepth *
 			normalStrength;
 
-		float3 deformationNormal =
-			normalize(
-				receiverNormal +
+		float3 deformationVector =
+			receiverNormal +
 				float3(
 					heightNormal.x,
 					heightNormal.y,
-					0.0f));
+					0.0f);
+		float deformationLengthSq = dot(deformationVector, deformationVector);
+		float3 deformationNormal =
+			deformationLengthSq > 1.0e-8f
+				? deformationVector * rsqrt(deformationLengthSq)
+				: float3(0.0f, 0.0f, 1.0f);
 
 		float gradientMagnitude =
 			length(compactionGradient) *

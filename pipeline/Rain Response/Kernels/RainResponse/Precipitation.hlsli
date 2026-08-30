@@ -11,6 +11,11 @@
 namespace RainResponse
 {
 	static const float PIXL_RAIN_TAU = 6.28318530717958647692f;
+	float3 SafeNormalizePrecipitation(float3 value, float3 fallback)
+	{
+		float lengthSq = dot(value, value);
+		return lengthSq > 1e-8f ? value * rsqrt(lengthSq) : fallback;
+	}
 
 	float RainHash12(float2 p)
 	{
@@ -222,8 +227,8 @@ namespace RainResponse
 		if (SharedData::rainResponseSettings.EnableRainParticleEnhancement == 0)
 			return 1.0f;
 
-		float3 V = normalize(viewDirection);
-		float3 lightAxis = normalize(SharedData::DirLightDirection.xyz);
+		float3 V = SafeNormalizePrecipitation(viewDirection, float3(0.0f, 0.0f, 1.0f));
+		float3 lightAxis = SafeNormalizePrecipitation(SharedData::DirLightDirection.xyz, float3(0.0f, 0.0f, 1.0f));
 
 		// We deliberately use |dot| because Skyrim/weather pipelines can encode the
 		// directional vector as either light travel direction or direction-to-light.
@@ -247,8 +252,8 @@ namespace RainResponse
 
 	float GetRainLightAlignment(float3 viewDirection, float3 lightDirection)
 	{
-		float3 V = normalize(viewDirection);
-		float3 L = normalize(lightDirection);
+		float3 V = SafeNormalizePrecipitation(viewDirection, float3(0.0f, 0.0f, 1.0f));
+		float3 L = SafeNormalizePrecipitation(lightDirection, float3(0.0f, 0.0f, 1.0f));
 		return pow(saturate(abs(dot(V, L))), 5.0f);
 	}
 

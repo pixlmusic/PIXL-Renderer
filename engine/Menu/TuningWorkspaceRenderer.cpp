@@ -5,6 +5,7 @@
 #include <SKSE/InputMap.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cctype>
 #include <cstdio>
@@ -103,6 +104,7 @@ namespace
 		bool cameraMotionValid = false;
 		RE::NiPoint3 cameraMotionPosition{};
 		RE::NiPoint3 cameraMotionVelocity{};
+		float cameraMoveSpeed = 1.0f;
 
 		// UI-safe delayed capture. The HUD disappears before the request and
 		// stays suppressed through the temporal sample window.
@@ -111,6 +113,9 @@ namespace
 
 		float originalHour = 12.0f;
 		float photoHour = 12.0f;
+		bool fovSnapshotValid = false;
+		float originalWorldFov = 75.0f;
+		float photoWorldFov = 75.0f;
 		RE::TESWeather* originalWeather = nullptr;
 		DirectorWeatherPreset weatherPreset =
 			DirectorWeatherPreset::Original;
@@ -125,6 +130,9 @@ namespace
 
 	DirectorPhotoModeState
 		g_directorPhotoMode{};
+	std::atomic_bool g_directorExitRequested{ false };
+	std::atomic_bool g_directorExitTaskScheduled{ false };
+	std::atomic_bool g_directorExitTaskComplete{ false };
 
 	bool EvaluateDirectorPhotoModeEligibility(
 		std::string* reason)
@@ -400,7 +408,7 @@ namespace
 		}
 	}
 
-	void ApplyDirectorHour(float hour)
+	void ApplyDirectorHour(float hour, bool refreshWeather = true)
 	{
 		auto* calendar =
 			RE::Calendar::GetSingleton();
@@ -409,14 +417,63 @@ namespace
 			!calendar->gameHour)
 			return;
 
-		calendar->gameHour->value =
-			std::clamp(
-				hour,
-				0.0f,
-				23.99f);
+		const float clampedHour =
+			std::clamp(hour, 0.0f, 23.99f);
+		calendar->gameHour->value = clampedHour;
+
+		// Native TFC freezes simulation, including Skyrim's ordinary sky tick.
+		// Refresh the cached sky time and active weather immediately so Director's
+		// temporary time control remains visible without unpausing actors.
+		if (auto* sky = RE::Sky::GetSingleton()) {
+			sky->currentGameHour = clampedHour;
+			sky->flags.set(
+				RE::Sky::Flags::kUpdateSunriseBegin,
+				RE::Sky::Flags::kUpdateSunriseEnd,
+				RE::Sky::Flags::kUpdateSunsetBegin,
+				RE::Sky::Flags::kUpdateSunsetEnd,
+				RE::Sky::Flags::kUpdateColorsSunriseBegin,
+				RE::Sky::Flags::kUpdateColorsSunsetEnd);
+
+			if (refreshWeather && sky->currentWeather) {
+				if (sky->overrideWeather)
+					sky->ForceWeather(sky->currentWeather, true);
+				else
+					sky->SetWeather(sky->currentWeather, false, true);
+			}
+		}
+	}
+
+	float GetDirectorWorldFov()
+	{
+		if (auto* camera = RE::PlayerCamera::GetSingleton())
+			return std::clamp(camera->GetRuntimeData2().worldFOV, 20.0f, 110.0f);
+		return std::clamp(g_directorPhotoMode.photoWorldFov, 20.0f, 110.0f);
+	}
+
+	float GetDirectorCameraMoveSpeed()
+	{
+		return std::clamp(
+			g_directorPhotoMode.cameraMoveSpeed,
+			0.25f,
+			2.0f);
+	}
+
+	void ApplyDirectorCameraMoveSpeed(float speed)
+	{
+		g_directorPhotoMode.cameraMoveSpeed =
+			std::clamp(speed, 0.25f, 2.0f);
+	}
+
+	void ApplyDirectorWorldFov(float fov)
+	{
+		g_directorPhotoMode.photoWorldFov = std::clamp(fov, 20.0f, 110.0f);
+		if (auto* camera = RE::PlayerCamera::GetSingleton())
+			camera->GetRuntimeData2().worldFOV = g_directorPhotoMode.photoWorldFov;
 	}
 
 	void ExitDirectorPhotoMode();
+	bool ProcessDirectorPhotoModeExit();
+	PixelCapture* GetDirectorCapture();
 
 	bool EnterDirectorPhotoMode()
 	{
@@ -466,6 +523,11 @@ namespace
 
 		g_directorPhotoMode.weatherPreset =
 			DirectorWeatherPreset::Original;
+		g_directorPhotoMode.originalWorldFov =
+			camera->GetRuntimeData2().worldFOV;
+		g_directorPhotoMode.photoWorldFov =
+			g_directorPhotoMode.originalWorldFov;
+		g_directorPhotoMode.fovSnapshotValid = true;
 
 		{
 			std::lock_guard<std::mutex>
@@ -477,11 +539,6 @@ namespace
 				.originalCamera =
 					cameraSuite.settings;
 		}
-
-		// Photo mode captures an optically clean scene. Both CameraSuite's PIXL
-		// enhancement and Skyrim's native image-space DOF are suppressed until
-		// Director exits; focus/aperture controls now feed only Photo Lens DOF.
-		cameraSuite.SetPhotoModeDofIsolation(true);
 
 		g_directorPhotoMode.snapshotValid =
 			true;
@@ -503,6 +560,7 @@ namespace
 		g_directorPhotoMode.cameraMotionValid = false;
 		g_directorPhotoMode.cameraMotionPosition = {};
 		g_directorPhotoMode.cameraMotionVelocity = {};
+		g_directorPhotoMode.cameraMoveSpeed = 1.0f;
 		g_directorPhotoMode.captureDelayFrames = 0;
 		g_directorPhotoMode.captureHideFrames = 0;
 
@@ -561,84 +619,180 @@ namespace
 			return;
 		}
 
-		auto* camera =
-			RE::PlayerCamera::GetSingleton();
+		if (!g_directorExitRequested.exchange(
+				true,
+				std::memory_order_acq_rel)) {
+			logger::info(
+				"[PIXL Director] Photo Mode exit requested; deferring native camera/input restoration to the game thread");
+		}
+	}
 
-		if (camera &&
-			camera->IsInFreeCameraMode()) {
-			camera->ToggleFreeCameraMode(
-				false);
+	bool ProcessDirectorPhotoModeExit()
+	{
+		if (!g_directorExitRequested.load(
+				std::memory_order_acquire)) {
+			return false;
 		}
 
-		auto& cameraSuite =
-			globals::pipeline::cameraSuite;
+		if (g_directorExitTaskComplete.exchange(
+				false,
+				std::memory_order_acq_rel)) {
+			auto& cameraSuite =
+				globals::pipeline::cameraSuite;
 
-		if (g_directorPhotoMode
-				.snapshotValid) {
-			if (g_directorPhotoMode
-					.restoreWorldOnExit) {
-				ApplyDirectorHour(
-					g_directorPhotoMode
-						.originalHour);
-
-				ApplyDirectorWeather(
-					DirectorWeatherPreset::
-						Original);
-			}
-
-			if (g_directorPhotoMode
-					.restoreLookOnExit) {
+			if (g_directorPhotoMode.snapshotValid &&
+				g_directorPhotoMode.restoreLookOnExit) {
 				{
-					std::lock_guard<std::mutex>
-						lock(
-							cameraSuite
-								.settingsMutex);
-
+					std::lock_guard<std::mutex> lock(
+						cameraSuite.settingsMutex);
 					cameraSuite.settings =
-						g_directorPhotoMode
-							.originalCamera;
+						g_directorPhotoMode.originalCamera;
 				}
 
+				// D3D resources remain owned by the Present/render thread.
 				cameraSuite.LoadLookTexture();
 				cameraSuite.UpdateHDRData();
 			}
+
+			g_directorPhotoMode.active = false;
+			g_directorPhotoMode.snapshotValid = false;
+			g_directorPhotoMode.weatherPreset =
+				DirectorWeatherPreset::Original;
+			g_directorPhotoMode.hudVisible = true;
+			g_directorPhotoMode.quickPanelVisible = false;
+			g_directorPhotoMode.focusTargetMode = false;
+			g_directorPhotoMode.focusTargetValid = false;
+			g_directorPhotoMode.focusTargetDistance = 0.0f;
+			g_directorPhotoMode.selectedQuickOption = 0;
+			g_directorPhotoMode.cameraAnchorValid = false;
+			g_directorPhotoMode.cameraAnchor = {};
+			g_directorPhotoMode.cameraBoundaryUsage = 0.0f;
+			g_directorPhotoMode.cameraBoundaryHit = false;
+			g_directorPhotoMode.cameraMotionValid = false;
+			g_directorPhotoMode.cameraMotionPosition = {};
+			g_directorPhotoMode.cameraMotionVelocity = {};
+			g_directorPhotoMode.captureDelayFrames = 0;
+			g_directorPhotoMode.captureHideFrames = 0;
+			g_directorPhotoMode.playerAlphaSnapshotValid = false;
+			g_directorPhotoMode.originalPlayerAlpha = 1.0f;
+			g_directorPhotoMode.fovSnapshotValid = false;
+			g_directorPhotoMode.originalWorldFov = 75.0f;
+			g_directorPhotoMode.photoWorldFov = 75.0f;
+
+			g_directorExitTaskScheduled.store(
+				false,
+				std::memory_order_release);
+			g_directorExitRequested.store(
+				false,
+				std::memory_order_release);
+			logger::info(
+				"[PIXL Director] Photo Mode exit completed safely");
+			return true;
 		}
 
-		cameraSuite.SetPhotoModeDofIsolation(false);
+		if (!g_directorExitTaskScheduled.exchange(
+				true,
+				std::memory_order_acq_rel)) {
+			const bool restoreWorld =
+				g_directorPhotoMode.snapshotValid &&
+				g_directorPhotoMode.restoreWorldOnExit;
+			const bool restoreTime =
+				restoreWorld &&
+				std::abs(
+					g_directorPhotoMode.photoHour -
+					g_directorPhotoMode.originalHour) > 0.001f;
+			const bool restoreWeather =
+				restoreWorld &&
+				g_directorPhotoMode.weatherPreset !=
+					DirectorWeatherPreset::Original;
+			const float originalHour =
+				g_directorPhotoMode.originalHour;
+			auto* originalWeather =
+				g_directorPhotoMode.originalWeather;
+			const bool restoreFov =
+				g_directorPhotoMode.fovSnapshotValid &&
+				std::abs(
+					g_directorPhotoMode.photoWorldFov -
+					g_directorPhotoMode.originalWorldFov) > 0.001f;
+			const float originalFov =
+				g_directorPhotoMode.originalWorldFov;
 
-		if (g_directorPhotoMode
-				.playerAlphaSnapshotValid) {
-			if (auto* player =
-					RE::PlayerCharacter::GetSingleton()) {
-				player->SetAlpha(
-					g_directorPhotoMode
-						.originalPlayerAlpha);
+			auto* taskInterface =
+				SKSE::GetTaskInterface();
+			if (!taskInterface) {
+				g_directorExitTaskScheduled.store(
+					false,
+					std::memory_order_release);
+				g_directorExitRequested.store(
+					false,
+					std::memory_order_release);
+				logger::error(
+					"[PIXL Director] Could not queue safe Photo Mode exit because the SKSE task interface is unavailable");
+				return true;
 			}
+
+			taskInterface->AddTask(
+				[restoreTime,
+				 restoreWeather,
+				 originalHour,
+				 originalWeather,
+				 restoreFov,
+				 originalFov]() {
+					logger::info(
+						"[PIXL Director] Exit stage 1/4: releasing native free camera");
+					auto* camera =
+						RE::PlayerCamera::GetSingleton();
+					if (camera &&
+						camera->IsInFreeCameraMode()) {
+						// Clear only TFC-owned transient motion. Touching PlayerControls
+						// during the native state transition can race Skyrim's handler
+						// teardown and was the reproducible second-HOME crash path.
+						auto* freeCameraState =
+							static_cast<RE::FreeCameraState*>(
+								camera->currentState.get());
+						if (freeCameraState) {
+							freeCameraState->useRunSpeed = false;
+							freeCameraState->verticalDirection = 0;
+							freeCameraState->zUpDown = {};
+						}
+						camera->rotationInput = {};
+						camera->translationInput = {};
+						camera->zoomInput = 0.0f;
+						camera->ToggleFreeCameraMode(false);
+					}
+					logger::info(
+						"[PIXL Director] Exit stage 1/4: native free camera released");
+
+					logger::info(
+						"[PIXL Director] Exit stage 2/4: restoring changed world state");
+					if (restoreTime)
+						ApplyDirectorHour(originalHour, false);
+					if (restoreWeather) {
+						if (auto* sky = RE::Sky::GetSingleton()) {
+							sky->ReleaseWeatherOverride();
+							if (originalWeather)
+								sky->SetWeather(originalWeather, false, true);
+						}
+					}
+					logger::info(
+						"[PIXL Director] Exit stage 2/4: changed world state restored");
+
+					logger::info(
+						"[PIXL Director] Exit stage 3/4: restoring changed camera state");
+					if (restoreFov && camera)
+						camera->GetRuntimeData2().worldFOV = originalFov;
+					logger::info(
+						"[PIXL Director] Exit stage 3/4: changed camera state restored");
+
+					g_directorExitTaskComplete.store(
+						true,
+						std::memory_order_release);
+					logger::info(
+						"[PIXL Director] Exit stage 4/4: game-thread teardown complete");
+				});
 		}
 
-		g_directorPhotoMode.active =
-			false;
-		g_directorPhotoMode.snapshotValid =
-			false;
-		g_directorPhotoMode.weatherPreset =
-			DirectorWeatherPreset::Original;
-		g_directorPhotoMode.hudVisible = true;
-		g_directorPhotoMode.quickPanelVisible = false;
-		g_directorPhotoMode.focusTargetMode = false;
-		g_directorPhotoMode.focusTargetValid = false;
-		g_directorPhotoMode.focusTargetDistance = 0.0f;
-		g_directorPhotoMode.selectedQuickOption = 0;
-		g_directorPhotoMode.cameraAnchorValid = false;
-		g_directorPhotoMode.cameraAnchor = {};
-		g_directorPhotoMode.cameraBoundaryUsage = 0.0f;
-		g_directorPhotoMode.cameraBoundaryHit = false;
-		g_directorPhotoMode.cameraMotionValid = false;
-		g_directorPhotoMode.cameraMotionPosition = {};
-		g_directorPhotoMode.cameraMotionVelocity = {};
-		g_directorPhotoMode.captureDelayFrames = 0;
-		g_directorPhotoMode.captureHideFrames = 0;
-		g_directorPhotoMode.playerAlphaSnapshotValid = false;
-		g_directorPhotoMode.originalPlayerAlpha = 1.0f;
+		return true;
 	}
 
 	void DrawDirectorQuickLook()
@@ -654,14 +808,11 @@ namespace
 
 		bool bloomEnabled = false;
 		float bloomStrength = 0.0f;
-
-		bool dofEnabled = false;
-		float dofStrength = 0.0f;
-		float focusDistance = 2200.0f;
-		float focusRange = 1600.0f;
-		float bokehRadius = 1.0f;
-
+		float lookOpacity = 0.35f;
+		float fieldOfView = GetDirectorWorldFov();
+		float cameraMoveSpeed = GetDirectorCameraMoveSpeed();
 		int lookPreset = 0;
+		auto* capture = GetDirectorCapture();
 
 		{
 			std::lock_guard<std::mutex>
@@ -690,22 +841,7 @@ namespace
 			bloomStrength =
 				camera.settings
 					.bloomStrength;
-
-			dofEnabled =
-				camera.settings
-					.enableEnhancedDepthOfField;
-			dofStrength =
-				camera.settings
-					.dofStrength;
-			focusDistance =
-				camera.settings
-					.dofFocusDistance;
-			focusRange =
-				camera.settings
-					.dofFocusRange;
-			bokehRadius =
-				camera.settings
-					.dofBokehRadius;
+			lookOpacity = camera.settings.lookOpacity;
 
 			lookPreset =
 				static_cast<int>(
@@ -732,6 +868,32 @@ namespace
 				static_cast<int>(
 					std::size(
 						looks)));
+
+		ImGui::BeginDisabled(lookPreset == 0);
+		changed |=
+			PIXLUI::SliderFloatField(
+				"LUT intensity",
+				&lookOpacity,
+				0.0f,
+				1.0f,
+				"%.2f");
+		ImGui::EndDisabled();
+
+		changed |=
+			PIXLUI::SliderFloatField(
+				"Camera lens / FOV",
+				&fieldOfView,
+				20.0f,
+				110.0f,
+				"%.0f deg");
+
+		changed |=
+			PIXLUI::SliderFloatField(
+				"Free-camera speed",
+				&cameraMoveSpeed,
+				0.25f,
+				2.0f,
+				"%.2fx");
 
 		changed |=
 			PIXLUI::SliderFloatField(
@@ -791,49 +953,13 @@ namespace
 
 		ImGui::EndDisabled();
 
-		changed |=
-			PIXLUI::LabeledToggle(
-				"Depth of field",
-				&dofEnabled);
-
-		ImGui::BeginDisabled(
-			!dofEnabled);
-
-		changed |=
-			PIXLUI::SliderFloatField(
-				"DOF strength",
-				&dofStrength,
-				0.0f,
-				1.0f,
-				"%.2f");
-
-		changed |=
-			PIXLUI::SliderFloatField(
-				"Focus distance",
-				&focusDistance,
-				100.0f,
-				20000.0f,
-				"%.0f units",
-				true);
-
-		changed |=
-			PIXLUI::SliderFloatField(
-				"Focus range",
-				&focusRange,
-				100.0f,
-				20000.0f,
-				"%.0f units",
-				true);
-
-		changed |=
-			PIXLUI::SliderFloatField(
-				"Bokeh size",
-				&bokehRadius,
-				0.5f,
-				2.0f,
-				"%.2fx");
-
-		ImGui::EndDisabled();
+		if (capture) {
+			changed |= PIXLUI::LabeledToggle("Processed motion blur", &capture->photoFinishMotionEnabled);
+			ImGui::BeginDisabled(!capture->photoFinishMotionEnabled);
+			changed |= PIXLUI::SliderFloatField("Shutter strength", &capture->photoFinishMotionStrength, 0.0f, 1.0f, "%.2f");
+			changed |= PIXLUI::SliderFloatField("Motion direction", &capture->photoFinishMotionAngleDegrees, -180.0f, 180.0f, "%.0f deg");
+			ImGui::EndDisabled();
+		}
 
 		if (changed) {
 			{
@@ -858,19 +984,7 @@ namespace
 					bloomEnabled;
 				camera.settings.bloomStrength =
 					bloomStrength;
-
-				camera.settings
-					.enableEnhancedDepthOfField =
-						dofEnabled;
-				camera.settings.dofStrength =
-					dofStrength;
-				camera.settings.dofFocusDistance =
-					focusDistance;
-				camera.settings.dofFocusRange =
-					focusRange;
-				camera.settings.dofBokehRadius =
-					bokehRadius;
-
+				camera.settings.lookOpacity = lookOpacity;
 				camera.settings.lookPreset =
 					static_cast<uint>(
 						lookPreset);
@@ -878,6 +992,60 @@ namespace
 
 			camera.LoadLookTexture();
 			camera.UpdateHDRData();
+			ApplyDirectorWorldFov(fieldOfView);
+			ApplyDirectorCameraMoveSpeed(cameraMoveSpeed);
+		}
+
+		if (capture) {
+			ImGui::SeparatorText("PHOTO PRESETS");
+			for (std::size_t index = 0; index < capture->directorPhotoPresets.size(); ++index) {
+				ImGui::PushID(static_cast<int>(index));
+				auto& preset = capture->directorPhotoPresets[index];
+				if (ImGui::Button(std::format("Save {}", index + 1).c_str())) {
+					preset.valid = true;
+					preset.lookPreset = static_cast<unsigned int>(lookPreset);
+					preset.lookOpacity = lookOpacity;
+					preset.exposure = exposure;
+					preset.contrast = contrast;
+					preset.saturation = saturation;
+					preset.highlightProtection = highlightProtection;
+					preset.shadowDetail = shadowDetail;
+					preset.bloomEnabled = bloomEnabled;
+					preset.bloomStrength = bloomStrength;
+					preset.fieldOfView = fieldOfView;
+					preset.motionEnabled = capture->photoFinishMotionEnabled;
+					preset.motionStrength = capture->photoFinishMotionStrength;
+					preset.motionAngleDegrees = capture->photoFinishMotionAngleDegrees;
+					if (globals::state)
+						globals::state->Save();
+				}
+				ImGui::SameLine();
+				ImGui::BeginDisabled(!preset.valid);
+				if (ImGui::Button(std::format("Load {}", index + 1).c_str())) {
+					{
+						std::lock_guard<std::mutex> lock(camera.settingsMutex);
+						camera.settings.lookPreset = preset.lookPreset;
+						camera.settings.lookOpacity = preset.lookOpacity;
+						camera.settings.cameraExposureCompensationEV = preset.exposure;
+						camera.settings.cameraContrast = preset.contrast;
+						camera.settings.cameraSaturation = preset.saturation;
+						camera.settings.cameraHighlightProtection = preset.highlightProtection;
+						camera.settings.cameraShadowDetail = preset.shadowDetail;
+						camera.settings.enableBloom = preset.bloomEnabled;
+						camera.settings.bloomStrength = preset.bloomStrength;
+					}
+					capture->photoFinishMotionEnabled = preset.motionEnabled;
+					capture->photoFinishMotionStrength = preset.motionStrength;
+					capture->photoFinishMotionAngleDegrees = preset.motionAngleDegrees;
+					ApplyDirectorWorldFov(preset.fieldOfView);
+					camera.LoadLookTexture();
+					camera.UpdateHDRData();
+				}
+				ImGui::EndDisabled();
+				if (index + 1 < capture->directorPhotoPresets.size())
+					ImGui::SameLine();
+				ImGui::PopID();
+			}
 		}
 	}
 
@@ -951,10 +1119,9 @@ namespace
 		Weather = 0,
 		TimeOfDay,
 		Exposure,
-		DepthOfField,
-		FocusMode,
-		FocusDistance,
-		ApertureBokeh,
+		ColourGrade,
+		LutIntensity,
+		CameraLens,
 		Bloom,
 		Contrast,
 		Colour,
@@ -1175,6 +1342,7 @@ namespace
 		auto* capture =
 			GetDirectorCapture();
 		bool cameraChanged = false;
+		bool lookChanged = false;
 
 		switch (option) {
 		case DirectorQuickOption::Weather:
@@ -1240,84 +1408,31 @@ namespace
 			break;
 		}
 
-		case DirectorQuickOption::DepthOfField:
+		case DirectorQuickOption::ColourGrade:
 		{
-			if (capture)
-				capture->photoLensDofEnabled =
-					!capture->photoLensDofEnabled;
-
-			// Live DOF remains isolated; this switch controls only the final
-			// high-quality Photo Lens resolve.
+			std::lock_guard<std::mutex> lock(camera.settingsMutex);
+			constexpr int count = 6;
+			camera.settings.lookPreset = static_cast<unsigned int>(
+				(static_cast<int>(camera.settings.lookPreset) + direction + count) % count);
+			cameraChanged = true;
+			lookChanged = true;
 			break;
 		}
 
-		case DirectorQuickOption::FocusMode:
-			SetDirectorFocusTargetMode(
-				!g_directorPhotoMode
-					 .focusTargetMode);
-			return;
-
-		case DirectorQuickOption::FocusDistance:
+		case DirectorQuickOption::LutIntensity:
 		{
-			SetDirectorFocusTargetMode(
-				false);
-
-			std::lock_guard<std::mutex>
-				lock(
-					camera.settingsMutex);
-
-			const float step =
-				std::max(
-					50.0f,
-					camera.settings
-							.dofFocusDistance *
-						0.075f);
-
-			camera.settings
-				.dofFocusDistance =
-					std::clamp(
-						camera.settings
-								.dofFocusDistance +
-							step *
-								static_cast<float>(
-									direction),
-						100.0f,
-						20000.0f);
-
+			std::lock_guard<std::mutex> lock(camera.settingsMutex);
+			camera.settings.lookOpacity = std::clamp(
+				camera.settings.lookOpacity + 0.05f * static_cast<float>(direction),
+				0.0f,
+				1.0f);
 			cameraChanged = true;
 			break;
 		}
 
-		case DirectorQuickOption::ApertureBokeh:
-		{
-			std::lock_guard<std::mutex>
-				lock(
-					camera.settingsMutex);
-
-			camera.settings.dofBokehRadius =
-				std::clamp(
-					camera.settings.dofBokehRadius +
-						0.10f *
-							static_cast<float>(
-								direction),
-					0.5f,
-					2.0f);
-
-			if (capture) {
-				capture->photoLensDofStrength =
-					std::clamp(
-						0.18f +
-							(camera.settings.dofBokehRadius -
-							 0.5f) /
-								1.5f *
-								0.78f,
-						0.18f,
-						0.96f);
-			}
-
-			cameraChanged = true;
+		case DirectorQuickOption::CameraLens:
+			ApplyDirectorWorldFov(GetDirectorWorldFov() + 2.0f * static_cast<float>(direction));
 			break;
-		}
 
 		case DirectorQuickOption::Bloom:
 		{
@@ -1526,6 +1641,8 @@ namespace
 			break;
 		}
 
+		if (lookChanged)
+			camera.LoadLookTexture();
 		if (cameraChanged)
 			camera.UpdateHDRData();
 	}
@@ -1601,57 +1718,31 @@ namespace
 				4.0f;
 			break;
 
-		case DirectorQuickOption::DepthOfField:
-			result.label = "Photo Lens DOF";
-			result.value =
-				capture &&
-						capture->photoLensDofEnabled
-					? "ON / PHOTO HQ"
-					: "OFF";
+		case DirectorQuickOption::ColourGrade:
+		{
+			static constexpr const char* looks[] = {
+				"ORIGINAL", "NORDIC NEUTRAL", "SAGA", "DRAMATIC", "HEARTHFIRE", "BLEAK"
+			};
+			result.label = "Colour Grade";
+			result.value = looks[std::clamp(settingsCopy.lookPreset, 0u, 5u)];
+			break;
+		}
+
+		case DirectorQuickOption::LutIntensity:
+			result.label = "LUT Intensity";
+			result.value = std::format("{:.0f}%", settingsCopy.lookOpacity * 100.0f);
+			result.normalized = settingsCopy.lookOpacity;
 			break;
 
-		case DirectorQuickOption::FocusMode:
-			result.label = "Focus Mode";
-			if (g_directorPhotoMode
-					.focusTargetMode) {
-				result.value =
-					g_directorPhotoMode
-							.focusTargetValid
-						? "TRACKING / LOCK"
-						: "TRACKING / SEARCH";
-			} else {
-				result.value = "MANUAL";
-			}
+		case DirectorQuickOption::CameraLens:
+		{
+			const float fov = GetDirectorWorldFov();
+			const float focalLength = 18.0f / std::tan(fov * 0.5f * 3.1415926535f / 180.0f);
+			result.label = "Camera Lens / FOV";
+			result.value = std::format("{:.0f}mm / {:.0f} deg", focalLength, fov);
+			result.normalized = (fov - 20.0f) / 90.0f;
 			break;
-
-		case DirectorQuickOption::FocusDistance:
-			result.label = "Focus";
-			result.value =
-				std::format(
-					"{:.0f} u",
-					settingsCopy
-						.dofFocusDistance);
-			result.normalized =
-				std::clamp(
-					settingsCopy
-							.dofFocusDistance /
-						10000.0f,
-					0.0f,
-					1.0f);
-			break;
-
-		case DirectorQuickOption::ApertureBokeh:
-			result.label = "Aperture / Bokeh";
-			result.value =
-				std::format(
-					"{:.2f}x",
-					settingsCopy
-						.dofBokehRadius);
-			result.normalized =
-				(settingsCopy.dofBokehRadius -
-				 0.5f) /
-				1.5f;
-			break;
+		}
 
 		case DirectorQuickOption::Bloom:
 			result.label = "Bloom";
@@ -1749,7 +1840,7 @@ namespace
 			break;
 
 		case DirectorQuickOption::MotionFinish:
-			result.label = "Motion Finish";
+			result.label = "Processed Motion Blur";
 			result.value =
 				capture &&
 						capture->
@@ -1804,7 +1895,9 @@ namespace
 			freeCameraState->useRunSpeed;
 		// Native TFC remains the input source, but ordinary movement is deliberately
 		// slowed for precise framing. Shift restores a fast traversal gear.
-		const float speedScale = shiftHeld ? 0.82f : 0.30f;
+		const float userSpeed = GetDirectorCameraMoveSpeed();
+		const float speedScale =
+			(shiftHeld ? 0.82f : 0.30f) * userSpeed;
 
 		const RE::NiPoint3 proposed = freeCameraState->translation;
 		RE::NiPoint3 rawDelta{
@@ -1941,17 +2034,7 @@ namespace
 		const float radius =
 			30.0f * scale;
 
-		const ImU32 focusColor =
-			g_directorPhotoMode
-					.focusTargetMode
-				? g_directorPhotoMode
-						  .focusTargetValid
-					? PIXLUI::Colors::
-						  CyanBright
-					: PIXLUI::Colors::
-						  TextDim
-				: PIXLUI::Colors::
-					  TextMuted;
+		const ImU32 focusColor = PIXLUI::Colors::TextMuted;
 
 		draw->AddCircle(
 			center,
@@ -1997,32 +2080,11 @@ namespace
 			focusColor,
 			1.2f * scale);
 
-		std::string label;
-
-		if (g_directorPhotoMode
-				.focusTargetMode) {
-			if (g_directorPhotoMode
-					.focusTargetValid) {
-				label =
-					std::format(
-						"FOCUS LOCK  {:.0f}u",
-						g_directorPhotoMode
-							.focusTargetDistance);
-			} else {
-				label =
-					"FOCUS TRACKING";
-			}
-		} else {
-			const auto focus =
-				GetDirectorQuickReadout(
-					DirectorQuickOption::
-						FocusDistance);
-
-			label =
-				std::format(
-					"MANUAL FOCUS  {}",
-					focus.value);
-		}
+		const auto lens = GetDirectorQuickReadout(DirectorQuickOption::CameraLens);
+		const std::string label = std::format(
+			"PIXL DIRECTOR  {}  |  MOVE {:.0f}%",
+			lens.value,
+			GetDirectorCameraMoveSpeed() * 100.0f);
 
 		const ImVec2 textSize =
 			ImGui::CalcTextSize(
@@ -2275,7 +2337,7 @@ namespace
 				max.y -
 					20.0f * scale),
 			PIXLUI::Colors::TextDim,
-			"ARROWS / D-PAD  NAVIGATE + ADJUST");
+			"NUM 8 / 2  SELECT     NUM 4 / 6  ADJUST");
 	}
 
 	void DrawDirectorBottomBar(
@@ -2283,28 +2345,36 @@ namespace
 		const ImVec2& displaySize,
 		float scale)
 	{
-		const char* hint =
-			"HOME  EXIT    END  TAKE PHOTO    TAB  FOCUS TARGET    INSERT  EFFECTS    DELETE  HIDE UI    SHIFT+ENTER  PIXL";
+		const char* primaryHint =
+			"HOME  EXIT    END  TAKE PHOTO    INSERT  EFFECTS    DELETE  HIDE UI    SHIFT+ENTER  PIXL";
+		const std::string cameraHint = std::format(
+			"UP / DOWN  LENS FOV {:.0f} DEG    LEFT / RIGHT  CAMERA SPEED {:.0f}%    SHIFT  FAST MOVE",
+			GetDirectorWorldFov(),
+			GetDirectorCameraMoveSpeed() * 100.0f);
 
-		const ImVec2 textSize =
-			ImGui::CalcTextSize(hint);
+		const ImVec2 primarySize =
+			ImGui::CalcTextSize(primaryHint);
+		const ImVec2 cameraSize =
+			ImGui::CalcTextSize(cameraHint.c_str());
+		const float textWidth =
+			std::max(primarySize.x, cameraSize.x);
 
 		const float width =
 			std::min(
 				displaySize.x -
 					40.0f * scale,
-				textSize.x +
+				textWidth +
 					46.0f * scale);
 
 		const float height =
-			34.0f * scale;
+			52.0f * scale;
 
 		const ImVec2 min(
 			(displaySize.x -
 			 width) *
 				0.5f,
 			displaySize.y -
-				55.0f * scale);
+				73.0f * scale);
 
 		const ImVec2 max(
 			min.x + width,
@@ -2344,12 +2414,20 @@ namespace
 			ImVec2(
 				min.x +
 					(width -
-					 textSize.x) *
+					 primarySize.x) *
 						0.5f,
 				min.y +
-					9.0f * scale),
+					8.0f * scale),
 			PIXLUI::Colors::TextMuted,
-			hint);
+			primaryHint);
+
+		draw->AddText(
+			ImVec2(
+				min.x +
+					(width - cameraSize.x) * 0.5f,
+				min.y + 26.0f * scale),
+			PIXLUI::Colors::CyanSoft,
+			cameraHint.c_str());
 	}
 
 
@@ -2434,6 +2512,9 @@ namespace
 
 	void RenderDirectorPhotoModeOverlayInternal()
 	{
+		if (ProcessDirectorPhotoModeExit())
+			return;
+
 		if (!g_directorPhotoMode.active)
 			return;
 
@@ -2465,9 +2546,6 @@ namespace
 			playerCamera);
 		UpdateDirectorPlayerBodyFade(
 			playerCamera);
-
-		if (g_directorPhotoMode.focusTargetMode)
-			UpdateDirectorFocusTarget();
 
 		// Suppress every HUD primitive before triggering capture.
 		if (g_directorPhotoMode.captureDelayFrames > 0) {
@@ -3249,6 +3327,25 @@ bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
 	if (!g_directorPhotoMode.active)
 		return false;
 
+	// These four framing controls remain available even with the Director HUD
+	// hidden, so a clean composition never requires reopening a settings panel.
+	switch (virtualKey) {
+	case VK_UP:
+		ApplyDirectorWorldFov(GetDirectorWorldFov() + 2.0f);
+		return true;
+	case VK_DOWN:
+		ApplyDirectorWorldFov(GetDirectorWorldFov() - 2.0f);
+		return true;
+	case VK_LEFT:
+		ApplyDirectorCameraMoveSpeed(GetDirectorCameraMoveSpeed() - 0.10f);
+		return true;
+	case VK_RIGHT:
+		ApplyDirectorCameraMoveSpeed(GetDirectorCameraMoveSpeed() + 0.10f);
+		return true;
+	default:
+		break;
+	}
+
 	if (!g_directorPhotoMode.hudVisible) {
 		switch (virtualKey) {
 		case VK_DELETE:
@@ -3282,12 +3379,6 @@ bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
 		ArmDirectorPhotoCapture();
 		return true;
 
-	case VK_TAB:
-		SetDirectorFocusTargetMode(
-			!g_directorPhotoMode
-				 .focusTargetMode);
-		return true;
-
 	case VK_INSERT:
 		g_directorPhotoMode.quickPanelVisible =
 			!g_directorPhotoMode
@@ -3299,7 +3390,32 @@ bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
 			!g_directorPhotoMode.hudVisible;
 		return true;
 
-	case VK_UP:
+	case VK_NUMPAD8:
+		g_directorPhotoMode.quickPanelVisible = true;
+		g_directorPhotoMode.selectedQuickOption =
+			(g_directorPhotoMode.selectedQuickOption +
+			 kDirectorQuickOptionCount - 1) %
+			kDirectorQuickOptionCount;
+		return true;
+
+	case VK_NUMPAD2:
+		g_directorPhotoMode.quickPanelVisible = true;
+		g_directorPhotoMode.selectedQuickOption =
+			(g_directorPhotoMode.selectedQuickOption + 1) %
+			kDirectorQuickOptionCount;
+		return true;
+
+	case VK_NUMPAD4:
+		g_directorPhotoMode.quickPanelVisible = true;
+		AdjustDirectorQuickOption(-1);
+		return true;
+
+	case VK_NUMPAD6:
+		g_directorPhotoMode.quickPanelVisible = true;
+		AdjustDirectorQuickOption(1);
+		return true;
+
+	case VK_PRIOR:  // Page Up
 		if (g_directorPhotoMode.quickPanelVisible) {
 			g_directorPhotoMode.selectedQuickOption =
 				(g_directorPhotoMode.selectedQuickOption +
@@ -3310,7 +3426,7 @@ bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
 		}
 		break;
 
-	case VK_DOWN:
+	case VK_NEXT:  // Page Down
 		if (g_directorPhotoMode.quickPanelVisible) {
 			g_directorPhotoMode.selectedQuickOption =
 				(g_directorPhotoMode.selectedQuickOption +
@@ -3320,14 +3436,14 @@ bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
 		}
 		break;
 
-	case VK_LEFT:
+	case VK_OEM_4:  // [
 		if (g_directorPhotoMode.quickPanelVisible) {
 			AdjustDirectorQuickOption(-1);
 			return true;
 		}
 		break;
 
-	case VK_RIGHT:
+	case VK_OEM_6:  // ]
 		if (g_directorPhotoMode.quickPanelVisible) {
 			AdjustDirectorQuickOption(1);
 			return true;
@@ -3410,12 +3526,6 @@ bool TuningWorkspaceRenderer::HandleDirectorGamepadInput(
 	case SKSE::InputMap::kGamepadButtonOffset_B:
 		// Director is modal. B is consumed so Skyrim cannot use it to back out
 		// into another menu/state, but it intentionally does NOT exit Photo Mode.
-		return true;
-
-	case SKSE::InputMap::kGamepadButtonOffset_X:
-		SetDirectorFocusTargetMode(
-			!g_directorPhotoMode
-				 .focusTargetMode);
 		return true;
 
 	case SKSE::InputMap::kGamepadButtonOffset_Y:
@@ -3997,7 +4107,7 @@ void TuningWorkspaceRenderer::ListMenuVisitor::operator()(RenderModule* feat)
 		ImGui::SameLine();
 		std::string formattedVersion = feat->version;
 		std::replace(formattedVersion.begin(), formattedVersion.end(), '-', '.');
-		ImGui::TextDisabled(fmt::format("({})", formattedVersion).c_str());
+		ImGui::TextDisabled("(%s)", formattedVersion.c_str());
 	}
 }
 
@@ -4642,7 +4752,11 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 			ImGui::TextColored(
 				PIXLUI::ToVec4(
 					PIXLUI::Colors::TextMuted),
-				"HOME enters photo mode. Frame continuously with the live viewfinder, quick effects and END capture hotkey.");
+				"HOME enters or exits Photo Mode. END captures the frame; INSERT opens the compact effects panel.");
+			ImGui::TextColored(
+				PIXLUI::ToVec4(
+					PIXLUI::Colors::CyanSoft),
+				"UP / DOWN changes lens FOV. LEFT / RIGHT changes camera speed. Hold SHIFT for fast movement.");
 
 			ImGui::Dummy(
 				ImVec2(
@@ -4708,7 +4822,7 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 					ImGui::TextColored(
 						PIXLUI::ToVec4(
 							PIXLUI::Colors::TextDim),
-						"HOME does the same anywhere in-world: freeze simulation, enter free camera, then use the live Director HUD without reopening PIXL.");
+						"HOME works anywhere in-world: freeze simulation, compose with the live Director HUD, then press HOME again to return safely to gameplay.");
 				}
 			} else {
 				if (PIXLUI::ActionButton(
@@ -5416,7 +5530,7 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::RenderFeatureSettings(RenderModul
 	if (hasFailedMessage && feat->DrawFailLoadMessage() && !PipelineHealth::IsObsoleteFeature(feat->GetShortName())) {
 		ImGui::Spacing();
 		SeparatorTextWithFont(T("menu.features.error_header", "Error"), Menu::FontRole::Subheading);
-		ImGui::TextColored(themeSettings.StatusPalette.Error, feat->failedLoadedMessage.c_str());
+		ImGui::TextColored(themeSettings.StatusPalette.Error, "%s", feat->failedLoadedMessage.c_str());
 	}
 }
 

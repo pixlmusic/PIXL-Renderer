@@ -368,7 +368,7 @@ VS_OUTPUT main(VS_INPUT input)
 #	endif  // VC
 
 	float fogColorParam = min(FogParam.w,
-		exp2(FogParam.z * log2(saturate(length(viewPos.xyz) * FogParam.y - FogParam.x))));
+		exp2(FogParam.z * log2(max(saturate(length(viewPos.xyz) * FogParam.y - FogParam.x), 1e-6f))));
 
 	vsout.FogParam.xyz = lerp(FogNearColor.xyz, FogFarColor.xyz, fogColorParam);
 	vsout.FogParam.w = fogColorParam;
@@ -979,6 +979,7 @@ float GetSnowParameterY(float texProjTmp, float alpha)
 #	endif
 
 #	include "Common/LightingCommon.hlsli"
+#	include "Common/PIXLAdvancedSnowMaterial.hlsli"
 
 #	if defined(MATERIAL_LAYERS)
 #		include "MaterialLayers/MaterialLayersTuning.hlsli"
@@ -994,9 +995,10 @@ float GetSnowParameterY(float texProjTmp, float alpha)
 #		include "GroundResponse/DeformableGround.hlsli"
 #	endif
 
-// DialogueFocus owns PS b13 only on SKIN/EYE/HAIR permutations.
-// LANDSCAPE is compile-time excluded inside the include so GroundResponse's b13 ABI is untouched.
+// Character runtime owns PS b13 only on actor permutations. LANDSCAPE is
+// compile-time excluded so GroundResponse's b13 ABI remains untouched.
 #	include "DialogueFocus/DialogueFocus.hlsli"
+#	include "ActorSurfaceEffects/ActorSurfaceEffects.hlsli"
 
 #	if defined(WATER_OPTICS)
 #		include "WaterOptics/WaterCaustics.hlsli"
@@ -1485,6 +1487,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// Per-geometry DialogueFocus is zero for every non-focused/non-character draw.
 	// The spatial mask deliberately concentrates the quality budget on face/upper body.
 	const float pixlDialogueFocus = DialogueFocus::GetFocus(input.WorldPosition.xyz);
+	const ActorSurfaceEffects::SurfaceSample pixlActorSurface =
+#	if defined(SKINNED)
+		ActorSurfaceEffects::EvaluateSkinned(input.ModelPosition.xyz);
+#	else
+		ActorSurfaceEffects::Evaluate(input.WorldPosition.xyz);
+#	endif
 
 #	if defined(DEFERRED)
 	const bool inWorld = true;
@@ -2044,6 +2052,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float skinFuzzMask = 1;
 	float skinWetMask = 1;
 	float skinAO = 1;
+	float skinMicroRoughness = 0;
 	bool skinRoughnessSet = false;
 #		endif
 #	endif
@@ -2512,6 +2521,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		const float detailLengthSq = dot(detailNormalXY, detailNormalXY);
 		if (detailLengthSq > 0.9604f)
 			detailNormalXY *= sqrt(0.9604f / detailLengthSq);
+		// Couple resolved pore relief to a very small roughness variation. A normal
+		// map alone changes the highlight direction but leaves every pore equally
+		// polished, which reads as embossed plastic in dialogue close-ups. This
+		// bounded term lets pore walls broaden the primary/secondary highlights
+		// while the existing specular-AA path handles distant minification.
+		skinMicroRoughness =
+			0.035f * smoothstep(0.025f, 0.30f, sqrt(saturate(detailLengthSq)));
 		const float3 detailNormal = float3(
 			detailNormalXY,
 			sqrt(max(1.0f - dot(detailNormalXY, detailNormalXY), 1e-4f)));
@@ -2869,29 +2885,35 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			const float snowTextureWorldPeriod = 640.0f;
 			const float snowTextureTexel = 1.0f / 512.0f;
 			float2 snowMicroUV = groundAbsoluteXY / snowTextureWorldPeriod;
+			float2 snowMicroUVdx = ddx(snowMicroUV);
+			float2 snowMicroUVdy = ddy(snowMicroUV);
 			float2 snowTexelX = float2(snowTextureTexel, 0.0f);
 			float2 snowTexelY = float2(0.0f, snowTextureTexel);
 
 			float3 snowLeft =
-				TexGroundSnowMicroSampler.SampleLevel(
+				TexGroundSnowMicroSampler.SampleGrad(
 					SampColorSampler,
 					snowMicroUV - snowTexelX,
-					0.0f).rgb;
+					snowMicroUVdx,
+					snowMicroUVdy).rgb;
 			float3 snowRight =
-				TexGroundSnowMicroSampler.SampleLevel(
+				TexGroundSnowMicroSampler.SampleGrad(
 					SampColorSampler,
 					snowMicroUV + snowTexelX,
-					0.0f).rgb;
+					snowMicroUVdx,
+					snowMicroUVdy).rgb;
 			float3 snowDown =
-				TexGroundSnowMicroSampler.SampleLevel(
+				TexGroundSnowMicroSampler.SampleGrad(
 					SampColorSampler,
 					snowMicroUV - snowTexelY,
-					0.0f).rgb;
+					snowMicroUVdx,
+					snowMicroUVdy).rgb;
 			float3 snowUp =
-				TexGroundSnowMicroSampler.SampleLevel(
+				TexGroundSnowMicroSampler.SampleGrad(
 					SampColorSampler,
 					snowMicroUV + snowTexelY,
-					0.0f).rgb;
+					snowMicroUVdx,
+					snowMicroUVdy).rgb;
 
 			const float3 snowHeightWeights =
 				float3(0.20f, 0.46f, 0.34f);
@@ -3055,6 +3077,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #	endif
 
+	worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 	float3 screenSpaceNormal = normalize(FrameBuffer::WorldToView(worldNormal, false));
 
 #	if defined(HAIR) && defined(STRAND_SHADING)
@@ -3350,7 +3373,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 				groundMudWaterAccumulation);
 
 		float packedSnowRoughness =
-			lerp(0.64f, 0.48f, groundDeformationFreshness);
+			PIXLAdvancedSnowMaterial::PackedRoughness(groundDeformationFreshness);
 		float oldRutRoughness =
 			max(
 				SharedData::deformableGroundSettings.MudRoughness,
@@ -3394,7 +3417,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 				groundMudWaterAccumulation);
 
 		float3 snowF0 =
-			lerp(0.030f, 0.040f, groundDeformationFreshness).xxx;
+			PIXLAdvancedSnowMaterial::DielectricF0(groundDeformationFreshness);
 
 		// Reuse MudRoughness as an ABI-safe gloss/specular control. Low
 		// roughness means wet/glossy mud and now also raises dielectric F0
@@ -3445,6 +3468,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 	material.Roughness = min(1.0, material.Roughness + ExtraRoughness);
 	material.RoughnessSecondary = min(1.0, material.RoughnessSecondary + ExtraRoughness);
+	material.Roughness = min(1.0f, material.Roughness + skinMicroRoughness);
+	material.RoughnessSecondary = min(1.0f, material.RoughnessSecondary + skinMicroRoughness * 0.55f);
 	material.SecondarySpecIntensity = SharedData::skinOpticsData.skinParams2.x;
 	material.Thickness = 1 - skinsk.x;
 	material.SubsurfaceColor = skinsk.xyz;
@@ -3623,6 +3648,28 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		0.035f * pixlDialogueFocus *
 		DialogueFocus::EyeQuality() *
 		DialogueFocus::EyeReflectionQuality();
+#	endif
+
+	ActorSurfaceEffects::ApplyMaterial(
+		material.BaseColor,
+		material.Roughness,
+		material.F0,
+		material.Metallic,
+		pixlActorSurface,
+#	if defined(SKIN)
+		1.0f,
+#	else
+		0.0f,
+#	endif
+#	if defined(HAIR)
+		1.0f,
+#	else
+		0.0f,
+#	endif
+#	if defined(EYE)
+		1.0f);
+#	else
+		0.0f);
 #	endif
 
 	// Geometric specular anti-aliasing: normal-map/parallax detail can remain high
@@ -4045,13 +4092,32 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			groundSnowShadow;
 
 		const float3 groundSnowScatterTint =
-			float3(0.74f, 0.86f, 1.00f);
+			PIXLAdvancedSnowMaterial::BackscatterTint();
 
 		transmissionColor +=
 			dirLightColor *
 			groundSnowScatterTint *
 			groundSnowScatter *
 			0.095f;
+	}
+#	endif
+#	if defined(ACTOR_SURFACE_EFFECTS) && !defined(LANDSCAPE)
+	// Thin actor snow uses the same PIXL snow tint and shadow-aware porous
+	// backscatter model as raised world snow, at a reduced energy appropriate to
+	// a shallow layer on moving skin/clothing/armour.
+	const float actorSnowScatterWeight =
+		saturate(max(pixlActorSurface.SnowFresh, pixlActorSurface.SnowMelting));
+	[branch] if (actorSnowScatterWeight > 1.0e-4f) {
+		const float actorSnowBackLight =
+			smoothstep(0.08f, 0.82f, saturate(-dirLightAngle));
+		const float actorSnowShadow = min(dirDetailedShadow, dirSoftShadow);
+		transmissionColor +=
+			dirLightColor *
+			PIXLAdvancedSnowMaterial::BackscatterTint() *
+			actorSnowScatterWeight *
+			actorSnowBackLight *
+			actorSnowShadow *
+			0.055f;
 	}
 #	endif
 #	if defined(TREE_ANIM) && defined(FOLIAGE_DYNAMICS)
@@ -4127,8 +4193,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			useLocalContactShadow &&
 			dot(worldNormal.xyz, normalizedLightDirection) > 0.0f)
 		{
+			// Held spells and torches sit close to the camera.  Give these emitters a
+			// useful minimum near-field shadow reach even when an older user preset
+			// retained the historical 16-unit contact length.
+			float heldEmitterShadowLength =
+				length(PointLightPosition[lightIndex].xyz) < 280.0f ? 112.0f : 0.0f;
 			lightShadow *= ContactShadows::GetLocalContactShadow(
-				input.WorldPosition.xyz, worldNormal.xyz, normalizedLightDirection, lightDist);
+				input.WorldPosition.xyz, worldNormal.xyz, normalizedLightDirection,
+				lightDist, heldEmitterShadowLength);
 		}
 #			endif
 
@@ -4310,8 +4382,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			useLocalContactShadow &&
 			lightAngle > 0.0f)
 		{
+			float heldEmitterShadowLength =
+				length(light.positionWS.xyz) < 280.0f ? 112.0f : 0.0f;
 			lightShadow *= ContactShadows::GetLocalContactShadow(
-				input.WorldPosition.xyz, worldNormal.xyz, normalizedLightDirection, lightDist);
+				input.WorldPosition.xyz, worldNormal.xyz, normalizedLightDirection,
+				lightDist, heldEmitterShadowLength);
 		}
 #			endif
 
@@ -4789,7 +4864,44 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #				endif
 #			endif
 #		else
-		color.xyz += indirectLobeWeights.specular * directionalAmbientColor;
+	color.xyz += indirectLobeWeights.specular * directionalAmbientColor;
+#		endif
+
+#		if defined(PIXL_WINDOW_LIFE_ACTIVE) && defined(WORLD_PROBES)
+	// WindowLife's normal material lobe already participates in PIXL PBR. Add a
+	// restrained, explicitly directional probe layer at grazing angles so glass
+	// reflects the actual current environment rather than merely raising scalar F0.
+	[branch] if (pixlWindowSurface.glassWeight > 1.0e-4f &&
+		WindowLife::GetFidelity0().x > 1.0e-4f)
+	{
+		float pixlGlassNoV = saturate(abs(dot(normalize(worldNormal), normalize(viewDirection))));
+		float pixlGlassFresnel = pixlWindowSurface.f0 +
+			(1.0f - pixlWindowSurface.f0) * pow(1.0f - pixlGlassNoV, 5.0f);
+#			if defined(SKY_BOUNCE)
+		float3 pixlGlassProbe = WorldProbes::GetDynamicCubemapSpecularIrradiance(
+			worldNormal, viewDirection, max(material.Roughness * 0.72f, 0.06f), skyBounceSH);
+#			else
+		float3 pixlGlassProbe = WorldProbes::GetDynamicCubemapSpecularIrradiance(
+			worldNormal, viewDirection, max(material.Roughness * 0.72f, 0.06f));
+#			endif
+		color.xyz += pixlGlassProbe * pixlGlassFresnel *
+			pixlWindowSurface.glassWeight * WindowLife::GetFidelity0().x * 0.20f;
+	}
+#		endif
+
+#		if defined(PIXL_WINDOW_LIFE_ACTIVE)
+	// Flat glass produces a tight solar glint distinct from the broad environment
+	// response. Keep it exterior-only so directional light never leaks indoors.
+	[branch] if (!SharedData::InInterior && pixlWindowSurface.glassWeight > 1.0e-4f &&
+		WindowLife::GetFidelity0().w > 1.0e-4f)
+	{
+		float3 pixlSunL = normalize(SharedData::DirLightDirection.xyz);
+		float3 pixlSunR = reflect(-pixlSunL, normalize(worldNormal));
+		float pixlSunAlignment = saturate(dot(pixlSunR, normalize(viewDirection)));
+		float pixlSunGlint = pow(pixlSunAlignment, 192.0f) *
+			pixlWindowSurface.glassWeight * WindowLife::GetFidelity0().w;
+		color.xyz += max(SharedData::DirLightColor.xyz, 0.0f.xxx) * pixlSunGlint * 0.55f;
+	}
 #		endif
 
 	color.xyz = Color::IrradianceToGamma(color.xyz);

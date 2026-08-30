@@ -5,6 +5,7 @@
 #include "MaterialForge/PhysicalMaterialRegistry.h"
 
 #include "Modules/InteriorDaylight.h"
+#include "Modules/ActorSurfaceEffects.h"
 #include "Modules/MaterialLayers.h"
 #include "Hooks.h"
 #include "I18n/I18n.h"
@@ -1415,7 +1416,17 @@ struct BSLightingShader_GetPixelTechnique
 		uint32_t pixelTechnique = rawTechnique;
 
 		pixelTechnique &= ~0b111000000u;
-		if ((pixelTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ModelSpaceNormals)) == 0) {
+		// Vanilla tangent-normal skinned draws normally collapse onto the matching
+		// static pixel permutation because skinning itself is vertex-only. Actor
+		// Surface Effects needs that distinction in the pixel shader so equipped
+		// armour/clothing declares the character b13 payload and evaluates the same
+		// actor-local mask as FaceGen/model-space-normal skin. Retain the bit only
+		// while the module exists; the historical permutation collapse remains the
+		// fallback if Actor Surface Effects fails to load.
+		const bool retainSkinnedPixelPermutation =
+			globals::pipeline::actorSurfaceEffects.loaded;
+		if (!retainSkinnedPixelPermutation &&
+			(pixelTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ModelSpaceNormals)) == 0) {
 			pixelTechnique &= ~static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Skinned);
 		}
 		pixelTechnique |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::VC);

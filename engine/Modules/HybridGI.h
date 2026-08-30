@@ -309,7 +309,7 @@ public:
 	/** @brief Returns AO, diffuse SH Y/CoCg, hybrid reflection and bent-normal visibility SRVs. */
 	inline auto GetOutputTextures()
 	{
-		return (loaded && settings.Enabled) ?
+		return (loaded && settings.Enabled && ShadersOK()) ?
 		           std::make_tuple(
 					   texAo[outputAoIdx]->srv.get(),
 					   texIlY[outputIlIdx]->srv.get(),

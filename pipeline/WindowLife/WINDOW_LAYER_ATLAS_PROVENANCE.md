@@ -3,7 +3,9 @@
 Assets:
 
 - `Kernels/WindowLife/CurtainAtlas.png`
+- `Kernels/WindowLife/CurtainAtlas_high-fidelity-2k.dds`
 - `Kernels/WindowLife/OccupantAtlas.png`
+- `Kernels/WindowLife/GlassGrime_1k.png`
 
 Both assets were created for PIXL Renderer with OpenAI's image-generation tool
 from original PIXL-directed prompts. No game screenshot, third-party texture,
@@ -30,3 +32,20 @@ the public repository.
 
 This record documents asset origin and processing. It does not replace the
 project's normal release licensing and publisher review.
+
+The project owner supplied the updated 2048-square BC3 curtain DDS derivative
+on 2026-08-29. It preserves the 4x4 straight-alpha curtain layout, contains
+twelve mip levels, and was imported byte-for-byte from the runtime-tested shader
+directory. SHA-256:
+`50BCC66F209B7508417B13E79C8CBCE48F978F1CC1F80C0729A8C3D49BBBA69D`.
+
+The glass-grime texture was generated for PIXL Renderer on 2026-08-29 using
+OpenAI's built-in image-generation model. The original prompt requested a
+square, seamless, neutral-grayscale old architectural-glass surface containing
+subtle dust, mineral haze, faint vertical rain marks, micro-scratches and broad
+low-frequency variation, with no frame, scenery, text, logo, watermark or
+recognizable third-party design. It was mechanically resized to `1024 x 1024`,
+converted to 8-bit grayscale RGB-compatible PNG and stripped of unrelated
+metadata. Runtime mip levels are generated once during module initialization.
+SHA-256:
+`06CA7B30F4C8E8EA9E1DEA8CDFB3503F016B7805629D273B97C795B8722D02A9`.

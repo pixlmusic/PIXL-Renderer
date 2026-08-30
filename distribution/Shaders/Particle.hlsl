@@ -637,6 +637,18 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		endif
 
 				float3 lightColor = light.color.xyz * intensityMultiplier;
+#		if defined(ENVCUBE) && !defined(RAIN) && defined(RAIN_RESPONSE)
+				// Snow crystals should catch local illumination, but Skyrim's close
+				// character/dialogue and carried-light response can be several times
+				// brighter than the surrounding scene. Compress only the snow-particle
+				// local-light term so flakes do not turn into emissive white blocks near
+				// actors; directional/ambient snow lighting remains unchanged.
+				float snowLocalLuma = max(
+					dot(max(lightColor, 0.0f), float3(0.2126f, 0.7152f, 0.0722f)),
+					0.0f);
+				lightColor *=
+					(0.28f / (1.0f + snowLocalLuma * 0.35f));
+#		endif
 				propertyColor += lightColor;
 
 #		if defined(ENVCUBE) && defined(RAIN) && defined(RAIN_RESPONSE)

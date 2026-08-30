@@ -7,6 +7,7 @@
 #include "Modules/MaterialLayers.h"
 #include "Modules/ThinSurface.h"
 #include "Modules/GroundResponse.h"
+#include "Modules/ActorSurfaceEffects.h"
 #include "Modules/FoliageDynamics.h"
 #include "Modules/CameraSuite.h"
 #include "Modules/StrandShading.h"
@@ -60,6 +61,7 @@ namespace globals
 		VolumeOcclusion volumeOcclusion{};
 		MaterialLayers materialLayers{};
 		GroundResponse groundResponse{};
+		ActorSurfaceEffects actorSurfaceEffects{};
 		FoliageDynamics foliageDynamics{};
 		AmbientProbe ambientProbe{};
 		RadiantGrid radiantGrid{};

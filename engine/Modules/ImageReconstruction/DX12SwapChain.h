@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Windows.Foundation.h>
+#include <memory>
 #include <stdio.h>
 #include <winrt/base.h>
 #include <wrl\client.h>
@@ -29,7 +30,7 @@ struct DXGISwapChainProxy : IDXGISwapChain
 public:
 	DXGISwapChainProxy(IDXGISwapChain4* a_swapChain);
 
-	IDXGISwapChain4* swapChain;
+	IDXGISwapChain4* swapChain = nullptr;
 
 	/****IUnknown****/
 	virtual HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObj) override;
@@ -66,16 +67,16 @@ public:
 	winrt::com_ptr<ID3D12CommandAllocator> commandAllocators[2];
 	winrt::com_ptr<ID3D12GraphicsCommandList4> commandLists[2];
 
-	IDXGISwapChain4* swapChain;
+	IDXGISwapChain4* swapChain = nullptr;
 
-	DXGI_SWAP_CHAIN_DESC1 swapChainDesc;
+	DXGI_SWAP_CHAIN_DESC1 swapChainDesc{};
 
-	WrappedResource* swapChainBufferWrapped;
-	WrappedResource* uiBufferWrapped;
+	std::unique_ptr<WrappedResource> swapChainBufferWrapped;
+	std::unique_ptr<WrappedResource> uiBufferWrapped;
 
 	// D3D12 interop resources for frame generation
-	WrappedResource* depthBufferShared12 = nullptr;
-	WrappedResource* motionVectorBufferShared12 = nullptr;
+	std::unique_ptr<WrappedResource> depthBufferShared12;
+	std::unique_ptr<WrappedResource> motionVectorBufferShared12;
 
 	winrt::com_ptr<ID3D11Device5> d3d11Device;
 	winrt::com_ptr<ID3D11DeviceContext4> d3d11Context;
@@ -88,11 +89,11 @@ public:
 	UINT frameIndex = 0;
 	UINT64 fenceValue = 0;
 
-	LARGE_INTEGER qpf;
+	LARGE_INTEGER qpf{};
 
 	double refreshRate = 0;
 
-	DXGISwapChainProxy* swapChainProxy = nullptr;
+	std::unique_ptr<DXGISwapChainProxy> swapChainProxy;
 
 	// Returns the current frame time (in seconds) for accurate FPS calculation when frame generation is active
 	float GetFrameTime() const;
@@ -106,7 +107,7 @@ public:
 	void SetD3D11Device(ID3D11Device* a_d3d11Device);
 	void SetD3D11DeviceContext(ID3D11DeviceContext* a_d3d11Context);
 
-	HRESULT GetBuffer(void** ppSurface);
+	HRESULT GetBuffer(UINT buffer, REFIID riid, void** ppSurface);
 	HRESULT Present(UINT SyncInterval, UINT Flags);
 	HRESULT GetDevice(_In_ REFIID riid, _COM_Outptr_ void** ppDevice);
 	HANDLE GetFrameLatencyWaitableObject();

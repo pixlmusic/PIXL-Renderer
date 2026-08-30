@@ -50,6 +50,11 @@ float3 GetSamplingVector(uint3 ThreadID, in RWTexture2DArray<float4> OutputTextu
 }
 
 [numthreads(8, 8, 1)] void main(uint3 ThreadID : SV_DispatchThreadID) {
+	uint outputWidth, outputHeight, outputDepth;
+	EnvInferredTexture.GetDimensions(outputWidth, outputHeight, outputDepth);
+	if (ThreadID.x >= outputWidth || ThreadID.y >= outputHeight || ThreadID.z >= outputDepth)
+		return;
+
 	float3 uv = GetSamplingVector(ThreadID, EnvInferredTexture);
 	float4 color = EnvCaptureTexture.SampleLevel(LinearSampler, uv, 0);
 
@@ -83,7 +88,7 @@ float3 GetSamplingVector(uint3 ThreadID, in RWTexture2DArray<float4> OutputTextu
 		if ((color.w + tempColor.w) > 1.0) {
 			mipLevel -= color.w;
 			float alphaDiff = 1.0 - color.w;
-			tempColor.xyzw *= alphaDiff / tempColor.w;
+			tempColor.xyzw *= alphaDiff * rcp(max(tempColor.w, 1e-6f));
 			color.xyzw += tempColor;
 			break;
 		} else {

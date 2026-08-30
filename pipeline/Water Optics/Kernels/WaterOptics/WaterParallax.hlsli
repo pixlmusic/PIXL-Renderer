@@ -45,10 +45,10 @@ namespace WaterOptics
 		float minTexCoordDelta = max(dTexCoords.x, dTexCoords.y);
 
 		// Compute the current mip level  (* 0.5 is effectively computing a square root before )
-		float mipLevel = max(0.5 * log2(minTexCoordDelta), 0);
+		float mipLevel = max(0.5 * log2(max(minTexCoordDelta, 1e-8f)), 0);
 
 		// Offset mip level to sample as if texture were 512x512
-		float mipOffset = log2(actualTextureDims.x / 512.0);
+		float mipOffset = log2(max(actualTextureDims.x, 1.0f) / 512.0);
 
 		mipLevel = max(mipLevel + mipOffset, 0.0);
 
@@ -152,6 +152,7 @@ namespace WaterOptics
 		float parallaxScale = 0.008 * saturate(viewDotUp * 2.0);
 		parallaxDir *= parallaxScale;
 
+		flowmapDims = max(abs(flowmapDims), 1.0f.xx);
 		float2 uvShiftPx = 1 / (128 * flowmapDims);
 
 		int numSteps = (int)lerp(32.0, 8.0, viewDotUp);

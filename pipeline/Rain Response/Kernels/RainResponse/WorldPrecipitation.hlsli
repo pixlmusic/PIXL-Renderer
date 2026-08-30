@@ -26,6 +26,12 @@ cbuffer PIXLWorldPrecipitationTuning : register(b13)
 
 namespace PIXLPrecipitation
 {
+	float3 SafeNormalizeSnow(float3 value, float3 fallback)
+	{
+		float lengthSq = dot(value, value);
+		return lengthSq > 1e-8f ? value * rsqrt(lengthSq) : fallback;
+	}
+
 	float Hash31(float3 p)
 	{
 		p = frac(p * 0.1031f);
@@ -108,8 +114,8 @@ namespace PIXLPrecipitation
 		if (PIXL_EnableSnowEnhancement == 0u)
 			return 1.0f;
 
-		float3 V = normalize(viewDirection);
-		float3 lightAxis = normalize(SharedData::DirLightDirection.xyz);
+		float3 V = SafeNormalizeSnow(viewDirection, float3(0.0f, 0.0f, 1.0f));
+		float3 lightAxis = SafeNormalizeSnow(SharedData::DirLightDirection.xyz, float3(0.0f, 0.0f, 1.0f));
 		float alignment = saturate(abs(dot(V, lightAxis)));
 		float lobe = pow(alignment, 3.5f);
 

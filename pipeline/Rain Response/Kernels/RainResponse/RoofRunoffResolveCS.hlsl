@@ -28,7 +28,8 @@ float3 ReconstructCameraRelativePosition(int2 pixel, float depth)
 
 	float4 positionCS = float4(2.0f * float2(uv.x, 1.0f - uv.y) - 1.0f, depth, 1.0f);
 	float4 positionWS = mul(FrameBuffer::CameraViewProjInverse, positionCS);
-	return positionWS.xyz / max(abs(positionWS.w), 1e-6f);
+	float safeW = abs(positionWS.w) > 1e-6f ? positionWS.w : (positionWS.w < 0.0f ? -1e-6f : 1e-6f);
+	return positionWS.xyz / safeW;
 }
 
 float SeedDistance(float a, float b)

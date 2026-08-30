@@ -25,7 +25,7 @@ Compiled pipelines are cached locally after first use. A clean install therefore
 
 ## Renderer features
 
-PIXL currently contains **36 integrated rendering modules**, plus renderer-level systems for dialogue focus, quality orchestration, benchmarking, tuning and capture.
+PIXL currently contains **37 integrated rendering modules**, plus renderer-level systems for dialogue focus, quality orchestration, benchmarking, tuning and capture.
 
 ### Lighting and atmosphere
 
@@ -45,17 +45,19 @@ PIXL currently contains **36 integrated rendering modules**, plus renderer-level
 
 - **Material Forge** unifies legacy and authored materials under an energy-conscious PBR response with roughness, metallic, displacement, clearcoat, fuzz, glints, decals and landscape support.
 - **Material Layers** handles parallax occlusion mapping, height blending, terrain heightmaps and parallax self-shadowing.
-- **Window Life** upgrades architectural glass with old-glass optics, mask-fitted recessed room layers, curtains, furniture depth, varied moving occupants and interior passers-by. It is designed to stay inside the actual pane instead of illuminating half of Solitude—which turns out to be quite an important detail lol.
+- **Window Life** upgrades architectural glass with old-glass optics, recessed room atlases, curtains, furniture depth, varied occupants, stable architectural families and adaptive window fitting. It is designed to stay inside the actual pane instead of illuminating half of Solitude—which turns out to be quite an important detail lol.
 - **Skin Optics** adds layered skin response, dual specular lobes, micro detail and dynamic wetness.
 - **Tissue Diffusion** provides material-aware subsurface light transport for natural skin and other translucent surfaces.
 - **Strand Shading** gives hair directional, tangent-based specular response and controllable highlight shift.
 - **Thin Surface** supports directional transmission and multiple translucent fabric/surface models.
+- **Actor Surface Effects** adds bounded, contact-driven snow, mud and wetness accumulation to the player and nearby NPCs. Effects evolve over time, remain anchored in actor/model space, and share Ground Response and weather state rather than painting a fixed biome-height band onto every character.
 - **Foliage Dynamics** improves grass and vegetation lighting, GGX-style specular response, subsurface transmission, complex-grass normal handling and natural material controls.
 - **Rain Response** coordinates world-stable rain, gust layers, impact splashes, wet materials, puddles, ripples, roof-edge runoff and rain mist.
 
 ### Terrain, snow, mud and water
 
 - **Ground Response** drives actor grass interaction and a persistent, layer-classified terrain surface for raised snow, compressed tracks and wet mud, including coherent depth, G-buffer and motion-vector replay.
+- **Native Seasons compatibility** optionally reads the active Seasons of Skyrim state without creating a hard dependency. Resolved runtime materials remain authoritative, while season changes invalidate stale Ground Response classifications and incompatible deformation history so Turn of the Seasons and other season packs can transition safely.
 - **Terrain Detail** reduces visible tiling with stochastic variation while remaining compatible with parallax materials.
 - **Terrain Field** extends terrain material texture support and automatic terrain setup.
 - **Terrain Seam** blends terrain and intersecting objects more naturally.
@@ -89,6 +91,8 @@ The complete module ancestry—including every renamed Community Shaders system�
 PIXL is intended to own the engine-level shader pipeline. Do not combine it with ENB, ReShade, Kreate, another shader-hook renderer or a second PIXL installation unless a future compatibility note explicitly says otherwise.
 
 A clean-cache package compiles shaders on the first launch. Let that process finish before judging performance or visuals. Ordinary HLSL changes should invalidate only affected permutations; deleting the whole pipeline library is reserved for deliberate cold-cache validation.
+
+The current compatibility baseline ships with the live-tested **Medium** quality profile and Skyrim-native **TAA** selected. Users can move upward to High/Ultra or select DLSS/FSR after confirming their own hardware and mod stack are stable.
 
 ## Building from source
 

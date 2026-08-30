@@ -66,18 +66,24 @@ void ContactShadows::ClearShaderCache()
 
 uint ContactShadows::GetScaledSampleCount()
 {
-	float2 renderSize = Util::ConvertToDynamic(float2{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight });
+	const auto* graphicsState = globals::game::graphicsState;
+	if (!graphicsState)
+		return 8u;
+
+	float2 renderSize = Util::ConvertToDynamic(float2{ (float)graphicsState->screenWidth, (float)graphicsState->screenHeight });
+	renderSize.x = std::max(renderSize.x, 1.0f);
+	renderSize.y = std::max(renderSize.y, 1.0f);
 
 	// Scale sample count based on both dimensions relative to 1920x1080 reference
 	float2 referenceRes = { 1920.0f, 1080.0f };
 	float referenceArea = referenceRes.x * referenceRes.y;
 	float currentArea = renderSize.x * renderSize.y;
-	float areaScale = std::sqrt(currentArea / referenceArea);
+	float areaScale = std::clamp(std::sqrt(currentArea / referenceArea), 0.5f, 4.0f);
 	uint scaledSampleCount = static_cast<uint>(std::round(bendSettings.SampleCount * 60 * areaScale));
 
 	// Quantize to steps of 8 to prevent frequent recompilation from small DRS oscillations
 	scaledSampleCount = ((scaledSampleCount + 7u) / 8u) * 8u;
-	scaledSampleCount = std::max(scaledSampleCount, 8u);
+	scaledSampleCount = std::clamp(scaledSampleCount, 8u, 960u);
 
 	return scaledSampleCount;
 }
@@ -106,12 +112,28 @@ ID3D11ComputeShader* ContactShadows::GetComputeRaymarch()
 void ContactShadows::DrawShadows()
 {
 	ZoneScopedS(8);
+	if (!globals::state || !globals::state->tracyCtx || !globals::profiler ||
+		!globals::d3d::context || !globals::game::graphicsState || !raymarchCB ||
+		!contactShadowsTexture || !contactShadowsTexture->uav || !pointBorderSampler) {
+		return;
+	}
+
 	TracyD3D11Zone(globals::state->tracyCtx, "Contact Shadows");
 
 	auto context = globals::d3d::context;
 
 	auto accumulator = *globals::game::currentAccumulator.get();
-	auto dirLight = skyrim_cast<RE::NiDirectionalLight*>(accumulator->GetRuntimeData().activeShadowSceneNode->GetRuntimeData().sunLight->light.get());
+	if (!accumulator)
+		return;
+	auto* shadowSceneNode = accumulator->GetRuntimeData().activeShadowSceneNode;
+	if (!shadowSceneNode || !shadowSceneNode->GetRuntimeData().sunLight ||
+		!shadowSceneNode->GetRuntimeData().sunLight->light) {
+		return;
+	}
+	auto dirLight = skyrim_cast<RE::NiDirectionalLight*>(
+		shadowSceneNode->GetRuntimeData().sunLight->light.get());
+	if (!dirLight)
+		return;
 
 	auto& directionNi = dirLight->GetWorldDirection();
 	float3 light = { directionNi.x, directionNi.y, directionNi.z };
@@ -129,6 +151,8 @@ void ContactShadows::DrawShadows()
 
 	float2 renderSize = Util::ConvertToDynamic(float2{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight });
 	int viewportSize[2] = { (int)renderSize.x, (int)renderSize.y };
+	if (viewportSize[0] <= 0 || viewportSize[1] <= 0)
+		return;
 
 	int minRenderBounds[2] = { 0, 0 };
 	int maxRenderBounds[2] = { viewportSize[0], viewportSize[1] };
@@ -140,6 +164,9 @@ void ContactShadows::DrawShadows()
 	// The shader's DepthTexture declaration is conditional on TERRAIN_SEAM:
 	// `<float>` for the R32_FLOAT path, `<unorm float>` for the R24_UNORM path.
 	auto* depthSRV = Util::GetCurrentSceneDepthSRV(false);
+	auto* raymarchShader = GetComputeRaymarch();
+	if (!depthSRV || !raymarchShader)
+		return;
 	context->CSSetShaderResources(0, 1, &depthSRV);
 
 	auto uav = contactShadowsTexture->uav.get();
@@ -214,7 +241,7 @@ void ContactShadows::DrawShadows()
 	float InvTexSizeX = 1.0f / (float)viewportSize[0];
 	float InvTexSizeY = 1.0f / (float)viewportSize[1];
 
-	Dispatch(GetComputeRaymarch(), lightProjectionF.data(), InvTexSizeX, InvTexSizeY);
+	Dispatch(raymarchShader, lightProjectionF.data(), InvTexSizeX, InvTexSizeY);
 
 	ID3D11ShaderResourceView* views[1]{ nullptr };
 	context->CSSetShaderResources(0, 1, views);
@@ -234,6 +261,10 @@ void ContactShadows::DrawShadows()
 void ContactShadows::Prepass()
 {
 	auto context = globals::d3d::context;
+	if (!context || !contactShadowsTexture || !contactShadowsTexture->uav ||
+		!contactShadowsTexture->srv) {
+		return;
+	}
 
 	float white[4] = { 1, 1, 1, 1 };
 	context->ClearUnorderedAccessViewFloat(contactShadowsTexture->uav.get(), white);
@@ -250,6 +281,11 @@ void ContactShadows::Prepass()
 void ContactShadows::LoadSettings(json& o_json)
 {
 	bendSettings = o_json;
+	bendSettings.Enable = bendSettings.Enable ? 1u : 0u;
+	bendSettings.SampleCount = std::clamp(bendSettings.SampleCount, 1u, 4u);
+	bendSettings.SurfaceThickness = std::clamp(bendSettings.SurfaceThickness, 0.005f, 0.05f);
+	bendSettings.BilinearThreshold = std::clamp(bendSettings.BilinearThreshold, 0.02f, 1.0f);
+	bendSettings.ShadowContrast = std::clamp(bendSettings.ShadowContrast, 1.0f, 4.0f);
 }
 
 void ContactShadows::SaveSettings(json& o_json)
@@ -271,6 +307,17 @@ bool ContactShadows::HasShaderDefine(RE::BSShader::Type shaderType)
 
 void ContactShadows::SetupResources()
 {
+	if (!globals::d3d::device || !globals::d3d::context || !globals::game::renderer) {
+		logger::error("[PIXL Contact Shadows] D3D11 renderer state unavailable; resources were not created");
+		return;
+	}
+	auto renderer = globals::game::renderer;
+	auto shadowMask = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGET::kSHADOW_MASK];
+	if (!shadowMask.texture || !shadowMask.SRV) {
+		logger::error("[PIXL Contact Shadows] Skyrim shadow-mask resources are unavailable");
+		return;
+	}
+
 	raymarchCB = new ConstantBuffer(ConstantBufferDesc<RaymarchCB>(), "ContactShadows::RaymarchCB");
 
 	{
@@ -295,9 +342,6 @@ void ContactShadows::SetupResources()
 	}
 
 	{
-		auto renderer = globals::game::renderer;
-		auto shadowMask = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGET::kSHADOW_MASK];
-
 		D3D11_TEXTURE2D_DESC texDesc{};
 		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
 

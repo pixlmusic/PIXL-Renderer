@@ -1,5 +1,6 @@
 #include "GroundResponse.h"
 
+#include "ActorSurfaceEffects.h"
 #include "CameraSuite.h"
 #include "FoliageDynamics.h"
 
@@ -8,6 +9,8 @@
 #include "MaterialForge/BSLightingShaderMaterialPBRLandscape.h"
 #include "ShaderCache.h"
 #include "RainResponse.h"
+#include "SeasonIntegration.h"
+#include "TerrainField.h"
 
 
 #include "State.h"
@@ -752,6 +755,27 @@ namespace
 		return key;
 	}
 
+	ResolvedLandSurface GroundResolveLandSurface(const RE::TESLandTexture* a_landTexture)
+	{
+		return SeasonIntegration::GetSingleton().ResolveLandSurface(a_landTexture);
+	}
+
+	RE::MATERIAL_ID GroundResolvedLandMaterialID(
+		const RE::TESLandTexture* a_landTexture,
+		RE::MATERIAL_ID a_fallback)
+	{
+		const auto resolved = GroundResolveLandSurface(a_landTexture);
+		if (resolved.landTexture && resolved.landTexture->materialType &&
+			resolved.landTexture->materialType->materialID != RE::MATERIAL_ID::kNone) {
+			return resolved.landTexture->materialType->materialID;
+		}
+
+		// TES::GetLandMaterialType is itself redirected by Seasons and is therefore
+		// an authoritative fallback at sampled world positions. Callers that only
+		// possess the original LT pass kNone, preventing stale pre-swap material data.
+		return a_fallback;
+	}
+
 	void ResistanceCacheRenderedSnowTexture(
 		const char* a_path,
 		float a_snowFlag)
@@ -816,12 +840,12 @@ namespace
 	bool ResistanceRendererTextureIsSnow(
 		const RE::TESLandTexture* a_landTexture)
 	{
-		if (!a_landTexture ||
-			!a_landTexture->textureSet)
+		const auto resolved = GroundResolveLandSurface(a_landTexture);
+		if (!resolved.textureSet)
 			return false;
 
 		const char* diffusePath =
-			a_landTexture->textureSet->textures[0].textureName.c_str();
+			resolved.textureSet->textures[0].textureName.c_str();
 		const std::string key =
 			ResistanceNormalizeTextureKey(diffusePath);
 		if (key.empty())
@@ -840,21 +864,22 @@ namespace
 	bool ResistanceSnowTextureFallback(
 		const RE::TESLandTexture* a_landTexture)
 	{
-		if (!a_landTexture)
+		const auto resolved = GroundResolveLandSurface(a_landTexture);
+		if (!resolved.originalLandTexture)
 			return false;
 
 		std::string text;
 
 		if (const char* editorID =
-			a_landTexture->GetFormEditorID();
+			resolved.landTexture ? resolved.landTexture->GetFormEditorID() : nullptr;
 			editorID && editorID[0] != '\0') {
 			text += editorID;
 			text.push_back(' ');
 		}
 
-		if (a_landTexture->textureSet) {
+		if (resolved.textureSet) {
 			const char* diffusePath =
-				a_landTexture->textureSet->textures[0].textureName.c_str();
+				resolved.textureSet->textures[0].textureName.c_str();
 			if (diffusePath)
 				text += diffusePath;
 		}
@@ -874,7 +899,8 @@ namespace
 		RE::MATERIAL_ID a_materialID,
 		const RE::TESLandTexture* a_landTexture)
 	{
-		if (ResistanceIsSnowMaterial(a_materialID))
+		if (ResistanceIsSnowMaterial(
+				GroundResolvedLandMaterialID(a_landTexture, a_materialID)))
 			return GroundSnowClassifier::kPhysicalMaterial;
 
 		if (ResistanceRendererTextureIsSnow(a_landTexture))
@@ -895,9 +921,8 @@ namespace
 		if (!a_landTexture)
 			return false;
 
-		if (a_landTexture->materialType &&
-			ResistanceIsSnowMaterial(
-				a_landTexture->materialType->materialID)) {
+		if (ResistanceIsSnowMaterial(
+				GroundResolvedLandMaterialID(a_landTexture, RE::MATERIAL_ID::kNone))) {
 			return true;
 		}
 
@@ -1339,15 +1364,35 @@ namespace
 		return !softOverride;
 	}
 
+	bool GroundTerrainTextureIsSnow(
+		const std::string& a_key)
+	{
+		if (a_key.empty())
+			return false;
+
+		// Respect explicit negative naming used by some landscape packs before
+		// accepting the resolved runtime texture name as snow evidence.
+		if (GroundTerrainKeyContains(a_key, "nosnow") ||
+			GroundTerrainKeyContains(a_key, "no_snow") ||
+			GroundTerrainKeyContains(a_key, "snowless")) {
+			return false;
+		}
+
+		return
+			GroundTerrainKeyContains(a_key, "snow") ||
+			GroundTerrainKeyContains(a_key, "snw") ||
+			GroundTerrainKeyContains(a_key, "glacier");
+	}
+
 	bool GroundLandTextureIsHard(
 		const RE::TESLandTexture* a_landTexture)
 	{
-		if (!a_landTexture ||
-			!a_landTexture->textureSet)
+		const auto resolved = GroundResolveLandSurface(a_landTexture);
+		if (!resolved.textureSet)
 			return false;
 
 		const char* diffusePath =
-			a_landTexture->textureSet->textures[0].textureName.c_str();
+			resolved.textureSet->textures[0].textureName.c_str();
 
 		return
 			GroundTerrainTextureIsHard(
@@ -1371,8 +1416,14 @@ namespace
 		const bool hard =
 			GroundTerrainTextureIsHard(key);
 
-		const float encoded =
-			hard ? -1.0f : authoredSnow;
+		// Seasons and landscape replacers do not always preserve Skyrim's authored
+		// textureIsSnow bit on the final substituted layer. The resolved diffuse path
+		// is the material Skyrim is actually drawing, so use it as generic evidence
+		// rather than leaving visible snow layers non-deformable. Structural hard
+		// surfaces still win and remain excluded.
+		const float resolvedSnow = GroundTerrainTextureIsSnow(key) ? 1.0f : 0.0f;
+		const float classifiedSnow = std::max(authoredSnow, resolvedSnow);
+		const float encoded = hard ? -1.0f : classifiedSnow;
 
 		if (g_groundResistanceSettings.DebugMovementResistance && !key.empty()) {
 			static std::mutex s_groundTerrainAuditMutex;
@@ -1386,15 +1437,16 @@ namespace
 				const char* finalClass =
 					hard
 						? "HARD_EXCLUDED"
-						: authoredSnow > 0.50f
+						: classifiedSnow > 0.50f
 							? "SNOW"
 							: "SOFT";
 
 				logger::info(
-					"[GR-MATERIAL] source={} slot={} authoredSnow={:.2f} class={} path={}",
+					"[GR-MATERIAL] source={} slot={} authoredSnow={:.2f} resolvedSnow={:.2f} class={} path={}",
 					a_source ? a_source : "Unknown",
 					a_slot,
 					authoredSnow,
+					resolvedSnow,
 					finalClass,
 					key);
 			}
@@ -1482,12 +1534,7 @@ GroundResistanceSample ResistanceEvaluateActor(
 		RE::MATERIAL_ID materialID =
 			tes->GetLandMaterialType(actorPosition);
 
-		if (landTexture->materialType &&
-			landTexture->materialType->materialID !=
-				RE::MATERIAL_ID::kNone) {
-			materialID =
-				landTexture->materialType->materialID;
-		}
+		materialID = GroundResolvedLandMaterialID(landTexture, materialID);
 
 		result.materialID =
 			static_cast<std::uint32_t>(materialID);
@@ -2663,10 +2710,7 @@ GroundResistanceSample ResistanceEvaluateActor(
 			return false;
 
 		RE::MATERIAL_ID materialID = tes->GetLandMaterialType(a_position);
-		if (landTexture->materialType &&
-			landTexture->materialType->materialID != RE::MATERIAL_ID::kNone) {
-			materialID = landTexture->materialType->materialID;
-		}
+		materialID = GroundResolvedLandMaterialID(landTexture, materialID);
 
 		const float slopeMask =
 			ResistanceTerrainSlopeMask(tes, a_position, a_ground);
@@ -3344,7 +3388,7 @@ void GroundResponse::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Wetness level required before mud tracks become visible. Lower values react sooner after rain begins.");
 		changed |= ImGui::SliderFloat("Mud Rut Depth", &settings.MudMaximumDepth, 2.0f, 30.0f, "%.1f units", ImGuiSliderFlags_AlwaysClamp);
-		changed |= ImGui::SliderFloat("Mud Darkening", &settings.MudDarkening, 0.0f, 0.80f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		changed |= ImGui::SliderFloat("Mud Darkening", &settings.MudDarkening, 0.0f, 1.50f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		// Keep the existing MudRoughness ABI/JSON field, but expose it as the
 		// artist-facing quantity being tuned: wet gloss/specular response.
 		float mudGlossSpecular =
@@ -3494,7 +3538,7 @@ void GroundResponse::DrawSettings()
 
 		ImGui::Separator();
 		changed |= ImGui::SliderFloat("Track Normal Strength", &settings.GroundNormalStrength, 0.0f, 2.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		changed |= ImGui::SliderFloat("Interaction Strength", &settings.GroundResponseStrength, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		changed |= ImGui::SliderFloat("Interaction / Compaction Strength", &settings.GroundResponseStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Overall stamp strength for both materials. Snow/mud history is stored as normalized compaction in an absolute-world XY toroidal field; first/third person, camera height and equipment changes never rebase existing trail values.");
 		changed |= ImGui::SliderFloat("Track Hold Time", &settings.TrackHoldSeconds, 0.0f, 30.0f, "%.1f s", ImGuiSliderFlags_AlwaysClamp);
@@ -3504,6 +3548,12 @@ void GroundResponse::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Recovery speed after Track Hold Time expires. Internally this is converted to normalized compaction recovery using the snow-shell thickness, so snow and mud share one persistent footprint lifetime.");
 		if (globals::state->IsDeveloperMode()) {
+			const auto seasonContext = SeasonIntegration::GetSingleton().GetContext();
+			ImGui::SeparatorText("Season Compatibility");
+			ImGui::Text("Provider: %s", seasonContext.providerAvailable ? "Detected" : "Not detected");
+			ImGui::Text("Native status: %s", SeasonIntegration::StatusName(seasonContext.status));
+			ImGui::Text("Current season: %s", SeasonIntegration::SeasonName(seasonContext.season));
+			ImGui::Text("Season generation: %u", seasonContext.generation);
 			changed |= ImGui::Checkbox("Debug Interaction Field", &settings.DebugInteractionField);
 			if (auto _tt = Util::HoverTooltipWrapper())
 				ImGui::TextWrapped("Non-destructive diagnostic tint over the real terrain texture: red = no actor collision boxes, magenta = missing Material Forge snow metadata, cyan = snow, brown = mud/non-snow, green/yellow = contact/depression. The overlay is accepted only when the GroundResponse runtime magic/version match exactly.");
@@ -3517,6 +3567,28 @@ void GroundResponse::DrawSettings()
 
 	if (changed)
 		globals::state->UpdateFeatureData(globals::state->inWorld);
+}
+
+void GroundResponse::ObserveSeasonContext()
+{
+	const auto context = SeasonIntegration::GetSingleton().GetContext();
+	if (!context.providerAvailable || context.generation == 0 ||
+		context.generation == observedSeasonGeneration) {
+		return;
+	}
+
+	observedSeasonGeneration = context.generation;
+	{
+		std::scoped_lock lock(g_resistanceSnowTextureCacheMutex);
+		g_resistanceSnowTextureFlags.clear();
+	}
+
+	pendingSeasonHistoryGeneration.store(context.generation, std::memory_order_release);
+	globals::pipeline::terrainField.InvalidateSeasonalMaterialCache(context.generation);
+	logger::info(
+		"[PIXL][GroundResponse] Invalidated season-dependent classifications and queued surface-history reset for {} (generation {}).",
+		SeasonIntegration::SeasonName(context.season),
+		context.generation);
 }
 
 void GroundResponse::QueueCollisions()
@@ -3778,7 +3850,16 @@ void GroundResponse::QueueCollisions()
 		// Havok body actually intersects the deformable surface. A hand entering
 		// snow from above therefore starts with a local contact instead of carving
 		// the XY path it travelled while it was still in the air.
-		std::vector<GroundPendingInteraction> bodyContacts;
+		struct ActorBodySurfaceContact
+		{
+			GroundPendingInteraction interaction{};
+			RE::NiPoint3 worldCenter{};
+			RE::NiPoint3 worldVelocity{};
+			float verticalRadius = 1.0f;
+			float materialActivation = 1.0f;
+			ActorSurfaceEffects::EffectType effectType = ActorSurfaceEffects::EffectType::Snow;
+		};
+		std::vector<ActorBodySurfaceContact> bodyContacts;
 		bodyContacts.reserve(detailedSurfaceShapes.size());
 
 		for (const auto& bound : detailedSurfaceShapes) {
@@ -3876,7 +3957,29 @@ void GroundResponse::QueueCollisions()
 				contactDepth * 1.4f +
 				motionLength * 2.2f +
 				stampRadius * 0.55f;
-			bodyContacts.push_back(interaction);
+
+			const float contactBandBottom = std::max(bottom, probe.landHeight - 2.0f);
+			const float contactBandTop = std::max(
+				contactBandBottom + 1.0f,
+				std::min(top, probe.surfaceTop + 1.5f));
+			ActorBodySurfaceContact actorContact{};
+			actorContact.interaction = interaction;
+			actorContact.worldCenter = {
+				bound.center.x,
+				bound.center.y,
+				(contactBandBottom + contactBandTop) * 0.5f
+			};
+			actorContact.worldVelocity = {
+				(bound.center.x - previous.x) / frameDt,
+				(bound.center.y - previous.y) / frameDt,
+				(bound.center.z - previous.z) / frameDt
+			};
+			actorContact.verticalRadius = std::max((contactBandTop - contactBandBottom) * 0.5f, 1.25f);
+			actorContact.materialActivation = probe.snow ? probe.snowActivation : probe.mudActivation;
+			actorContact.effectType = probe.snow
+				? ActorSurfaceEffects::EffectType::Snow
+				: ActorSurfaceEffects::EffectType::Mud;
+			bodyContacts.push_back(actorContact);
 		}
 
 		// A creature can expose dozens of ragdoll bodies. Keep the contacts that
@@ -3885,15 +3988,35 @@ void GroundResponse::QueueCollisions()
 			bodyContacts.begin(),
 			bodyContacts.end(),
 			[](const auto& a, const auto& b) {
-				return a.priority > b.priority;
+				return a.interaction.priority > b.interaction.priority;
 			});
 		if (bodyContacts.size() > 16u)
 			bodyContacts.resize(16u);
 
 		if (surfaceContactAllowed) {
 			for (const auto& contact : bodyContacts) {
-				if (!appendActorSurfaceStamp(contact))
+				if (!appendActorSurfaceStamp(contact.interaction))
 					break;
+
+				// Share the exact accepted contact with Actor Surface Effects. This is
+				// deliberately downstream of the same cap/receiver decision as the
+				// deformation stamp so actor contamination cannot invent a contact
+				// that Ground Response rejected.
+				if (globals::pipeline::actorSurfaceEffects.loaded) {
+					const float materialStrength = std::clamp(
+						0.55f + contact.materialActivation * 0.45f,
+						0.55f,
+						1.0f);
+					globals::pipeline::actorSurfaceEffects.AddGroundContact(
+						actor.get(),
+						contact.effectType,
+						contact.worldCenter,
+						contact.worldVelocity,
+						contact.interaction.endRadius,
+						contact.verticalRadius,
+						contact.interaction.contactDepth,
+						contact.interaction.strength * materialStrength);
+				}
 			}
 		}
 
@@ -3916,7 +4039,23 @@ void GroundResponse::QueueCollisions()
 					0.10f,
 					0.82f);
 			fallback.contactDepth = 6.0f;
-			appendActorSurfaceStamp(fallback);
+			if (appendActorSurfaceStamp(fallback) &&
+				globals::pipeline::actorSurfaceEffects.loaded) {
+				GroundSurfaceProbe fallbackProbe{};
+				if (GroundProbeSurface(actorPosition, *this, fallbackProbe)) {
+					globals::pipeline::actorSurfaceEffects.AddGroundContact(
+						actor.get(),
+						fallbackProbe.snow
+							? ActorSurfaceEffects::EffectType::Snow
+							: ActorSurfaceEffects::EffectType::Mud,
+						RE::NiPoint3{ actorPosition.x, actorPosition.y, fallbackProbe.surfaceTop - 2.0f },
+						RE::NiPoint3{ actorDelta.x / frameDt, actorDelta.y / frameDt, 0.0f },
+						fallback.endRadius,
+						3.0f,
+						fallback.contactDepth,
+						fallback.strength);
+				}
+			}
 		}
 
 		if (actorSurfaceBox.IndexStart != actorSurfaceBox.IndexEnd &&
@@ -4233,6 +4372,11 @@ void GroundResponse::QueueCollisions()
 void GroundResponse::Update()
 {
 	auto context = globals::d3d::context;
+	if (!context || !perFrame || !surfacePerFrame || !globals::state ||
+		!*globals::game::perFrame.get()) {
+		return;
+	}
+
 	static Util::FrameChecker frameChecker;
 	static uint32_t s_updateDiagCount = 0u;
 	if (frameChecker.IsNewFrame()) {
@@ -4466,7 +4610,7 @@ void GroundResponse::Update()
 				0.001f,
 				1.0f);
 		surfaceFieldData.StampStrength =
-			std::clamp(settings.GroundResponseStrength, 0.0f, 2.0f);
+			std::clamp(settings.GroundResponseStrength, 0.0f, 3.0f);
 		surfaceFieldData.ElementalRecoveryRate =
 			std::clamp(settings.ElementalRecoveryRate, 0.0f, 2.0f);
 
@@ -4615,10 +4759,10 @@ GroundResponse::GroundData GroundResponse::GetGroundData() const
 		.MudMaximumDepth = std::clamp(settings.MudMaximumDepth, 2.0f, 30.0f),
 		.GroundNormalStrength = std::clamp(settings.GroundNormalStrength, 0.0f, 2.5f),
 		.SnowCompactionDarkening = std::clamp(settings.SnowCompactionDarkening, 0.0f, 0.65f),
-		.MudDarkening = std::clamp(settings.MudDarkening, 0.0f, 0.80f),
+		.MudDarkening = std::clamp(settings.MudDarkening, 0.0f, 1.50f),
 		.MudRoughness = std::clamp(settings.MudRoughness, 0.08f, 0.80f),
 		.MudWetnessThreshold = std::clamp(settings.MudWetnessThreshold, 0.0f, 0.75f),
-		.GroundResponseStrength = std::clamp(settings.GroundResponseStrength, 0.0f, 2.0f),
+		.GroundResponseStrength = std::clamp(settings.GroundResponseStrength, 0.0f, 3.0f),
 		.PosOffset = currentPosOffset,
 		.ArrayOrigin = currentArrayOrigin
 	};
@@ -4719,6 +4863,54 @@ void GroundResponse::LoadSettings(json& o_json)
 		settings.GeometryTessellationNearDistance = 768.0f;
 		settings.GeometryTessellationFarDistance = 2048.0f;
 	}
+
+	// Settings can be edited outside the PIXL UI. Keep persisted values inside
+	// the same release-tested envelope used by the user-facing controls before
+	// they participate in tessellation, scan scheduling, or gameplay resistance.
+	settings.SnowMaximumDepth = std::clamp(settings.SnowMaximumDepth, 2.0f, 40.0f);
+	settings.SnowSurfaceThickness = std::clamp(settings.SnowSurfaceThickness, 2.0f, 24.0f);
+	settings.GeometryRenderDistance = std::clamp(settings.GeometryRenderDistance, 384.0f, 4096.0f);
+	settings.GeometryFadeStart = std::clamp(settings.GeometryFadeStart, 256.0f, settings.GeometryRenderDistance);
+	settings.GeometryMinimumSlopeZ = std::clamp(settings.GeometryMinimumSlopeZ, 0.20f, 0.90f);
+	settings.GeometryTessellationNear = std::clamp(settings.GeometryTessellationNear, 1.0f, 16.0f);
+	settings.GeometryTessellationFar = std::clamp(settings.GeometryTessellationFar, 1.0f, 10.0f);
+	settings.GeometryTessellationNearDistance = std::clamp(settings.GeometryTessellationNearDistance, 64.0f, 1600.0f);
+	settings.GeometryTessellationFarDistance = std::clamp(
+		settings.GeometryTessellationFarDistance,
+		std::max(settings.GeometryTessellationNearDistance, 384.0f),
+		3200.0f);
+	settings.SnowCoverageThreshold = std::clamp(settings.SnowCoverageThreshold, 0.0f, 0.40f);
+	settings.SnowCoverageFeather = std::clamp(settings.SnowCoverageFeather, 0.02f, 0.50f);
+	settings.MudMaximumDepth = std::clamp(settings.MudMaximumDepth, 2.0f, 30.0f);
+	settings.GroundNormalStrength = std::clamp(settings.GroundNormalStrength, 0.0f, 2.5f);
+	settings.SnowCompactionDarkening = std::clamp(settings.SnowCompactionDarkening, 0.0f, 0.65f);
+	settings.MudDarkening = std::clamp(settings.MudDarkening, 0.0f, 1.50f);
+	settings.MudRoughness = std::clamp(settings.MudRoughness, 0.08f, 0.80f);
+	settings.MudWetnessThreshold = std::clamp(settings.MudWetnessThreshold, 0.0f, 0.75f);
+	settings.GroundResponseStrength = std::clamp(settings.GroundResponseStrength, 0.0f, 3.0f);
+	settings.TrackRecoveryRate = std::clamp(settings.TrackRecoveryRate, 0.05f, 2.0f);
+	settings.TrackHoldSeconds = std::clamp(settings.TrackHoldSeconds, 0.0f, 30.0f);
+	settings.ObjectInteractionRadius = std::clamp(settings.ObjectInteractionRadius, 384.0f, 1800.0f);
+	settings.ObjectScanInterval = std::clamp(settings.ObjectScanInterval, 0.04f, 0.25f);
+	settings.ReceiverContactTolerance = std::clamp(settings.ReceiverContactTolerance, 2.0f, 24.0f);
+	settings.ReceiverBlockerClearance = std::clamp(settings.ReceiverBlockerClearance, 2.0f, 12.0f);
+	settings.FireMeltUnits = std::clamp(settings.FireMeltUnits, 0.0f, 24.0f);
+	settings.FrostAddUnits = std::clamp(settings.FrostAddUnits, 0.0f, 24.0f);
+	settings.ElementalHeightLimit = std::clamp(settings.ElementalHeightLimit, 0.0f, 32.0f);
+	settings.ElementalRecoveryRate = std::clamp(settings.ElementalRecoveryRate, 0.0f, 0.25f);
+
+	g_groundResistanceSettings.SnowResistanceStrength = std::clamp(g_groundResistanceSettings.SnowResistanceStrength, 0.0f, 1.0f);
+	g_groundResistanceSettings.FluffySnowResistanceStrength = std::clamp(g_groundResistanceSettings.FluffySnowResistanceStrength, 0.0f, 0.60f);
+	g_groundResistanceSettings.MudResistanceStrength = std::clamp(g_groundResistanceSettings.MudResistanceStrength, 0.0f, 1.0f);
+	g_groundResistanceSettings.MudMinimumSpeedScale = std::clamp(g_groundResistanceSettings.MudMinimumSpeedScale, 0.30f, 0.95f);
+	g_groundResistanceSettings.MinimumSurfaceSpeedScale = std::clamp(g_groundResistanceSettings.MinimumSurfaceSpeedScale, 0.20f, 0.85f);
+	g_groundResistanceSettings.SnowResistanceStartDepth = std::clamp(g_groundResistanceSettings.SnowResistanceStartDepth, 0.0f, 32.0f);
+	g_groundResistanceSettings.SnowFullResistanceDepth = std::clamp(
+		g_groundResistanceSettings.SnowFullResistanceDepth,
+		std::max(g_groundResistanceSettings.SnowResistanceStartDepth + 1.0f, 24.0f),
+		72.0f);
+	g_groundResistanceSettings.ResistanceResponseRate = std::clamp(g_groundResistanceSettings.ResistanceResponseRate, 1.0f, 12.0f);
+	g_groundResistanceSettings.ResistanceUpdateInterval = std::clamp(g_groundResistanceSettings.ResistanceUpdateInterval, 0.025f, 0.50f);
 
 	// Runtime settings reloads may happen after DataLoaded; refresh compatibility
 	// IDs when the data handler is already available.
@@ -5687,6 +5879,10 @@ void GroundResponse::CaptureDirectionalShadowAtlas(bool a_captureFocusShadow)
 
 void GroundResponse::SetupResources()
 {
+	if (!globals::d3d::device || !globals::d3d::context) {
+		logger::error("[PIXL Ground Response] D3D11 device/context unavailable; deformation resources were not created");
+		return;
+	}
 	logger::debug("[GR-DIAG] SetupResources enter");
 	logger::debug("PIXL GroundResponse v3.0.13AD displaced-snow two-stage ACTIVE");
 	logger::debug("PIXL GroundResponse v3.1 animated-Havok/world-interactions ACTIVE");
@@ -5913,6 +6109,9 @@ void GroundResponse::Hooks::MainUpdate_QueueCollisions::thunk()
 	if (hookDiag)
 		logger::debug("[GR-DIAG] MainUpdate original returned; before QueueCollisions");
 
+	auto& seasonIntegration = SeasonIntegration::GetSingleton();
+	seasonIntegration.Poll();
+	globals::pipeline::groundResponse.ObserveSeasonContext();
 	globals::pipeline::groundResponse.QueueCollisions();
 
 	// This marker is deliberately after QueueCollisions has completely returned.
@@ -6080,6 +6279,11 @@ void GroundResponse::Hooks::BSGrassShader_SetupGeometry::thunk(RE::BSShader* Thi
 	// Rebind PIXL after vanilla setup, immediately before the actual draw.
 	auto* state = globals::state;
 	auto* context = globals::d3d::context;
+	if (!state || !context || !state->permutationCB || !state->sharedDataCB ||
+		!state->featureDataCB) {
+		return;
+	}
+
 	ID3D11Buffer* pixlBuffers[3] = {
 		state->permutationCB->CB(),
 		state->sharedDataCB->CB(),
@@ -6099,6 +6303,42 @@ void GroundResponse::Hooks::BSGrassShader_SetupGeometry::thunk(RE::BSShader* Thi
 	// foliage payload, so establish ownership here at the final draw boundary.
 	if (globals::pipeline::foliageDynamics.loaded)
 		globals::pipeline::foliageDynamics.BindGrassTuning();
+}
+
+void GroundResponse::ApplyCameraSurfaceClearance(RE::NiPoint3& a_translation) const
+{
+	if (!settings.EnableDeformableGround ||
+		!settings.EnableGeometricSnow ||
+		!settings.EnableSnowDeformation ||
+		!GroundFinitePoint(a_translation)) {
+		return;
+	}
+
+	GroundSurfaceProbe probe{};
+	if (!GroundProbeSurface(a_translation, *this, probe) ||
+		!probe.snow || probe.snowActivation <= 1.0e-4f) {
+		return;
+	}
+
+	// Skyrim's Havok terrain remains at landHeight while PIXL raises only the
+	// rendered snow shell.  Correct only the narrow region between those two
+	// surfaces; fail closed for underground/teleport states and leave free/photo
+	// cameras untouched because this is called solely from ThirdPersonState.
+	const float clearanceHeight = probe.surfaceTop + 2.0f;
+	const float correction = clearanceHeight - a_translation.z;
+	if (correction > 0.0f &&
+		correction <= std::max(probe.pristineDepth + 12.0f, 20.0f) &&
+		a_translation.z >= probe.landHeight - 8.0f) {
+		a_translation.z = clearanceHeight;
+	}
+}
+
+void GroundResponse::Hooks::ThirdPersonState_GetTranslation::thunk(
+	RE::ThirdPersonState* a_this,
+	RE::NiPoint3& a_translation)
+{
+	func(a_this, a_translation);
+	globals::pipeline::groundResponse.ApplyCameraSurfaceClearance(a_translation);
 }
 
 void GroundResponse::ClearShaderCache()
@@ -7095,7 +7335,7 @@ void GroundResponse::FinishTerrainPass()
 
 void GroundResponse::BindDefaultRuntimeData()
 {
-	if (!perFrame)
+	if (!perFrame || !globals::d3d::context)
 		return;
 
 	currentPerFrame.TerrainSnow1to4 = {};
@@ -7135,6 +7375,9 @@ void GroundResponse::BindDefaultRuntimeData()
 void GroundResponse::UpdateCollisionTexture()
 {
 	auto context = globals::d3d::context;
+	if (!context || !collisionTexture || !collisionBoundingBoxes || !collisionInstances ||
+		!perFrame || !*globals::game::perFrame.get() || !globals::profiler)
+		return;
 	// The field remains bound to terrain/grass between passes. Explicitly release
 	// both read bindings before exposing the same resource as a compute UAV.
 	ID3D11ShaderResourceView* nullInteractionSRV = nullptr;
@@ -7203,7 +7446,7 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 			queuedSurfaceStampBoxes.size(),
 			queuedSurfaceStamps.size());
 
-	if (!surfaceDeformationTexture ||
+	if (!context || !globals::profiler || !surfaceDeformationTexture ||
 		!surfaceDisplacementTexture ||
 		!surfaceElementalTexture ||
 		!surfacePerFrame) {
@@ -7221,6 +7464,27 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 		nullptr, nullptr, nullptr
 	};
 	context->DSSetShaderResources(101, 3, nullSurfaceDSSRVs);
+
+	const std::uint32_t pendingSeasonGeneration =
+		pendingSeasonHistoryGeneration.load(std::memory_order_acquire);
+	if (pendingSeasonGeneration != 0 &&
+		pendingSeasonGeneration != appliedSeasonHistoryGeneration) {
+		const float clearSeasonHistory[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		context->ClearUnorderedAccessViewFloat(
+			surfaceDeformationTexture->uav.get(),
+			clearSeasonHistory);
+		context->ClearUnorderedAccessViewFloat(
+			surfaceDisplacementTexture->uav.get(),
+			clearSeasonHistory);
+		context->ClearUnorderedAccessViewFloat(
+			surfaceElementalTexture->uav.get(),
+			clearSeasonHistory);
+		appliedSeasonHistoryGeneration = pendingSeasonGeneration;
+		surfaceElementalClearedWhileDisabled = true;
+		logger::info(
+			"[PIXL][GroundResponse] Cleared incompatible snow/mud deformation history for season generation {}.",
+			pendingSeasonGeneration);
+	}
 
 	if (!settings.EnableDeformableGround ||
 		(!settings.EnableSnowDeformation && !settings.EnableMudDeformation)) {

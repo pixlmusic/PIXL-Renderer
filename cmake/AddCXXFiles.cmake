@@ -45,10 +45,10 @@ function(add_cxx_files TARGET)
 	file(GLOB_RECURSE HLSL_FILES
 		LIST_DIRECTORIES false
 		CONFIGURE_DEPENDS
-		"pipeline/**/Kernels/**/*.hlsl"
-		"pipeline/**/Kernels/**/*.hlsli"
-		"distribution/Shaders/**/*.hlsl"
-		"distribution/Shaders/**/*.hlsli"
+		"pipeline/*/Kernels/*.hlsl"
+		"pipeline/*/Kernels/*.hlsli"
+		"distribution/Shaders/*.hlsl"
+		"distribution/Shaders/*.hlsli"
 	)
 
 	set(HLSL_FILES ${HLSL_FILES} PARENT_SCOPE)

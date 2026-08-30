@@ -462,6 +462,7 @@
                          "submergedBlur":  0.5600000023841858,
                          "submergedRefraction":  1.0,
                          "submergedTransitionSpeed":  3.059999942779541,
+                         "enableSkyrimDepthOfField":  true,
                          "enableEnhancedDepthOfField":  false,
                          "enableHDR":  false,
                          "enablePhysicalCamera":  true,
@@ -920,7 +921,14 @@
                         "AutomaticRoomSizing":  true,
 						"UseExactGlassMasks":  true,
 						"InteriorContrast":  1.0,
-						"InteriorEmission":  1.0
+						"InteriorEmission":  1.0,
+						"EnvironmentReflectionStrength":  0.42,
+						"InteriorLightingResponse":  0.34,
+						"WeatherGlassResponse":  0.36,
+						"SunGlintStrength":  0.24,
+						"DirectionalRevealStrength":  0.22,
+						"RoomVariationStrength":  0.12,
+						"CloseLayerFeather":  0.65
                     },
     "ImageReconstruction":  {
                                 "forceLatestDLSSModelOnLegacyRTX":  false,

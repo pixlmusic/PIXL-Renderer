@@ -11,6 +11,7 @@
 #include "Modules/CameraSuite.h"
 #include "Modules/InteriorDaylight.h"
 #include "Modules/GroundResponse.h"
+#include "Modules/ActorSurfaceEffects.h"
 #include "Modules/DialogueFocus.h"
 #include "Modules/PulseProfiler.h"
 #include "Modules/SkinOptics.h"
@@ -284,6 +285,11 @@ void State::Setup()
 	CheckTypedUAVLoadSupport();
 
 	RenderModule::ForEachLoadedModule("SetupResources", [](RenderModule* feature) { feature->SetupResources(); });
+	// ActorSurfaceEffects extends DialogueFocus's character-only b13 ABI. Install
+	// its hook last so contaminated actors replace the legacy prefix payload only
+	// after every earlier BSLightingShader setup hook has completed.
+	if (globals::pipeline::actorSurfaceEffects.loaded)
+		globals::pipeline::actorSurfaceEffects.InstallLateHooks();
 	globals::deferred->SetupResources();
 
 	// Load per-weather settings after features are setup
@@ -349,7 +355,7 @@ void State::Load(ConfigMode a_configMode, bool a_allowReload)
 	logger::info("Loading default settings from: {}", defaultConfigFilePath);
 	if (!tryLoadConfig(defaultConfigFilePath)) {
 		logger::info("No default config ({}), generating new one", defaultConfigFilePath);
-		std::fill(enabledClasses, enabledClasses + magic_enum::enum_integer(RE::BSShader::Type::Total) - 1, true);
+		std::fill(std::begin(enabledClasses), std::end(enabledClasses), true);
 		Save(ConfigMode::DEFAULT);
 		// Attempt to load the newly created config
 		if (!tryLoadConfig(defaultConfigFilePath)) {
@@ -662,19 +668,23 @@ void State::LoadFromJson(nlohmann::json& settings)
 
 void State::Save(ConfigMode a_configMode)
 {
-	std::string configPath = GetConfigPath(a_configMode);
-	std::ofstream o{ configPath };
+	const std::filesystem::path configPath = GetConfigPath(a_configMode);
 
 	try {
-		std::filesystem::create_directories(Util::PathHelpers::GetSettingsUserPath().parent_path());
+		// Config modes can use different filenames, but they all need their own
+		// resolved parent created before the stream is opened. Opening first made a
+		// clean installation fail to create its initial settings file.
+		std::filesystem::create_directories(configPath.parent_path());
 	} catch (const std::filesystem::filesystem_error& e) {
-		logger::warn("Error creating directory during Save ({}) : {}\n", Util::PathHelpers::GetPluginPath().string(), e.what());
+		logger::warn("Error creating settings directory during Save ({}): {}", configPath.parent_path().string(), e.what());
 		return;
 	}
 
+	std::ofstream o{ configPath, std::ios::out | std::ios::trunc };
+
 	// Check if the file opened successfully
 	if (!o.is_open()) {
-		logger::warn("Failed to open config file for saving: {}", configPath);
+		logger::warn("Failed to open config file for saving: {}", configPath.string());
 		return;  // Exit early if file cannot be opened
 	}
 
@@ -683,9 +693,14 @@ void State::Save(ConfigMode a_configMode)
 
 	try {
 		o << settings.dump(1);
-		logger::info("Saving settings to {}", configPath);
+		o.flush();
+		if (!o.good()) {
+			logger::warn("Failed to flush settings file: {}", configPath.string());
+			return;
+		}
+		logger::info("Saving settings to {}", configPath.string());
 	} catch (const std::exception& e) {
-		logger::warn("Failed to write settings to file: {}. Error: {}", configPath, e.what());
+		logger::warn("Failed to write settings to file: {}. Error: {}", configPath.string(), e.what());
 	}
 }
 
@@ -750,8 +765,8 @@ std::vector<std::pair<std::string, std::string>>* State::GetDefines()
 
 bool State::ShaderEnabled(const RE::BSShader::Type a_type)
 {
-	auto index = magic_enum::enum_integer(a_type) + 1;
-	if (index < sizeof(enabledClasses)) {
+	const auto index = magic_enum::enum_integer(a_type) - 1;
+	if (index >= 0 && static_cast<size_t>(index) < std::size(enabledClasses)) {
 		return enabledClasses[index];
 	}
 	return false;

@@ -21,6 +21,17 @@ private:
 	static constexpr std::string_view MOD_ID = "156952";
 
 public:
+	enum class FrameGenerationState : std::uint8_t
+	{
+		Off,
+		Active,
+		TemporarilySuspended,
+		Starting,
+		RestartRequired,
+		Unavailable,
+		RuntimeFault
+	};
+
 	// RenderModule interface
 	virtual inline std::string GetName() override { return "ImageReconstruction"; }
 	virtual std::string GetDisplayName() override { return T("feature.image_reconstruction.name", "Image Reconstruction"); }
@@ -62,7 +73,7 @@ public:
 		float sharpnessFSR = 0.0f;
 		bool sharpnessEnabledDLSS = false;
 		float sharpnessDLSS = 0.0f;
-		uint presetDLSS = 0;  // 0=Default, 1=J, 2=K, 3=L, 4=M
+		uint presetDLSS = 0;  // 0=Default, 1=J, 2=K, 3=L, 4=M, 5=F
 		bool forceLatestDLSSModelOnLegacyRTX = false;
 		bool reflexLowLatencyMode = false;
 		bool reflexLowLatencyBoost = false;
@@ -104,6 +115,8 @@ public:
 	bool IsFrameGenerationDx12PathActive() const;
 	bool IsFrameGenerationActive() const;
 	bool ShouldUseFrameGenerationThisFrame() const;
+	FrameGenerationState GetFrameGenerationState() const;
+	bool IsFrameGenerationTemporarilySuspended() const;
 	float GetFrameGenerationFrameTime() const;
 	bool IsUpscalingActive() const;
 
@@ -170,6 +183,10 @@ public:
 	Texture2D* reactiveMaskTexture = nullptr;
 	Texture2D* transparencyCompositionMaskTexture = nullptr;
 	Texture2D* motionVectorCopyTexture = nullptr;
+	// FidelityFX's DX11 backend cannot infer sampled depth from Skyrim's
+	// R24G8_TYPELESS resource. Encode raw device depth into a typed R32_FLOAT
+	// texture so FSR receives the format and values it expects.
+	Texture2D* fsrDepthTexture = nullptr;
 	Texture2D* sharpenerTexture = nullptr;
 
 	virtual void ClearShaderCache() override;
@@ -190,11 +207,14 @@ public:
 
 	bool previousUpscalingWasActive = false;
 	bool depthUpscaleUseWideKernel = false;
+	float previousReconstructionFov = 0.0f;
+	bool hasPreviousReconstructionFov = false;
 
 	/**
-	 * Set by MenuOpenCloseEventHandler when LoadingMenu closes (cell/worldspace transitions,
-	 * initial load). Consumed at the start of Upscale() to force a one-frame DLSS feature
-	 * rebuild.
+	 * Set when loading/cell transitions or camera discontinuities invalidate temporal
+	 * reconstruction. Consumed by the active DLSS/FSR backend on its next dispatch.
+	 * The historical member name is retained because benchmark/runtime helpers already
+	 * use it, but the request applies to either reconstruction backend.
 	 */
 	std::atomic<bool> pendingDLSSReset{ false };
 

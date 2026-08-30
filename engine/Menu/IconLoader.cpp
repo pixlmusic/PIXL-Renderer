@@ -16,8 +16,22 @@ namespace Util
 {
 	bool LoadTextureFromFile(ID3D11Device* device, const char* filename, ID3D11ShaderResourceView** out_srv, ImVec2& out_size, bool loadAsTintableMask)
 	{
+		if (!device || !filename || filename[0] == '\0' || !out_srv) {
+			return false;
+		}
+		*out_srv = nullptr;
+
 		int image_width = 0;
 		int image_height = 0;
+		int image_components = 0;
+		constexpr int kMaxInterfaceTextureDimension = 4096;
+		if (!stbi_info(filename, &image_width, &image_height, &image_components) ||
+			image_width <= 0 || image_height <= 0 ||
+			image_width > kMaxInterfaceTextureDimension || image_height > kMaxInterfaceTextureDimension) {
+			logger::warn("Rejected invalid or oversized interface texture: {}", filename);
+			return false;
+		}
+
 		unsigned char* image_data = stbi_load(filename, &image_width, &image_height, nullptr, 4);
 		if (image_data == nullptr) {
 			return false;
@@ -48,8 +62,8 @@ namespace Util
 		desc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
 
 		ID3D11Texture2D* pTexture = nullptr;
-		device->CreateTexture2D(&desc, nullptr, &pTexture);
-		if (!pTexture) {
+		HRESULT hr = device->CreateTexture2D(&desc, nullptr, &pTexture);
+		if (FAILED(hr) || !pTexture) {
 			stbi_image_free(image_data);
 			return false;
 		}
@@ -57,9 +71,12 @@ namespace Util
 
 		ID3D11DeviceContext* context = nullptr;
 		device->GetImmediateContext(&context);
-		if (context) {
-			context->UpdateSubresource(pTexture, 0, nullptr, image_data, desc.Width * 4, 0);
+		if (!context) {
+			pTexture->Release();
+			stbi_image_free(image_data);
+			return false;
 		}
+		context->UpdateSubresource(pTexture, 0, nullptr, image_data, desc.Width * 4, 0);
 
 		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
 		srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -67,7 +84,7 @@ namespace Util
 		srvDesc.Texture2D.MipLevels = static_cast<UINT>(-1);
 		srvDesc.Texture2D.MostDetailedMip = 0;
 
-		HRESULT hr = device->CreateShaderResourceView(pTexture, &srvDesc, out_srv);
+		hr = device->CreateShaderResourceView(pTexture, &srvDesc, out_srv);
 		if (FAILED(hr)) {
 			pTexture->Release();
 			stbi_image_free(image_data);
@@ -77,10 +94,8 @@ namespace Util
 		}
 		Util::SetResourceName(*out_srv, "IconLoader::%s SRV", filename);
 
-		if (context) {
-			context->GenerateMips(*out_srv);
-			context->Release();
-		}
+		context->GenerateMips(*out_srv);
+		context->Release();
 
 		pTexture->Release();
 		stbi_image_free(image_data);
@@ -114,7 +129,12 @@ namespace Util::IconLoader
 			return;
 		}
 
-		std::filesystem::path themeIconsPath = Util::PathHelpers::GetThemesPath() / selectedTheme;
+		const auto safeTheme = Util::FileHelpers::SanitizeFileName(selectedTheme);
+		if (safeTheme.empty()) {
+			logger::warn("LoadThemeSpecificIcons: Ignoring invalid theme name");
+			return;
+		}
+		std::filesystem::path themeIconsPath = Util::PathHelpers::GetThemesPath() / safeTheme;
 		if (!std::filesystem::exists(themeIconsPath) || !std::filesystem::is_directory(themeIconsPath)) {
 			logger::debug("LoadThemeSpecificIcons: Theme folder does not exist: {}", themeIconsPath.string());
 			return;

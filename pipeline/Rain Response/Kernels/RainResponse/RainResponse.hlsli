@@ -9,6 +9,16 @@
 namespace RainResponse
 {
 	Texture2D<float4> TexPrecipOcclusion : register(t70);
+	float3 SafeNormalizeRain(float3 value, float3 fallback)
+	{
+		float lengthSq = dot(value, value);
+		return lengthSq > 1e-8f ? value * rsqrt(lengthSq) : fallback;
+	}
+	float2 SafeNormalizeRain(float2 value, float2 fallback)
+	{
+		float lengthSq = dot(value, value);
+		return lengthSq > 1e-8f ? value * rsqrt(lengthSq) : fallback;
+	}
 
 	// https://github.com/BelmuTM/Noble/blob/master/LICENSE.txt
 
@@ -36,7 +46,7 @@ namespace RainResponse
 
 		// Precompute constants
 		float uintToFloat = rcp(4294967295.0);
-		float rippleBreadthRcp = rcp(SharedData::rainResponseSettings.RippleBreadth);
+		float rippleBreadthRcp = rcp(max(SharedData::rainResponseSettings.RippleBreadth, 1e-4f));
 		float intervalRcp = SharedData::rainResponseSettings.RaindropIntervalRcp;
 		float lifetimeRcp = SharedData::rainResponseSettings.RippleLifetimeRcp;
 
@@ -126,9 +136,9 @@ namespace RainResponse
 								float deriv = (bandLerp < 0.5 ? SmoothstepDeriv(bandLerp * 2.0) : -SmoothstepDeriv(2.0 - bandLerp * 2.0)) *
 								              lerp(rippleStrength, 0.0, rippleT * rippleT);
 
-								float3 grad = float3(normalize(vec2Centre), -deriv);
+								float3 grad = float3(SafeNormalizeRain(vec2Centre, float2(1.0f, 0.0f)), -deriv);
 								float3 bitangent = float3(-grad.y, grad.x, 0.0);
-								float3 normal = normalize(cross(grad, bitangent));
+								float3 normal = SafeNormalizeRain(cross(grad, bitangent), float3(0.0f, 0.0f, 1.0f));
 
 								rippleNormal = ReorientNormal(normal, rippleNormal);
 							}
@@ -145,7 +155,7 @@ namespace RainResponse
 	{
 	#if USE_PIXL_WETNESS_RESPONSE
 		roughness = BRDF::FilterRoughnessByNormalVariance(roughness, N, 0.75f, 0.18f);
-		float3 H = normalize(V + L);
+		float3 H = SafeNormalizeRain(V + L, N);
 		float NdotL = saturate(dot(N, L));
 		float NdotV = saturate(dot(N, V));
 		float NdotH = saturate(dot(N, H));

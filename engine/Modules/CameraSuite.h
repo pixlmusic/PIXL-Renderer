@@ -106,9 +106,10 @@ public:
 		bool enableElementalDamageLens = true;
 		float elementalLensStrength = 0.45f;
 
-		// PIXL-owned depth-aware bokeh reconstruction. Skyrim's image-space pass is
-		// retained only as the integration point that supplies sharp colour/depth;
-		// its legacy blurred image is bypassed whenever this feature is active.
+		// Release path: let Skyrim own depth of field and expose only its native
+		// runtime enable. The retired PIXL fields remain serialized below solely so
+		// older UserGraphics files keep loading without a schema break.
+		bool enableSkyrimDepthOfField = true;
 		bool enableEnhancedDepthOfField = false;
 		bool dofAutoFocus = true;
 		float dofStrength = 0.24f;
@@ -191,7 +192,7 @@ public:
 	void UpdateHDRData() const;
 	/** Applies PIXL's user-facing bloom policy to the current image-space state. */
 	void ApplyPlayerPostProcessing() const;
-	/** @brief Hard-disables both PIXL and native Skyrim DOF while Director owns the camera. */
+	/** @brief Suspends PIXL depth-dependent camera effects while Director owns the camera. */
 	void SetPhotoModeDofIsolation(bool enabled);
 	/** @brief Adds a confirmed player-hit elemental optical pulse (0..1). */
 	void TriggerElementalLens(float fireAmount, float frostAmount);
@@ -437,14 +438,10 @@ public:
 	mutable float fireLensState = 0.0f;
 	mutable float frostImpactLensState = 0.0f;
 
-	// Director photo mode deliberately captures a sharp scene and applies its
-	// own offline lens model afterwards. This gate prevents both the PIXL
-	// realtime enhancement and Skyrim's native DOF from entering capture samples.
+	// Director keeps PIXL's optional depth-dependent camera effects isolated from
+	// its clean capture path. Skyrim's native DOF remains governed by the public
+	// enableSkyrimDepthOfField setting.
 	bool photoModeDofIsolation = false;
-	bool photoModeNativeDofSnapshotValid = false;
-	float photoModeNativeDofStrength = 0.0f;
-	float photoModeNativeDofDistance = 0.0f;
-	float photoModeNativeDofRange = 0.0f;
 
 	Texture2D* hdrTexture = nullptr;
 	Texture2D* outputTexture = nullptr;

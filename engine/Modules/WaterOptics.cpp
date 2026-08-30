@@ -86,6 +86,19 @@ void WaterOptics::LoadSettings(json& o_json)
 		settings = o_json;
 	else
 		settings = {};
+
+	settings.EnableEnhancedCaustics = settings.EnableEnhancedCaustics ? 1u : 0u;
+	settings.CausticsStrength = std::clamp(settings.CausticsStrength, 0.0f, 2.0f);
+	settings.CausticsDispersion = std::clamp(settings.CausticsDispersion, 0.0f, 1.5f);
+	settings.CausticsFocus = std::clamp(settings.CausticsFocus, 0.25f, 2.0f);
+	settings.EnableEnhancedSSR = settings.EnableEnhancedSSR ? 1u : 0u;
+	settings.SSRThicknessScale = std::clamp(settings.SSRThicknessScale, 0.25f, 3.0f);
+	settings.SSRDistanceScale = std::clamp(settings.SSRDistanceScale, 0.25f, 1.5f);
+	settings.SSREdgeFade = std::clamp(settings.SSREdgeFade, 0.25f, 2.0f);
+	settings.SurfaceSSRStrength = std::clamp(settings.SurfaceSSRStrength, 0.0f, 1.5f);
+	settings.CausticsVisibility = std::clamp(settings.CausticsVisibility, 0.0f, 2.5f);
+	settings.WaterTintStrength = std::clamp(settings.WaterTintStrength, 0.0f, 1.0f);
+	settings.ReflectionBrightness = std::clamp(settings.ReflectionBrightness, 0.5f, 1.15f);
 }
 void WaterOptics::SaveSettings(json& o_json) { o_json = settings; }
 void WaterOptics::RestoreDefaultSettings() { settings = {}; }
@@ -94,6 +107,10 @@ void WaterOptics::SetupResources()
 {
 	auto device = globals::d3d::device;
 	auto context = globals::d3d::context;
+	if (!device || !context) {
+		logger::error("[PIXL Water Optics] D3D11 device/context unavailable; caustics will remain disabled");
+		return;
+	}
 
 	constexpr auto causticsPath = L"Data\\Shaders\\WaterOptics\\watercaustics.dds";
 	const auto result = DirectX::CreateDDSTextureFromFile(device, context, causticsPath, nullptr, causticsView.put());
@@ -107,6 +124,8 @@ void WaterOptics::SetupResources()
 void WaterOptics::Prepass()
 {
 	auto context = globals::d3d::context;
+	if (!context)
+		return;
 	auto srv = causticsView.get();
 	context->PSSetShaderResources(65, 1, &srv);
 }

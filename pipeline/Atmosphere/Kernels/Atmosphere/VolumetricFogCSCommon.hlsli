@@ -43,12 +43,15 @@ namespace Atmosphere
 	{
 		float2 volumeUV = (float2(coord.xy) + cellOffset.xy) * VolumetricFogInvGridSize.xy;
 
-		viewDepth = ComputeVolumetricSliceDepth(max(float(coord.z) + cellOffset.z, 0.0f));
+		viewDepth = max(ComputeVolumetricSliceDepth(max(float(coord.z) + cellOffset.z, 0.0f)), 1e-4f);
 
 		float2 ndc = volumeUV * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f);
-		float deviceZ = (SharedData::CameraData.x - SharedData::CameraData.w / viewDepth) / SharedData::CameraData.z;
+		float cameraZ = SharedData::CameraData.z;
+		float safeCameraZ = abs(cameraZ) > 1e-8f ? cameraZ : (cameraZ < 0.0f ? -1e-8f : 1e-8f);
+		float deviceZ = (SharedData::CameraData.x - SharedData::CameraData.w / viewDepth) / safeCameraZ;
 		float4 worldPosition = mul(VolumetricFogClipToWorld, float4(ndc, deviceZ, 1.0f));
-		return worldPosition.xyz / worldPosition.w;
+		float safeW = abs(worldPosition.w) > 1e-8f ? worldPosition.w : (worldPosition.w < 0.0f ? -1e-8f : 1e-8f);
+		return worldPosition.xyz / safeW;
 	}
 }
 

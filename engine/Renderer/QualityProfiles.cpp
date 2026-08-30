@@ -8,6 +8,7 @@
 #include "Modules/SkyVeil.h"
 #include "Modules/MaterialLayers.h"
 #include "Modules/GroundResponse.h"
+#include "Modules/ActorSurfaceEffects.h"
 #include "Modules/FoliageDynamics.h"
 #include "Modules/CameraSuite.h"
 #include "Modules/StrandShading.h"
@@ -270,6 +271,7 @@ namespace PIXLRenderer::QualityProfiles
 			hair.Enabled = true;
 			hair.HairMode = quality >= High ? 1u : 0u;
 			hair.EnableSelfShadow = quality >= Medium;
+			globals::pipeline::actorSurfaceEffects.ApplyQualityTier(static_cast<std::uint32_t>(quality));
 		}
 
 		void ApplyCamera(int quality)
@@ -409,7 +411,9 @@ namespace PIXLRenderer::QualityProfiles
 				    sss.BurleySamples == samples[quality] &&
 				    hair.Enabled &&
 				    hair.HairMode == (quality >= High ? 1u : 0u) &&
-				    (hair.EnableSelfShadow != 0) == (quality >= Medium)) {
+				    (hair.EnableSelfShadow != 0) == (quality >= Medium) &&
+				    (!globals::pipeline::actorSurfaceEffects.loaded ||
+				     globals::pipeline::actorSurfaceEffects.settings.EffectQuality == static_cast<std::uint32_t>(quality))) {
 					return quality;
 				}
 			}

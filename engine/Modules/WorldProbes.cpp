@@ -150,6 +150,9 @@ void WorldProbes::PostPostLoad()
 
 RE::BSEventNotifyControl MenuOpenCloseEventHandler::ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>*)
 {
+	if (!a_event)
+		return RE::BSEventNotifyControl::kContinue;
+
 	// When entering a new cell, reset the capture
 	if (a_event->menuName == RE::LoadingMenu::MENU_NAME) {
 		if (!a_event->opening) {
@@ -171,7 +174,13 @@ bool MenuOpenCloseEventHandler::Register()
 		return false;
 	}
 
-	ui->GetEventSource<RE::MenuOpenCloseEvent>()->AddEventSink(&singleton);
+	auto* eventSource = ui->GetEventSource<RE::MenuOpenCloseEvent>();
+	if (!eventSource) {
+		logger::error("[WorldProbes] Menu event source not found");
+		return false;
+	}
+
+	eventSource->AddEventSink(&singleton);
 
 	logger::info("Registered {}", typeid(singleton).name());
 

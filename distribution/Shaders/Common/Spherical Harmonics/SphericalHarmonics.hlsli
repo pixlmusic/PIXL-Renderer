@@ -206,10 +206,11 @@ namespace SphericalHarmonics
 	{
 		// https://www.gdcvault.com/play/1026701/Fast-Denoising-With-Self-Stabilizing
 		// get dominant ggx reflection direction
+		roughness = saturate(roughness);
 		float f = (1 - roughness) * (sqrt(1 - roughness) + roughness);
 		float3 R = reflect(-V, N);
 		float3 D = lerp(N, R, f);
-		float3 dominantDir = normalize(D);
+		float3 dominantDir = D * rsqrt(max(dot(D, D), 1e-8f));
 
 		// lobe half angle
 		// credit: Olivier Therrien
