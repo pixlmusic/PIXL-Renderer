@@ -203,6 +203,9 @@ foreach ($relativePath in @(
     $null = $identityAllowPaths.Add((Join-Path $repo $relativePath))
 }
 $textFiles = foreach ($root in $scanRoots) {
+    # Public source archives deliberately omit private instruction/ledger files.
+    # Treat those optional scan roots as absent rather than failing the audit.
+    if (-not (Test-Path -LiteralPath $root)) { continue }
     if (Test-Path -LiteralPath $root -PathType Leaf) { Get-Item -LiteralPath $root; continue }
     Get-ChildItem -LiteralPath $root -Recurse -File | Where-Object {
         $_.Extension -in @('.cpp','.h','.hlsl','.hlsli','.ini','.json','.ps1','.txt','.md') -and
