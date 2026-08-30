@@ -1,6 +1,6 @@
 # PIXL Renderer GUI and Control Audit
 
-Date: 2026-08-28  
+Date: 2026-08-28
 Scope: the public PIXL Renderer menu, the advanced tuner, quality profiles, shader/runtime controls, and every active final-build renderer module.
 
 ## Method and status rules
