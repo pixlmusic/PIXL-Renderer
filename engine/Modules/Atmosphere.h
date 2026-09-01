@@ -152,5 +152,11 @@ private:
 	bool lastHideSky = false;
 	bool lastInMapMenu = false;
 	bool hasSceneClassHistory = false;
+	float lastVerticalFov = 0.0f;
+	std::uintptr_t lastExteriorWorldspaceIdentity = 0;
+	uint32_t lastLightingInputFlags = 0;
+	bool hasProjectionHistory = false;
+	bool hasWorldspaceHistory = false;
+	bool hasLightingInputHistory = false;
 	uint32_t lastPrepassFrame = UINT32_MAX;
 };

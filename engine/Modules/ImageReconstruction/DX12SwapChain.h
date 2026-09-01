@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Windows.Foundation.h>
+#include <atomic>
 #include <memory>
 #include <stdio.h>
 #include <winrt/base.h>
@@ -73,10 +74,32 @@ public:
 
 	std::unique_ptr<WrappedResource> swapChainBufferWrapped;
 	std::unique_ptr<WrappedResource> uiBufferWrapped;
+	// Optional DLSS Neural Rendering output. It is allocated with the sidecar
+	// but remains untouched unless the capability-gated experimental path runs.
+	// Double-buffered so D3D11 photo capture can copy the last completed neural
+	// frame while D3D12 writes the next one. A single shared output races at the
+	// nested Present boundary used by Skyrim's D3D11 swap-chain hook.
+	std::unique_ptr<WrappedResource> neuralRenderingOutputWrapped[2];
 
 	// D3D12 interop resources for frame generation
 	std::unique_ptr<WrappedResource> depthBufferShared12;
 	std::unique_ptr<WrappedResource> motionVectorBufferShared12;
+	// Neural Rendering uses post-DLSS encoded/dilated guides. Keep them separate
+	// from FSR frame generation's raw pre-upscale guides when both features run.
+	std::unique_ptr<WrappedResource> neuralDepthBufferShared12;
+	std::unique_ptr<WrappedResource> neuralMotionVectorBufferShared12;
+
+	// Active render subrect written into the full-size shared guide textures.
+	// Neural Rendering consumes only this region; frame generation continues to
+	// use the existing full-resource contract.
+	UINT neuralGuideWidth = 0;
+	UINT neuralGuideHeight = 0;
+
+	// Published only after the D3D12 queue has completed a successful neural
+	// frame and the D3D11 fence wait has been queued. Consumers use the serial to
+	// reject stale frames during deterministic Photo Finish accumulation.
+	std::atomic_uint64_t completedNeuralFrameSerial{ 0 };
+	std::atomic_uint32_t completedNeuralOutputIndex{ UINT32_MAX };
 
 	winrt::com_ptr<ID3D11Device5> d3d11Device;
 	winrt::com_ptr<ID3D11DeviceContext4> d3d11Context;
@@ -92,7 +115,6 @@ public:
 	LARGE_INTEGER qpf{};
 
 	double refreshRate = 0;
-
 	std::unique_ptr<DXGISwapChainProxy> swapChainProxy;
 
 	// Returns the current frame time (in seconds) for accurate FPS calculation when frame generation is active
@@ -129,4 +151,8 @@ public:
 
 	// D3D12 interop resource management
 	void CreateSharedResources();
+
+	[[nodiscard]] ID3D11Texture2D* GetCompletedNeuralOutput() const;
+	[[nodiscard]] ID3D11Texture2D* GetProvisionedNeuralOutput() const;
+	[[nodiscard]] std::uint64_t GetCompletedNeuralFrameSerial() const;
 };

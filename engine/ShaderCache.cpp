@@ -10,6 +10,7 @@
 #include "State.h"
 
 #include "Modules/WorldProbes.h"
+#include "Modules/HairReconstruction.h"
 
 #include "Plugin.h"
 
@@ -148,8 +149,30 @@ namespace SIE
 					defines[lastIndex++] = { "GLINT", nullptr };
 				}
 			}
+			if ((descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::AutoFur)) != 0) {
+				defines[lastIndex++] = { "AUTO_FUR", nullptr };
+			}
+			if ((descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::AutoHair)) != 0) {
+				defines[lastIndex++] = { "AUTO_HAIR", nullptr };
+			}
+			if ((descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::HairCandidate)) != 0) {
+				defines[lastIndex++] = { "HAIR_CANDIDATE", nullptr };
+			}
+
+			const bool pixlHairDescriptor =
+				GetTechnique(descriptor) == static_cast<uint32_t>(ShaderCache::LightingShaderTechniques::Hair) ||
+				(descriptor & (static_cast<uint32_t>(ShaderCache::LightingShaderFlags::AutoHair) |
+					static_cast<uint32_t>(ShaderCache::LightingShaderFlags::HairCandidate))) != 0;
+			if (pixlHairDescriptor && globals::pipeline::hairReconstruction.loaded) {
+				defines[lastIndex++] = { "HAIR_RECONSTRUCTION", nullptr };
+			}
 
 			for (auto* feature : RenderModule::GetModuleList()) {
+				// Hair Reconstruction is descriptor-scoped above. Emitting its define on
+				// every Lighting permutation would invalidate the complete shader cache
+				// and make unrelated materials depend on an optional character feature.
+				if (feature == &globals::pipeline::hairReconstruction)
+					continue;
 				if (feature->loaded && feature->HasShaderDefine(RE::BSShader::Type::Lighting)) {
 					defines[lastIndex++] = { feature->GetShaderDefineName().data(), nullptr };
 				}

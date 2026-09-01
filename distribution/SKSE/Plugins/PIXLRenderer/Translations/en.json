@@ -1368,7 +1368,7 @@
     "menu.issues.uninstall_via_mod_manager":  "Completely uninstall the feature via your mod manager",
     "menu.issues.unknown_compilation_warning":  "This unknown feature may have modified core shader files and could be causing compilation failures. Unknown features should be removed if failures continue.",
     "menu.issues.unknown_delete_warning":  "This is an UNKNOWN feature. If it modified core shader files (outside of its own folder), deleting these files alone will NOT fix shader compilation issues.",
-    "menu.issues.unknown_features_desc":  "The following features are not recognized and we tried to disable automatically. They may be from development branches or newer CS versions. Since we cannot determine what files they may have modified, they should be removed as a precaution to prevent potential shader compilation failures.",
+    "menu.issues.unknown_features_desc":  "The following features are not recognized and we tried to disable automatically. They may be from development branches or newer PIXL Renderer versions. Since we cannot determine what files they may have modified, they should be removed as a precaution to prevent potential shader compilation failures.",
     "menu.issues.unknown_features_header":  "Unknown Features",
     "menu.issues.update_no_link_tooltip":  "This feature needs to be updated but no download link is available. Check the mod page manually.",
     "menu.issues.update_required":  "Update Required",

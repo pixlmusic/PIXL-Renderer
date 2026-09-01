@@ -6,6 +6,7 @@
 
 #include "Modules/InteriorDaylight.h"
 #include "Modules/ActorSurfaceEffects.h"
+#include "Modules/HairReconstruction.h"
 #include "Modules/MaterialLayers.h"
 #include "Hooks.h"
 #include "I18n/I18n.h"
@@ -341,6 +342,27 @@ void MaterialForge::DrawSettings()
 		}
 		if (settings.LegacyPhysicalDebugMode != 0) {
 			ImGui::TextDisabled("Lighting geometry only; particles, flames, sky, and UI may remain visible");
+		}
+		if (ImGui::TreeNodeEx("Physical Material Registry", ImGuiTreeNodeFlags_None)) {
+			const auto diagnostics = PhysicalMaterial::Registry::GetSingleton().GetDiagnostics();
+			ImGui::Text("Generation: %llu", static_cast<unsigned long long>(diagnostics.generation));
+			ImGui::Text("Materials: %zu  (legacy model %zu, metallic/roughness %zu)",
+				diagnostics.materialCount,
+				diagnostics.legacyMaterialCount,
+				diagnostics.metallicRoughnessMaterialCount);
+			ImGui::Text("Textures: %zu  (file %zu, runtime %zu)",
+				diagnostics.textureCount,
+				diagnostics.fileBackedTextureCount,
+				diagnostics.runtimeTextureCount);
+			ImGui::Text("Automatic fur descriptors: %zu", diagnostics.furMaterialCount);
+			if (diagnostics.invalidDescriptorCount == 0) {
+				ImGui::TextDisabled("Descriptor validation: OK");
+			} else {
+				ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f),
+					"Descriptor validation: %zu invalid", diagnostics.invalidDescriptorCount);
+			}
+			DrawTooltip("Developer-only registry health view. It inspects backend-neutral material metadata and does not alter rendering or compile shader permutations.");
+			ImGui::TreePop();
 		}
 		}
 		ImGui::TreePop();
@@ -1027,6 +1049,34 @@ struct BSLightingShaderProperty_GetRenderPasses
 		if (property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexLighting) && (property->material->GetFeature() == RE::BSShaderMaterial::Feature::kDefault || property->material->GetFeature() == RE::BSShaderMaterial::Feature::kMultiTexLandLODBlend)) {
 			isPbr = true;
 		}
+		const char* geometryName = geometry != nullptr ? geometry->name.c_str() : nullptr;
+		std::string geometryHierarchy;
+		for (auto* object = static_cast<RE::NiAVObject*>(geometry); object != nullptr && geometryHierarchy.size() < 512u; object = object->parent) {
+			const char* objectName = object->name.c_str();
+			if (objectName != nullptr && *objectName != '\0') {
+				if (!geometryHierarchy.empty())
+					geometryHierarchy.push_back('\\');
+				geometryHierarchy.append(objectName);
+			}
+		}
+		const float automaticFurConfidence =
+			!isPbr && property->material != nullptr
+				? PhysicalMaterial::ClassifyAutomaticFur(
+					  *static_cast<RE::BSLightingShaderMaterialBase*>(property->material),
+					  geometryName != nullptr ? std::string_view(geometryName) : std::string_view{})
+				: 0.0f;
+		float automaticHairConfidence = property->material != nullptr
+			? PhysicalMaterial::ClassifyAutomaticHair(
+				  *static_cast<RE::BSLightingShaderMaterialBase*>(property->material),
+				  geometryHierarchy)
+			: 0.0f;
+		const bool hairHasAlpha = geometry != nullptr &&
+			geometry->GetGeometryRuntimeData().alphaProperty != nullptr;
+		if (automaticHairConfidence > 0.0f && hairHasAlpha)
+			automaticHairConfidence = std::min(1.0f, automaticHairConfidence + 0.03f);
+		if (automaticHairConfidence > 0.0f &&
+			property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kBackLighting))
+			automaticHairConfidence = std::min(1.0f, automaticHairConfidence + 0.02f);
 
 		auto currentPass = renderPasses->head;
 		while (currentPass != nullptr) {
@@ -1035,7 +1085,33 @@ struct BSLightingShaderProperty_GetRenderPasses
 				auto lightingTechnique = currentPass->passEnum - LightingTechniqueStart;
 				auto lightingFlags = lightingTechnique & ~(~0u << 24);
 				auto lightingType = static_cast<SIE::ShaderCache::LightingShaderTechniques>((lightingTechnique >> 24) & 0x3F);
-				lightingFlags &= ~0b111000u;
+				// Bits 3..7 are PIXL-owned descriptor metadata. Rebuild them from
+				// authoritative material state so a recycled render pass cannot retain a
+				// stale fur/hair classification after an equipment or hairstyle change.
+				lightingFlags &= ~0b11111000u;
+				const bool automaticFurEligible =
+					automaticFurConfidence >= 0.80f &&
+					(lightingFlags & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Skinned)) != 0 &&
+					(lightingType == SIE::ShaderCache::LightingShaderTechniques::None ||
+					 lightingType == SIE::ShaderCache::LightingShaderTechniques::TreeAnim);
+				if (automaticFurEligible)
+					lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::AutoFur);
+
+				const bool nativeHair =
+					lightingType == SIE::ShaderCache::LightingShaderTechniques::Hair;
+				const bool automaticHairGeometryEligible =
+					hairHasAlpha &&
+					(lightingFlags & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Skinned)) != 0 &&
+					lightingType == SIE::ShaderCache::LightingShaderTechniques::None;
+				if (globals::pipeline::hairReconstruction.loaded) {
+					if (nativeHair ||
+						(automaticHairGeometryEligible && automaticHairConfidence >=
+							globals::pipeline::hairReconstruction.settings.DetectionThreshold)) {
+						lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::AutoHair);
+					} else if (automaticHairGeometryEligible && automaticHairConfidence >= 0.40f) {
+						lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::HairCandidate);
+					}
+				}
 				if (isPbr) {
 					lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::MaterialForge);
 					lightingFlags &= ~static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Specular);
@@ -1415,7 +1491,14 @@ struct BSLightingShader_GetPixelTechnique
 	{
 		uint32_t pixelTechnique = rawTechnique;
 
+		const uint32_t pixlHairFlags =
+			globals::pipeline::hairReconstruction.settings.Enabled != 0u
+			? pixelTechnique &
+				  (static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::AutoHair) |
+				   static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::HairCandidate))
+			: 0u;
 		pixelTechnique &= ~0b111000000u;
+		pixelTechnique |= pixlHairFlags;
 		// Vanilla tangent-normal skinned draws normally collapse onto the matching
 		// static pixel permutation because skinning itself is vertex-only. Actor
 		// Surface Effects needs that distinction in the pixel shader so equipped

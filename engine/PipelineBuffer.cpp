@@ -12,6 +12,7 @@
 #include "Modules/FoliageDynamics.h"
 #include "Modules/GroundResponse.h"
 #include "Modules/StrandShading.h"
+#include "Modules/HairReconstruction.h"
 #include "Modules/CameraSuite.h"
 #include "Modules/AmbientProbe.h"
 #include "Modules/DistanceBlend.h"
@@ -47,18 +48,6 @@ std::pair<unsigned char*, size_t> _GetPipelineBufferData(const Ts&... feat_datas
 	return std::make_pair(storage.data(), storage.size());
 }
 
-namespace
-{
-	// Retains the established shared-buffer offsets while the reserved post-process
-	// payload is inactive. All fields are zero, so compatibility reads
-	// are inert and every following PIXL block remains ABI-identical.
-	struct alignas(16) ReservedPostProcessData
-	{
-		std::array<std::uint32_t, 32> blocks{};
-	};
-	static_assert(sizeof(ReservedPostProcessData) == 128);
-}
-
 std::pair<unsigned char*, size_t> GetPipelineBufferData(bool a_inWorld)
 {
 	return _GetPipelineBufferData(
@@ -79,7 +68,9 @@ std::pair<unsigned char*, size_t> GetPipelineBufferData(bool a_inWorld)
 		globals::pipeline::ambientProbe.GetCommonBufferData(),
 		globals::pipeline::thinSurface.GetCommonBufferData(),
 		globals::pipeline::linearLightCore.GetCommonBufferData(),
-		ReservedPostProcessData{},
+		// Hair Reconstruction occupies the historical eight-register post-process
+		// reservation. Its 128-byte contract keeps all later offsets byte-identical.
+		globals::pipeline::hairReconstruction.GetCommonBufferData(),
 		globals::pipeline::terrainSeam.settings,
 		globals::pipeline::atmosphere.GetCommonBufferData(),
 		globals::pipeline::materialForge.settings,

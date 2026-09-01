@@ -10,6 +10,7 @@ struct GroundResponse;
 struct ActorSurfaceEffects;
 struct FoliageDynamics;
 struct StrandShading;
+struct HairReconstruction;
 struct HorizonBlend;
 struct AmbientProbe;
 struct RadiantGrid;
@@ -97,6 +98,7 @@ namespace globals
 		extern ActorSurfaceEffects actorSurfaceEffects;
 		extern FoliageDynamics foliageDynamics;
 		extern StrandShading strandShading;
+		extern HairReconstruction hairReconstruction;
 		extern HorizonBlend horizonBlend;
 		extern AmbientProbe ambientProbe;
 		extern RadiantGrid radiantGrid;

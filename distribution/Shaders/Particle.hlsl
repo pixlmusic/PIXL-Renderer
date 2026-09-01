@@ -611,6 +611,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #	if defined(RADIANT_GRID)
 	uint lightCount = 0;
+#		if defined(ENVCUBE) && !defined(RAIN) && defined(RAIN_RESPONSE)
+	float3 snowLocalLighting = 0.0f.xxx;
+#		endif
 	{
 		float3 viewPosition = FrameBuffer::WorldToView(positionWS.xyz);
 		float2 screenUV = FrameBuffer::ViewToUV(viewPosition);
@@ -638,18 +641,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 				float3 lightColor = light.color.xyz * intensityMultiplier;
 #		if defined(ENVCUBE) && !defined(RAIN) && defined(RAIN_RESPONSE)
-				// Snow crystals should catch local illumination, but Skyrim's close
-				// character/dialogue and carried-light response can be several times
-				// brighter than the surrounding scene. Compress only the snow-particle
-				// local-light term so flakes do not turn into emissive white blocks near
-				// actors; directional/ambient snow lighting remains unchanged.
-				float snowLocalLuma = max(
-					dot(max(lightColor, 0.0f), float3(0.2126f, 0.7152f, 0.0722f)),
-					0.0f);
-				lightColor *=
-					(0.28f / (1.0f + snowLocalLuma * 0.35f));
-#		endif
+				// Compress the complete local-light sum once below. Per-light
+				// compression allowed overlapping carried/character/incandescent
+				// sources to add back into emissive-white flakes around an NPC.
+				snowLocalLighting += max(lightColor, 0.0f);
+#		else
 				propertyColor += lightColor;
+#		endif
 
 #		if defined(ENVCUBE) && defined(RAIN) && defined(RAIN_RESPONSE)
 				float3 rainLocalL =
@@ -667,6 +665,21 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			}
 		}
 	}
+#		if defined(ENVCUBE) && !defined(RAIN) && defined(RAIN_RESPONSE)
+	{
+		float snowLocalLuma = max(
+			dot(snowLocalLighting, float3(0.2126f, 0.7152f, 0.0722f)),
+			0.0f);
+		// Preserve weak coloured illumination, with a single energy shoulder for
+		// every local source affecting this flake. Directional and ambient snow
+		// lighting remain untouched.
+		float snowLocalScale =
+			snowLocalLuma > 1.0e-5f
+				? (0.42f / (0.42f + snowLocalLuma))
+				: 1.0f;
+		propertyColor += snowLocalLighting * snowLocalScale;
+	}
+#		endif
 #	endif
 
 #	if defined(ENVCUBE) && defined(RAIN) && defined(RAIN_RESPONSE)

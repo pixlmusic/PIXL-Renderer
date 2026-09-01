@@ -35,7 +35,9 @@ RWTexture2D<float4> outRemappedBentVisibility : register(u6);
 void readHistory(
 	float curr_depth, float3 curr_pos, float3 curr_normal, int2 pixCoord, float bilinear_weight,
 	inout half prev_ao, inout half4 prev_y, inout half2 prev_co_cg, inout float accum_frames,
-	inout half4 prev_gi_specular, inout half4 prev_bent_visibility, inout float wsum)
+	inout half4 prev_gi_specular, inout float3 prev_bent_direction,
+	inout half2 prev_visibility_confidence, inout float bent_direction_wsum,
+	inout half2 strongest_bent_encoded, inout float strongest_bent_weight, inout float wsum)
 {
 	const float2 uv = (pixCoord + .5) * RCP_OUT_FRAME_DIM;
 	const float2 screen_pos = uv;
@@ -72,7 +74,15 @@ void readHistory(
 #	ifdef GI_SPECULAR
 		prev_gi_specular += srcPrevGISpecular[pixCoord] * bilinear_weight;
 #	endif
-		prev_bent_visibility += srcPrevBentVisibility[pixCoord] * bilinear_weight;
+		half4 packed_bent_visibility = srcPrevBentVisibility[pixCoord];
+		float bent_weight = bilinear_weight * lerp(0.20f, 1.0f, saturate((float)packed_bent_visibility.w));
+		prev_bent_direction += GBuffer::DecodeNormal(packed_bent_visibility.xy) * bent_weight;
+		prev_visibility_confidence += packed_bent_visibility.zw * bilinear_weight;
+		bent_direction_wsum += bent_weight;
+		if (bent_weight > strongest_bent_weight) {
+			strongest_bent_weight = bent_weight;
+			strongest_bent_encoded = packed_bent_visibility.xy;
+		}
 #endif
 		wsum += bilinear_weight;
 	}
@@ -94,7 +104,11 @@ void readHistory(
 	half4 prev_y = 0;
 	half2 prev_co_cg = 0;
 	half4 prev_gi_specular = 0;
-	half4 prev_bent_visibility = 0;
+	float3 prev_bent_direction = 0.0f;
+	half2 prev_visibility_confidence = 0.0h;
+	float bent_direction_wsum = 0.0f;
+	half2 strongest_bent_encoded = 0.0h;
+	float strongest_bent_weight = 0.0f;
 	float accum_frames = 0;
 	float wsum = 0;
 
@@ -123,16 +137,24 @@ void readHistory(
 
 		readHistory(curr_depth, curr_pos, curr_normal,
 			prev_px_lu, (1 - bilinear_weights.x) * (1 - bilinear_weights.y),
-			prev_ao, prev_y, prev_co_cg, accum_frames, prev_gi_specular, prev_bent_visibility, wsum);
+			prev_ao, prev_y, prev_co_cg, accum_frames, prev_gi_specular,
+			prev_bent_direction, prev_visibility_confidence, bent_direction_wsum,
+			strongest_bent_encoded, strongest_bent_weight, wsum);
 		readHistory(curr_depth, curr_pos, curr_normal,
 			prev_px_lu + int2(1, 0), bilinear_weights.x * (1 - bilinear_weights.y),
-			prev_ao, prev_y, prev_co_cg, accum_frames, prev_gi_specular, prev_bent_visibility, wsum);
+			prev_ao, prev_y, prev_co_cg, accum_frames, prev_gi_specular,
+			prev_bent_direction, prev_visibility_confidence, bent_direction_wsum,
+			strongest_bent_encoded, strongest_bent_weight, wsum);
 		readHistory(curr_depth, curr_pos, curr_normal,
 			prev_px_lu + int2(0, 1), (1 - bilinear_weights.x) * bilinear_weights.y,
-			prev_ao, prev_y, prev_co_cg, accum_frames, prev_gi_specular, prev_bent_visibility, wsum);
+			prev_ao, prev_y, prev_co_cg, accum_frames, prev_gi_specular,
+			prev_bent_direction, prev_visibility_confidence, bent_direction_wsum,
+			strongest_bent_encoded, strongest_bent_weight, wsum);
 		readHistory(curr_depth, curr_pos, curr_normal,
 			prev_px_lu + int2(1, 1), bilinear_weights.x * bilinear_weights.y,
-			prev_ao, prev_y, prev_co_cg, accum_frames, prev_gi_specular, prev_bent_visibility, wsum);
+			prev_ao, prev_y, prev_co_cg, accum_frames, prev_gi_specular,
+			prev_bent_direction, prev_visibility_confidence, bent_direction_wsum,
+			strongest_bent_encoded, strongest_bent_weight, wsum);
 
 		if (wsum > 1e-2) {
 			float rcpWsum = rcp(wsum + EPSILON_WEIGHT_SUM);
@@ -144,7 +166,7 @@ void readHistory(
 #		ifdef GI_SPECULAR
 			prev_gi_specular *= rcpWsum;
 #		endif
-			prev_bent_visibility *= rcpWsum;
+			prev_visibility_confidence *= rcpWsum;
 #	endif
 		}
 	}
@@ -159,25 +181,22 @@ void readHistory(
 #endif
 
 #ifdef TEMPORAL_DENOISER
-	// On disocclusion (wsum near zero), halve the accumulation instead of
-	// resetting to 1.  This softens the flash from a sudden 100% new-frame
-	// blend while still adapting quickly to disoccluded regions.
+	// Accepted history has already passed motion, world-position, depth and normal
+	// validation above. Keep its normal convergence budget during camera rotation;
+	// reducing every fast-moving pixel to four frames made otherwise valid indirect
+	// illumination visibly brighten/darken while panning. True disocclusions have no
+	// accepted weight and naturally restart from one sample.
 	float prevAccum = accum_frames * 255;
-	if (wsum < 1e-2)
-		prevAccum = prevAccum * 0.5;
-
-	// Reduce max accumulation proportionally to motion vector length.
-	// Fast camera/head movement means history is less trustworthy.
-	float2 motionVec = prev_screen_pos - screen_pos;
-	float motionLen = length(motionVec);
-	float motionMaxAccum = lerp(MaxAccumFrames, max(MaxAccumFrames * 0.25, 4), saturate(motionLen * 20));
-
-	accum_frames = max(1, min(prevAccum + 1, motionMaxAccum));
+	accum_frames = max(1, min(prevAccum + 1, MaxAccumFrames));
 	outAccumFrames[pixCoord] = accum_frames / 255.0;
 	outRemappedAo[pixCoord] = prev_ao;
 	outRemappedIlY[pixCoord] = prev_y;
 	outRemappedIlCoCg[pixCoord] = prev_co_cg;
 	outRemappedPrevGISpecular[pixCoord] = prev_gi_specular;
-	outRemappedBentVisibility[pixCoord] = prev_bent_visibility;
+	float bent_length_sq = dot(prev_bent_direction, prev_bent_direction);
+	float3 remapped_bent_direction = bent_length_sq > 1e-6f ?
+		prev_bent_direction * rsqrt(bent_length_sq) : GBuffer::DecodeNormal(strongest_bent_encoded);
+	outRemappedBentVisibility[pixCoord] = bent_direction_wsum > 1e-5f ?
+		float4(GBuffer::EncodeNormal(remapped_bent_direction), saturate(prev_visibility_confidence)) : 0.0f;
 #endif
 }

@@ -28,7 +28,14 @@ void main(uint2 dispatchID : SV_DispatchThreadID)
     SceneTex.GetDimensions(sceneWidth, sceneHeight);
     uint2 sceneDimensions = uint2(sceneWidth, sceneHeight);
     uint2 base = dispatchID * 2u;
-    float exposure = max(ExposureTex.Load(int3(0, 0, 0)), 1e-5f);
+    // Bloom is exposure-relative only while PIXL Physical Camera owns exposure.
+    // The exposure texture intentionally retains its last adapted value when the
+    // camera is disabled; reusing that stale value made bloom jump after toggling
+    // Physical Camera off. The compatibility path has no PIXL exposure stage, so
+    // its stable scene-relative reference is unity.
+    float exposure = physicalCameraEnabled > 0.5f
+        ? max(ExposureTex.Load(int3(0, 0, 0)), 1e-5f)
+        : 1.0f;
 
     float3 sum = 0.0f;
     float weightSum = 0.0f;

@@ -1319,6 +1319,18 @@ namespace
 		if (a_key.empty())
 			return false;
 
+		// Resolved seasonal layers are commonly named mountainsnow/cliffsnow.
+		// Explicit snow cover is the material Skyrim is actually drawing; terrain
+		// slope/contact rejection still prevents deformation on vertical rock.
+		const bool explicitlySnowCovered =
+			!GroundTerrainKeyContains(a_key, "nosnow") &&
+			!GroundTerrainKeyContains(a_key, "no_snow") &&
+			!GroundTerrainKeyContains(a_key, "snowless") &&
+			(GroundTerrainKeyContains(a_key, "snow") ||
+			 GroundTerrainKeyContains(a_key, "snw"));
+		if (explicitlySnowCovered)
+			return false;
+
 		const bool structuralHard =
 			GroundTerrainKeyContains(a_key, "cliff") ||
 			GroundTerrainKeyContains(a_key, "boulder") ||

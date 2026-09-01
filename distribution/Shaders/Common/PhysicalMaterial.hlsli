@@ -102,9 +102,9 @@ namespace PhysicalMaterial
 	/**
 	 * Estimate a bounded conductor weight when a legacy texture set has no
 	 * metallic channel. This is intentionally conservative: an environment mask
-	 * is mandatory and is cross-checked against smoothness, specular response,
-	 * colour correlation, and opacity. No lighting or emission value participates,
-	 * so candles and other bright objects cannot classify themselves as metal.
+	 * is the strongest single signal, while unmasked surfaces require corroborating
+	 * smoothness, specular response, colour correlation, and opacity. No lighting or
+	 * emission value participates, so candles cannot classify themselves as metal.
 	 */
 	float InferLegacyMetallic(float3 baseColor, float3 specularColor, float specularStrength,
 		float roughness, float environmentResponse, float opacity, float confidenceThreshold,

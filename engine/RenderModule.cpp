@@ -12,6 +12,7 @@
 #include "Modules/FoliageDynamics.h"
 #include "Modules/CameraSuite.h"
 #include "Modules/StrandShading.h"
+#include "Modules/HairReconstruction.h"
 #include "Modules/HorizonBlend.h"
 #include "Modules/AmbientProbe.h"
 #include "Modules/InteriorDaylight.h"
@@ -244,6 +245,10 @@ const std::vector<RenderModule*>& RenderModule::GetModuleList()
 		&globals::pipeline::distanceBlend,
 		&globals::pipeline::naturalLighting,
 		&globals::pipeline::strandShading,
+		// Hair Reconstruction is intentionally retired from the shipping module list.
+		// Strand Shading remains the authoritative, known-good hair path. The dormant
+		// implementation and its reserved shared-buffer storage are retained for ABI
+		// compatibility with existing cached shaders.
 		&globals::pipeline::interiorDaylight,
 		&globals::pipeline::terrainDetail,
 		&globals::pipeline::ambientProbe,

@@ -152,14 +152,12 @@ namespace ActorSurfaceEffects
 		return EvaluateLocal(ToActorLocal(worldPosition));
 	}
 
-	SurfaceSample EvaluateSkinned(float3 modelPosition)
+	SurfaceSample EvaluateSkinned(float3 worldPosition)
 	{
-		// Lighting's ModelPosition is the original bind/model-space vertex position,
-		// before the current bone palette is applied. It therefore remains attached
-		// to the material while walking, running, posing and jumping. Convert it to
-		// actor-local world units so it matches CPU contact lobes and actor scale.
-		float actorScale = clamp(PIXLCharacterRuntime::ActorOriginScale.w, 0.1f, 10.0f);
-		return EvaluateLocal(modelPosition * actorScale);
+		// Compatibility wrapper for older call sites. Skyrim's separately-authored
+		// head/body/equipment meshes do not share bind-space origins, so persistent
+		// contamination is always reconstructed from actor-relative world position.
+		return Evaluate(worldPosition);
 	}
 
 	float3 ApplyNormal(float3 worldNormal, SurfaceSample sample)
@@ -194,6 +192,12 @@ namespace ActorSurfaceEffects
 		materialAcceptance *= lerp(1.0f, 0.42f, saturate(eyeResponse));
 		float snowFresh = saturate(sample.SnowFresh * materialAcceptance);
 		float snowMelting = saturate(sample.SnowMelting * materialAcceptance);
+#if defined(HAIR_RECONSTRUCTION)
+		if (hairResponse > 0.5f && SharedData::hairReconstructionSettings.SnowResponse == 0u) {
+			snowFresh = 0.0f;
+			snowMelting = 0.0f;
+		}
+#endif
 		float mudWet = saturate(sample.MudWet * materialAcceptance);
 		float mudDry = saturate(sample.MudDry * materialAcceptance);
 		float wetness = saturate(sample.Wetness * materialAcceptance);
@@ -261,7 +265,7 @@ namespace ActorSurfaceEffects
 	}
 #else
 	SurfaceSample Evaluate(float3 worldPosition) { return EmptySample(); }
-	SurfaceSample EvaluateSkinned(float3 modelPosition) { return EmptySample(); }
+	SurfaceSample EvaluateSkinned(float3 worldPosition) { return EmptySample(); }
 	float3 ApplyNormal(float3 worldNormal, SurfaceSample sample) { return worldNormal; }
 	void ApplyMaterial(
 		inout float3 baseColor,

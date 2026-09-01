@@ -347,12 +347,43 @@ namespace SharedData
 		uint pad0;
 	};
 
-	// The historical post-process feature occupied eight 16-byte registers here.
-	// Keep the zeroed reservation so every following integrated-module offset stays
-	// ABI-stable without exposing dead settings or shader permutations.
-	struct ReservedPostProcessData
+	// Hair Reconstruction replaces the historical eight-register post-process
+	// reservation in place. The exact 128-byte footprint is an ABI contract: every
+	// following integrated-module field retains its pre-Hair byte offset.
+	struct HairReconstructionSettings
 	{
-		uint4 blocks[8];
+		uint Enabled;
+		uint Quality;
+		float DetectionThreshold;
+		float ReconstructionThreshold;
+
+		uint AnisotropicLighting;
+		float DirectionBlend;
+		float StrandDetail;
+		float Transmission;
+
+		uint SecondaryMotion;
+		float WindResponse;
+		float MotionStrength;
+		float Damping;
+
+		uint WetHair;
+		float WetDarkening;
+		float WetRoughness;
+		float WetWeight;
+
+		uint SnowResponse;
+		uint ProceduralStrands;
+		float StrandDensity;
+		float SilhouetteDetail;
+
+		float SimulationDistance;
+		uint DebugMode;
+		float FrameDelta;
+		uint Padding0;
+
+		uint4 Reserved0;
+		uint4 Reserved1;
 	};
 	struct TerrainSeamSettings
 	{
@@ -483,7 +514,7 @@ namespace SharedData
 		AmbientProbeSettings ambientProbeSettings;
 		ThinSurfaceSettings thinSurfaceSettings;
 		LinearLightCoreSettings linearLightCoreSettings;
-		ReservedPostProcessData reservedPostProcessData;
+		HairReconstructionSettings hairReconstructionSettings;
 		TerrainSeamSettings terrainSeamSettings;
 		AtmosphereSettings atmosphereSettings;
 		MaterialForgeSettings materialForgeSettings;

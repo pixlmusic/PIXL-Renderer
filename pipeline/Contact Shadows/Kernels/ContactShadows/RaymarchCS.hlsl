@@ -33,6 +33,10 @@ cbuffer PerFrame : register(b1)
 	float SurfaceThickness;
 	float BilinearThreshold;
 	float ShadowContrast;
+	uint Enable;
+	uint SampleCount;
+	float Strength;
+	uint2 Padding;
 };
 
 [numthreads(WAVE_SIZE, 1, 1)] void main(
@@ -66,6 +70,7 @@ cbuffer PerFrame : register(b1)
 	// The user-facing control is defined on [1, 4].  Values below one are
 	// clamped instead of jumping to maximum contrast.
 	parameters.ShadowContrast = clamp((half)ShadowContrast, 1.0h, 4.0h);
+	parameters.Strength = saturate((half)Strength);
 
 	// Broad, flat interior floors still produced dark stepped blotches whenever
 	// repeated depth discontinuities were classified as edge casters. Prefer

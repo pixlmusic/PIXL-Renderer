@@ -67,7 +67,7 @@ namespace
 		return false;
 	}
 
-	float ClassifyFurMaterial(std::string_view texturePath, std::string_view meshPath = {})
+	float ClassifyFurEvidence(std::string_view texturePath, std::string_view meshPath = {})
 	{
 		const std::string evidence =
 			NormalizeResourceName(std::string(texturePath) + "\\" + std::string(meshPath));
@@ -81,22 +81,75 @@ namespace
 				return 1.0f;
 		}
 
+		// Explicit non-fur sub-materials on otherwise furry creatures must win over
+		// directory/name evidence. Substring matching is intentional here because
+		// common assets concatenate tokens (wolfeyes, sabrecatclaws, bearteeth).
+		for (const auto token : {
+				 "eye", "teeth", "tooth", "claw", "talon", "horn", "antler",
+				 "weapon", "armor", "armour", "saddle", "hoof", "beak" }) {
+			if (evidence.find(token) != std::string::npos)
+				return 0.0f;
+		}
+
 		// Creature names alone are not enough (eyes, claws and armour often share a
 		// directory), so require a body/skin/coat cue as corroborating evidence.
 		bool creature = false;
 		for (const auto token : {
 				 "wolf", "fox", "bear", "sabrecat", "sabercat", "werewolf",
-				 "khajiit", "mammoth", "dog", "rabbit", "hare", "goat" }) {
-			creature = creature || HasFurToken(evidence, token);
+				 "khajiit", "mammoth", "dog", "rabbit", "hare", "goat",
+				 "deer", "elk", "horse", "cow" }) {
+			creature = creature || evidence.find(token) != std::string::npos;
 		}
 		bool coat = false;
 		for (const auto token : { "body", "skin", "coat", "torso", "hide" })
-			coat = coat || HasFurToken(evidence, token);
+			coat = coat || evidence.find(token) != std::string::npos;
 
 		return creature && coat ? 0.86f : 0.0f;
 	}
 
-	void ApplyFurSemantics(PhysicalMaterial::Descriptor& descriptor, float confidence)
+	float ClassifyHairEvidence(std::string_view texturePath, std::string_view meshPath = {})
+	{
+		const std::string texture = NormalizeResourceName(texturePath);
+		const std::string mesh = NormalizeResourceName(meshPath);
+		const std::string evidence = texture + "\\" + mesh;
+		if (evidence.empty())
+			return 0.0f;
+
+		// Strong author vocabulary.  "hair" is intentionally a substring here to
+		// support common concatenated assets (hairfemale, hairline, facialhair), but
+		// known furniture false positives are rejected below and the renderer still
+		// requires skinned alpha geometry before accepting the score.
+		float confidence = 0.0f;
+		for (const auto token : { "hair", "hairstyle", "hairline", "beard", "moustache", "mustache", "sideburn", "ponytail", "braid" }) {
+			if (evidence.find(token) != std::string::npos)
+				confidence = std::max(confidence, 0.96f);
+		}
+		for (const auto token : { "brow", "eyebrow", "lash", "whisker" }) {
+			if (evidence.find(token) != std::string::npos)
+				confidence = std::max(confidence, 0.74f);
+		}
+
+		// These materials commonly sit on the same actor/head hierarchy but must not
+		// inherit fibre motion or the hair BRDF merely because a parent mesh says head.
+		for (const auto token : {
+				 "helmet", "hood", "circlet", "crown", "armor", "armour", "cloth", "robe",
+				 "skin", "face", "headhuman", "eye", "teeth", "mouth", "tongue", "ear" }) {
+			if (texture.find(token) != std::string::npos)
+				return 0.0f;
+		}
+
+		// "chair" contains the literal substring "hair". Check these lexical false
+		// positives against the full hierarchy, unlike actor-head exclusions above,
+		// so an alpha-tested animated furnishing can never become a hair candidate.
+		for (const auto token : { "chair", "furniture", "furnish" }) {
+			if (evidence.find(token) != std::string::npos)
+				return 0.0f;
+		}
+
+		return confidence;
+	}
+
+	void ApplyFurSemanticsImpl(PhysicalMaterial::Descriptor& descriptor, float confidence)
 	{
 		if (confidence < 0.80f)
 			return;
@@ -131,6 +184,31 @@ namespace
 
 namespace PhysicalMaterial
 {
+	float ClassifyAutomaticFur(
+		const RE::BSLightingShaderMaterialBase& material,
+		std::string_view meshPath)
+	{
+		const std::string diffusePath = material.diffuseTexture
+			? NormalizeResourceName(*material.diffuseTexture)
+			: std::string{};
+		return ClassifyFurEvidence(diffusePath, meshPath);
+	}
+
+	float ClassifyAutomaticHair(
+		const RE::BSLightingShaderMaterialBase& material,
+		std::string_view meshPath)
+	{
+		const std::string diffusePath = material.diffuseTexture
+			? NormalizeResourceName(*material.diffuseTexture)
+			: std::string{};
+		return ClassifyHairEvidence(diffusePath, meshPath);
+	}
+
+	void ApplyAutomaticFurSemantics(Descriptor& descriptor, float confidence)
+	{
+		ApplyFurSemanticsImpl(descriptor, confidence);
+	}
+
 	Registry& Registry::GetSingleton()
 	{
 		static Registry singleton;
@@ -170,8 +248,7 @@ namespace PhysicalMaterial
 
 		addBinding(Texture::BaseColor, ColorSpace::SRGB, material.diffuseTexture);
 		addBinding(Texture::Normal, ColorSpace::Linear, material.normalTexture);
-		if (material.diffuseTexture)
-			ApplyFurSemantics(descriptor, ClassifyFurMaterial(NormalizeResourceName(*material.diffuseTexture)));
+		ApplyAutomaticFurSemantics(descriptor, ClassifyAutomaticFur(material));
 
 		using enum RE::BSShaderMaterial::Feature;
 		switch (material.GetFeature()) {
@@ -215,9 +292,9 @@ namespace PhysicalMaterial
 		const std::string diffusePath = material.diffuseTexture
 			? NormalizeResourceName(*material.diffuseTexture)
 			: std::string{};
-		ApplyFurSemantics(
+		ApplyAutomaticFurSemantics(
 			resolvedDescriptor,
-			ClassifyFurMaterial(diffusePath, material.inputFilePath));
+			ClassifyFurEvidence(diffusePath, material.inputFilePath));
 		const std::array bindings{
 			SourceBinding{ Texture::BaseColor, ColorSpace::SRGB, material.diffuseTexture.get() },
 			SourceBinding{ Texture::Normal, ColorSpace::Linear, material.normalTexture.get() },
@@ -389,5 +466,69 @@ namespace PhysicalMaterial
 	{
 		std::shared_lock lock(mutex_);
 		return generation_;
+	}
+
+	RegistryDiagnostics Registry::GetDiagnostics() const
+	{
+		std::shared_lock lock(mutex_);
+
+		RegistryDiagnostics diagnostics;
+		diagnostics.generation = generation_;
+		diagnostics.materialCount = materials_.size();
+		diagnostics.textureCount = textures_.size();
+
+		auto finite3 = [](const std::array<float, 3>& value) {
+			return std::ranges::all_of(value, [](float component) { return std::isfinite(component); });
+		};
+		auto finiteGlint = [](const Glint& value) {
+			return std::isfinite(value.screenSpaceScale) &&
+				std::isfinite(value.logMicrofacetDensity) &&
+				std::isfinite(value.microfacetRoughness) &&
+				std::isfinite(value.densityRandomization);
+		};
+
+		for (const auto& [id, entry] : materials_) {
+			(void)id;
+			const auto& descriptor = entry.descriptor;
+			if (descriptor.shadingModel == static_cast<std::uint32_t>(ShadingModel::LegacySpecular))
+				diagnostics.legacyMaterialCount++;
+			else if (descriptor.shadingModel == static_cast<std::uint32_t>(ShadingModel::MetallicRoughness))
+				diagnostics.metallicRoughnessMaterialCount++;
+
+			if (descriptor.HasTrait(MaterialTrait::FurShell))
+				diagnostics.furMaterialCount++;
+
+			const bool finitePayload =
+				finite3(descriptor.baseColorFactor) && std::isfinite(descriptor.opacity) &&
+				finite3(descriptor.emissiveFactor) && std::isfinite(descriptor.emissiveStrength) &&
+				finite3(descriptor.f0Factor) && std::isfinite(descriptor.furShellLength) &&
+				std::isfinite(descriptor.roughnessScale) && std::isfinite(descriptor.metallicScale) &&
+				std::isfinite(descriptor.ambientOcclusionStrength) && std::isfinite(descriptor.specularLevel) &&
+				std::isfinite(descriptor.normalScale) && std::isfinite(descriptor.displacementScale) &&
+				std::isfinite(descriptor.subsurfaceOpacity) && std::isfinite(descriptor.coatStrength) &&
+				finite3(descriptor.subsurfaceColor) && std::isfinite(descriptor.coatRoughness) &&
+				finite3(descriptor.coatColor) && std::isfinite(descriptor.coatSpecularLevel) &&
+				finite3(descriptor.fuzzColor) && std::isfinite(descriptor.fuzzWeight) &&
+				finite3(descriptor.projectedBaseColorScale) && std::isfinite(descriptor.projectedRoughness) &&
+				std::isfinite(descriptor.projectedSpecularLevel) && std::isfinite(descriptor.furConfidence) &&
+				std::isfinite(descriptor.furDensity) && std::isfinite(descriptor.furSoftness) &&
+				finiteGlint(descriptor.glint) && finiteGlint(descriptor.projectedGlint);
+
+			if (descriptor.schemaVersion != SchemaVersion ||
+				descriptor.shadingModel > static_cast<std::uint32_t>(ShadingModel::MetallicRoughness) ||
+				entry.bindingCount > entry.bindings.size() || !finitePayload) {
+				diagnostics.invalidDescriptorCount++;
+			}
+		}
+
+		for (const auto& [id, texture] : textures_) {
+			(void)id;
+			if (texture.fileBacked)
+				diagnostics.fileBackedTextureCount++;
+			else
+				diagnostics.runtimeTextureCount++;
+		}
+
+		return diagnostics;
 	}
 }

@@ -54,6 +54,8 @@ struct PixelCapture : public RenderModule
 
 	/** @brief True while Director is collecting temporal samples from presented frames. */
 	[[nodiscard]] bool IsPhotoFinishSampling() const;
+	/** @brief True from request acceptance until the final file has been written or the job fails. */
+	[[nodiscard]] bool IsPhotoFinishBusy() const;
 	/** @brief Number of temporal samples copied for the active Photo Finish capture. */
 	[[nodiscard]] std::uint32_t GetPhotoFinishSamplesCaptured() const;
 	/** @brief Target temporal sample count for the active Photo Finish capture. */
@@ -62,6 +64,7 @@ struct PixelCapture : public RenderModule
 	enum class PhotoFinishStage : std::uint32_t
 	{
 		Idle = 0,
+		ConvergingLighting,
 		Accumulating,
 		Resolving,
 		LensDepthOfField,
@@ -110,6 +113,21 @@ struct PixelCapture : public RenderModule
 	unsigned int photoFinishTemporalSamples = 8;
 	// C5E.3 multi-scale luma-guided detail recovery around the jitter-aware resolve.
 	float photoFinishDetailStrength = 0.35f;
+	// Photo Mode-only preference. It is enabled by default but capability-gated:
+	// unsupported/TAA/FSR systems transparently retain the universal Photo Finish
+	// source, and the user can turn it off for direct A/B captures.
+	bool photoFinishNeuralEnabled = true;
+	// Minimum internal render domain used while lighting/post histories converge:
+	// 0 current gameplay scale, 1 at least 85%, 2 native 100%.
+	unsigned int photoFinishRenderScaleMode = 2;
+	// Fully rendered frames allowed to settle temporal lighting and post effects
+	// before any final-image sample is copied.
+	unsigned int photoFinishLightingWarmupFrames = 8;
+	// Fresh-frame neural convergence tier. Feature 18 is evaluated once per real
+	// jittered frame; tiers 1/2/3 require at least 8/16/24 independent neural
+	// outputs before the offline resolve. Recursive model feedback is intentionally
+	// avoided because it low-passes detail against unchanged temporal guides.
+	unsigned int photoFinishNeuralFeedbackSteps = 1;
 
 	// Legacy Photo Lens data is retained for settings compatibility, but the
 	// experimental resolve is disabled until its depth edges are release-ready.
@@ -140,6 +158,7 @@ struct PixelCapture : public RenderModule
 		bool motionEnabled = false;
 		float motionStrength = 0.18f;
 		float motionAngleDegrees = 0.0f;
+		bool neuralPhotoEnabled = false;
 	};
 
 	std::array<DirectorPhotoPreset, 3> directorPhotoPresets{};
@@ -203,6 +222,10 @@ private:
 		uint32_t copyWidth = 0;
 		uint32_t copyHeight = 0;
 		unsigned int targetSamples = 1;
+		unsigned int warmupFramesRemaining = 0;
+		unsigned int warmupFramesTotal = 0;
+		unsigned int neuralFeedbackSteps = 1;
+		float minimumRenderScale = 1.0f;
 		unsigned int outputScale = 1;
 		float detailStrength = 0.0f;
 		bool photoLensDofEnabled = false;
@@ -221,6 +244,10 @@ private:
 		// rendered. Skip that immediate ProcessCaptureRequest call so sample 0 is
 		// captured on the next frame after the projection override is applied.
 		bool awaitingFirstJitteredFrame = true;
+		bool useNeuralSource = false;
+		bool awaitingNeuralFrame = false;
+		std::uint64_t lastNeuralFrameSerial = 0;
+		std::uint32_t neuralWaitFrames = 0;
 		bool motionEnabled = false;
 		float motionStrength = 0.0f;
 		float motionAngleDegrees = 0.0f;

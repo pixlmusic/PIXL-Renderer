@@ -47,3 +47,8 @@ shadertoolsconfig.json
 
 # Downloaded local compiler bundle; the renderer build does not consume it.
 /extern/DirectXShaderCompiler/
+
+# NVIDIA Neural Rendering runtime is installed/package-local proprietary binary data.
+# The open integration source is tracked; the redistributable runtime must be supplied
+# through the licensed release pipeline and is far above GitHub's normal file limit.
+/pipeline/ImageReconstruction/Kernels/ImageReconstruction/Streamline/nvngx_dlssnr.dll

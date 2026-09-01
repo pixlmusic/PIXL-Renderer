@@ -270,7 +270,13 @@ namespace Hair
 
 		float shadow = context.hairShadow * context.detailedShadow;
 
-		dirTransmission += D_Marschner(L, V, T, roughness, baseColor, 0, SharedData::strandShadingSettings.Transmission) * lightColor * shadow * SharedData::strandShadingSettings.SpecularMult;
+		float reconstructionTransmission = 1.0f;
+#if defined(HAIR_RECONSTRUCTION)
+		reconstructionTransmission = SharedData::hairReconstructionSettings.Enabled != 0u
+			? SharedData::hairReconstructionSettings.Transmission
+			: 1.0f;
+#endif
+		dirTransmission += D_Marschner(L, V, T, roughness, baseColor, 0, SharedData::strandShadingSettings.Transmission * reconstructionTransmission) * lightColor * shadow * SharedData::strandShadingSettings.SpecularMult;
 		dirTransmission += GetHairDiffuseAttenuationKajiyaKay(T, V, L, shadow, baseColor) * lightColor * shadow * SharedData::strandShadingSettings.DiffuseMult;
 	}
 

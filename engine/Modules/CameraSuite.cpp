@@ -1848,7 +1848,7 @@ void CameraSuite::ApplyHDR()
 		UpdatePhysicalCameraExposure(sceneSRV);
 		RunCameraFinishingPasses(sceneSRV);
 		// Auxiliary readiness changes per frame (menus, disabled controls and
-		// allocation/compile fallbacks), so refresh the unchanged 272-byte CB.
+		// allocation/compile fallbacks), so refresh the ABI-stable presentation CB.
 		hdrDataCB->Update(BuildHDRData());
 		DispatchHDROutput(sceneSRV, uiSRV, outputTexture->uav.get());
 	}

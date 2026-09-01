@@ -27,7 +27,10 @@ namespace Permutation
 		static const uint VertexColor = (1 << 0);
 		static const uint Skinned = (1 << 1);
 		static const uint ModelSpaceNormals = (1 << 2);
-		// Flags 3 to 8 are unused
+		// Flags 3 to 5 are PIXL raster features; 6 to 8 remain unused.
+		static const uint MaterialForge = (1 << 3);
+		static const uint Deferred = (1 << 4);
+		static const uint AutoFur = (1 << 5);
 		static const uint Specular = (1 << 9);
 		static const uint SoftLighting = (1 << 10);
 		static const uint RimLighting = (1 << 11);

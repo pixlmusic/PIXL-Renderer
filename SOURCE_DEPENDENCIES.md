@@ -12,7 +12,7 @@ The authoritative URLs live in `.gitmodules`; the release commit pins exact
 revisions. At the current development checkpoint they are:
 
 - CommonLibSSE-NG / CommonLibVR: `8f4205da56f01cbe98557422c008a5719c180fb9`
-- FidelityFX SDK DX11: `054f0ade7bd443710644ecb2564936281821f532`
+- FidelityFX SDK DX11: `e65b2530631f2afb9a9ac753884926e49e20d608`
 - NVIDIA Streamline: `a9ed1f58436864891f68b0458300464dc53d9a69`
 
 PIXL carries one source patch for FidelityFX's Windows DX11 shader-generator

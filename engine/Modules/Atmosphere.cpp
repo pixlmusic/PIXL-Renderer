@@ -419,6 +419,9 @@ void Atmosphere::EnsureVolumetricResources()
 	hasLightScatteringHistory = false;
 	hasConservativeDepthHistory = false;
 	hasSceneClassHistory = false;
+	hasProjectionHistory = false;
+	hasWorldspaceHistory = false;
+	hasLightingInputHistory = false;
 	lastPrepassFrame = UINT32_MAX;
 }
 
@@ -434,6 +437,9 @@ void Atmosphere::ReleaseVolumetricResources()
 	hasLightScatteringHistory = false;
 	hasConservativeDepthHistory = false;
 	hasSceneClassHistory = false;
+	hasProjectionHistory = false;
+	hasWorldspaceHistory = false;
+	hasLightingInputHistory = false;
 	lastPrepassFrame = UINT32_MAX;
 	ID3D11ShaderResourceView* nullSRV = nullptr;
 	if (globals::d3d::context) {
@@ -532,6 +538,9 @@ void Atmosphere::Prepass()
 		hasLightScatteringHistory = false;
 		hasConservativeDepthHistory = false;
 		hasSceneClassHistory = false;
+		hasProjectionHistory = false;
+		hasWorldspaceHistory = false;
+		hasLightingInputHistory = false;
 		lastPrepassFrame = UINT32_MAX;
 		return;
 	}
@@ -547,6 +556,9 @@ void Atmosphere::Prepass()
 		hasLightScatteringHistory = false;
 		hasConservativeDepthHistory = false;
 		hasSceneClassHistory = false;
+		hasProjectionHistory = false;
+		hasWorldspaceHistory = false;
+		hasLightingInputHistory = false;
 		lastPrepassFrame = UINT32_MAX;
 		return;
 	}
@@ -583,6 +595,29 @@ void Atmosphere::Prepass()
 	const bool dynamicResolutionChanged =
 		std::abs(dr.x - dr.z) > 0.01f ||
 		std::abs(dr.y - dr.w) > 0.01f;
+	const float currentVerticalFov = Util::GetVerticalFOVRad();
+	const bool currentFovValid = std::isfinite(currentVerticalFov) && currentVerticalFov > 0.0f;
+	const bool projectionChanged =
+		hasProjectionHistory &&
+		(!currentFovValid || std::abs(currentVerticalFov - lastVerticalFov) > 1.0e-4f);
+
+	// Camera-relative positions can be numerically identical in two unrelated
+	// exterior worldspaces. Do not reproject the previous world's fog into the new
+	// one merely because a load/teleport happened to remain below the distance cut.
+	auto* tes = RE::TES::GetSingleton();
+	const auto currentExteriorWorldspaceIdentity = reinterpret_cast<std::uintptr_t>(
+		!inInterior && tes ? tes->GetRuntimeData2().worldSpace : nullptr);
+	const bool worldspaceChanged =
+		hasWorldspaceHistory && currentExteriorWorldspaceIdentity != lastExteriorWorldspaceIdentity;
+
+	const uint32_t lightingInputFlags =
+		(directionalShadowMap && directionalShadowLightData ? 1u : 0u) |
+		(depthSrv ? 2u : 0u) |
+		(hasIBL ? 4u : 0u) |
+		(hasSkyBounce ? 8u : 0u) |
+		(hasLocalLightData ? 32u : 0u);
+	const bool lightingInputsChanged =
+		hasLightingInputHistory && lightingInputFlags != lastLightingInputFlags;
 
 	const bool sceneClassChanged =
 		hasSceneClassHistory &&
@@ -595,6 +630,9 @@ void Atmosphere::Prepass()
 		globals::state->frameCount == lastPrepassFrame + 1u &&
 		!cameraCut &&
 		!dynamicResolutionChanged &&
+		!projectionChanged &&
+		!worldspaceChanged &&
+		!lightingInputsChanged &&
 		!sceneClassChanged;
 
 	VolumetricFogCB cb{};
@@ -602,12 +640,8 @@ void Atmosphere::Prepass()
 		currentGridSize.x,
 		currentGridSize.y,
 		currentGridSize.z,
-		(directionalShadowMap && directionalShadowLightData ? 1u : 0u) |
-			(depthSrv ? 2u : 0u) |
-			(hasIBL ? 4u : 0u) |
-			(hasSkyBounce ? 8u : 0u) |
-			(depthSrv && temporalHistoryValid && hasConservativeDepthHistory ? 16u : 0u) |
-			(hasLocalLightData ? 32u : 0u)
+		lightingInputFlags |
+			(depthSrv && temporalHistoryValid && hasConservativeDepthHistory ? 16u : 0u)
 	};
 	cb.invGridSizeAndNearFade = {
 		1.0f / static_cast<float>(currentGridSize.x),
@@ -788,6 +822,12 @@ void Atmosphere::Prepass()
 	lastHideSky = hideSky;
 	lastInMapMenu = inMapMenu;
 	hasSceneClassHistory = true;
+	lastVerticalFov = currentVerticalFov;
+	hasProjectionHistory = currentFovValid;
+	lastExteriorWorldspaceIdentity = currentExteriorWorldspaceIdentity;
+	hasWorldspaceHistory = true;
+	lastLightingInputFlags = lightingInputFlags;
+	hasLightingInputHistory = true;
 	lastPrepassFrame = globals::state->frameCount;
 	BindIntegratedLightScattering();
 }

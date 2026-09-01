@@ -5,6 +5,7 @@
 #include <shared_mutex>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -19,6 +20,32 @@ class BSLightingShaderMaterialPBRLandscape;
 
 namespace PhysicalMaterial
 {
+	struct Descriptor;
+
+	/**
+	 * @brief Returns conservative confidence that a Skyrim lighting material is fur.
+	 *
+	 * Explicit fur/pelt authoring is accepted directly. Creature directory names
+	 * require corroborating body/skin/coat evidence and reject eyes, teeth, claws,
+	 * horns, weapons and armour to avoid changing unrelated animal materials.
+	 */
+	[[nodiscard]] float ClassifyAutomaticFur(
+		const RE::BSLightingShaderMaterialBase& material,
+		std::string_view meshPath = {});
+
+	/**
+	 * @brief Returns conservative path/material evidence for ordinary Skyrim hair.
+	 *
+	 * Geometry ownership, skinning and alpha state are deliberately evaluated by
+	 * the draw hook; this function only scores stable material/mesh vocabulary.
+	 */
+	[[nodiscard]] float ClassifyAutomaticHair(
+		const RE::BSLightingShaderMaterialBase& material,
+		std::string_view meshPath = {});
+
+	/** @brief Adds the shared FurShell/Fuzz semantic payload for a proven material. */
+	void ApplyAutomaticFurSemantics(Descriptor& descriptor, float confidence);
+
 	/** @brief API-neutral description of a texture source for backend resource creation. */
 	struct TextureSource
 	{
@@ -34,6 +61,20 @@ namespace PhysicalMaterial
 		std::uint64_t generation = 0;
 		std::vector<TableEntry> materials;
 		std::vector<TextureSource> textures;
+	};
+
+	/** @brief Cheap developer diagnostics for the backend-neutral material tables. */
+	struct RegistryDiagnostics
+	{
+		std::uint64_t generation = 0;
+		std::size_t materialCount = 0;
+		std::size_t legacyMaterialCount = 0;
+		std::size_t metallicRoughnessMaterialCount = 0;
+		std::size_t furMaterialCount = 0;
+		std::size_t invalidDescriptorCount = 0;
+		std::size_t textureCount = 0;
+		std::size_t fileBackedTextureCount = 0;
+		std::size_t runtimeTextureCount = 0;
 	};
 
 	/**
@@ -79,6 +120,9 @@ namespace PhysicalMaterial
 
 		/** @brief Returns the current table generation without copying table rows. */
 		[[nodiscard]] std::uint64_t GetGeneration() const;
+
+		/** @brief Summarizes registry health without copying material or texture payloads. */
+		[[nodiscard]] RegistryDiagnostics GetDiagnostics() const;
 
 	private:
 		struct OwnerKey

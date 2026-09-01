@@ -11,6 +11,7 @@
 #include "Modules/FoliageDynamics.h"
 #include "Modules/CameraSuite.h"
 #include "Modules/StrandShading.h"
+#include "Modules/HairReconstruction.h"
 #include "Modules/HorizonBlend.h"
 #include "Modules/AmbientProbe.h"
 #include "Modules/InteriorDaylight.h"
@@ -68,6 +69,7 @@ namespace globals
 		LinearLightCore linearLightCore{};
 		DistanceBlend distanceBlend{};
 		StrandShading strandShading{};
+		HairReconstruction hairReconstruction{};
 		HorizonBlend horizonBlend{};
 		InteriorDaylight interiorDaylight{};
 		NaturalLighting naturalLighting{};

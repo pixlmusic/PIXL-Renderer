@@ -398,7 +398,10 @@ bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport, bool resetHi
 	slConstants.motionVectors3D = sl::Boolean::eFalse;
 	slConstants.motionVectorsInvalidValue = FLT_MIN;
 	slConstants.orthographicProjection = sl::Boolean::eFalse;
-	slConstants.motionVectorsDilated = sl::Boolean::eFalse;
+	// EncodeTexturesCS writes the closest/longest 5x5 motion representative used
+	// by both DLSS and the optional neural post-pass.  Tell Streamline the truth so
+	// DLSS does not apply assumptions intended for an undilated velocity field.
+	slConstants.motionVectorsDilated = sl::Boolean::eTrue;
 	slConstants.motionVectorsJittered = sl::Boolean::eFalse;
 
 	if (SL_FAILED(res, slSetConstants(slConstants, *frameToken, p_viewport))) {
@@ -438,7 +441,7 @@ void Streamline::SetDLSSOptions(sl::ViewportHandle p_viewport, uint32_t width)
 	sl::DLSSOptions dlssOptions{};
 
 	// Map quality mode to DLSS mode
-	uint32_t qualityMode = globals::pipeline::imageReconstruction.settings.qualityMode;
+	uint32_t qualityMode = globals::pipeline::imageReconstruction.GetEffectiveQualityMode();
 	switch (qualityMode) {
 	case 1:
 		dlssOptions.mode = sl::DLSSMode::eMaxQuality;
@@ -478,12 +481,6 @@ void Streamline::SetDLSSOptions(sl::ViewportHandle p_viewport, uint32_t width)
 		break;
 	case 2:
 		customPreset = sl::DLSSPreset::ePresetK;
-		break;
-	case 3:
-		customPreset = sl::DLSSPreset::ePresetL;
-		break;
-	case 4:
-		customPreset = sl::DLSSPreset::ePresetM;
 		break;
 	case 5:
 		customPreset = sl::DLSSPreset::ePresetF;

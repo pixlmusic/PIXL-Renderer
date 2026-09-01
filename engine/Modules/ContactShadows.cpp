@@ -20,7 +20,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	SampleCount,
 	SurfaceThickness,
 	BilinearThreshold,
-	ShadowContrast)
+	ShadowContrast,
+	Strength)
 
 void ContactShadows::DrawSettings()
 {
@@ -44,6 +45,10 @@ void ContactShadows::DrawSettings()
 		ImGui::SliderFloat(T(TKEY("shadow_contrast"), "Shadow Edge Contrast"), &bendSettings.ShadowContrast, 1.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("%s", T(TKEY("shadow_contrast_tooltip"), "Contrast boost for the shadow transition. 1 preserves the traced visibility; higher values produce harder contact edges."));
+
+		ImGui::SliderFloat("Directional Shadow Strength", &bendSettings.Strength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Blends PIXL's depth-reconstructed sun/moon shadows with Skyrim's existing directional shadow map. Zero keeps only Skyrim shadows; one uses the complete PIXL refinement.");
 
 		ImGui::Spacing();
 		ImGui::Spacing();
@@ -286,6 +291,7 @@ void ContactShadows::LoadSettings(json& o_json)
 	bendSettings.SurfaceThickness = std::clamp(bendSettings.SurfaceThickness, 0.005f, 0.05f);
 	bendSettings.BilinearThreshold = std::clamp(bendSettings.BilinearThreshold, 0.02f, 1.0f);
 	bendSettings.ShadowContrast = std::clamp(bendSettings.ShadowContrast, 1.0f, 4.0f);
+	bendSettings.Strength = std::clamp(bendSettings.Strength, 0.0f, 1.0f);
 }
 
 void ContactShadows::SaveSettings(json& o_json)

@@ -289,6 +289,22 @@ namespace PhysicalLighting
 #	if defined(BACK_LIGHTING)
 		lightingOutput.diffuse += softLightColor * saturate(-NdotL) * material.backLightColor * Color::VanillaNormalization();
 #	endif
+#	if defined(AUTO_FUR)
+	// Legacy animal/fur materials do not enter MaterialForge's PBR fuzz branch.
+	// Add a broad, energy-bounded fibre sheen here using the virtual-shell
+	// occupancy prepared in Lighting.hlsl. Wrapped incidence keeps the soft edge
+	// readable while the view term gives fur its characteristic grazing response.
+	const float furNdotV = saturate(abs(dot(context.worldNormal, context.viewDir)));
+	const float furWrappedNdotL = saturate((NdotL + 0.35f) / 1.35f);
+	const float furGrazing = pow(1.0f - furNdotV, 1.35f);
+	const float furForward = pow(saturate(-dot(context.viewDir, context.lightDir)), 6.0f);
+	const float furResponse =
+		material.FuzzWeight * furWrappedNdotL *
+		(0.18f + 0.62f * furGrazing + 0.20f * furForward);
+	lightingOutput.specular *= 1.0f - 0.30f * material.FuzzWeight;
+	lightingOutput.diffuse +=
+		material.FuzzColor * softLightColor * furResponse * BRDF::Diffuse_Lambert();
+#	endif
 #endif
 	}
 
@@ -329,6 +345,13 @@ namespace PhysicalLighting
 			lobeWeights.specular = saturate(lobeWeights.specular);
 			lobeWeights.diffuse *= 1 - lobeWeights.specular;
 		}
+#	endif
+#	if defined(AUTO_FUR)
+		const float furNdotV = saturate(abs(dot(context.worldNormal, context.viewDir)));
+		const float furGrazing = pow(1.0f - furNdotV, 1.35f);
+		lobeWeights.diffuse +=
+			material.FuzzColor * material.FuzzWeight * (0.12f + 0.28f * furGrazing);
+		lobeWeights.specular *= 1.0f - 0.22f * material.FuzzWeight;
 #	endif
 #endif
 	}

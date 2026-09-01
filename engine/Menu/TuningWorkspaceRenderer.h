@@ -70,6 +70,8 @@ public:
 
 	// PIXL Director live photo-mode controls / HUD.
 	[[nodiscard]] static bool IsDirectorPhotoModeActive();
+	/** True while a Photo Finish transaction owns and freezes the Director camera. */
+	[[nodiscard]] static bool IsDirectorPhotoCaptureLocked();
 	/**
 	 * @brief Returns whether Director can safely take ownership of gameplay now.
 	 *

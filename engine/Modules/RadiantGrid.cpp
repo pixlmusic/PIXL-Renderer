@@ -8,6 +8,8 @@
 #include "State.h"
 #include "Utils/ExternalEmittance.h"
 
+#include <RE/B/BSLightingShaderMaterialGlowmap.h>
+
 #include <numbers>
 
 #define I18N_KEY_PREFIX "feature.radiant_grid."
@@ -43,6 +45,8 @@ void RadiantGrid::DrawSettings()
 
 	if (globals::state->IsDeveloperMode() && ImGui::TreeNodeEx(T(TKEY("statistics"), "Statistics"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		ImGui::Text("Clustered Light Count: %u", lightCount);
+		ImGui::Text("Particle Emitters: %u", particleEmitterLightCount);
+		ImGui::Text("Glow-mapped Emitters: %u", glowMappedEmitterLightCount);
 
 		ImGui::TreePop();
 	}
@@ -196,6 +200,18 @@ void RadiantGrid::SetupResources()
 	}
 }
 
+void RadiantGrid::Reset()
+{
+	std::unique_lock lock{ particleLightsMutex };
+	queuedParticleLights.clear();
+	currentParticleLights.clear();
+	queuedParticleLightOwners.clear();
+	persistedParticleLights.clear();
+	particleLightFrameSerial = 0;
+	particleEmitterLightCount = 0;
+	glowMappedEmitterLightCount = 0;
+}
+
 void RadiantGrid::SaveSettings(json& o_json)
 {
 	o_json = settings;
@@ -234,6 +250,15 @@ void RadiantGrid::BSLightingShader_SetupGeometry_Before(RE::BSRenderPass* a_pass
 
 	if (!shaderCache->IsEnabled())
 		return;
+
+	// Skyrim and many mesh replacers author candles, braziers and hearth embers as
+	// ordinary glow-mapped lighting geometry. Their emissive pixels reach bloom,
+	// but they never pass through the soft-particle light extractor and therefore
+	// do not illuminate nearby opaque surfaces. Observe those deliberately named
+	// incandescent materials here and queue one bounded local emitter for the next
+	// Radiant Grid update. Classification is cached per geometry and remains under
+	// the existing Enable Particle Lights master switch.
+	QueueIncandescentGeometryLight(a_pass);
 
 	strictLightDataTemp.NumStrictLights = 0;
 	strictLightDataTemp.ShadowBitMask = 0;
@@ -705,33 +730,62 @@ namespace
 		return stem;
 	}
 
-	struct IncandescentParticleProfile
+	struct IncandescentEmitterProfile
 	{
-		float radiusScale;
-		float minimumRadius;
-		float intensityScale;
+		float particleRadiusScale;
+		float particleMinimumRadius;
+		float particleIntensityScale;
+		float geometryRadiusScale;
+		float geometryMinimumRadius;
+		float geometryIntensityScale;
+		RE::NiColor geometryTint;
 	};
 
-	std::optional<IncandescentParticleProfile> GetIncandescentParticleProfile(std::string_view a_stem)
+	std::optional<IncandescentEmitterProfile> GetIncandescentEmitterProfile(std::string_view a_evidence)
 	{
 		// This is deliberately restricted to practical incandescent emitters.
-		// The existing soft-effect/billboard/depth-test checks still apply, and
-		// an attached Skyrim light remains authoritative (GetParticleLightConfig
-		// rejects shader properties which already own lightData).
+		// Particle candidates retain the existing billboard/depth checks. Ordinary
+		// geometry additionally requires a real GlowMap material before reaching
+		// this name evidence, so a diffuse filename alone cannot create a light.
 		auto contains = [&](std::string_view token) {
-			return a_stem.find(token) != std::string_view::npos;
+			return a_evidence.find(token) != std::string_view::npos;
 		};
 
 		if (contains("candle") || contains("wick"))
-			return IncandescentParticleProfile{ 8.0f, 280.0f, 0.90f };
+			return IncandescentEmitterProfile{
+				8.0f, 280.0f, 0.90f,
+				4.0f, 360.0f, 1.55f,
+				{ 1.0f, 0.52f, 0.18f }
+			};
 		if (contains("torch") || contains("sconce"))
-			return IncandescentParticleProfile{ 10.0f, 420.0f, 1.05f };
+			return IncandescentEmitterProfile{
+				10.0f, 420.0f, 1.05f,
+				4.5f, 520.0f, 2.00f,
+				{ 1.0f, 0.43f, 0.12f }
+			};
 		if (contains("brazier") || contains("bonfire") || contains("campfire") || contains("hearth"))
-			return IncandescentParticleProfile{ 12.0f, 620.0f, 1.15f };
+			return IncandescentEmitterProfile{
+				12.0f, 620.0f, 1.15f,
+				5.0f, 900.0f, 2.80f,
+				{ 1.0f, 0.36f, 0.08f }
+			};
 		if (contains("fire") || contains("flame") || contains("ember") || contains("burn"))
-			return IncandescentParticleProfile{ 9.0f, 380.0f, 1.00f };
+			return IncandescentEmitterProfile{
+				9.0f, 380.0f, 1.00f,
+				4.5f, 640.0f, 2.30f,
+				{ 1.0f, 0.38f, 0.09f }
+			};
 
 		return std::nullopt;
+	}
+
+	std::string LowercasePath(const char* a_path)
+	{
+		if (!a_path)
+			return {};
+		std::string result(a_path);
+		std::transform(result.begin(), result.end(), result.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		return result;
 	}
 }
 
@@ -834,7 +888,7 @@ RadiantGrid::VertexColorCacheEntry RadiantGrid::GetParticleLightConfig(RE::BSRen
 
 	auto& configs = particleLightConfigs.configs;
 	auto configIt = configs.find(*textureName);
-	const auto incandescentProfile = GetIncandescentParticleProfile(*textureName);
+	const auto incandescentProfile = GetIncandescentEmitterProfile(*textureName);
 	if (configIt == configs.end() && !incandescentProfile)
 		return cacheInvalid(node);
 
@@ -846,9 +900,9 @@ RadiantGrid::VertexColorCacheEntry RadiantGrid::GetParticleLightConfig(RE::BSRen
 	entry.config = config;
 	entry.baseColor = { 1, 1, 1, 1 };
 	if (incandescentProfile) {
-		entry.radiusScale = incandescentProfile->radiusScale;
-		entry.minimumRadius = incandescentProfile->minimumRadius;
-		entry.intensityScale = incandescentProfile->intensityScale;
+		entry.radiusScale = incandescentProfile->particleRadiusScale;
+		entry.minimumRadius = incandescentProfile->particleMinimumRadius;
+		entry.intensityScale = incandescentProfile->particleIntensityScale;
 	}
 	bool hasVertexTint = false;
 	if (auto rendererData = a_pass->geometry->GetGeometryRuntimeData().rendererData) {
@@ -881,6 +935,150 @@ RadiantGrid::VertexColorCacheEntry RadiantGrid::GetParticleLightConfig(RE::BSRen
 		vertexColorCache[node] = entry;
 	}
 	return entry;
+}
+
+RadiantGrid::VertexColorCacheEntry RadiantGrid::GetIncandescentGeometryLightConfig(RE::BSRenderPass* a_pass)
+{
+	if (!a_pass || !a_pass->geometry || !settings.EnableParticleLights)
+		return {};
+
+	auto* geometry = a_pass->geometry;
+	auto& property = geometry->GetGeometryRuntimeData().shaderProperty;
+	auto* lightingProperty = property && property->GetRTTI() == globals::rtti::BSLightingShaderPropertyRTTI.get() ?
+	                             static_cast<RE::BSLightingShaderProperty*>(property.get()) :
+	                             nullptr;
+	if (!lightingProperty)
+		return {};
+
+	auto* material = static_cast<RE::BSLightingShaderMaterialBase*>(lightingProperty->material);
+	{
+		std::shared_lock lock{ particleLightsMutex };
+		if (auto it = incandescentGeometryCache.find(geometry);
+			it != incandescentGeometryCache.end() && it->second.material == material) {
+			return it->second.light;
+		}
+	}
+
+	auto cacheResult = [&](const VertexColorCacheEntry& a_entry) {
+		std::unique_lock lock{ particleLightsMutex };
+		incandescentGeometryCache[geometry] = { material, a_entry };
+		return a_entry;
+	};
+
+	if (!material || material->GetFeature() != RE::BSShaderMaterial::Feature::kGlowMap)
+		return cacheResult({});
+
+	auto* textures = material->textureSet.get();
+	if (!textures)
+		return cacheResult({});
+
+	const std::string diffusePath = LowercasePath(textures->GetTexturePath(RE::BSTextureSet::Texture::kDiffuse));
+	const std::string glowPath = LowercasePath(textures->GetTexturePath(RE::BSTextureSet::Texture::kGlowMap));
+	if (glowPath.empty())
+		return cacheResult({});
+
+	const std::string evidence = diffusePath + '|' + glowPath;
+	const auto profile = GetIncandescentEmitterProfile(evidence);
+	if (!profile)
+		return cacheResult({});
+
+	VertexColorCacheEntry entry{};
+	entry.valid = true;
+	entry.applyEffectMaterialTint = false;
+	entry.radiusScale = profile->geometryRadiusScale;
+	entry.minimumRadius = profile->geometryMinimumRadius;
+	entry.intensityScale = profile->geometryIntensityScale;
+
+	RE::NiColor tint = profile->geometryTint;
+	float emissiveEvidence = 1.0f;
+	if (lightingProperty->emissiveColor) {
+		const RE::NiColor authored{
+			std::max(lightingProperty->emissiveColor->red, 0.0f),
+			std::max(lightingProperty->emissiveColor->green, 0.0f),
+			std::max(lightingProperty->emissiveColor->blue, 0.0f)
+		};
+		const float authoredMax = std::max({ authored.red, authored.green, authored.blue });
+		const float authoredMin = std::min({ authored.red, authored.green, authored.blue });
+		if (authoredMax > 0.05f) {
+			emissiveEvidence = authoredMax;
+			// Preserve deliberately coloured magical/blue flames while retaining a
+			// candle-like warm default for the common neutral-white emissive colour.
+			if ((authoredMax - authoredMin) / authoredMax > 0.08f) {
+				const RE::NiColor authoredChroma{ authored.red / authoredMax, authored.green / authoredMax, authored.blue / authoredMax };
+				tint.red = tint.red * 0.30f + authoredChroma.red * 0.70f;
+				tint.green = tint.green * 0.30f + authoredChroma.green * 0.70f;
+				tint.blue = tint.blue * 0.30f + authoredChroma.blue * 0.70f;
+			}
+		}
+	}
+
+	const float authoredMultiplier = std::isfinite(lightingProperty->emissiveMult) ?
+	                                     std::max(lightingProperty->emissiveMult, 0.0f) :
+	                                     0.0f;
+	const float response = std::clamp(std::sqrt(std::max(authoredMultiplier * emissiveEvidence, 0.25f)), 0.65f, 2.25f);
+	entry.baseColor = {
+		tint.red * entry.intensityScale * response,
+		tint.green * entry.intensityScale * response,
+		tint.blue * entry.intensityScale * response,
+		1.0f
+	};
+
+	return cacheResult(entry);
+}
+
+bool RadiantGrid::QueueResolvedEmitterLight(RE::NiAVObject* a_owner, const ResolvedParticleLight& a_resolved)
+{
+	if (!a_owner)
+		return false;
+
+	std::unique_lock lock{ particleLightsMutex };
+	if (auto ownerIt = queuedParticleLightOwners.find(a_owner); ownerIt != queuedParticleLightOwners.end()) {
+		auto& aggregate = queuedParticleLights[ownerIt->second];
+
+		const float aggregateEnergy = std::max({ aggregate.color.red, aggregate.color.green, aggregate.color.blue }) * aggregate.color.alpha;
+		const float resolvedEnergy = std::max({ a_resolved.color.red, a_resolved.color.green, a_resolved.color.blue }) * a_resolved.color.alpha;
+		if (resolvedEnergy > aggregateEnergy) {
+			aggregate.color = a_resolved.color;
+			aggregate.source = a_resolved.source;
+		}
+
+		if (a_resolved.radius > aggregate.radius) {
+			aggregate.position = a_resolved.position;
+			aggregate.radius = a_resolved.radius;
+		}
+		return true;
+	}
+
+	queuedParticleLightOwners.emplace(a_owner, queuedParticleLights.size());
+	queuedParticleLights.push_back(a_resolved);
+	return true;
+}
+
+bool RadiantGrid::QueueIncandescentGeometryLight(RE::BSRenderPass* a_pass)
+{
+	if (!a_pass || !a_pass->geometry)
+		return false;
+
+	const auto reference = GetIncandescentGeometryLightConfig(a_pass);
+	if (!reference.valid)
+		return false;
+
+	ResolvedParticleLight resolved{};
+	resolved.position = a_pass->geometry->worldBound.center;
+	resolved.color = reference.baseColor;
+	resolved.radius = std::clamp(
+		std::max(a_pass->geometry->worldBound.radius * reference.radiusScale, reference.minimumRadius),
+		1.0f,
+		2000.0f);
+	resolved.source = ResolvedParticleLight::Source::GlowMappedGeometry;
+
+	if (!std::isfinite(resolved.position.x) || !std::isfinite(resolved.position.y) || !std::isfinite(resolved.position.z) ||
+		!std::isfinite(resolved.color.red) || !std::isfinite(resolved.color.green) || !std::isfinite(resolved.color.blue) ||
+		!std::isfinite(resolved.radius)) {
+		return false;
+	}
+
+	return QueueResolvedEmitterLight(a_pass->geometry, resolved);
 }
 
 bool RadiantGrid::QueueParticleLight(RE::BSRenderPass* a_pass, VertexColorCacheEntry& a_reference)
@@ -921,11 +1119,26 @@ bool RadiantGrid::QueueParticleLight(RE::BSRenderPass* a_pass, VertexColorCacheE
 		std::max(a_pass->geometry->worldBound.radius * a_reference.radiusScale, a_reference.minimumRadius),
 		1.0f,
 		1600.0f);
+	if (!std::isfinite(resolved.position.x) || !std::isfinite(resolved.position.y) || !std::isfinite(resolved.position.z) ||
+		!std::isfinite(resolved.color.red) || !std::isfinite(resolved.color.green) || !std::isfinite(resolved.color.blue) ||
+		!std::isfinite(resolved.color.alpha) || !std::isfinite(resolved.radius)) {
+		return false;
+	}
+	resolved.color.red = std::max(resolved.color.red, 0.0f);
+	resolved.color.green = std::max(resolved.color.green, 0.0f);
+	resolved.color.blue = std::max(resolved.color.blue, 0.0f);
+	resolved.color.alpha = std::clamp(resolved.color.alpha, 0.0f, 1.0f);
+	resolved.source = ResolvedParticleLight::Source::Particle;
 
-	std::unique_lock lock{ particleLightsMutex };
-	queuedParticleLights.push_back(resolved);
-
-	return true;
+	// One billboard owner represents one physical fire/torch/brazier emitter.
+	// Skyrim may submit the same owner through multiple immediate-render paths,
+	// and layered particle geometry may contribute several eligible draw calls.
+	// Keep one non-additive representative so render-pass count cannot multiply
+	// local-light energy or consume clustered-light capacity unpredictably.
+	RE::NiAVObject* owner = a_pass->geometry->parent;
+	if (!owner)
+		owner = a_pass->geometry;
+	return QueueResolvedEmitterLight(owner, resolved);
 }
 
 bool RadiantGrid::CheckParticleLights(RE::BSRenderPass* a_pass, uint32_t)
@@ -951,16 +1164,58 @@ bool RadiantGrid::CheckParticleLights(RE::BSRenderPass* a_pass, uint32_t)
 
 void RadiantGrid::AddParticleLightsToBuffer(eastl::vector<LightData>& a_lightsData)
 {
-	if (!settings.EnableParticleLights)
-		return;
-
 	static float& lightFadeStart = *reinterpret_cast<float*>(REL::RelocationID(527668, 414582).address());
 	static float& lightFadeEnd = *reinterpret_cast<float*>(REL::RelocationID(527669, 414583).address());
 
 	std::unique_lock lock{ particleLightsMutex };
 
+	++particleLightFrameSerial;
+	for (const auto& [owner, index] : queuedParticleLightOwners) {
+		if (owner && index < queuedParticleLights.size()) {
+			auto& persisted = persistedParticleLights[owner];
+			persisted.light = queuedParticleLights[index];
+			persisted.lastSeenFrame = particleLightFrameSerial;
+		}
+	}
+
 	currentParticleLights.clear();
-	std::swap(currentParticleLights, queuedParticleLights);
+	queuedParticleLights.clear();
+	queuedParticleLightOwners.clear();
+	particleEmitterLightCount = 0;
+	glowMappedEmitterLightCount = 0;
+
+	// Always drain the producer queue. Otherwise toggling particle lighting off
+	// and back on can inject stale emitters from an earlier frame for one update.
+	if (!settings.EnableParticleLights) {
+		persistedParticleLights.clear();
+		currentParticleLights.clear();
+		return;
+	}
+
+	// Effect geometry is visibility-submitted by Skyrim. Without a short renderer-
+	// side hold, a candle or fire emitter disappears from the clustered-light list
+	// the instant its billboard leaves the frustum, even while the illuminated wall
+	// remains visible. Preserve only the resolved scalar payload (never dereference
+	// the owner pointer), then fade it over a bounded third of a second. This removes
+	// camera-turn lighting pops while still retiring destroyed/hidden emitters.
+	constexpr std::uint64_t kFullHoldFrames = 2;
+	constexpr std::uint64_t kLifetimeFrames = 20;
+	for (auto it = persistedParticleLights.begin(); it != persistedParticleLights.end();) {
+		const std::uint64_t age = particleLightFrameSerial - it->second.lastSeenFrame;
+		if (age > kLifetimeFrames) {
+			it = persistedParticleLights.erase(it);
+			continue;
+		}
+
+		ResolvedParticleLight resolved = it->second.light;
+		if (age > kFullHoldFrames) {
+			const float fade = 1.0f - static_cast<float>(age - kFullHoldFrames) /
+				static_cast<float>(kLifetimeFrames - kFullHoldFrames);
+			resolved.color.alpha *= std::clamp(fade, 0.0f, 1.0f);
+		}
+		currentParticleLights.push_back(resolved);
+		++it;
+	}
 
 	for (const auto& pl : currentParticleLights) {
 		if (a_lightsData.size() >= MAX_LIGHTS)
@@ -996,6 +1251,10 @@ void RadiantGrid::AddParticleLightsToBuffer(eastl::vector<LightData>& a_lightsDa
 		if ((light.color.x + light.color.y + light.color.z) * light.fade > 1e-4 && light.radius > 1e-4) {
 			light.invRadius = 1.f / light.radius;
 			a_lightsData.push_back(light);
+			if (pl.source == ResolvedParticleLight::Source::GlowMappedGeometry)
+				++glowMappedEmitterLightCount;
+			else
+				++particleEmitterLightCount;
 		}
 	}
 }
@@ -1012,6 +1271,7 @@ void RadiantGrid::Hooks::BSGeometry_Destroy::thunk(RE::BSGeometry* This)
 	{
 		std::unique_lock lock{ globals::pipeline::radiantGrid.particleLightsMutex };
 		globals::pipeline::radiantGrid.vertexColorCache.erase(This);
+		globals::pipeline::radiantGrid.incandescentGeometryCache.erase(This);
 	}
 	func(This);
 }

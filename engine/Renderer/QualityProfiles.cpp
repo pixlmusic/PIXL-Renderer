@@ -12,6 +12,7 @@
 #include "Modules/FoliageDynamics.h"
 #include "Modules/CameraSuite.h"
 #include "Modules/StrandShading.h"
+#include "Modules/HairReconstruction.h"
 #include "Modules/HybridGI.h"
 #include "Modules/ContactShadows.h"
 #include "Modules/SkinOptics.h"
@@ -57,7 +58,7 @@ namespace PIXLRenderer::QualityProfiles
 			LightingContract{ 0, 3, 6, 3, 2, 6, false, 16, 1, 1, 20, 2.8f, 4.0f, 4.0f, 0.08f },
 			LightingContract{ 0, 4, 8, 4, 3, 4, true, 24, 1, 1, 20, 2.5f, 5.0f, 6.0f, 0.10f },
 			LightingContract{ 0, 5, 10, 6, 4, 3, true, 32, 2, 1, 20, 2.2f, 6.0f, 8.0f, 0.12f },
-			LightingContract{ 0, 6, 12, 8, 4, 2, true, 48, 2, 2, 18, 2.0f, 8.0f, 10.0f, 0.14f }
+			LightingContract{ 0, 6, 12, 8, 4, 2, true, 48, 4, 2, 18, 2.0f, 8.0f, 10.0f, 0.14f }
 		};
 
 		bool NearlyEqual(float left, float right)
@@ -209,7 +210,7 @@ namespace PIXLRenderer::QualityProfiles
 			static_cast<void>(clouds);
 			// Smaller XY footprints and deeper Z grids increase froxel count. The
 			// Atmosphere prepass detects these changes and recreates its resources.
-			fog.volumetricGridPixelSize = std::array<std::uint32_t, 4>{ 32, 24, 20, 16 }[quality];
+			fog.volumetricGridPixelSize = std::array<std::uint32_t, 4>{ 48, 36, 30, 24 }[quality];
 			fog.volumetricGridSizeZ = std::array<std::uint32_t, 4>{ 32, 40, 52, 64 }[quality];
 			fog.volumetricHistoryMissSampleCount = std::array<std::uint32_t, 4>{ 1, 2, 3, 4 }[quality];
 			// Light Volumes are owned by the Lighting quality group. Atmosphere must
@@ -224,8 +225,8 @@ namespace PIXLRenderer::QualityProfiles
 			// to a visibly different vanilla water material.
 			water.EnableEnhancedSSR = true;
 			water.EnableEnhancedCaustics = true;
-			water.SSRDistanceScale = std::array{ 0.65f, 0.86f, 1.06f, 1.29f }[quality];
-			water.SSREdgeFade = std::array{ 1.35f, 1.15f, 0.95f, 0.80f }[quality];
+			water.SSRDistanceScale = std::array{ 0.65f, 0.90f, 1.20f, 1.50f }[quality];
+			water.SSREdgeFade = std::array{ 1.35f, 1.00f, 0.60f, 0.25f }[quality];
 			water.CausticsDispersion = std::array{ 0.25f, 0.45f, 0.65f, 0.88f }[quality];
 			globals::pipeline::hybridGI.recompileFlag = true;
 			globals::pipeline::hybridGI.queuedResetHistory = true;
@@ -236,23 +237,14 @@ namespace PIXLRenderer::QualityProfiles
 			auto& ground = globals::pipeline::groundResponse.settings;
 			// Vegetation material response and wind character are artistic controls,
 			// not workload controls. Preserve them at every quality tier. Scale the
-			// expensive raised snow/mud tessellation envelope instead: this produces a
-			// real GPU-cost change while retaining every PIXL interaction feature.
-			constexpr std::array<float, 4> geometryDistance{ 1800.0f, 2600.0f, 3400.0f, 4000.0f };
-			constexpr std::array<float, 4> geometryFadeStart{ 1450.0f, 2150.0f, 2850.0f, 3400.0f };
+			// expensive raised snow/mud tessellation factors instead. Coverage, depth,
+			// classification and distance are deliberately left untouched: lowering a
+			// quality preset must never change where Ground Response exists or how it
+			// behaves, only how finely its generated surface is subdivided.
 			constexpr std::array<float, 4> tessellationNear{ 4.0f, 7.0f, 10.0f, 14.0f };
 			constexpr std::array<float, 4> tessellationFar{ 1.5f, 2.0f, 2.5f, 3.0f };
-			constexpr std::array<float, 4> nearDistance{ 400.0f, 500.0f, 600.0f, 699.0f };
-			constexpr std::array<float, 4> farDistance{ 900.0f, 1250.0f, 1600.0f, 1895.0f };
-			ground.EnableDeformableGround = true;
-			ground.EnableSnowDeformation = true;
-			ground.EnableMudDeformation = true;
-			ground.GeometryRenderDistance = geometryDistance[quality];
-			ground.GeometryFadeStart = geometryFadeStart[quality];
 			ground.GeometryTessellationNear = tessellationNear[quality];
 			ground.GeometryTessellationFar = tessellationFar[quality];
-			ground.GeometryTessellationNearDistance = nearDistance[quality];
-			ground.GeometryTessellationFarDistance = farDistance[quality];
 			globals::pipeline::terrainDetail.settings.enableLODTerrainTilingFix = 1;
 		}
 
@@ -266,7 +258,7 @@ namespace PIXLRenderer::QualityProfiles
 			// Dialogue faces must retain the PIXL skin identity even on Low; tiers
 			// reduce Burley samples/detail rather than disabling scattering outright.
 			skin.UseSSS = true;
-			sss.settings.BurleySamples = std::array<uint, 4>{ 8, 12, 16, 21 }[quality];
+			sss.settings.BurleySamples = std::array<uint, 4>{ 8, 12, 18, 24 }[quality];
 			sss.updateKernels = true;
 			hair.Enabled = true;
 			hair.HairMode = quality >= High ? 1u : 0u;
@@ -336,7 +328,7 @@ namespace PIXLRenderer::QualityProfiles
 		int DetectAtmosphereTier()
 		{
 			const auto& fog = globals::pipeline::atmosphere.settings;
-			constexpr std::array<std::uint32_t, 4> gridXY{ 32, 24, 20, 16 };
+			constexpr std::array<std::uint32_t, 4> gridXY{ 48, 36, 30, 24 };
 			constexpr std::array<std::uint32_t, 4> gridZ{ 32, 40, 52, 64 };
 			constexpr std::array<std::uint32_t, 4> historyMiss{ 1, 2, 3, 4 };
 
@@ -353,8 +345,8 @@ namespace PIXLRenderer::QualityProfiles
 		int DetectWaterTier()
 		{
 			const auto& water = globals::pipeline::waterOptics.settings;
-			constexpr std::array<float, 4> distance{ 0.65f, 0.86f, 1.06f, 1.29f };
-			constexpr std::array<float, 4> edgeFade{ 1.35f, 1.15f, 0.95f, 0.80f };
+			constexpr std::array<float, 4> distance{ 0.65f, 0.90f, 1.20f, 1.50f };
+			constexpr std::array<float, 4> edgeFade{ 1.35f, 1.00f, 0.60f, 0.25f };
 			constexpr std::array<float, 4> dispersion{ 0.25f, 0.45f, 0.65f, 0.88f };
 
 			for (int quality = Low; quality <= Ultra; ++quality) {
@@ -373,23 +365,12 @@ namespace PIXLRenderer::QualityProfiles
 		{
 			const auto& ground = globals::pipeline::groundResponse.settings;
 			const auto& terrain = globals::pipeline::terrainDetail.settings;
-			constexpr std::array<float, 4> geometryDistance{ 1800.0f, 2600.0f, 3400.0f, 4000.0f };
-			constexpr std::array<float, 4> geometryFadeStart{ 1450.0f, 2150.0f, 2850.0f, 3400.0f };
 			constexpr std::array<float, 4> tessellationNear{ 4.0f, 7.0f, 10.0f, 14.0f };
 			constexpr std::array<float, 4> tessellationFar{ 1.5f, 2.0f, 2.5f, 3.0f };
-			constexpr std::array<float, 4> nearDistance{ 400.0f, 500.0f, 600.0f, 699.0f };
-			constexpr std::array<float, 4> farDistance{ 900.0f, 1250.0f, 1600.0f, 1895.0f };
 
 			for (int quality = Low; quality <= Ultra; ++quality) {
-				if (ground.EnableDeformableGround &&
-				    ground.EnableSnowDeformation &&
-				    ground.EnableMudDeformation &&
-				    NearlyEqual(ground.GeometryRenderDistance, geometryDistance[quality]) &&
-				    NearlyEqual(ground.GeometryFadeStart, geometryFadeStart[quality]) &&
-				    NearlyEqual(ground.GeometryTessellationNear, tessellationNear[quality]) &&
+				if (NearlyEqual(ground.GeometryTessellationNear, tessellationNear[quality]) &&
 				    NearlyEqual(ground.GeometryTessellationFar, tessellationFar[quality]) &&
-				    NearlyEqual(ground.GeometryTessellationNearDistance, nearDistance[quality]) &&
-				    NearlyEqual(ground.GeometryTessellationFarDistance, farDistance[quality]) &&
 				    terrain.enableLODTerrainTilingFix == 1) {
 					return quality;
 				}
@@ -402,7 +383,7 @@ namespace PIXLRenderer::QualityProfiles
 			const auto& skin = globals::pipeline::skinOptics.settings;
 			const auto& sss = globals::pipeline::tissueDiffusion.settings;
 			const auto& hair = globals::pipeline::strandShading.settings;
-			constexpr std::array<uint, 4> samples{ 8, 12, 16, 21 };
+			constexpr std::array<uint, 4> samples{ 8, 12, 18, 24 };
 
 			for (int quality = Low; quality <= Ultra; ++quality) {
 				if (skin.EnableSkin &&

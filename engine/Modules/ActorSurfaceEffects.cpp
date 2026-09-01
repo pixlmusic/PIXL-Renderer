@@ -35,9 +35,33 @@ namespace
 		return a_value.x * a_value.x + a_value.y * a_value.y + a_value.z * a_value.z;
 	}
 
+	RE::NiPoint3 ResolveActorRenderOrigin(RE::Actor* a_actor)
+	{
+		if (!a_actor)
+			return {};
+
+		// Actor/Get3D reference roots can remain on the support plane while the
+		// animated skeleton has already moved vertically (most visibly during a
+		// jump). Lighting receives the skinned skeleton result, so anchor persistent
+		// contamination to Skyrim's live NPC Root node first. This keeps a deposit
+		// attached to boots/armour instead of leaving it projected at ground height.
+		static const RE::BSFixedString kNpcRootNode("NPC Root [Root]");
+		if (auto* skeletonRoot = a_actor->GetNodeByName(kNpcRootNode);
+			skeletonRoot && IsFinite(skeletonRoot->world.translate)) {
+			return skeletonRoot->world.translate;
+		}
+
+		// Creatures and unusual skeletons may not expose the humanoid node. Their
+		// loaded scene root remains the safest renderer-owned fallback.
+		if (auto* root = a_actor->Get3D(); root && IsFinite(root->world.translate))
+			return root->world.translate;
+
+		return a_actor->GetPosition();
+	}
+
 	RE::NiPoint3 ToActorLocal(RE::Actor* a_actor, const RE::NiPoint3& a_world)
 	{
-		const RE::NiPoint3 origin = a_actor->GetPosition();
+		const RE::NiPoint3 origin = ResolveActorRenderOrigin(a_actor);
 		const float yaw = a_actor->GetAngleZ();
 		const float cosine = std::cos(yaw);
 		const float sine = std::sin(yaw);
@@ -545,6 +569,19 @@ void ActorSurfaceEffects::Reset()
 		for (auto& lobe : state.lobes) {
 			lobe.ageSeconds += dt;
 
+			if (submerged) {
+				// Entering/deeply occupying water is an authoritative wash, not a slow
+				// weathering hint. Clear snow and both mud phases immediately while
+				// retaining a temporary water film that dries normally after exit.
+				lobe.snowFresh = 0.0f;
+				lobe.snowMelting = 0.0f;
+				lobe.mudWet = 0.0f;
+				lobe.mudDry = 0.0f;
+				lobe.wetness = 1.0f;
+				lobe.splash = 0.0f;
+				continue;
+			}
+
 			const float freshToMelting = std::min(
 				lobe.snowFresh,
 				settings.SnowMeltRate * warmth * persistenceScale * dt);
@@ -578,16 +615,6 @@ void ActorSurfaceEffects::Reset()
 				lobe.wetness - settings.WetnessDryRate * (1.0f - rain) * persistenceScale * dt);
 			lobe.splash = std::max(0.0f, lobe.splash - 0.18f * dt);
 
-			if (submerged) {
-				// Skyrim's actor water state is already available here; reuse it as a
-				// bounded wash input instead of performing another water-height query.
-				const float wash = std::clamp(0.22f * dt, 0.0f, 1.0f);
-				lobe.snowFresh *= 1.0f - wash;
-				lobe.snowMelting *= 1.0f - wash * 0.75f;
-				lobe.mudWet *= 1.0f - wash * 0.48f;
-				lobe.mudDry *= 1.0f - wash * 0.82f;
-				lobe.wetness = std::max(lobe.wetness, 0.92f);
-			}
 		}
 
 		state.lobes.erase(
@@ -657,7 +684,10 @@ void ActorSurfaceEffects::Prepass()
 			QualityEventLimit(settings.EffectQuality));
 		data.Flags = (settings.EnableSnow ? 1u : 0u) | (settings.EnableMud ? 2u : 0u);
 
-		const RE::NiPoint3 actorPosition = actor->GetPosition();
+		// Match event conversion to the rendered skeleton root. Subtracting this
+		// live origin in HLSL cancels jump/gait/root motion rather than sliding an
+		// otherwise persistent deposit through the character.
+		const RE::NiPoint3 actorPosition = ResolveActorRenderOrigin(actor.get());
 		float actorHeight = actor->GetHeight();
 		if (!std::isfinite(actorHeight) || actorHeight < 24.0f || actorHeight > 420.0f)
 			actorHeight = 128.0f;
@@ -680,14 +710,27 @@ void ActorSurfaceEffects::Prepass()
 		for (std::uint32_t index = 0; index < data.EventCount; ++index) {
 			const auto& source = state.lobes[index];
 			auto& target = data.Events[index];
+			// As a deposit ages away its upper boundary recedes toward the original
+			// contact plane. This gives snow/mud a gravity-readable downward fade
+			// instead of uniformly dissolving the complete vertical lobe in place.
+			const float retainedAmount = std::clamp(source.TotalAmount(), 0.0f, 1.0f);
+			const float retainedHeight = std::lerp(
+				0.12f,
+				1.0f,
+				std::sqrt(retainedAmount));
+			const float sourceRadius = std::max(source.verticalRadius, 1.0f);
+			const float lowerBoundary = source.localCenter.z - sourceRadius;
+			const float visibleHeight = std::max(2.0f * sourceRadius * retainedHeight, 2.0f);
+			const float visibleRadius = visibleHeight * 0.5f;
+			const float visibleCenterZ = lowerBoundary + visibleRadius;
 			target.LocalCenterRadius = {
 				source.localCenter.x,
 				source.localCenter.y,
-				source.localCenter.z,
+				visibleCenterZ,
 				source.horizontalRadius
 			};
 			target.VerticalAmounts = {
-				source.verticalRadius,
+				visibleRadius,
 				source.snowFresh,
 				source.snowMelting,
 				source.mudWet
@@ -746,6 +789,10 @@ void ActorSurfaceEffects::BindLightingGeometry(RE::BSRenderPass* a_pass)
 		: runtime->neutralBuffer->CB();
 	if (settings.Enable) {
 		const auto found = runtime->actors.find(actorFormID);
+		// A contaminated actor payload already contains the byte-identical
+		// DialogueFocus prefix built during Prepass. It must win even when that actor
+		// is the dialogue subject; selecting dialogueOnly here erased every surface
+		// lobe whenever conversation focus became active.
 		if (found != runtime->actors.end() && found->second->prepared && found->second->constantBuffer)
 			buffer = found->second->constantBuffer->CB();
 	}

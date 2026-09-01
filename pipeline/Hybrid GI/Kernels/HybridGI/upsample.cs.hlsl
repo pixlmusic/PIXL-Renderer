@@ -10,6 +10,7 @@ Texture2D<half4> srcIlY : register(t2);         // low-res
 Texture2D<half2> srcIlCoCg : register(t3);      // low-res
 Texture2D<half4> srcGiSpecular : register(t4);  // low-res
 Texture2D<half4> srcBentVisibility : register(t5); // low-res: encoded bent normal.xy, visibility, confidence
+Texture2D<float2> srcNormal : register(t6);      // full pyramid: octahedral view-space normal
 
 RWTexture2D<half> outAo : register(u0);
 RWTexture2D<half4> outIlY : register(u1);
@@ -84,7 +85,20 @@ void main(const uint2 dtid : SV_DispatchThreadID)
     float maxd = max4(d);
     float avg = max(dot(d, 0.25.xxxx), 1e-4);
     float edgeThreshold = UpsampleEdgeThreshold > 0.0 ? UpsampleEdgeThreshold : 0.10;
-    bool smoothNeighborhood = ((maxd - mind) / avg) < edgeThreshold;
+
+    // Depth alone cannot distinguish two surfaces that meet at a crease (or
+    // thin alpha-tested geometry at almost the same depth).  Use the normal
+    // pyramid that HybridGI already generated to prevent AO, radiance and the
+    // bent direction from crossing those boundaries during reconstruction.
+    float3 receiverNormal = GBuffer::DecodeNormal(srcNormal.Load(int3(dtid, 0)));
+    float3 n00 = GBuffer::DecodeNormal(srcNormal.Load(int3(px00, RES_MIP)));
+    float3 n01 = GBuffer::DecodeNormal(srcNormal.Load(int3(px01, RES_MIP)));
+    float3 n10 = GBuffer::DecodeNormal(srcNormal.Load(int3(px10, RES_MIP)));
+    float3 n11 = GBuffer::DecodeNormal(srcNormal.Load(int3(px11, RES_MIP)));
+    float4 normalSimilarity = saturate(float4(
+        dot(receiverNormal, n00), dot(receiverNormal, n01),
+        dot(receiverNormal, n10), dot(receiverNormal, n11)));
+    bool smoothNeighborhood = ((maxd - mind) / avg) < edgeThreshold && min4(normalSimilarity) > 0.85f;
 
     float ao;
     float4 y;
@@ -99,7 +113,10 @@ void main(const uint2 dtid : SV_DispatchThreadID)
         // reflected radiance or a bent normal from the opposite side of an edge.
         float bgDepth = srcDepth.Load(int3(dtid, 0));
         float4 dd = abs(d - bgDepth);
-        float4 w = rcp(dd + 1e-4);
+        // Retain a small floor so a receiver near a heavily downsampled normal
+        // still has a deterministic fallback instead of producing zero weight.
+        float4 normalWeight = 0.01f.xxxx + pow(normalSimilarity, 8.0f);
+        float4 w = rcp(dd + 1e-4) * normalWeight;
         float sumw = dot(w, 1.0.xxxx);
 
         ao = BLEND_WEIGHT(srcAo[px00], srcAo[px01], srcAo[px10], srcAo[px11], w, sumw);

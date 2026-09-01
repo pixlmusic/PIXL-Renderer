@@ -58,12 +58,12 @@ Generated from the canonical CMake source globs and the release staging copy gra
 | `pipeline/Interior Daylight/Module.ini` | InteriorDaylight | YES | NO | NO | NO | NO | NO | NO |
 | `pipeline/Light Volumes/Module.ini` | LightVolumes | YES | NO | NO | NO | NO | NO | NO |
 | `pipeline/Linear Light Core/Module.ini` | LinearLightCore | YES | NO | NO | NO | NO | NO | NO |
-| `pipeline/MaterialForge/Module.ini` | MaterialForge | YES | NO | NO | NO | NO | NO | NO |
+| `pipeline/MaterialForge/Module.ini` | MaterialForge | YES | YES | NO | YES | YES | YES | YES |
 | `pipeline/Material Layers/Module.ini` | MaterialLayers | YES | NO | NO | NO | NO | NO | NO |
-| `pipeline/Natural Lighting/Module.ini` | NaturalLighting | YES | NO | NO | NO | NO | NO | NO |
+| `pipeline/Natural Lighting/Module.ini` | NaturalLighting | YES | YES | NO | YES | YES | YES | YES |
 | `pipeline/Pixel Capture/Module.ini` | PixelCapture | YES | NO | NO | NO | NO | NO | NO |
 | `pipeline/Pulse Profiler/Module.ini` | PulseProfiler | YES | NO | NO | NO | NO | NO | NO |
-| `pipeline/Radiant Grid/Module.ini` | RadiantGrid | YES | NO | NO | NO | NO | NO | NO |
+| `pipeline/Radiant Grid/Module.ini` | RadiantGrid | YES | YES | NO | YES | YES | YES | YES |
 | `pipeline/Rain Response/Module.ini` | RainResponse | YES | NO | NO | NO | NO | NO | NO |
 | `pipeline/SkinOptics/Module.ini` | SkinOptics | YES | NO | NO | NO | NO | NO | NO |
 | `pipeline/SkyBounce/Module.ini` | SkyBounce | YES | NO | NO | NO | NO | NO | NO |
@@ -145,17 +145,17 @@ Generated from the canonical CMake source globs and the release staging copy gra
 | `distribution/SOURCE-AND-CREDITS.md` | Release Package | YES | NO | NO | NO | NO | NO | NO |
 | `EXCEPTIONS.md` | Release Package | YES | NO | NO | NO | NO | NO | NO |
 | `THIRD_PARTY_NOTICES.md` | Release Package | YES | NO | NO | NO | NO | NO | NO |
-| `engine/MaterialForge.cpp` | MaterialForge | YES | NO | NO | NO | NO | NO | NO |
-| `engine/MaterialForge.h` | MaterialForge | YES | NO | NO | NO | NO | NO | NO |
-| `engine/MaterialForge/BSLightingShaderMaterialPBR.cpp` | MaterialForge | YES | NO | NO | NO | NO | NO | NO |
-| `engine/MaterialForge/BSLightingShaderMaterialPBR.h` | MaterialForge | YES | NO | NO | NO | NO | NO | NO |
-| `engine/MaterialForge/BSLightingShaderMaterialPBRLandscape.cpp` | MaterialForge | YES | NO | NO | NO | NO | NO | NO |
-| `engine/MaterialForge/BSLightingShaderMaterialPBRLandscape.h` | MaterialForge | YES | NO | NO | NO | NO | NO | NO |
-| `engine/MaterialForge/DX11TextureResolver.cpp` | MaterialForge | YES | NO | NO | NO | NO | NO | NO |
-| `engine/MaterialForge/DX11TextureResolver.h` | MaterialForge | YES | NO | NO | NO | NO | NO | NO |
-| `engine/MaterialForge/PhysicalMaterial.h` | MaterialForge | YES | NO | NO | NO | NO | NO | NO |
-| `engine/MaterialForge/PhysicalMaterialRegistry.cpp` | MaterialForge | YES | NO | NO | NO | NO | NO | NO |
-| `engine/MaterialForge/PhysicalMaterialRegistry.h` | MaterialForge | YES | NO | NO | NO | NO | NO | NO |
+| `engine/MaterialForge.cpp` | MaterialForge | YES | YES | YES | YES | YES | YES | YES |
+| `engine/MaterialForge.h` | MaterialForge | YES | YES | YES | YES | YES | YES | YES |
+| `engine/MaterialForge/BSLightingShaderMaterialPBR.cpp` | MaterialForge | YES | YES | YES | YES | YES | YES | YES |
+| `engine/MaterialForge/BSLightingShaderMaterialPBR.h` | MaterialForge | YES | YES | NO | YES | YES | YES | YES |
+| `engine/MaterialForge/BSLightingShaderMaterialPBRLandscape.cpp` | MaterialForge | YES | YES | NO | YES | YES | YES | YES |
+| `engine/MaterialForge/BSLightingShaderMaterialPBRLandscape.h` | MaterialForge | YES | YES | NO | YES | YES | YES | YES |
+| `engine/MaterialForge/DX11TextureResolver.cpp` | MaterialForge | YES | YES | NO | YES | YES | YES | YES |
+| `engine/MaterialForge/DX11TextureResolver.h` | MaterialForge | YES | YES | NO | YES | YES | YES | YES |
+| `engine/MaterialForge/PhysicalMaterial.h` | MaterialForge | YES | YES | NO | YES | YES | YES | YES |
+| `engine/MaterialForge/PhysicalMaterialRegistry.cpp` | MaterialForge | YES | YES | YES | YES | YES | YES | YES |
+| `engine/MaterialForge/PhysicalMaterialRegistry.h` | MaterialForge | YES | YES | YES | YES | YES | YES | YES |
 | `pipeline/AmbientProbe/Kernels/AmbientProbe/AmbientProbe.hlsli` | AmbientProbe | YES | NO | NO | NO | NO | NO | NO |
 | `pipeline/AmbientProbe/Kernels/AmbientProbe/DiffuseAmbientProbe.dds` | AmbientProbe | YES | NO | NO | NO | NO | NO | NO |
 | `pipeline/AmbientProbe/Kernels/AmbientProbe/DiffuseAmbientProbeCS.hlsl` | AmbientProbe | YES | NO | NO | NO | NO | NO | NO |
@@ -245,11 +245,11 @@ Generated from the canonical CMake source globs and the release staging copy gra
 | `pipeline/Material Layers/Kernels/MaterialLayers/MaterialLayersParallaxCore.hlsli` | MaterialLayers | YES | NO | NO | NO | NO | NO | NO |
 | `pipeline/Material Layers/Kernels/MaterialLayers/MaterialLayersTerrain.hlsli` | MaterialLayers | YES | NO | NO | NO | NO | NO | NO |
 | `pipeline/Material Layers/Kernels/MaterialLayers/MaterialLayersTuning.hlsli` | MaterialLayers | YES | NO | NO | NO | NO | NO | NO |
-| `pipeline/Natural Lighting/Kernels/NaturalLighting/NaturalLighting.hlsli` | NaturalLighting | YES | NO | NO | NO | NO | NO | NO |
-| `pipeline/Radiant Grid/Kernels/RadiantGrid/ClusterBuildingCS.hlsl` | RadiantGrid | YES | NO | NO | NO | NO | NO | NO |
-| `pipeline/Radiant Grid/Kernels/RadiantGrid/ClusterCullingCS.hlsl` | RadiantGrid | YES | NO | NO | NO | NO | NO | NO |
-| `pipeline/Radiant Grid/Kernels/RadiantGrid/Common.hlsli` | RadiantGrid | YES | NO | NO | NO | NO | NO | NO |
-| `pipeline/Radiant Grid/Kernels/RadiantGrid/RadiantGrid.hlsli` | RadiantGrid | YES | NO | NO | NO | NO | NO | NO |
+| `pipeline/Natural Lighting/Kernels/NaturalLighting/NaturalLighting.hlsli` | NaturalLighting | YES | YES | NO | YES | YES | YES | YES |
+| `pipeline/Radiant Grid/Kernels/RadiantGrid/ClusterBuildingCS.hlsl` | RadiantGrid | YES | YES | NO | YES | YES | YES | YES |
+| `pipeline/Radiant Grid/Kernels/RadiantGrid/ClusterCullingCS.hlsl` | RadiantGrid | YES | YES | NO | YES | YES | YES | YES |
+| `pipeline/Radiant Grid/Kernels/RadiantGrid/Common.hlsli` | RadiantGrid | YES | YES | NO | YES | YES | YES | YES |
+| `pipeline/Radiant Grid/Kernels/RadiantGrid/RadiantGrid.hlsli` | RadiantGrid | YES | YES | NO | YES | YES | YES | YES |
 | `pipeline/Rain Response/Kernels/RainResponse/optimized-ggx.hlsli` | RainResponse | YES | NO | NO | NO | NO | NO | NO |
 | `pipeline/Rain Response/Kernels/RainResponse/Precipitation.hlsli` | RainResponse | YES | NO | NO | NO | NO | NO | NO |
 | `pipeline/Rain Response/Kernels/RainResponse/RainResponse.hlsli` | RainResponse | YES | NO | NO | NO | NO | NO | NO |
@@ -273,17 +273,17 @@ Generated from the canonical CMake source globs and the release staging copy gra
 | `distribution/Shaders/Common/GBuffer.hlsli` | Shared Shader Math | YES | NO | NO | NO | NO | NO | NO |
 | `distribution/Shaders/Common/Glints/Glints2023.hlsli` | Shared Shader Math | YES | NO | NO | NO | NO | NO | NO |
 | `distribution/Shaders/Common/Glints/noisegen.cs.hlsl` | Shared Shader Math | YES | NO | NO | NO | NO | NO | NO |
-| `distribution/Shaders/Common/LightingCommon.hlsli` | Shared Shader Math | YES | NO | NO | NO | NO | NO | NO |
-| `distribution/Shaders/Common/LightingEval.hlsli` | Shared Shader Math | YES | NO | NO | NO | NO | NO | NO |
+| `distribution/Shaders/Common/LightingCommon.hlsli` | Shared Shader Math | YES | YES | NO | YES | YES | YES | YES |
+| `distribution/Shaders/Common/LightingEval.hlsli` | Shared Shader Math | YES | YES | NO | YES | YES | YES | YES |
 | `distribution/Shaders/Common/LightingLandscape.hlsli` | Shared Shader Math | YES | NO | NO | NO | NO | NO | NO |
 | `distribution/Shaders/Common/LodLandscape.hlsli` | Shared Shader Math | YES | NO | NO | NO | NO | NO | NO |
-| `distribution/Shaders/Common/MaterialForgeTuning.hlsli` | Shared Shader Math | YES | NO | NO | NO | NO | NO | NO |
+| `distribution/Shaders/Common/MaterialForgeTuning.hlsli` | Shared Shader Math | YES | YES | NO | YES | YES | YES | YES |
 | `distribution/Shaders/Common/Math.hlsli` | Shared Shader Math | YES | NO | NO | NO | NO | NO | NO |
 | `distribution/Shaders/Common/MotionBlur.hlsli` | Shared Shader Math | YES | NO | NO | NO | NO | NO | NO |
-| `distribution/Shaders/Common/PBR.hlsli` | Shared Shader Math | YES | NO | NO | NO | NO | NO | NO |
-| `distribution/Shaders/Common/PBRMath.hlsli` | Shared Shader Math | YES | NO | NO | NO | NO | NO | NO |
+| `distribution/Shaders/Common/PBR.hlsli` | Shared Shader Math | YES | YES | NO | YES | YES | YES | YES |
+| `distribution/Shaders/Common/PBRMath.hlsli` | Shared Shader Math | YES | YES | NO | YES | YES | YES | YES |
 | `distribution/Shaders/Common/Permutation.hlsli` | Shared Shader Math | YES | NO | NO | NO | NO | NO | NO |
-| `distribution/Shaders/Common/PhysicalMaterial.hlsli` | Shared Shader Math | YES | NO | NO | NO | NO | NO | NO |
+| `distribution/Shaders/Common/PhysicalMaterial.hlsli` | Shared Shader Math | YES | YES | YES | YES | YES | YES | YES |
 | `distribution/Shaders/Common/Random.hlsli` | Shared Shader Math | YES | NO | NO | NO | NO | NO | NO |
 | `distribution/Shaders/Common/Shading.hlsli` | Shared Shader Math | YES | NO | NO | NO | NO | NO | NO |
 | `distribution/Shaders/Common/ShadowSampling.hlsli` | Shared Shader Math | YES | NO | NO | NO | NO | NO | NO |
@@ -337,7 +337,7 @@ Generated from the canonical CMake source globs and the release staging copy gra
 | `distribution/Shaders/ISWaterFlow.hlsl` | Skyrim Shader Entry Points | YES | NO | NO | NO | NO | NO | NO |
 | `distribution/Shaders/ISWorldMap.hlsl` | Skyrim Shader Entry Points | YES | NO | NO | NO | NO | NO | NO |
 | `distribution/Shaders/LICENSE` | Skyrim Shader Entry Points | YES | NO | NO | NO | NO | NO | NO |
-| `distribution/Shaders/Lighting.hlsl` | Skyrim Shader Entry Points | YES | NO | NO | NO | NO | NO | NO |
+| `distribution/Shaders/Lighting.hlsl` | Skyrim Shader Entry Points | YES | YES | NO | YES | YES | YES | YES |
 | `distribution/Shaders/Menu/BackgroundBlurComposite.hlsl` | Skyrim Shader Entry Points | YES | NO | NO | NO | NO | NO | NO |
 | `distribution/Shaders/Menu/BackgroundBlurHorizontal.hlsl` | Skyrim Shader Entry Points | YES | NO | NO | NO | NO | NO | NO |
 | `distribution/Shaders/Menu/BackgroundBlurVertical.hlsl` | Skyrim Shader Entry Points | YES | NO | NO | NO | NO | NO | NO |
@@ -417,15 +417,15 @@ Generated from the canonical CMake source globs and the release staging copy gra
 | `engine/Modules/LinearLightCore.h` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/MaterialLayers.cpp` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/MaterialLayers.h` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
-| `engine/Modules/NaturalLighting.cpp` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
-| `engine/Modules/NaturalLighting.h` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
+| `engine/Modules/NaturalLighting.cpp` | Module Infrastructure | YES | YES | NO | YES | YES | YES | YES |
+| `engine/Modules/NaturalLighting.h` | Module Infrastructure | YES | YES | NO | YES | YES | YES | YES |
 | `engine/Modules/OverlayFeature.h` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/PixelCapture.cpp` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/PixelCapture.h` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/PulseProfiler.cpp` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/PulseProfiler.h` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
-| `engine/Modules/RadiantGrid.cpp` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
-| `engine/Modules/RadiantGrid.h` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
+| `engine/Modules/RadiantGrid.cpp` | Module Infrastructure | YES | YES | NO | YES | YES | YES | YES |
+| `engine/Modules/RadiantGrid.h` | Module Infrastructure | YES | YES | NO | YES | YES | YES | YES |
 | `engine/Modules/RainResponse.cpp` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/RainResponse.h` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/SkinOptics.cpp` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
@@ -460,7 +460,7 @@ Generated from the canonical CMake source globs and the release staging copy gra
 | `engine/Modules/WindowLife.h` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/WorldProbes.cpp` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/WorldProbes.h` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
-| `engine/Modules/NaturalLighting/Common.h` | Natural Lighting | YES | NO | NO | NO | NO | NO | NO |
+| `engine/Modules/NaturalLighting/Common.h` | Natural Lighting | YES | YES | NO | YES | YES | YES | YES |
 | `engine/Modules/PulseProfiler/ABTesting/ABTestAggregator.cpp` | Pulse Profiler | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/PulseProfiler/ABTesting/ABTestAggregator.h` | Pulse Profiler | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/PulseProfiler/ABTesting/ABTesting.cpp` | Pulse Profiler | YES | NO | NO | NO | NO | NO | NO |

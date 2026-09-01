@@ -36,6 +36,17 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	sharpnessDLSS,
 	presetDLSS,
 	forceLatestDLSSModelOnLegacyRTX,
+	neuralRenderingEnabled,
+	neuralRenderingPreset,
+	neuralRenderingQualityMode,
+	neuralRenderingOutputPreset,
+	neuralRenderingIntensity,
+	neuralRenderingLocalTone,
+	neuralRenderingLocalStructure,
+	neuralRenderingSkinStructure,
+	neuralRenderingStyle,
+	neuralRenderingAutoMask,
+	neuralRenderingUICorrection,
 	reflexLowLatencyMode,
 	reflexLowLatencyBoost,
 	reflexUseMarkersToOptimize,
@@ -97,8 +108,16 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 	auto refreshRate = ImageReconstruction::GetRefreshRate(pSwapChainDesc->OutputWindow);
 	imageReconstruction.refreshRate = refreshRate;
 
+	const bool neuralRenderingProvisioned =
+		imageReconstruction.settings.upscaleMethod == static_cast<uint>(ImageReconstruction::UpscaleMethod::kDLSS);
 	if (shouldProxy) {
-		if (imageReconstruction.settings.frameGenerationMode)
+		if (neuralRenderingProvisioned) {
+			// Neural Rendering reuses PIXL's DX12 sidecar but does not require a
+			// high-refresh display. Provision it for DLSS sessions even when the
+			// real-time master is off so Photo Finish can invoke it transactionally.
+			// Frame Generation remains independently gated.
+			shouldProxy = true;
+		} else if (imageReconstruction.settings.frameGenerationMode)
 			if (refreshRate >= 120)
 				shouldProxy = true;
 			else if (imageReconstruction.settings.frameGenerationForceEnable)
@@ -111,11 +130,20 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 
 	imageReconstruction.lowRefreshRate = refreshRate < 120;
 	imageReconstruction.isWindowed = pSwapChainDesc->Windowed;
+	imageReconstruction.frameGenerationRequestedAtBoot = imageReconstruction.settings.frameGenerationMode != 0;
+	imageReconstruction.neuralRenderingRequestedAtBoot = imageReconstruction.settings.neuralRenderingEnabled;
+	imageReconstruction.neuralRenderingProvisionedAtBoot = neuralRenderingProvisioned;
+	imageReconstruction.neuralRenderingQualityModeAtBoot = imageReconstruction.settings.neuralRenderingQualityMode;
+	imageReconstruction.neuralRenderingOutputPresetAtBoot = imageReconstruction.settings.neuralRenderingOutputPreset;
 
 	const D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_1;
 
 	if (shouldProxy) {
-		logger::info("[Frame Generation] Frame Generation enabled, using D3D12 proxy");
+		logger::info(
+			"[ImageReconstruction] PIXL DX12 sidecar enabled (frameGeneration={}, neuralRenderingLive={}, neuralRenderingPhotoProvisioned={})",
+			imageReconstruction.settings.frameGenerationMode != 0,
+			imageReconstruction.settings.neuralRenderingEnabled,
+			imageReconstruction.neuralRenderingProvisionedAtBoot);
 
 		if (imageReconstruction.HasFrameGenModule()) {
 			DX::ThrowIfFailed(D3D11CreateDevice(
@@ -305,17 +333,25 @@ void ImageReconstruction::DrawSettings()
 				T(TKEY("dlss_model_preset_default"), "Default"),
 				T(TKEY("dlss_model_preset_j"), "Preset J"),
 				T(TKEY("dlss_model_preset_k"), "Preset K"),
-				T(TKEY("dlss_model_preset_l"), "Preset L"),
-				T(TKEY("dlss_model_preset_m"), "Preset M"),
 				T(TKEY("dlss_model_preset_f"), "Preset F (DLAA / Ultra Performance)")
 			};
-			ImGui::Combo(T(TKEY("dlss_model_preset"), "DLSS Model Preset"), (int*)&settings.presetDLSS, presets, 6);
+			// Streamline 2.10.3 only accepts Default/J/K/F. Legacy E was
+			// removed by NVIDIA, while L/M are explicitly resolved to Default.
+			int presetSelection = settings.presetDLSS == 1 ? 1 :
+				settings.presetDLSS == 2 ? 2 : settings.presetDLSS == 5 ? 3 : 0;
+			if (ImGui::Combo(
+					T(TKEY("dlss_model_preset"), "DLSS Model Preset"),
+					&presetSelection,
+					presets,
+					IM_ARRAYSIZE(presets))) {
+				constexpr uint storedPreset[]{ 0, 1, 2, 5 };
+				settings.presetDLSS = storedPreset[std::clamp(presetSelection, 0, 3)];
+			}
 			if (auto _tt = Util::HoverTooltipWrapper()) {
-				ImGui::Text("%s", T(TKEY("dlss_model_preset_tooltip"),
-									  "Choose which DLSS AI model preset to use.\n"
-									  "Each model offers different visual quality, performance, and motion stability.\n"
-									  "Set to 'Default' for automatic selection based on your Upscale Preset and hardware.\n"
-									  "Changing this setting requires a restart to take effect."));
+				ImGui::TextWrapped(
+					"Choose a DLSS SR model preset honored by the installed Streamline 2.10.3 runtime. "
+					"NVIDIA removed legacy preset E; requesting it would silently select Default. "
+					"Changing this setting requires a restart.");
 			}
 
 			if (streamline.isRTXBelow40series) {
@@ -329,6 +365,177 @@ void ImageReconstruction::DrawSettings()
 					settings.forceLatestDLSSModelOnLegacyRTX ? ImVec4(0.42f, 0.82f, 0.64f, 1.0f) : ImVec4(0.72f, 0.75f, 0.78f, 1.0f),
 					"%s",
 					settings.forceLatestDLSSModelOnLegacyRTX ? "LATEST INSTALLED MODEL REQUESTED" : "COMPATIBILITY MODEL POLICY");
+			}
+
+			if (ImGui::TreeNodeEx("DLSS Neural Rendering (Experimental)")) {
+				ImGui::TextWrapped(
+					"Runs NVIDIA's experimental DLSSNR 310.8 model through PIXL Renderer's own DX12 sidecar. "
+					"It is optional, version-gated, and automatically retains normal DLSS output if evaluation fails.");
+
+				const bool configuredAtBoot = d3d12SwapChainActive && neuralRenderingProvisionedAtBoot;
+				if (settings.neuralRenderingEnabled && !configuredAtBoot)
+					Util::Text::Warning("Restart required to create the PIXL DX12 sidecar for Neural Rendering.");
+				if (settings.frameGenerationMode)
+					ImGui::TextWrapped("Frame Generation is scheduled after the neural presentation copy and uses dedicated raw depth/motion guides.");
+				if (globals::pipeline::cameraSuite.loaded && globals::pipeline::cameraSuite.settings.enableHDR)
+					Util::Text::Warning("The validated DLSSNR 310.8 path is SDR-only; HDR currently uses normal DLSS.");
+				if (GetModuleHandleW(L"renodx-dlss.addon64"))
+					Util::Text::Warning("RenoDX DLSS addon detected. PIXL's native path is bypassed to prevent double processing.");
+
+				ImGui::Checkbox("Enable Neural Rendering", &settings.neuralRenderingEnabled);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::TextWrapped(
+						"Requires nvngx_dlssnr.dll 310.8.x in Data/Shaders/ImageReconstruction/Streamline. "
+						"DLSS sessions provision the sidecar at startup. The real-time toggle can remain off while Photo Finish uses the same model temporarily. No ReShade or RenoDX addon is used by PIXL's path.");
+				}
+
+				const char* neuralPresets[]{ "Natural", "Balanced", "Detail", "Strong / Experimental", "Custom" };
+				int neuralPreset = static_cast<int>(std::min(settings.neuralRenderingPreset, 4u));
+				if (ImGui::Combo("Neural Rendering Preset", &neuralPreset, neuralPresets, IM_ARRAYSIZE(neuralPresets))) {
+					settings.neuralRenderingPreset = static_cast<uint>(neuralPreset);
+					switch (settings.neuralRenderingPreset) {
+					case 0:
+						settings.neuralRenderingIntensity = 0.8f;
+						settings.neuralRenderingLocalTone = 0.75f;
+						settings.neuralRenderingLocalStructure = 0.9f;
+						settings.neuralRenderingSkinStructure = 0.9f;
+						break;
+					case 1:
+						settings.neuralRenderingIntensity = 1.0f;
+						settings.neuralRenderingLocalTone = 1.0f;
+						settings.neuralRenderingLocalStructure = 1.0f;
+						settings.neuralRenderingSkinStructure = 1.0f;
+						break;
+					case 2:
+						settings.neuralRenderingIntensity = 1.35f;
+						settings.neuralRenderingLocalTone = 0.9f;
+						settings.neuralRenderingLocalStructure = 1.6f;
+						settings.neuralRenderingSkinStructure = 1.15f;
+						break;
+					case 3:
+						settings.neuralRenderingIntensity = 1.75f;
+						settings.neuralRenderingLocalTone = 1.25f;
+						settings.neuralRenderingLocalStructure = 1.5f;
+						settings.neuralRenderingSkinStructure = 1.3f;
+						break;
+					default:
+						break;
+					}
+					pendingNeuralRenderingReset.store(true, std::memory_order_release);
+				}
+
+				const auto markCustom = [&]() {
+					settings.neuralRenderingPreset = 4;
+					pendingNeuralRenderingReset.store(true, std::memory_order_release);
+				};
+				if (ImGui::SliderFloat("NR Intensity", &settings.neuralRenderingIntensity, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp))
+					markCustom();
+				if (auto _tt = Util::HoverTooltipWrapper())
+					ImGui::TextWrapped("Overall Neural Rendering contribution. Natural (0.80) is the restrained release-safe starting point.");
+
+				if (ImGui::TreeNode("Advanced NR Tuning")) {
+					const char* inputResolutionModes[]{
+						"DLAA / Native 100%",
+						"Quality",
+						"Balanced",
+						"Performance",
+						"Ultra Performance"
+					};
+					int inputResolutionMode = static_cast<int>(std::min(settings.qualityMode, 4u));
+					if (ImGui::Combo(
+							"NR / DLSS Input Resolution",
+							&inputResolutionMode,
+							inputResolutionModes,
+							IM_ARRAYSIZE(inputResolutionModes))) {
+						settings.qualityMode = static_cast<uint>(inputResolutionMode);
+						pendingDLSSReset.store(true, std::memory_order_release);
+						pendingNeuralRenderingReset.store(true, std::memory_order_release);
+						FidelityFX::needsReset.store(true, std::memory_order_release);
+					}
+					if (auto _tt = Util::HoverTooltipWrapper())
+						ImGui::TextWrapped(
+							"Controls the real scene-render input shared by DLSS Super Resolution and Neural Rendering. "
+							"Lower modes reduce geometry, lighting and model-guide pixels before reconstruction. "
+							"This is the supported workload control shown as 'internal resolution' in DLSS benchmarks; "
+							"Feature 18's output itself must remain at display resolution with the installed 310.8 runtime.");
+					if (globals::game::graphicsState) {
+						const auto displayWidth = globals::game::graphicsState->screenWidth;
+						const auto displayHeight = globals::game::graphicsState->screenHeight;
+						const auto inputWidth = static_cast<std::uint32_t>(
+							std::max(1.0f, std::floor(static_cast<float>(displayWidth) * resolutionScale.x)));
+						const auto inputHeight = static_cast<std::uint32_t>(
+							std::max(1.0f, std::floor(static_cast<float>(displayHeight) * resolutionScale.y)));
+						ImGui::TextDisabled(
+							"Current scene input: %u x %u (%.0f%% x %.0f%%) -> %u x %u",
+							inputWidth,
+							inputHeight,
+							resolutionScale.x * 100.0f,
+							resolutionScale.y * 100.0f,
+							displayWidth,
+							displayHeight);
+					}
+
+					const char* qualityModes[]{
+						"Follow Current DLSS Mode",
+						"DLAA",
+						"Quality",
+						"Balanced",
+						"Performance",
+						"Ultra Performance",
+						"Ultra Quality"
+					};
+					int qualityMode = static_cast<int>(settings.neuralRenderingQualityMode);
+					if (ImGui::Combo(
+							"NR Quality Contract",
+							&qualityMode,
+							qualityModes,
+							IM_ARRAYSIZE(qualityModes)))
+						settings.neuralRenderingQualityMode = static_cast<uint>(qualityMode);
+					if (auto _tt = Util::HoverTooltipWrapper())
+						ImGui::TextWrapped("Sets the real NGX PerfQualityValue used when Feature 18 is created. Follow Current DLSS Mode is safest. An override changes model policy, not the allocated output resolution.");
+
+					const char* outputPresets[]{ "Runtime Default", "Preset 1", "Preset 2", "Preset 3" };
+					int outputPreset = static_cast<int>(settings.neuralRenderingOutputPreset);
+					if (ImGui::Combo(
+							"NR Output Preset",
+							&outputPreset,
+							outputPresets,
+							IM_ARRAYSIZE(outputPresets)))
+						settings.neuralRenderingOutputPreset = static_cast<uint>(outputPreset);
+					if (auto _tt = Util::HoverTooltipWrapper())
+						ImGui::TextWrapped("Selects the installed 310.8 runtime's DLSSNR.Hint.Render.Preset at Feature 18 creation. These private presets are intentionally numbered because NVIDIA does not publish stable semantic names for them.");
+
+					if (settings.neuralRenderingQualityMode != neuralRenderingQualityModeAtBoot ||
+						settings.neuralRenderingOutputPreset != neuralRenderingOutputPresetAtBoot)
+						Util::Text::Warning("Restart required to apply the NR quality contract or output preset.");
+					ImGui::TextWrapped("Model precision: NVIDIA runtime automatic. The installed 310.8 DLL exposes FP8/FP16 kernels but no application INT4 parameter, so PIXL cannot safely force INT4.");
+
+					if (ImGui::SliderFloat("Local Tone", &settings.neuralRenderingLocalTone, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp))
+						markCustom();
+					if (ImGui::SliderFloat("Local Structure", &settings.neuralRenderingLocalStructure, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp))
+						markCustom();
+					if (ImGui::SliderFloat("Skin Structure", &settings.neuralRenderingSkinStructure, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp))
+						markCustom();
+					int neuralStyle = static_cast<int>(settings.neuralRenderingStyle);
+					if (ImGui::SliderInt("Model Style", &neuralStyle, 0, 3, "%d", ImGuiSliderFlags_AlwaysClamp)) {
+						settings.neuralRenderingStyle = static_cast<uint>(neuralStyle);
+						markCustom();
+					}
+					ImGui::Checkbox("Automatic Character Mask", &settings.neuralRenderingAutoMask);
+					ImGui::Checkbox("UI Correction", &settings.neuralRenderingUICorrection);
+					ImGui::TreePop();
+				}
+
+				ImGui::Separator();
+				ImGui::Text("Runtime: %s", neuralRendering.GetStatusText());
+				if (!neuralRendering.GetVersion().empty())
+					ImGui::Text("Version: %s", neuralRendering.GetVersion().c_str());
+				if (!neuralRendering.GetDetail().empty())
+					ImGui::TextWrapped("%s", neuralRendering.GetDetail().c_str());
+				if (neuralRendering.GetSuccessfulFrames() > 0)
+					ImGui::Text("Successful frames: %llu", static_cast<unsigned long long>(neuralRendering.GetSuccessfulFrames()));
+
+				ImGui::TreePop();
 			}
 		}
 	}
@@ -549,10 +756,21 @@ void ImageReconstruction::LoadSettings(json& o_json)
 		logger::warn("[ImageReconstruction] Loaded upscaleMethodNoDLSS {} out of range, clamping to {}", settings.upscaleMethodNoDLSS, enumCount ? enumCount - 1 : 0);
 		settings.upscaleMethodNoDLSS = enumCount ? enumCount - 1 : 0;
 	}
-	if (settings.presetDLSS > 5) {
-		logger::warn("[ImageReconstruction] Loaded presetDLSS {} out of range, resetting to 0 (Default)", settings.presetDLSS);
+	if (settings.presetDLSS > 5 || settings.presetDLSS == 3 || settings.presetDLSS == 4) {
+		logger::warn("[ImageReconstruction] Loaded unsupported presetDLSS {}, resetting to 0 (Default)", settings.presetDLSS);
 		settings.presetDLSS = 0;
 	}
+	settings.neuralRenderingPreset = std::min(settings.neuralRenderingPreset, 4u);
+	settings.neuralRenderingQualityMode = std::min(settings.neuralRenderingQualityMode, 6u);
+	settings.neuralRenderingOutputPreset = std::min(settings.neuralRenderingOutputPreset, 3u);
+	settings.neuralRenderingStyle = std::min(settings.neuralRenderingStyle, 3u);
+	const auto sanitizeNeuralFloat = [](float& value, float fallback) {
+		value = std::isfinite(value) ? std::clamp(value, 0.0f, 2.0f) : fallback;
+	};
+	sanitizeNeuralFloat(settings.neuralRenderingIntensity, 0.8f);
+	sanitizeNeuralFloat(settings.neuralRenderingLocalTone, 0.75f);
+	sanitizeNeuralFloat(settings.neuralRenderingLocalStructure, 0.9f);
+	sanitizeNeuralFloat(settings.neuralRenderingSkinStructure, 0.9f);
 	const float originalReflexFPSLimit = settings.reflexFPSLimit;
 	if (!std::isfinite(settings.reflexFPSLimit)) {
 		settings.reflexFPSLimit = 60.0f;
@@ -647,6 +865,7 @@ RE::BSEventNotifyControl ImageReconstruction::MenuOpenCloseEventHandler::Process
 	if (a_event && a_event->menuName == RE::LoadingMenu::MENU_NAME && !a_event->opening) {
 		auto& reconstruction = globals::pipeline::imageReconstruction;
 		reconstruction.pendingDLSSReset.store(true, std::memory_order_release);
+		reconstruction.pendingNeuralRenderingReset.store(true, std::memory_order_release);
 		// Frame generation owns separate temporal state and may be active even when
 		// the selected image reconstruction method is not FSR.
 		FidelityFX::needsReset.store(true, std::memory_order_release);
@@ -1039,6 +1258,48 @@ void ImageReconstruction::EndPhotoCaptureJitter()
 	photoCaptureJitterIndex = 0u;
 }
 
+void ImageReconstruction::BeginPhotoCaptureRenderOverride(float minimumRenderScale, bool enableNeuralRendering)
+{
+	const bool activateNeural = enableNeuralRendering && CanUsePhotoNeuralRendering();
+	photoCaptureNeuralOverrideActive.store(activateNeural, std::memory_order_release);
+	// Feature 18's most reliable still-image contract is a native DLAA input.
+	// Do not mutate the serialized gameplay setting; expose quality mode 0 only
+	// for the lifetime of this transaction and restore it atomically on exit.
+	photoCaptureMinimumRenderScale = activateNeural
+		? 1.0f
+		: std::clamp(minimumRenderScale, 0.0f, 1.0f);
+	photoCaptureRenderOverrideActive = true;
+	pendingDLSSReset.store(true, std::memory_order_release);
+	pendingNeuralRenderingReset.store(true, std::memory_order_release);
+	FidelityFX::needsReset.store(true, std::memory_order_release);
+	globals::pipeline::hybridGI.queuedResetTemporalHistory.store(true, std::memory_order_release);
+	if (activateNeural) {
+		logger::info("Photo Finish neural override enabled: temporary DLAA/native input, gameplay Neural Rendering setting preserved.");
+	}
+	if (photoCaptureMinimumRenderScale > 0.0f) {
+		logger::info(
+			"Photo Finish internal render override enabled: minimum {:.0f}% of display resolution.",
+			photoCaptureMinimumRenderScale * 100.0f);
+	} else {
+		logger::info("Photo Finish internal render override enabled at the current gameplay scale.");
+	}
+}
+
+void ImageReconstruction::EndPhotoCaptureRenderOverride()
+{
+	if (!photoCaptureRenderOverrideActive)
+		return;
+
+	photoCaptureRenderOverrideActive = false;
+	photoCaptureMinimumRenderScale = 0.0f;
+	photoCaptureNeuralOverrideActive.store(false, std::memory_order_release);
+	pendingDLSSReset.store(true, std::memory_order_release);
+	pendingNeuralRenderingReset.store(true, std::memory_order_release);
+	FidelityFX::needsReset.store(true, std::memory_order_release);
+	globals::pipeline::hybridGI.queuedResetTemporalHistory.store(true, std::memory_order_release);
+	logger::info("Photo Finish render/neural overrides released; gameplay reconstruction restored.");
+}
+
 void ImageReconstruction::ConfigureTAA()
 {
 	auto upscaleMethod = GetUpscaleMethod();
@@ -1066,7 +1327,12 @@ void ImageReconstruction::ConfigureUpscaling(RE::BSGraphics::State* a_viewport)
 	auto screenHeight = static_cast<int>(screenSize.y);
 
 	if (upscaleMethod != UpscaleMethod::kNONE && upscaleMethod != UpscaleMethod::kTAA) {
-		float resolutionScaleBase = 1.0f / ffxFsr3GetUpscaleRatioFromQualityMode((FfxFsr3QualityMode)settings.qualityMode);
+		float resolutionScaleBase = 1.0f / ffxFsr3GetUpscaleRatioFromQualityMode((FfxFsr3QualityMode)GetEffectiveQualityMode());
+		if (photoCaptureRenderOverrideActive) {
+			resolutionScaleBase = std::max(
+				resolutionScaleBase,
+				photoCaptureMinimumRenderScale);
+		}
 
 		auto renderWidth = static_cast<int>(screenWidth * resolutionScaleBase);
 		auto renderHeight = static_cast<int>(screenHeight * resolutionScaleBase);
@@ -1209,7 +1475,7 @@ void ImageReconstruction::ClearShaderCache()
 	upscaleVS = nullptr;                 // com_ptr automatically releases
 }
 
-void ImageReconstruction::CopySharedD3D12Resources()
+void ImageReconstruction::CopySharedD3D12Resources(bool a_useNeuralGuides)
 {
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "ImageReconstruction - Copy Shared D3D12 Resources");
@@ -1219,7 +1485,28 @@ void ImageReconstruction::CopySharedD3D12Resources()
 	auto context = globals::d3d::context;
 
 	auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
-	context->CopyResource(dx12SwapChain.motionVectorBufferShared12->resource11, motionVector.texture);
+	ID3D11Texture2D* motionSource = motionVector.texture;
+	if (a_useNeuralGuides && motionVectorCopyTexture && motionVectorCopyTexture->resource)
+		motionSource = motionVectorCopyTexture->resource.get();
+	auto* motionTarget = a_useNeuralGuides
+		? dx12SwapChain.neuralMotionVectorBufferShared12.get()
+		: dx12SwapChain.motionVectorBufferShared12.get();
+	auto* depthTarget = a_useNeuralGuides
+		? dx12SwapChain.neuralDepthBufferShared12.get()
+		: dx12SwapChain.depthBufferShared12.get();
+	if (!motionTarget || !depthTarget) {
+		globals::state->EndPerfEvent();
+		return;
+	}
+	context->CopyResource(motionTarget->resource11, motionSource);
+
+	if (a_useNeuralGuides) {
+		const auto guideSize = Util::ConvertToDynamic(float2{
+			static_cast<float>(globals::game::graphicsState->screenWidth),
+			static_cast<float>(globals::game::graphicsState->screenHeight) });
+		dx12SwapChain.neuralGuideWidth = std::max(1u, static_cast<UINT>(guideSize.x));
+		dx12SwapChain.neuralGuideHeight = std::max(1u, static_cast<UINT>(guideSize.y));
+	}
 
 	auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 
@@ -1254,7 +1541,7 @@ void ImageReconstruction::CopySharedD3D12Resources()
 		context->PSSetShaderResources(0, ARRAYSIZE(views), views);
 
 		// Set render target view for pixel shader output
-		ID3D11RenderTargetView* rtvs[1] = { dx12SwapChain.depthBufferShared12->rtv };
+		ID3D11RenderTargetView* rtvs[1] = { depthTarget->rtv };
 		context->OMSetRenderTargets(ARRAYSIZE(rtvs), rtvs, nullptr);
 
 		context->PSSetShader(copyDepthToSharedBufferPS.get(), nullptr, 0);
@@ -1429,7 +1716,7 @@ bool ImageReconstruction::IsFrameGenerationDx12PathActive() const
 
 bool ImageReconstruction::IsFrameGenerationActive() const
 {
-	return IsFrameGenerationDx12PathActive() && settings.frameGenerationMode &&
+	return IsFrameGenerationDx12PathActive() && frameGenerationRequestedAtBoot && settings.frameGenerationMode &&
 	       !fidelityFX.frameGenerationRuntimeFault && fidelityFX.isFrameGenActive;
 }
 
@@ -1438,14 +1725,48 @@ bool ImageReconstruction::IsFrameGenerationTemporarilySuspended() const
 	auto* ui = globals::game::ui;
 	auto* state = globals::state;
 	const bool menuOpen = (ui && ui->GameIsPaused()) || (state && state->IsMainOrLoadingMenuOpen(ui));
-	return IsFrameGenerationDx12PathActive() && settings.frameGenerationMode &&
+	return IsFrameGenerationDx12PathActive() && frameGenerationRequestedAtBoot && settings.frameGenerationMode &&
 	       !fidelityFX.frameGenerationRuntimeFault && menuOpen && !settings.frameGenerationAllowInMenus;
 }
 
 bool ImageReconstruction::ShouldUseFrameGenerationThisFrame() const
 {
-	return IsFrameGenerationDx12PathActive() && settings.frameGenerationMode &&
+	return IsFrameGenerationDx12PathActive() && frameGenerationRequestedAtBoot && settings.frameGenerationMode &&
 	       !fidelityFX.frameGenerationRuntimeFault && !IsFrameGenerationTemporarilySuspended();
+}
+
+bool ImageReconstruction::IsNeuralRenderingConfiguredForSession()
+{
+	return d3d12SwapChainActive && neuralRenderingProvisionedAtBoot && settings.neuralRenderingEnabled &&
+	       GetUpscaleMethod() == UpscaleMethod::kDLSS;
+}
+
+bool ImageReconstruction::CanUsePhotoNeuralRendering()
+{
+	if (!d3d12SwapChainActive || !neuralRenderingProvisionedAtBoot ||
+		GetUpscaleMethod() != UpscaleMethod::kDLSS)
+		return false;
+	if (globals::pipeline::cameraSuite.loaded && globals::pipeline::cameraSuite.settings.enableHDR)
+		return false;
+	if (GetModuleHandleW(L"renodx-dlss.addon64")) {
+		static bool conflictLogged = false;
+		if (!conflictLogged) {
+			logger::warn("[NeuralRendering] RenoDX DLSS addon is loaded; PIXL native Neural Rendering is bypassed to prevent double processing");
+			conflictLogged = true;
+		}
+		return false;
+	}
+	const auto status = neuralRendering.GetStatus();
+	return status == NeuralRendering::Status::NotProbed ||
+	       status == NeuralRendering::Status::Ready ||
+	       status == NeuralRendering::Status::Initialized;
+}
+
+bool ImageReconstruction::ShouldUseNeuralRenderingThisFrame()
+{
+	if (!settings.neuralRenderingEnabled && !IsPhotoNeuralRenderingActive())
+		return false;
+	return CanUsePhotoNeuralRendering();
 }
 
 ImageReconstruction::FrameGenerationState ImageReconstruction::GetFrameGenerationState() const
@@ -1456,7 +1777,9 @@ ImageReconstruction::FrameGenerationState ImageReconstruction::GetFrameGeneratio
 	if (fidelityFX.frameGenerationRuntimeFault)
 		return FrameGenerationState::RuntimeFault;
 	if (!requested)
-		return pathActive ? FrameGenerationState::RestartRequired : FrameGenerationState::Off;
+		return frameGenerationRequestedAtBoot ? FrameGenerationState::RestartRequired : FrameGenerationState::Off;
+	if (!frameGenerationRequestedAtBoot)
+		return FrameGenerationState::RestartRequired;
 	if (!pathActive) {
 		if (!isWindowed || fidelityFXMissing || (lowRefreshRate && !settings.frameGenerationForceEnable))
 			return FrameGenerationState::Unavailable;
@@ -1624,6 +1947,7 @@ void ImageReconstruction::Upscale()
 
 	if (cameraCut || dynamicResolutionChanged || fovChanged) {
 		pendingDLSSReset.store(true, std::memory_order_release);
+		pendingNeuralRenderingReset.store(true, std::memory_order_release);
 		FidelityFX::needsReset.store(true, std::memory_order_release);
 		if (cameraCut)
 			globals::pipeline::hybridGI.queuedResetHistory.store(true, std::memory_order_release);
@@ -1954,11 +2278,19 @@ void ImageReconstruction::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_th
 	auto& imageReconstruction = globals::pipeline::imageReconstruction;
 	auto upscaleMethod = imageReconstruction.GetUpscaleMethod();
 
-	if (imageReconstruction.ShouldUseFrameGenerationThisFrame())
-		imageReconstruction.CopySharedD3D12Resources();
+	const bool useFrameGeneration = imageReconstruction.ShouldUseFrameGenerationThisFrame();
+	const bool useNeuralRendering = imageReconstruction.ShouldUseNeuralRenderingThisFrame();
+	if (useFrameGeneration)
+		imageReconstruction.CopySharedD3D12Resources(false);
 
 	if (upscaleMethod != UpscaleMethod::kNONE && upscaleMethod != UpscaleMethod::kTAA)
 		imageReconstruction.PerformUpscaling();
+
+	// NR consumes PIXL's encoded/dilated DLSS motion guide. Copy it only after
+	// EncodeTexturesCS has produced the current frame, while preserving the raw
+	// pre-upscale guide path required by frame generation.
+	if (useNeuralRendering)
+		imageReconstruction.CopySharedD3D12Resources(true);
 
 	if (upscaleMethod == UpscaleMethod::kDLSS)
 		imageReconstruction.ApplySharpening();

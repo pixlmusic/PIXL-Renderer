@@ -29,8 +29,8 @@ PIXL currently contains **37 integrated rendering modules**, plus renderer-level
 
 ### Lighting and atmosphere
 
-- **Radiance Weave (Hybrid GI)** combines detailed screen-space diffuse/specular indirect lighting with a persistent two-cascade world irradiance cache, secondary bounce, directional occlusion, temporal accumulation and edge-aware denoising.
-- **Radiant Grid** replaces Skyrim's four-light restriction with clustered dynamic-light handling.
+- **Radiance Weave (Hybrid GI)** combines detailed screen-space diffuse/specular indirect lighting with a persistent two-cascade world irradiance cache, secondary bounce, directional visibility/bent normals, confidence-aware temporal accumulation and edge-aware denoising. Valid history is retained during rapid camera rotation instead of being discarded merely because the view moved quickly.
+- **Radiant Grid** replaces Skyrim's four-light restriction with clustered dynamic-light handling. Particle-derived candles, torches and fires are deduplicated by emitter and retain a short bounded submission history so their illumination remains stable through turns and brief visibility changes.
 - **Linear Light Core** performs lighting in a more appropriate colour space so PBR, emissive and indirect-light calculations behave consistently.
 - **Natural Lighting** adds physically motivated inverse-square attenuation with controlled falloff.
 - **Ambient Probe** derives ambient irradiance from environment and sky cubemaps using spherical harmonics.
@@ -48,7 +48,7 @@ PIXL currently contains **37 integrated rendering modules**, plus renderer-level
 - **Window Life** upgrades architectural glass with old-glass optics, recessed room atlases, curtains, furniture depth, varied occupants, stable architectural families and adaptive window fitting. It is designed to stay inside the actual pane instead of illuminating half of Solitude—which turns out to be quite an important detail lol.
 - **Skin Optics** adds layered skin response, dual specular lobes, micro detail and dynamic wetness.
 - **Tissue Diffusion** provides material-aware subsurface light transport for natural skin and other translucent surfaces.
-- **Strand Shading** gives hair directional, tangent-based specular response and controllable highlight shift.
+- **Strand Shading** gives hair the stable legacy PIXL directional, tangent-based specular response and controllable highlight shift. The experimental Hair Reconstruction module has been retired from the shipping pipeline in favour of this known-good path.
 - **Thin Surface** supports directional transmission and multiple translucent fabric/surface models.
 - **Actor Surface Effects** adds bounded, contact-driven snow, mud and wetness accumulation to the player and nearby NPCs. Effects evolve over time, remain anchored in actor/model space, and share Ground Response and weather state rather than painting a fixed biome-height band onto every character.
 - **Foliage Dynamics** improves grass and vegetation lighting, GGX-style specular response, subsurface transmission, complex-grass normal handling and natural material controls.
@@ -69,9 +69,9 @@ PIXL currently contains **37 integrated rendering modules**, plus renderer-level
 
 ### Display, performance and creation tools
 
-- **Image Reconstruction** integrates TAA, NVIDIA DLSS/DLAA, AMD FidelityFX Super Resolution and supported frame-generation paths.
+- **Image Reconstruction** integrates TAA, NVIDIA DLSS/DLAA, AMD FidelityFX Super Resolution and supported frame-generation paths. The optional DX11/DX12 interop Neural Rendering path keeps depth, motion and UI resources synchronized through Present, exposes model precision/tuning controls, and provides a truthful DLSS/NR scene-input resolution selector for scaling its real geometry and guide workload.
 - **Camera Suite** supports HDR10 output, 16-bit intermediate rendering, histogram exposure, highlight protection, local adaptation and optional experimental lens/sensor behaviour.
-- **Pixel Capture** provides asynchronous lossless screenshots, HDR PNG output and a Director Photo Finish path with temporal multi-sampling and high-resolution finishing.
+- **Pixel Capture** provides asynchronous lossless screenshots, HDR PNG output and a Director Photo Finish path with locked-camera temporal accumulation, temporary native/DLAA reconstruction and optional offline-quality Neural Rendering before the final composite is captured.
 - **Pulse Profiler** exposes frame timing, FPS, draw calls, VRAM, shader timing and repeatable A/B performance comparisons.
 - **PIXL World Benchmark** runs repeatable scene fly-throughs, records samples/settings and captures reference frames for performance and visual-fidelity comparison.
 - **Quality Profiles** apply real Low/Medium/High/Ultra changes across renderer groups; a preset that does nothing is treated as a bug, not a feature.

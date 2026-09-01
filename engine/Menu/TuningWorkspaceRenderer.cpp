@@ -18,6 +18,7 @@
 #include "RenderModule.h"
 #include "Modules/HybridGI.h"
 #include "Modules/CameraSuite.h"
+#include "Modules/ImageReconstruction.h"
 #include "Modules/PixelCapture.h"
 #include "Modules/PulseProfiler.h"
 #include "ModuleRules.h"
@@ -110,6 +111,10 @@ namespace
 		// stays suppressed through the temporal sample window.
 		int captureDelayFrames = 0;
 		int captureHideFrames = 0;
+		bool capturePoseValid = false;
+		RE::NiPoint3 captureLockedTranslation{};
+		float captureLockedPitch = 0.0f;
+		float captureLockedYaw = 0.0f;
 
 		float originalHour = 12.0f;
 		float photoHour = 12.0f;
@@ -133,6 +138,8 @@ namespace
 	std::atomic_bool g_directorExitRequested{ false };
 	std::atomic_bool g_directorExitTaskScheduled{ false };
 	std::atomic_bool g_directorExitTaskComplete{ false };
+	std::atomic_bool g_directorCaptureLocked{ false };
+	std::atomic_bool g_directorCaptureDispatched{ false };
 
 	bool EvaluateDirectorPhotoModeEligibility(
 		std::string* reason)
@@ -563,6 +570,9 @@ namespace
 		g_directorPhotoMode.cameraMoveSpeed = 1.0f;
 		g_directorPhotoMode.captureDelayFrames = 0;
 		g_directorPhotoMode.captureHideFrames = 0;
+		g_directorPhotoMode.capturePoseValid = false;
+		g_directorCaptureLocked.store(false, std::memory_order_release);
+		g_directorCaptureDispatched.store(false, std::memory_order_release);
 
 		// CommonLib exposes Skyrim's native free-camera path directly. Passing
 		// true asks the engine to freeze world simulation while free camera is
@@ -673,6 +683,9 @@ namespace
 			g_directorPhotoMode.cameraMotionVelocity = {};
 			g_directorPhotoMode.captureDelayFrames = 0;
 			g_directorPhotoMode.captureHideFrames = 0;
+			g_directorPhotoMode.capturePoseValid = false;
+			g_directorCaptureLocked.store(false, std::memory_order_release);
+			g_directorCaptureDispatched.store(false, std::memory_order_release);
 			g_directorPhotoMode.playerAlphaSnapshotValid = false;
 			g_directorPhotoMode.originalPlayerAlpha = 1.0f;
 			g_directorPhotoMode.fovSnapshotValid = false;
@@ -1016,6 +1029,7 @@ namespace
 					preset.motionEnabled = capture->photoFinishMotionEnabled;
 					preset.motionStrength = capture->photoFinishMotionStrength;
 					preset.motionAngleDegrees = capture->photoFinishMotionAngleDegrees;
+					preset.neuralPhotoEnabled = capture->photoFinishNeuralEnabled;
 					if (globals::state)
 						globals::state->Save();
 				}
@@ -1037,6 +1051,11 @@ namespace
 					capture->photoFinishMotionEnabled = preset.motionEnabled;
 					capture->photoFinishMotionStrength = preset.motionStrength;
 					capture->photoFinishMotionAngleDegrees = preset.motionAngleDegrees;
+					capture->photoFinishNeuralEnabled = preset.neuralPhotoEnabled;
+					if (capture->photoFinishNeuralEnabled) {
+						capture->photoFinishTemporalSamples =
+							std::max(capture->photoFinishTemporalSamples, 8u);
+					}
 					ApplyDirectorWorldFov(preset.fieldOfView);
 					camera.LoadLookTexture();
 					camera.UpdateHDRData();
@@ -1126,6 +1145,10 @@ namespace
 		Contrast,
 		Colour,
 		CaptureQuality,
+		CaptureRenderScale,
+		LightingConvergence,
+		NeuralCapture,
+		NeuralRefinement,
 		OutputResolution,
 		TemporalSampling,
 		MotionFinish,
@@ -1282,13 +1305,33 @@ namespace
 			GetDirectorCapture();
 
 		if (!capture ||
-			capture->IsPhotoFinishSampling())
+			capture->IsPhotoFinishBusy() ||
+			g_directorCaptureLocked.load(std::memory_order_acquire))
 			return;
+
+		if (auto* camera = RE::PlayerCamera::GetSingleton();
+			camera && camera->IsInFreeCameraMode()) {
+			auto* freeCameraState = static_cast<RE::FreeCameraState*>(
+				camera->currentState.get());
+			if (freeCameraState) {
+				g_directorPhotoMode.captureLockedTranslation = freeCameraState->translation;
+				g_directorPhotoMode.captureLockedPitch = freeCameraState->rotation.x;
+				g_directorPhotoMode.captureLockedYaw = freeCameraState->rotation.y;
+				g_directorPhotoMode.capturePoseValid = true;
+				g_directorPhotoMode.cameraMotionPosition = freeCameraState->translation;
+				g_directorPhotoMode.cameraMotionVelocity = {};
+				camera->rotationInput = {};
+				camera->translationInput = {};
+				camera->zoomInput = 0.0f;
+			}
+		}
 
 		g_directorPhotoMode.captureDelayFrames =
 			2;
 		g_directorPhotoMode.captureHideFrames =
 			0;
+		g_directorCaptureDispatched.store(false, std::memory_order_release);
+		g_directorCaptureLocked.store(true, std::memory_order_release);
 	}
 
 	void DispatchDirectorPhotoCapture()
@@ -1316,6 +1359,8 @@ namespace
 			g_directorPhotoMode.captureHideFrames =
 				4;
 		}
+
+		g_directorCaptureDispatched.store(true, std::memory_order_release);
 	}
 
 	void AdjustDirectorQuickOption(int direction)
@@ -1531,27 +1576,84 @@ namespace
 					capture->photoFinishTemporalSamples = 4u;
 					capture->photoFinishScale = 1u;
 					capture->photoFinishDetailStrength = 0.28f;
+					capture->photoFinishRenderScaleMode = 0u;
+					capture->photoFinishLightingWarmupFrames = 0u;
+					capture->photoFinishNeuralFeedbackSteps = 1u;
 					capture->photoLensDofQuality = 0u;
 					break;
 				case 1:
 					capture->photoFinishTemporalSamples = 8u;
 					capture->photoFinishScale = 2u;
 					capture->photoFinishDetailStrength = 0.45f;
+					capture->photoFinishRenderScaleMode = 1u;
+					capture->photoFinishLightingWarmupFrames = 4u;
+					capture->photoFinishNeuralFeedbackSteps = 1u;
 					capture->photoLensDofQuality = 1u;
 					break;
 				case 2:
 					capture->photoFinishTemporalSamples = 16u;
 					capture->photoFinishScale = 2u;
 					capture->photoFinishDetailStrength = 0.65f;
+					capture->photoFinishRenderScaleMode = 2u;
+					capture->photoFinishLightingWarmupFrames = 8u;
+					capture->photoFinishNeuralFeedbackSteps = 2u;
 					capture->photoLensDofQuality = 2u;
 					break;
 				default:
 					capture->photoFinishTemporalSamples = 24u;
 					capture->photoFinishScale = 4u;
 					capture->photoFinishDetailStrength = 0.82f;
+					capture->photoFinishRenderScaleMode = 2u;
+					capture->photoFinishLightingWarmupFrames = 16u;
+					capture->photoFinishNeuralFeedbackSteps = 3u;
 					capture->photoLensDofQuality = 3u;
 					break;
 				}
+
+				if (capture->photoFinishNeuralEnabled) {
+					capture->photoFinishTemporalSamples =
+						std::max(capture->photoFinishTemporalSamples, 8u);
+				}
+			}
+			break;
+
+		case DirectorQuickOption::CaptureRenderScale:
+			if (capture) {
+				const int mode = static_cast<int>(capture->photoFinishRenderScaleMode);
+				capture->photoFinishRenderScaleMode = static_cast<unsigned int>(
+					(mode + direction + 3) % 3);
+			}
+			break;
+
+		case DirectorQuickOption::LightingConvergence:
+			if (capture) {
+				const auto frames = capture->photoFinishLightingWarmupFrames;
+				capture->photoFinishLightingWarmupFrames = direction > 0
+					? (frames < 4u ? 4u : frames < 8u ? 8u : frames < 16u ? 16u : 0u)
+					: (frames >= 16u ? 8u : frames >= 8u ? 4u : frames >= 4u ? 0u : 16u);
+			}
+			break;
+
+		case DirectorQuickOption::NeuralCapture:
+			if (capture) {
+				capture->photoFinishNeuralEnabled =
+					!capture->photoFinishNeuralEnabled;
+
+				// Neural Photo Finish is intentionally a multi-frame operation.  Do
+				// not let enabling it from the Insert panel retain a legacy one-frame
+				// capture setting that would bypass temporal convergence.
+				if (capture->photoFinishNeuralEnabled)
+					capture->photoFinishTemporalSamples =
+						std::max(capture->photoFinishTemporalSamples, 8u);
+			}
+			break;
+
+		case DirectorQuickOption::NeuralRefinement:
+			if (capture) {
+				const int steps = static_cast<int>(
+					std::clamp(capture->photoFinishNeuralFeedbackSteps, 1u, 3u));
+				capture->photoFinishNeuralFeedbackSteps = static_cast<unsigned int>(
+					((steps - 1 + direction + 3) % 3) + 1);
 			}
 			break;
 
@@ -1583,30 +1685,16 @@ namespace
 
 		case DirectorQuickOption::TemporalSampling:
 			if (capture) {
-				if (direction > 0) {
-					capture->
-						photoFinishTemporalSamples =
-							capture->
-									photoFinishTemporalSamples <
-								4u
-								? 4u
-								: capture->
-										  photoFinishTemporalSamples <
-									  8u
-									? 8u
-									: 1u;
+				const auto samples = capture->photoFinishTemporalSamples;
+				if (capture->photoFinishNeuralEnabled) {
+					// Feature 18 capture always collects a useful convergence burst.
+					capture->photoFinishTemporalSamples = direction > 0
+						? (samples < 16u ? 16u : samples < 24u ? 24u : 8u)
+						: (samples > 16u ? 16u : samples > 8u ? 8u : 24u);
 				} else {
-					capture->
-						photoFinishTemporalSamples =
-							capture->
-									photoFinishTemporalSamples >=
-								8u
-								? 4u
-								: capture->
-										  photoFinishTemporalSamples >=
-									  4u
-									? 1u
-									: 8u;
+					capture->photoFinishTemporalSamples = direction > 0
+						? (samples < 4u ? 4u : samples < 8u ? 8u : samples < 16u ? 16u : samples < 24u ? 24u : 1u)
+						: (samples >= 24u ? 16u : samples >= 16u ? 8u : samples >= 8u ? 4u : samples >= 4u ? 1u : 24u);
 				}
 			}
 			break;
@@ -1811,6 +1899,54 @@ namespace
 			}
 			break;
 
+		case DirectorQuickOption::CaptureRenderScale:
+			result.label = "Internal Render";
+			if (!capture)
+				result.value = "N/A";
+			else if (capture->photoFinishRenderScaleMode >= 2u)
+				result.value = "NATIVE 100%";
+			else if (capture->photoFinishRenderScaleMode >= 1u)
+				result.value = "HIGH 85%";
+			else
+				result.value = "CURRENT";
+			break;
+
+		case DirectorQuickOption::LightingConvergence:
+			result.label = "Lighting Convergence";
+			result.value = capture
+				? (capture->photoFinishLightingWarmupFrames > 0u
+					? std::format("{} FRAMES", capture->photoFinishLightingWarmupFrames)
+					: "OFF")
+				: "N/A";
+			break;
+
+		case DirectorQuickOption::NeuralCapture:
+			result.label = "Neural Final Composite";
+			if (!capture) {
+				result.value = "N/A";
+			} else if (!capture->photoFinishNeuralEnabled) {
+				result.value = "OFF";
+			} else {
+				auto& reconstruction = globals::pipeline::imageReconstruction;
+				const bool neuralReady = reconstruction.CanUsePhotoNeuralRendering() &&
+					reconstruction.dx12SwapChain.GetProvisionedNeuralOutput();
+				result.value = neuralReady ? "PHOTO READY" : "UNAVAILABLE";
+			}
+			break;
+
+		case DirectorQuickOption::NeuralRefinement:
+			result.label = "Neural Convergence";
+			if (!capture)
+				result.value = "N/A";
+			else if (!capture->photoFinishNeuralEnabled)
+				result.value = "OFF";
+			else
+				result.value = std::format(
+					"{} {}",
+					8u * std::clamp(capture->photoFinishNeuralFeedbackSteps, 1u, 3u),
+					"FRESH FRAMES");
+			break;
+
 		case DirectorQuickOption::OutputResolution:
 			result.label = "Photo Resolution";
 			if (!capture) {
@@ -1829,11 +1965,13 @@ namespace
 			break;
 
 		case DirectorQuickOption::TemporalSampling:
-			result.label = "Sampling";
+			result.label = capture && capture->photoFinishNeuralEnabled
+				? "Neural Accumulation"
+				: "Temporal Sampling";
 			result.value =
 				capture
 					? std::format(
-						  "{} FRAME",
+						  "{} FRESH FRAMES",
 						  capture->
 							  photoFinishTemporalSamples)
 					: "N/A";
@@ -1944,6 +2082,26 @@ namespace
 
 		if (!freeCameraState)
 			return;
+
+		if (g_directorCaptureLocked.load(std::memory_order_acquire) &&
+			g_directorPhotoMode.capturePoseValid) {
+			freeCameraState->translation =
+				g_directorPhotoMode.captureLockedTranslation;
+			freeCameraState->rotation.x =
+				g_directorPhotoMode.captureLockedPitch;
+			freeCameraState->rotation.y =
+				g_directorPhotoMode.captureLockedYaw;
+			freeCameraState->useRunSpeed = false;
+			freeCameraState->verticalDirection = 0;
+			freeCameraState->zUpDown = {};
+			playerCamera->rotationInput = {};
+			playerCamera->translationInput = {};
+			playerCamera->zoomInput = 0.0f;
+			g_directorPhotoMode.cameraMotionPosition =
+				g_directorPhotoMode.captureLockedTranslation;
+			g_directorPhotoMode.cameraMotionVelocity = {};
+			return;
+		}
 
 		SmoothDirectorCameraMotion(freeCameraState);
 
@@ -2518,6 +2676,21 @@ namespace
 		if (!g_directorPhotoMode.active)
 			return;
 
+		// The worker publishes Idle only after reconstruction, encoding and save
+		// have completed. Release the immutable camera/input transaction on the
+		// next Director frame; do not require another user event to unlock it.
+		if (g_directorCaptureLocked.load(std::memory_order_acquire) &&
+			g_directorCaptureDispatched.load(std::memory_order_acquire)) {
+			auto* capture = GetDirectorCapture();
+			if (!capture || !capture->IsPhotoFinishBusy()) {
+				g_directorPhotoMode.capturePoseValid = false;
+				g_directorPhotoMode.captureHideFrames = 0;
+				g_directorCaptureDispatched.store(false, std::memory_order_release);
+				g_directorCaptureLocked.store(false, std::memory_order_release);
+				logger::info("[PIXL Director] Photo transaction complete; camera and controls released");
+			}
+		}
+
 		std::string unavailableReason;
 		if (!EvaluateDirectorPhotoModeEligibility(
 				&unavailableReason)) {
@@ -2564,8 +2737,8 @@ namespace
 			GetDirectorCapture();
 
 		if (directorCapture &&
-			directorCapture->IsPhotoFinishProcessing() &&
-			!directorCapture->IsPhotoFinishSampling()) {
+			(g_directorCaptureLocked.load(std::memory_order_acquire) ||
+			 directorCapture->IsPhotoFinishBusy())) {
 			const ImVec2 displaySize =
 				ImGui::GetIO().DisplaySize;
 
@@ -3288,6 +3461,11 @@ bool TuningWorkspaceRenderer::IsDirectorPhotoModeActive()
 		g_directorPhotoMode.active;
 }
 
+bool TuningWorkspaceRenderer::IsDirectorPhotoCaptureLocked()
+{
+	return g_directorCaptureLocked.load(std::memory_order_acquire);
+}
+
 bool TuningWorkspaceRenderer::IsDirectorPhotoModeAvailable(
 	std::string* reason)
 {
@@ -3315,6 +3493,13 @@ bool TuningWorkspaceRenderer::OpenDirectorPhotoMode()
 bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
 	std::uint32_t virtualKey)
 {
+	if (g_directorPhotoMode.active &&
+		g_directorCaptureLocked.load(std::memory_order_acquire)) {
+		// The entire Photo Finish transaction owns the view. Consume every key,
+		// including HOME/END and framing controls, until the file is written.
+		return true;
+	}
+
 	if (virtualKey == VK_HOME) {
 		if (g_directorPhotoMode.active)
 			ExitDirectorPhotoMode();
@@ -3462,6 +3647,8 @@ bool TuningWorkspaceRenderer::HandleDirectorGamepadInput(
 {
 	if (!g_directorPhotoMode.active)
 		return false;
+	if (g_directorCaptureLocked.load(std::memory_order_acquire))
+		return true;
 
 	if (!g_directorPhotoMode.hudVisible) {
 		switch (gamepadKeyCode) {
@@ -4977,7 +5164,8 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 
 			ImGui::BeginDisabled(
 				!capture ||
-				!capture->loaded);
+					!capture->loaded ||
+					capture->IsPhotoFinishBusy());
 
 			if (PIXLUI::ActionButton(
 					"TAKE PHOTO",
@@ -4985,13 +5173,11 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 						PIXLUI::Ref(190.0f),
 						PIXLUI::Ref(36.0f)),
 					true)) {
-				if (capture->photoFinishEnabled) {
-					capture->
-						RequestPhotoFinishCapture();
-				} else {
-					capture->captureRequested =
-						true;
-				}
+				// Close the full PIXL workspace before the clean-frame delay and use
+				// the same immutable-camera transaction as END/controller capture.
+				if (globals::menu)
+					globals::menu->IsEnabled = false;
+				ArmDirectorPhotoCapture();
 			}
 
 			ImGui::EndDisabled();
@@ -5070,11 +5256,95 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 					&capture->
 						photoFinishEnabled);
 
+				auto& reconstruction = globals::pipeline::imageReconstruction;
+				const bool neuralPhotoAvailable = reconstruction.CanUsePhotoNeuralRendering() &&
+					reconstruction.dx12SwapChain.GetProvisionedNeuralOutput();
+				// Keep the preference editable before a completed neural frame exists.
+				// Capability gating happens when capture starts, so non-DLSS users retain
+				// the universal path without being locked out of the setting.
+				ImGui::BeginDisabled(
+					!capture->photoFinishEnabled ||
+					capture->IsPhotoFinishBusy());
+				const bool neuralToggleChanged = PIXLUI::LabeledToggle(
+					"Capture Neural Final Composite",
+					&capture->photoFinishNeuralEnabled);
+				if (neuralToggleChanged && capture->photoFinishNeuralEnabled) {
+					capture->photoFinishTemporalSamples =
+						std::max(capture->photoFinishTemporalSamples, 8u);
+				}
+				ImGui::EndDisabled();
+
+				if (!neuralPhotoAvailable) {
+					ImGui::TextColored(
+						PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
+						capture->photoFinishNeuralEnabled
+							? "Photo Neural Rendering is unavailable in this session. Use DLSS and restart once so PIXL can provision its DX12 sidecar; unsupported systems use normal Photo Finish."
+							: "Neural final-composite capture is disabled; Photo Finish will use the normal PIXL framebuffer.");
+				} else if (capture->photoFinishNeuralEnabled) {
+					ImGui::TextColored(
+						PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft),
+						"Capture temporarily switches DLSS to native DLAA, enables Feature 18, and accumulates fresh guided neural frames. Gameplay settings are restored afterward.");
+				}
+
 				ImGui::BeginDisabled(
 					!capture->
 						photoFinishEnabled ||
 					capture->
-						IsPhotoFinishSampling());
+						IsPhotoFinishBusy());
+
+				const char* renderScaleLabels[] = {
+					"Current gameplay scale",
+					"High - at least 85%",
+					"Native - 100%"
+				};
+				int renderScaleIndex = static_cast<int>(
+					std::min(capture->photoFinishRenderScaleMode, 2u));
+				if (PIXLUI::CycleSelector(
+						"Capture internal render",
+						&renderScaleIndex,
+						renderScaleLabels,
+						static_cast<int>(std::size(renderScaleLabels)))) {
+					capture->photoFinishRenderScaleMode =
+						static_cast<unsigned int>(renderScaleIndex);
+				}
+
+				const char* warmupLabels[] = {
+					"Off",
+					"4 frames",
+					"8 frames",
+					"16 frames"
+				};
+				int warmupIndex = capture->photoFinishLightingWarmupFrames >= 16u
+					? 3
+					: capture->photoFinishLightingWarmupFrames >= 8u
+						? 2
+						: capture->photoFinishLightingWarmupFrames >= 4u ? 1 : 0;
+				if (PIXLUI::CycleSelector(
+						"Lighting/post convergence",
+						&warmupIndex,
+						warmupLabels,
+						static_cast<int>(std::size(warmupLabels)))) {
+					capture->photoFinishLightingWarmupFrames =
+						warmupIndex == 3 ? 16u : warmupIndex == 2 ? 8u : warmupIndex == 1 ? 4u : 0u;
+				}
+
+				const char* refinementLabels[] = {
+					"8 fresh frames - Stable",
+					"16 fresh frames - Refined",
+					"24 fresh frames - Maximum"
+				};
+				int refinementIndex = static_cast<int>(
+					std::clamp(capture->photoFinishNeuralFeedbackSteps, 1u, 3u) - 1u);
+				ImGui::BeginDisabled(!capture->photoFinishNeuralEnabled);
+				if (PIXLUI::CycleSelector(
+						"Neural temporal convergence",
+						&refinementIndex,
+						refinementLabels,
+						static_cast<int>(std::size(refinementLabels)))) {
+					capture->photoFinishNeuralFeedbackSteps =
+						static_cast<unsigned int>(refinementIndex + 1);
+				}
+				ImGui::EndDisabled();
 
 				const char* resolutionLabels[] = {
 					"Native",
@@ -5090,7 +5360,7 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 							: 0;
 
 				if (PIXLUI::CycleSelector(
-						"Output resolution",
+						"Final output resolution",
 						&resolutionIndex,
 						resolutionLabels,
 						static_cast<int>(
@@ -5124,7 +5394,9 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 									: 0;
 
 				if (PIXLUI::CycleSelector(
-						"Temporal detail",
+						capture->photoFinishNeuralEnabled
+							? "Neural accumulation"
+							: "Temporal detail",
 						&temporalIndex,
 						temporalLabels,
 						static_cast<int>(
@@ -5140,7 +5412,21 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 									: temporalIndex == 1
 										? 4u
 										: 1u;
+					if (capture->photoFinishNeuralEnabled) {
+						capture->photoFinishTemporalSamples =
+							std::max(capture->photoFinishTemporalSamples, 8u);
+					}
 				}
+
+				if (capture->photoFinishNeuralEnabled) {
+					ImGui::TextColored(
+						PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
+						"PIXL waits for at least 8 fresh completed neural frames before resolving and saving; higher counts improve convergence at additional capture time.");
+				}
+
+				ImGui::TextColored(
+					PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
+					"Capture is transactional: PIXL freezes the exact camera and all controls, temporarily selects native DLAA, raises internal rendering, converges lighting/post histories, accumulates fresh neural frames, reconstructs the final resolution, saves, then restores gameplay.");
 
 				PIXLUI::SliderFloatField(
 					"Detail reconstruction",

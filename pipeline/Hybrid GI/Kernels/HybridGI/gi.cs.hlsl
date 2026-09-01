@@ -731,8 +731,33 @@ void CalculateGI(
 	}
 
 	float3 rawBentVS = bentWeightAccum > 1e-4f ? normalize(bentDirectionAccum / bentWeightAccum) : viewspaceNormal;
-	float historyConfidence = 1.0f - depthFade;
-	float bentAmount = BentNormalEnabled != 0u ? saturate(BentNormalStrength) * historyConfidence : 0.0f;
+
+	// Directional visibility is a screen-space observation, so its confidence
+	// must describe more than the distance fade. Near a viewport boundary the
+	// horizon footprint is clipped and an "open" direction may simply mean that
+	// the ray left the screen. Fade only the observation there; AO/GI retain their
+	// existing behavior and the consumer falls back to the geometric normal and
+	// unoccluded probe lighting. Cap the transition to 64 pixels so this remains a
+	// narrow stability guard rather than a visible vignette.
+	float2 viewportBorderPixels = min(normalizedScreenPos, 1.0f - normalizedScreenPos) * OUT_FRAME_DIM;
+	float closestViewportBorder = min(viewportBorderPixels.x, viewportBorderPixels.y);
+	float confidenceBorderWidth = clamp(screenspaceRadius * 0.20f, 8.0f, 64.0f);
+	float viewportConfidence = smoothstep(0.0f, 1.0f, saturate(closestViewportBorder / confidenceBorderWidth));
+
+	// Adaptive ray allocation deliberately lowers the angular sample budget on
+	// quiet tiles. It is still a valid observation, but should not carry exactly
+	// the same authority as a fully sampled tile when its direction is reused by
+	// several downstream lighting systems.
+	float sliceCoverage = saturate((float)effectiveNumSlices / max((float)NumSlices, 1.0f));
+	float stepCoverage = saturate((float)effectiveNumSteps / max((float)NumSteps, 1.0f));
+	float samplingConfidence = sqrt(max(sliceCoverage * stepCoverage, 0.0f));
+	float observationConfidence = (1.0f - depthFade) * viewportConfidence * lerp(0.65f, 1.0f, samplingConfidence);
+
+	// Store the strength-adjusted direction independently from observation
+	// confidence. DeferredComposite applies confidence exactly once when choosing
+	// between the geometric and bent normal. Baking it here as well made the bend
+	// confidence-squared through distance/edge transitions.
+	float bentAmount = BentNormalEnabled != 0u ? saturate(BentNormalStrength) : 0.0f;
 	float3 bentVS = normalize(lerp(viewspaceNormal, rawBentVS, bentAmount));
 	float3 bentWS = normalize(ViewToWorldVector(bentVS, FrameBuffer::CameraViewInverse));
 	float2 encodedBentWS = GBuffer::EncodeNormal(bentWS);
@@ -741,8 +766,8 @@ void CalculateGI(
 	// Fade it toward fully visible as HybridGI itself fades out, rather than
 	// multiplying toward zero (which would incorrectly make far-field surfaces
 	// *more* occluded). The deferred composite decides whether to apply it.
-	float storedDirectionalVisibility = lerp(1.0f, directionalVisibility, historyConfidence);
-	o_bentVisibility = float4(encodedBentWS, storedDirectionalVisibility, historyConfidence);
+	float storedDirectionalVisibility = lerp(1.0f, directionalVisibility, observationConfidence);
+	o_bentVisibility = float4(encodedBentWS, storedDirectionalVisibility, observationConfidence);
 
 #ifdef GI
 	radianceY *= rcpNumSlices;
@@ -1014,9 +1039,25 @@ void CalculateGI(
 		if (prevBentVisibility.w > 0.0h) {
 			float3 prevBentWS = GBuffer::DecodeNormal(prevBentVisibility.xy);
 			float3 currBentWS = GBuffer::DecodeNormal(currBentVisibility.xy);
-			float3 stableBentWS = normalize(lerp(prevBentWS, currBentWS, (float)lerpFactor));
+
+			// Radiance reactivity is not a reliable proxy for changing geometry.
+			// A moving silhouette can alter the visibility cone without changing
+			// luminance, leaving a stale bent direction in otherwise valid history.
+			// Raise the blend rate only when the cone direction, aperture, or
+			// observation confidence actually disagrees with the reprojected value.
+			float directionDelta = 1.0f - saturate(dot(prevBentWS, currBentWS));
+			float visibilityDelta = abs((float)currBentVisibility.z - (float)prevBentVisibility.z);
+			float confidenceDelta = abs((float)currBentVisibility.w - (float)prevBentVisibility.w);
+			float geometryReactivity = saturate(max(directionDelta * 1.5f,
+				max(visibilityDelta * 2.0f, confidenceDelta * 2.0f)));
+			float bentLerpFactor = max((float)lerpFactor, geometryReactivity * 0.55f);
+
+			float3 blendedBentWS = lerp(prevBentWS, currBentWS, bentLerpFactor);
+			float blendedBentLengthSq = dot(blendedBentWS, blendedBentWS);
+			float3 stableBentWS = blendedBentLengthSq > 1e-6f ?
+				blendedBentWS * rsqrt(blendedBentLengthSq) : currBentWS;
 			currBentVisibility.xy = (half2)GBuffer::EncodeNormal(stableBentWS);
-			currBentVisibility.zw = lerp(prevBentVisibility.zw, currBentVisibility.zw, lerpFactor);
+			currBentVisibility.zw = lerp(prevBentVisibility.zw, currBentVisibility.zw, (half)bentLerpFactor);
 		}
 
 #	if defined(GI_SPECULAR) && !defined(HYBRID_REFLECTIONS)

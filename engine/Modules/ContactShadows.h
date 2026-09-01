@@ -45,8 +45,10 @@ public:
 		float ShadowContrast = 1.0f;
 		uint Enable = 1;
 		uint SampleCount = 1;
-		uint pad0[3];
+		float Strength = 1.0f;
+		uint pad0[2];
 	};
+	static_assert(sizeof(BendSettings) == 32, "ContactShadows::BendSettings must match RaymarchCS b1 exactly.");
 
 	BendSettings bendSettings;
 

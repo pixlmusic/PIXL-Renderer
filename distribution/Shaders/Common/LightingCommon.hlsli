@@ -85,7 +85,7 @@ struct MaterialProperties
 #	if defined(BACK_LIGHTING)
 	float3 backLightColor;
 #	endif
-#	if defined(PIXL_SKIN) && defined(SKIN)
+#	if (defined(PIXL_SKIN) && defined(SKIN)) || defined(AUTO_FUR)
 	float RoughnessSecondary;
 	float SecondarySpecIntensity;
 	float Curvature;

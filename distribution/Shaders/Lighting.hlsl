@@ -10,6 +10,15 @@
 #include "Common/Random.hlsli"
 #include "Common/Shading.hlsli"
 #include "Common/SharedData.hlsli"
+#if defined(HAIR_RECONSTRUCTION) && defined(AUTO_HAIR) && !defined(HAIR)
+// Conservative runtime-classified mod hair uses the same proven card/material
+// path as Skyrim's native Hair technique.  Rejected candidates retain their
+// original shader and are visible only through the diagnostic tier.
+#	define HAIR
+#endif
+#if defined(HAIR_RECONSTRUCTION)
+#	include "HairReconstruction/HairReconstruction.hlsli"
+#endif
 #if defined(VSHADER) && defined(FOLIAGE_DYNAMICS) && defined(TREE_ANIM)
 #	include "FoliageDynamics/FoliageWind.hlsli"
 #endif
@@ -266,6 +275,11 @@ VS_OUTPUT main(VS_INPUT input)
 
 	float3x4 worldMatrix = Skinned::GetBoneTransformMatrix(Bones, actualIndices, BonesPivot, input.BoneWeights);
 	precise float4 worldPosition = float4(mul(inputPosition, transpose(worldMatrix)), 1);
+
+#	if defined(HAIR_RECONSTRUCTION) && defined(HAIR)
+	HairReconstruction::ApplyMotion(
+		input.Position.xyz, input.TexCoord0.xy, worldPosition, previousWorldPosition);
+#	endif
 
 	float4 viewPos = mul(ViewProj, worldPosition);
 #	else   // !SKINNED
@@ -1487,12 +1501,15 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// Per-geometry DialogueFocus is zero for every non-focused/non-character draw.
 	// The spatial mask deliberately concentrates the quality budget on face/upper body.
 	const float pixlDialogueFocus = DialogueFocus::GetFocus(input.WorldPosition.xyz);
+	// Every actor draw must be evaluated in the same actor-relative world space.
+	// Bind/model coordinates are mesh-local in Skyrim: FaceGen heads, dismember
+	// armour, boots and the body do not share one origin, which made a lower-leg
+	// contact lobe appear on a head whose mesh-local coordinates happened to
+	// overlap it. WorldPosition and ActorOriginScale are both camera-relative, so
+	// their difference remains translation-stable while also supporting every
+	// skinned attachment consistently.
 	const ActorSurfaceEffects::SurfaceSample pixlActorSurface =
-#	if defined(SKINNED)
-		ActorSurfaceEffects::EvaluateSkinned(input.ModelPosition.xyz);
-#	else
 		ActorSurfaceEffects::Evaluate(input.WorldPosition.xyz);
-#	endif
 
 #	if defined(DEFERRED)
 	const bool inWorld = true;
@@ -1846,10 +1863,33 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			float2 autoNormalDirectionTS = autoNormalTS.xy;
 			float3x3 autoParallaxTbn = tbnTr;
 #			endif
-			uv = MaterialLayers::GetAutoParallaxCoords(
-				viewPosition.z, uv, autoParallaxMipLevel, viewDirection, autoParallaxTbn, autoParallaxTextureDims,
+			float2 autoParallaxSourceUV = uv;
+			float2 autoParallaxCandidateUV = MaterialLayers::GetAutoParallaxCoords(
+				viewPosition.z, autoParallaxSourceUV, autoParallaxMipLevel, viewDirection, autoParallaxTbn, autoParallaxTextureDims,
 				autoNormalActivity, autoNormalDirectionTS, TexColorSampler, SampColorSampler,
 				pixelOffset, autoParallaxBaseHeight, autoParallaxStrength);
+
+#			if defined(DO_ALPHA_TEST)
+			// Atlas-packed vanilla architecture often places opaque timber islands next
+			// to transparent padding. Synthetic POM must never move a valid receiver into
+			// that padding: doing so reaches Skyrim's later alpha test and opens a literal
+			// sky-coloured hole along beams/roof edges. Authored POM is unaffected.
+			float autoSourceAlpha = TexColorSampler.SampleLevel(
+				SampColorSampler, autoParallaxSourceUV, autoParallaxMipLevel).a;
+			float autoCandidateAlpha = TexColorSampler.SampleLevel(
+				SampColorSampler, autoParallaxCandidateUV, autoParallaxMipLevel).a;
+			float autoAlphaThreshold = saturate(AlphaTestRefRS);
+			bool autoCrossedCutoutIsland =
+				autoSourceAlpha >= autoAlphaThreshold &&
+				autoCandidateAlpha < autoAlphaThreshold;
+			if (autoCrossedCutoutIsland)
+			{
+				autoParallaxCandidateUV = autoParallaxSourceUV;
+				autoParallaxStrength = 0.0f;
+				pixelOffset = 0.0f;
+			}
+#			endif
+			uv = autoParallaxCandidateUV;
 			autoParallaxApplied = autoParallaxStrength > 1e-5f;
 		}
 	}
@@ -3078,6 +3118,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 	worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
+#	if defined(HAIR_RECONSTRUCTION) && defined(HAIR)
+	HairReconstruction::ApplyCardAppearance(baseColor, input.WorldPosition.xyz, worldNormal, uv);
+#	endif
 	float3 screenSpaceNormal = normalize(FrameBuffer::WorldToView(worldNormal, false));
 
 #	if defined(HAIR) && defined(STRAND_SHADING)
@@ -3089,6 +3132,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	hairT = Bitangent;
 #		endif
 	hairT = Hair::ReorientTangent(hairT, worldNormal);
+#		if defined(HAIR_RECONSTRUCTION)
+	hairT = HairReconstruction::ResolveDirection(
+		hairT, worldNormal, input.WorldPosition.xyz, uv, useHairFlowMap);
+#		endif
 
 	if (SharedData::strandShadingSettings.Enabled) {
 		if (SharedData::strandShadingSettings.EnableTangentShift && SharedData::strandShadingSettings.HairMode != 1) {
@@ -3229,6 +3276,33 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	material.BaseColor = physicalSurface.BaseColor;
 	material.Roughness = physicalSurface.Roughness;
 	material.F0 = physicalSurface.F0;
+#		if defined(AUTO_FUR)
+	// A bounded virtual-shell response for legacy fur materials. Three stable
+	// UV-space fibre bands vary the grazing fuzz occupancy without extra texture
+	// fetches or geometry draws. This preserves animation/motion vectors and gives
+	// animals and fur-trimmed equipment the layered soft highlight that the former
+	// registry-only FurShell semantic never reached in the raster path.
+	float2 furCell = floor(uvOriginal * float2(173.0f, 211.0f));
+	uint2 furSeed = asuint(furCell);
+	float2 furRandom0 = Random::pcg2d(furSeed) / 4294967296.0f;
+	float2 furRandom1 = Random::pcg2d(furSeed + uint2(19u, 47u)) / 4294967296.0f;
+	float furNoise0 = furRandom0.x;
+	float furNoise1 = furRandom0.y;
+	float furNoise2 = furRandom1.x;
+	float virtualShellOccupancy =
+		(smoothstep(0.18f, 0.82f, furNoise0) +
+		 smoothstep(0.28f, 0.88f, furNoise1) +
+		 smoothstep(0.38f, 0.94f, furNoise2)) / 3.0f;
+	float furNdotV = saturate(abs(dot(worldNormal, -normalize(input.WorldPosition.xyz))));
+	float grazingFibres = pow(1.0f - furNdotV, 0.65f);
+	material.FuzzColor = lerp(
+		material.BaseColor,
+		saturate(material.BaseColor * 1.12f),
+		0.42f);
+	material.FuzzWeight = saturate(0.30f + 0.30f * grazingFibres * virtualShellOccupancy);
+	material.Roughness = max(material.Roughness, 0.62f);
+	material.F0 = min(material.F0, 0.08f.xxx);
+#		endif
 #		if defined(EMAT_ENVMAP)
 	PhysicalMaterial::ApplySpecularOverride(physicalSurface, complexSpecular, 1.0f - complexMaterialColor.y, complexMaterial);
 #		endif
@@ -3541,6 +3615,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			material.Roughness = PhysicalMaterial::LegacyShininessToPerceptualRoughness(material.Shininess * 0.75);
 		}
 	}
+#	if defined(HAIR_RECONSTRUCTION)
+	HairReconstruction::ApplyMaterial(
+		material.Roughness,
+		material.Metallic,
+		input.WorldPosition.xyz,
+		vertexNormal.xyz);
+#	endif
 #	endif
 
 	bool dynamicCubemap = false;
@@ -5082,6 +5163,18 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	else
 	psout.Diffuse.xyz = color.xyz;
 #	endif  // defined(RADIANT_GRID)
+
+#	if defined(HAIR_RECONSTRUCTION) && (defined(HAIR) || defined(HAIR_CANDIDATE))
+	if (SharedData::hairReconstructionSettings.DebugMode != 0u) {
+		float3 debugDirection = worldNormal.xyz;
+		float debugFlexibility = HairReconstruction::Flexibility(uv, input.ModelPosition.xyz);
+#		if defined(HAIR)
+		debugDirection = hairT;
+#		endif
+		psout.Diffuse.xyz = HairReconstruction::DebugColor(
+			debugDirection, debugFlexibility, screenMotionVector, uv);
+	}
+#	endif
 
 	psout.MotionVectors.xy = screenMotionVector.xy;
 	psout.MotionVectors.zw = float2(0, psout.Diffuse.w);

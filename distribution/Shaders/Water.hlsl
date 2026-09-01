@@ -915,6 +915,7 @@ struct DiffuseOutput
 	float depth;
 	float refractionMul;
 	float3 refractedViewDirection;
+	float receiverDistance;
 };
 
 DiffuseOutput GetWaterDiffuseColor(PS_INPUT input, float3 normal, float3 viewDirection, inout float4 distanceMul, float refractionsDepthFactor, float fresnel, float3 viewPosition, float depth)
@@ -988,6 +989,7 @@ DiffuseOutput GetWaterDiffuseColor(PS_INPUT input, float3 normal, float3 viewDir
 	output.depth = depth;
 	output.refractionMul = refractionMul;
 	output.refractedViewDirection = normalize(refractionWorldPosition.xyz - input.WPosition.xyz);
+	output.receiverDistance = length(refractionWorldPosition.xyz - input.WPosition.xyz);
 	return output;
 #			else
 	DiffuseOutput output;
@@ -996,8 +998,60 @@ DiffuseOutput GetWaterDiffuseColor(PS_INPUT input, float3 normal, float3 viewDir
 	output.depth = 1;
 	output.refractionMul = 1;
 	output.refractedViewDirection = viewDirection;
+	output.receiverDistance = 0;
 	return output;
 #			endif
+}
+
+float GetDynamicSurfaceCausticFocus(float3 normal, float3 worldPosition, float receiverDistance)
+{
+	// The opaque Lighting pass cannot see Skyrim's animated water-normal SRVs:
+	// those resources are material-local t4-t6 bindings in this Water pass. Build
+	// a bounded first-order refractive footprint here instead, after the complete
+	// wave, flowmap and rain-ripple normal has been composed by GetWaterNormal().
+	float sunLengthSq = dot(SunDir.xyz, SunDir.xyz);
+	float3 sunDirection = SunDir.xyz * rsqrt(max(sunLengthSq, 1e-8f));
+	float3 transmittedRay = refract(-sunDirection, normal, 0.750187f); // air -> water
+	float safeRayDepth = max(-transmittedRay.z, 0.15f);
+	float2 raySlope = transmittedRay.xy / safeRayDepth;
+
+	// Convert screen-space ray-slope derivatives to the local horizontal water
+	// basis. The determinant guard keeps edge-on/degenerate quads finite.
+	float2 dPdx = ddx_coarse(worldPosition.xy);
+	float2 dPdy = ddy_coarse(worldPosition.xy);
+	float2 dSdx = ddx_coarse(raySlope);
+	float2 dSdy = ddy_coarse(raySlope);
+	float basisDet = dPdx.x * dPdy.y - dPdx.y * dPdy.x;
+	float safeBasisDet = abs(basisDet) > 1e-5f ? basisDet : (basisDet < 0.0f ? -1e-5f : 1e-5f);
+	float invBasisDet = rcp(safeBasisDet);
+
+	float2 slopeGradientX = float2(
+		(dSdx.x * dPdy.y - dSdy.x * dPdx.y) * invBasisDet,
+		(dSdy.x * dPdx.x - dSdx.x * dPdy.x) * invBasisDet);
+	float2 slopeGradientY = float2(
+		(dSdx.y * dPdy.y - dSdy.y * dPdx.y) * invBasisDet,
+		(dSdy.y * dPdx.x - dSdx.y * dPdy.x) * invBasisDet);
+
+	// The Jacobian measures the area change of the refracted solar footprint at
+	// the visible receiver. A reciprocal area above one is focusing; below one is
+	// spreading. Clamp both depth and response to avoid singular highlights.
+	float focusDepth = min(max(receiverDistance, 0.0f), 768.0f);
+	float j00 = 1.0f + focusDepth * slopeGradientX.x;
+	float j01 = focusDepth * slopeGradientX.y;
+	float j10 = focusDepth * slopeGradientY.x;
+	float j11 = 1.0f + focusDepth * slopeGradientY.y;
+	float footprintArea = abs(j00 * j11 - j01 * j10);
+	float focusedLight = clamp(rcp(max(footprintArea, 0.55f)), 0.72f, 1.55f);
+
+	float validBasis = abs(basisDet) > 1e-5f ? 1.0f : 0.0f;
+	float daylight = smoothstep(0.04f, 0.28f, sunDirection.z) * (sunLengthSq > 1e-8f ? 1.0f : 0.0f);
+	float validTransmission = smoothstep(0.02f, 0.17f, -transmittedRay.z);
+	float depthFade = smoothstep(6.0f, 48.0f, focusDepth) * (1.0f - smoothstep(512.0f, 768.0f, focusDepth));
+	float focusStrength = saturate(SharedData::waterOpticsSettings.CausticsFocus * 0.42f) *
+		saturate(SharedData::waterOpticsSettings.CausticsStrength * 0.65f) *
+		saturate(SharedData::waterOpticsSettings.CausticsVisibility * 0.80f) *
+		validBasis * validTransmission * daylight * depthFade;
+	return lerp(1.0f, focusedLight, focusStrength);
 }
 
 float3 GetSunColor(float3 normal, float3 viewDirection, float3 worldPosition)
@@ -1009,7 +1063,31 @@ float3 GetSunColor(float3 normal, float3 viewDirection, float3 worldPosition)
 		return 0.0.xxx;
 
 	float3 reflectionDirection = reflect(viewDirection, normal);
-	float reflectionMul = exp2(VarAmounts.x * log2(max(saturate(dot(reflectionDirection, SunDir.xyz)), 1e-6f)));
+	float sunAlignment = saturate(dot(reflectionDirection, normalize(SunDir.xyz)));
+	float reflectionMul = exp2(VarAmounts.x * log2(max(sunAlignment, 1e-6f)));
+#			if USE_PIXL_WATER_OPTICS
+	// Flat water produces a compact directional sun glint, while choppy water
+	// widens and softens it. Use screen-space normal variance as a cheap analytic
+	// footprint so the new lobe gains definition without turning high-frequency
+	// ripples into temporal fireflies. The authored Skyrim lobe remains the broad
+	// base and the combined response is energy bounded.
+	float normalVariance = max(
+		dot(ddx_coarse(normal), ddx_coarse(normal)),
+		dot(ddy_coarse(normal), ddy_coarse(normal)));
+	float surfaceRoughness = clamp(
+		0.035f + sqrt(saturate(normalVariance)) * 0.20f,
+		0.035f,
+		0.42f);
+	float roughnessFactor = saturate((surfaceRoughness - 0.035f) / 0.385f);
+	float tightExponent = lerp(1400.0f, 96.0f, roughnessFactor);
+	float tightGlint = exp2(tightExponent * log2(max(sunAlignment, 1e-6f)));
+	float NdotV = saturate(dot(-viewDirection, normal));
+	float dielectricF0 = clamp(FresnelRI.x, 0.0204f, 0.08f);
+	float fresnel = dielectricF0 + (1.0f - dielectricF0) * BRDF::Pow5(1.0f - NdotV);
+	float authoredLobe = reflectionMul * lerp(1.0f, 0.78f, roughnessFactor);
+	float directionalGlint = tightGlint * lerp(0.55f, 1.05f, fresnel);
+	reflectionMul = min(max(authoredLobe, directionalGlint), 1.05f);
+#			endif
 
 	float llDirLightMult = (SharedData::linearLightCoreSettings.enableLinearLightCore && !SharedData::linearLightCoreSettings.isDirLightLinear) ? SharedData::linearLightCoreSettings.dirLightMult : 1.0f;
 	float3 sunColor = Color::DirectionalLight((SunColor.xyz * SunDir.w) / max(llDirLightMult, 1e-5), SharedData::linearLightCoreSettings.isDirLightLinear) * (1.0 - exp(-DeepColor.w)) * llDirLightMult;
@@ -1168,6 +1246,16 @@ PS_OUTPUT main(PS_INPUT input)
 #				endif
 
 	DiffuseOutput diffuseOutput = GetWaterDiffuseColor(input, normal, viewDirection, distanceMul, depthControl.y, fresnel, viewPosition, depth);
+
+#				if USE_PIXL_WATER_OPTICS && defined(REFRACTIONS) && !defined(UNDERWATER)
+	float dynamicCausticFocus = GetDynamicSurfaceCausticFocus(normal, input.WPosition.xyz, diffuseOutput.receiverDistance);
+	float dynamicCausticsEnabled =
+		(SharedData::waterOpticsSettings.EnableEnhancedCaustics != 0 &&
+		 !(Permutation::PixelShaderDescriptor & Permutation::WaterFlags::Interior)) ? 1.0f : 0.0f;
+	// Modulate only the visible refracted receiver. Reflections, fog, water tint,
+	// authored receiver caustics and the alpha/fresnel contract remain unchanged.
+	diffuseOutput.refractionColor *= lerp(1.0f, dynamicCausticFocus, dynamicCausticsEnabled);
+#				endif
 
 	float surfaceShadow;
 	float dirShadow = ShadowSampling::Get3DFilteredShadow(input.WPosition.xyz, diffuseOutput.refractedViewDirection, input.HPosition.xy, surfaceShadow);

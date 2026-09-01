@@ -466,14 +466,14 @@ public:
 		bool UseResolutionFont = true;                                                      // When true, runtime font size scales with screen resolution; when persisted to theme files, FontSize is zeroed for backward compatibility
 		bool AdvancedMode = false;                                                          // Exposes the complete renderer subsystem navigator
 		bool DeveloperMode = false;                                                         // Enables diagnostics, debug compilation, and engineering tools
-		int RendererQuality = 3;                                                           // 0 Low, 1 Medium, 2 High, 3 Ultra
-		int LightingQuality = 3;
-		int MaterialsQuality = 3;
-		int AtmosphereQuality = 3;
-		int WaterQuality = 3;
-		int TerrainVegetationQuality = 3;
-		int CharactersQuality = 3;
-		int CameraQuality = 3;
+		int RendererQuality = 1;                                                           // 0 Low, 1 Medium, 2 High, 3 Ultra
+		int LightingQuality = 1;
+		int MaterialsQuality = 1;
+		int AtmosphereQuality = 1;
+		int WaterQuality = 1;
+		int TerrainVegetationQuality = 1;
+		int CharactersQuality = 1;
+		int CameraQuality = 1;
 		ThemeSettings Theme;
 		std::string SelectedThemePreset = "";  // Currently selected theme preset (empty = custom/user theme)
 	};

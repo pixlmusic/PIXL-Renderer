@@ -11,6 +11,14 @@
 
 namespace PBR
 {
+	bool HasFuzzLobe()
+	{
+#if defined(AUTO_FUR)
+		return true;
+#else
+		return (PBRFlags & Flags::Fuzz) != 0;
+#endif
+	}
 #if defined(GLINT)
 	float3 SpecularMicrofacetWithGlint(float noise, float roughness, float3 F0, float NdotL, float NdotV, float NdotH, float VdotH, float glintH,
 		float logDensity, float microfacetRoughness, float densityRandomization, Glints::GlintCachedVars glintCache,
@@ -169,7 +177,7 @@ namespace PBR
 			lightingOutput.specular += Fr * detailedLightColor * satNdotL;
 
 #if !defined(LANDSCAPE) && !defined(LODLANDSCAPE)
-			[branch] if ((PBRFlags & Flags::Fuzz) != 0)
+			[branch] if (HasFuzzLobe())
 			{
 				float3 fuzzSpecular = SpecularMicroflakes(material.Roughness, material.FuzzColor, satNdotL, satNdotV, satNdotH, satVdotH) * detailedLightColor * satNdotL;
 				lightingOutput.specular = lerp(lightingOutput.specular, fuzzSpecular, material.FuzzWeight);
@@ -245,7 +253,7 @@ namespace PBR
 			{
 				lobeWeights.diffuse += material.SubsurfaceColor * (1 - material.Thickness) / Math::PI;
 			}
-			[branch] if ((PBRFlags & Flags::Fuzz) != 0)
+			[branch] if (HasFuzzLobe())
 			{
 				lobeWeights.diffuse += material.FuzzColor * material.FuzzWeight;
 			}

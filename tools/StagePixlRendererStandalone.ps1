@@ -80,6 +80,10 @@ Get-ChildItem -LiteralPath (Join-Path $sourceRoot "pipeline") -Directory | Sort-
     $kernels = Join-Path $_.FullName "Kernels"
     if (-not (Test-Path -LiteralPath $descriptor)) { throw "Missing PIXL module descriptor: $descriptor" }
     $descriptorText = Get-Content -LiteralPath $descriptor -Raw
+    # Retired ABI stubs remain in source only so old shared-buffer layouts and
+    # cached shader includes can be inspected safely. They are not runtime modules
+    # and must not be copied into a public/game package.
+    if ($descriptorText -match '(?im)^\s*Pipeline\s*=\s*Retired\s*$') { return }
     $idMatch = [regex]::Match($descriptorText, '(?m)^\s*Id\s*=\s*([^\r\n]+?)\s*$')
     if (-not $idMatch.Success) { throw "Module descriptor has no Id: $descriptor" }
     $moduleId = $idMatch.Groups[1].Value.Trim()

@@ -1,12 +1,40 @@
 #include "DX12SwapChain.h"
 
 #include <FidelityFX/api/include/dx12/ffx_api_dx12.hpp>
+#include <algorithm>
 #include <dxgi1_6.h>
 
 #include "../CameraSuite.h"
 #include "../ImageReconstruction.h"
 #include "FidelityFX.h"
 #include "Streamline.h"
+
+namespace
+{
+	std::uint32_t ResolveNeuralPerformanceQuality(std::uint32_t overrideMode, std::uint32_t dlssQualityMode)
+	{
+		// NVSDK_NGX_PerfQuality_Value: MaxPerf=0, Balanced=1,
+		// MaxQuality=2, UltraPerformance=3, UltraQuality=4, DLAA=5.
+		switch (overrideMode) {
+		case 1: return 5;  // DLAA
+		case 2: return 2;  // Quality
+		case 3: return 1;  // Balanced
+		case 4: return 0;  // Performance
+		case 5: return 3;  // Ultra Performance
+		case 6: return 4;  // Ultra Quality
+		default: break;
+		}
+
+		switch (dlssQualityMode) {
+		case 0: return 5;
+		case 1: return 2;
+		case 2: return 1;
+		case 3: return 0;
+		case 4: return 3;
+		default: return 2;
+		}
+	}
+}
 
 void DX12SwapChain::CreateD3D12Device(IDXGIAdapter* a_adapter)
 {
@@ -135,6 +163,15 @@ void DX12SwapChain::CreateInterop()
 	texDesc11.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS;
 
 	swapChainBufferWrapped = std::make_unique<WrappedResource>(texDesc11, d3d11Device.get(), d3d12Device.get());
+	if (globals::pipeline::imageReconstruction.neuralRenderingProvisionedAtBoot) {
+		for (auto& output : neuralRenderingOutputWrapped)
+			output = std::make_unique<WrappedResource>(texDesc11, d3d11Device.get(), d3d12Device.get());
+	} else {
+		for (auto& output : neuralRenderingOutputWrapped)
+			output.reset();
+	}
+	completedNeuralFrameSerial.store(0, std::memory_order_release);
+	completedNeuralOutputIndex.store(UINT32_MAX, std::memory_order_release);
 
 	// UI buffer uses R8G8B8A8_UNORM - vanilla UI is SDR and 8-bit precision
 	texDesc11.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -169,6 +206,8 @@ HRESULT DX12SwapChain::GetBuffer(UINT buffer, REFIID riid, void** ppSurface)
 HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 {
 	auto& imageReconstruction = globals::pipeline::imageReconstruction;
+	bool completedNeuralThisFrame = false;
+	std::uint32_t neuralOutputIndexThisFrame = UINT32_MAX;
 
 	// The proxy swap chain bypasses PIXL's native D3D11 Present detour. Draw the
 	// renderer overlay here so its input queue, compiler panel and settings menu
@@ -198,22 +237,139 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	DX::ThrowIfFailed(commandAllocators[frameIndex]->Reset());
 	DX::ThrowIfFailed(commandLists[frameIndex]->Reset(commandAllocators[frameIndex].get(), nullptr));
 
-	// Copy shared texture to swap chain buffer
+	// Run optional Neural Rendering and copy the selected source to the real
+	// swap-chain buffer. This records on the same queue/list as presentation,
+	// avoiding a second D3D12 device or unsafe allocator overlap.
 	{
 		auto fakeSwapChain = swapChainBufferWrapped->resource.get();
 		auto realSwapChain = swapChainBuffers[frameIndex].get();
+		ID3D12Resource* presentationSource = fakeSwapChain;
+		bool neuralTransitionsActive = false;
+
+		auto& neuralOutput = neuralRenderingOutputWrapped[frameIndex];
+		if (imageReconstruction.ShouldUseNeuralRenderingThisFrame() &&
+			neuralOutput && neuralOutput->resource &&
+			neuralDepthBufferShared12 && neuralDepthBufferShared12->resource &&
+			neuralMotionVectorBufferShared12 && neuralMotionVectorBufferShared12->resource) {
+			auto& neural = ImageReconstruction::neuralRendering;
+			if (neural.GetStatus() == NeuralRendering::Status::NotProbed ||
+				neural.GetStatus() == NeuralRendering::Status::Ready)
+				neural.Initialize(d3d12Device.get());
+
+			if (neural.GetStatus() == NeuralRendering::Status::Initialized) {
+				D3D11_TEXTURE2D_DESC guideDesc{};
+				neuralDepthBufferShared12->resource11->GetDesc(&guideDesc);
+				const UINT guideWidth = std::min(neuralGuideWidth, guideDesc.Width);
+				const UINT guideHeight = std::min(neuralGuideHeight, guideDesc.Height);
+				// Present can run before the first encoded depth/motion copy. Do not
+				// manufacture a 1x1 guide contract: Feature 18 treats it as a runtime
+				// fault and latches itself off for the session.
+				if (guideWidth > 1 && guideHeight > 1) {
+
+				ID3D12Resource* neuralInputs[]{
+					fakeSwapChain,
+					neuralDepthBufferShared12->resource.get(),
+					neuralMotionVectorBufferShared12->resource.get(),
+				};
+				D3D12_RESOURCE_BARRIER inputBarriers[3]{};
+				for (std::size_t i = 0; i < std::size(inputBarriers); ++i) {
+					inputBarriers[i] = CD3DX12_RESOURCE_BARRIER::Transition(
+						neuralInputs[i],
+						D3D12_RESOURCE_STATE_COMMON,
+						D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+				}
+				commandLists[frameIndex]->ResourceBarrier(
+					static_cast<UINT>(std::size(inputBarriers)),
+					inputBarriers);
+
+				NeuralRendering::Tuning tuning{
+					.intensity = imageReconstruction.settings.neuralRenderingIntensity,
+					.localToneStrength = imageReconstruction.settings.neuralRenderingLocalTone,
+					.localStructureStrength = imageReconstruction.settings.neuralRenderingLocalStructure,
+					.skinStructureStrength = imageReconstruction.settings.neuralRenderingSkinStructure,
+					.style = imageReconstruction.settings.neuralRenderingStyle,
+					.performanceQuality = ResolveNeuralPerformanceQuality(
+						imageReconstruction.neuralRenderingQualityModeAtBoot,
+						imageReconstruction.GetEffectiveQualityMode()),
+					.outputPreset = imageReconstruction.neuralRenderingOutputPresetAtBoot,
+					.useAutoMask = imageReconstruction.settings.neuralRenderingAutoMask,
+					.uiCorrection = imageReconstruction.settings.neuralRenderingUICorrection,
+				};
+				const bool initialReset =
+					imageReconstruction.pendingNeuralRenderingReset.exchange(false, std::memory_order_acq_rel);
+				const std::uint32_t targetIndex = static_cast<std::uint32_t>(frameIndex) & 1u;
+				auto& target = neuralRenderingOutputWrapped[targetIndex];
+				ID3D12Resource* finalNeuralOutput = nullptr;
+				std::uint32_t finalNeuralOutputIndex = UINT32_MAX;
+				if (target && target->resource) {
+					const auto targetToUav = CD3DX12_RESOURCE_BARRIER::Transition(
+						target->resource.get(),
+						D3D12_RESOURCE_STATE_COMMON,
+						D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+					commandLists[frameIndex]->ResourceBarrier(1, &targetToUav);
+
+					// Feature 18 is a temporal reconstruction model, not a recursively
+					// composable image generator. Re-feeding its output with unchanged
+					// geometry guides visibly low-passes detail. Photo Finish therefore
+					// accumulates fresh model outputs over real jittered frames instead.
+					const bool succeeded = neural.Evaluate(
+						commandLists[frameIndex].get(), fakeSwapChain,
+						neuralDepthBufferShared12->resource.get(),
+						neuralMotionVectorBufferShared12->resource.get(),
+						target->resource.get(),
+						guideWidth, guideHeight,
+						swapChainDesc.Width, swapChainDesc.Height,
+						static_cast<float>(guideWidth), static_cast<float>(guideHeight),
+						tuning,
+						initialReset);
+
+					const auto outputTransition = CD3DX12_RESOURCE_BARRIER::Transition(
+						target->resource.get(),
+						D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+						succeeded ? D3D12_RESOURCE_STATE_COPY_SOURCE : D3D12_RESOURCE_STATE_COMMON);
+					commandLists[frameIndex]->ResourceBarrier(1, &outputTransition);
+					if (succeeded) {
+						finalNeuralOutput = target->resource.get();
+						finalNeuralOutputIndex = targetIndex;
+					}
+				}
+
+				D3D12_RESOURCE_BARRIER restoreInputs[3]{};
+				for (std::size_t i = 0; i < std::size(restoreInputs); ++i) {
+					restoreInputs[i] = CD3DX12_RESOURCE_BARRIER::Transition(
+						neuralInputs[i],
+						D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+						D3D12_RESOURCE_STATE_COMMON);
+				}
+				commandLists[frameIndex]->ResourceBarrier(
+					static_cast<UINT>(std::size(restoreInputs)),
+					restoreInputs);
+
+				if (finalNeuralOutput) {
+					presentationSource = finalNeuralOutput;
+					neuralTransitionsActive = true;
+					completedNeuralThisFrame = true;
+					neuralOutputIndexThisFrame = finalNeuralOutputIndex;
+				}
+				}
+			}
+		}
 		{
 			std::vector<D3D12_RESOURCE_BARRIER> barriers;
-			barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(fakeSwapChain, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE));
+			if (presentationSource == fakeSwapChain)
+				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(fakeSwapChain, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE));
 			barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(realSwapChain, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST));
 			commandLists[frameIndex]->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
 		}
 
-		commandLists[frameIndex]->CopyResource(realSwapChain, fakeSwapChain);
+		commandLists[frameIndex]->CopyResource(realSwapChain, presentationSource);
 
 		{
 			std::vector<D3D12_RESOURCE_BARRIER> barriers;
-			barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(fakeSwapChain, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON));
+			if (presentationSource == fakeSwapChain)
+				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(fakeSwapChain, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON));
+			else if (neuralTransitionsActive)
+				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(presentationSource, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON));
 			barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(realSwapChain, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT));
 			commandLists[frameIndex]->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
 		}
@@ -233,6 +389,11 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	DX::ThrowIfFailed(commandQueue->Signal(d3d12Fence.get(), fenceValue));
 	DX::ThrowIfFailed(d3d11Context->Wait(d3d11Fence.get(), fenceValue));
 	fenceValue++;
+
+	if (completedNeuralThisFrame) {
+		completedNeuralOutputIndex.store(neuralOutputIndexThisFrame, std::memory_order_release);
+		completedNeuralFrameSerial.fetch_add(1, std::memory_order_acq_rel);
+	}
 
 	// Update the frame index
 	frameIndex = swapChain->GetCurrentBackBufferIndex();
@@ -511,9 +672,39 @@ void DX12SwapChain::CreateSharedResources()
 	main.texture->GetDesc(&texDesc);
 	texDesc.Format = DXGI_FORMAT_R32_FLOAT;
 	depthBufferShared12 = std::make_unique<WrappedResource>(texDesc, d3d11Device.get(), d3d12Device.get());
+	if (globals::pipeline::imageReconstruction.neuralRenderingProvisionedAtBoot)
+		neuralDepthBufferShared12 = std::make_unique<WrappedResource>(texDesc, d3d11Device.get(), d3d12Device.get());
+	else
+		neuralDepthBufferShared12.reset();
 
 	// Create motion vector buffer
 	auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 	motionVector.texture->GetDesc(&texDesc);
 	motionVectorBufferShared12 = std::make_unique<WrappedResource>(texDesc, d3d11Device.get(), d3d12Device.get());
+	if (globals::pipeline::imageReconstruction.neuralRenderingProvisionedAtBoot)
+		neuralMotionVectorBufferShared12 = std::make_unique<WrappedResource>(texDesc, d3d11Device.get(), d3d12Device.get());
+	else
+		neuralMotionVectorBufferShared12.reset();
+}
+
+ID3D11Texture2D* DX12SwapChain::GetCompletedNeuralOutput() const
+{
+	const auto index = completedNeuralOutputIndex.load(std::memory_order_acquire);
+	if (index >= std::size(neuralRenderingOutputWrapped) || !neuralRenderingOutputWrapped[index])
+		return nullptr;
+	return neuralRenderingOutputWrapped[index]->resource11;
+}
+
+ID3D11Texture2D* DX12SwapChain::GetProvisionedNeuralOutput() const
+{
+	for (const auto& output : neuralRenderingOutputWrapped) {
+		if (output && output->resource11)
+			return output->resource11;
+	}
+	return nullptr;
+}
+
+std::uint64_t DX12SwapChain::GetCompletedNeuralFrameSerial() const
+{
+	return completedNeuralFrameSerial.load(std::memory_order_acquire);
 }

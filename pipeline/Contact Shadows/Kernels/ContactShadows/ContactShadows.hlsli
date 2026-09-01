@@ -46,12 +46,13 @@ namespace ContactShadows
 		// erase every photon when the ray field becomes temporarily under-resolved.
 		float shadow = max(saturate(lerp(c, filtered, blur)), 0.12f);
 
-		// Contact shadows are a near-field detail technique. At long range even a
-		// continuous one-pixel receiver has insufficient depth precision to keep
-		// receiver/caster ordering stable while the camera moves. Retire the complete
-		// screen-space term before that range, with additional early rejection at
-		// discontinuities. The ordinary shadow maps remain authoritative there.
-		float rangeConfidence = 1.0f - smoothstep(2048.0f, 5120.0f, viewDepth);
+		// This texture contains PIXL's directional screen-space shadow, not only a
+		// tiny contact halo. Match the consumer range to the producer's validated
+		// depth-confidence envelope; the former 2048..5120 retirement discarded most
+		// useful outdoor sun shadowing even though the ray pass remained stable out to
+		// 12288 units. Depth discontinuity rejection still prevents long-range walls,
+		// roofs and alpha silhouettes from becoming broad false blockers.
+		float rangeConfidence = 1.0f - smoothstep(6144.0f, 12288.0f, viewDepth);
 		float receiverConfidence =
 			rangeConfidence * (1.0f - discontinuity * (1.0f - rangeConfidence));
 		return lerp(1.0f, shadow, receiverConfidence);

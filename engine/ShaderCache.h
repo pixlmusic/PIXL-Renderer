@@ -567,6 +567,9 @@ namespace SIE
 			// PIXL Renderer start
 			MaterialForge = 1 << 3,
 			Deferred = 1 << 4,
+			AutoFur = 1 << 5,
+			AutoHair = 1 << 6,
+			HairCandidate = 1 << 7,
 			// PIXL Renderer end
 			Specular = 1 << 9,
 			SoftLighting = 1 << 10,

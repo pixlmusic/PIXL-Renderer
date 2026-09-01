@@ -224,6 +224,12 @@ PhysicalMaterial::Descriptor BSLightingShaderMaterialPBR::GetPhysicalMaterialDes
 	};
 	copyGlint(glintParameters, descriptor.glint);
 	copyGlint(projectedMaterialGlintParameters, descriptor.projectedGlint);
+	// Automatic semantics must be resolved before the raster flags/constants are
+	// generated. Registry observation happens afterward and cannot affect the live
+	// draw descriptor by itself.
+	PhysicalMaterial::ApplyAutomaticFurSemantics(
+		descriptor,
+		PhysicalMaterial::ClassifyAutomaticFur(*this, inputFilePath));
 
 	return descriptor;
 }

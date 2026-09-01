@@ -21,9 +21,22 @@ struct RadiantGrid : OverlayFeature
 
 	struct ResolvedParticleLight
 	{
+		enum class Source : std::uint8_t
+		{
+			Particle,
+			GlowMappedGeometry
+		};
+
 		RE::NiPoint3 position;
 		RE::NiColorA color;
 		float radius;
+		Source source = Source::Particle;
+	};
+
+	struct PersistedParticleLight
+	{
+		ResolvedParticleLight light{};
+		std::uint64_t lastSeenFrame = 0;
 	};
 
 	struct VertexColorCacheEntry
@@ -37,12 +50,24 @@ struct RadiantGrid : OverlayFeature
 		float intensityScale = 1.0f;
 	};
 
+	struct IncandescentGeometryCacheEntry
+	{
+		const RE::BSShaderMaterial* material = nullptr;
+		VertexColorCacheEntry light{};
+	};
+
 	ParticleLightConfigStore particleLightConfigs;
 
 	eastl::hash_map<RE::BSGeometry*, VertexColorCacheEntry> vertexColorCache;
+	eastl::hash_map<RE::BSGeometry*, IncandescentGeometryCacheEntry> incandescentGeometryCache;
 	eastl::vector<ResolvedParticleLight> queuedParticleLights;
 	eastl::vector<ResolvedParticleLight> currentParticleLights;
+	eastl::hash_map<RE::NiAVObject*, std::size_t> queuedParticleLightOwners;
+	eastl::hash_map<RE::NiAVObject*, PersistedParticleLight> persistedParticleLights;
+	std::uint64_t particleLightFrameSerial = 0;
 	std::shared_mutex particleLightsMutex;
+	std::uint32_t particleEmitterLightCount = 0;
+	std::uint32_t glowMappedEmitterLightCount = 0;
 
 	bool CheckParticleLights(RE::BSRenderPass* a_pass, uint32_t a_technique);
 
@@ -189,6 +214,7 @@ public:
 
 	/** @brief Creates GPU buffers, compute shaders, and constant buffers for clustered lighting. */
 	virtual void SetupResources() override;
+	virtual void Reset() override;
 
 	virtual void SaveSettings(json& o_json) override;
 	virtual void LoadSettings(json& o_json) override;
@@ -326,6 +352,9 @@ public:
 
 private:
 	VertexColorCacheEntry GetParticleLightConfig(RE::BSRenderPass* a_pass);
+	VertexColorCacheEntry GetIncandescentGeometryLightConfig(RE::BSRenderPass* a_pass);
+	bool QueueIncandescentGeometryLight(RE::BSRenderPass* a_pass);
+	bool QueueResolvedEmitterLight(RE::NiAVObject* a_owner, const ResolvedParticleLight& a_resolved);
 	bool QueueParticleLight(RE::BSRenderPass* a_pass, VertexColorCacheEntry& a_reference);
 };
 

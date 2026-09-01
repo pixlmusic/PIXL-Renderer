@@ -2109,6 +2109,7 @@ void HybridGI::DrawHybridGI()
 		srvs.at(3) = texIlCoCg[inputGITexIdx]->srv.get();
 		srvs.at(4) = texGiSpecular[inputSpecTexIdx]->srv.get();
 		srvs.at(5) = texBentVisibility[inputBentTexIdx]->srv.get();
+		srvs.at(6) = texNormal->srv.get();
 
 		uavs.at(0) = texAo[!inputAoTexIdx]->uav.get();
 		uavs.at(1) = texIlY[!inputGITexIdx]->uav.get();

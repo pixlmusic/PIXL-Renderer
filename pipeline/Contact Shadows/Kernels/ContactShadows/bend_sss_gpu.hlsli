@@ -80,6 +80,7 @@ struct DispatchParameters
 
 	half ShadowContrast;  // A contrast boost is applied to the transition in/out of shadow.
 						  // Recommended starting value: 2 or 4. Values >= 1 are valid.
+	half Strength;  // Final blend against Skyrim's authoritative directional shadow map.
 
 	float2 DynamicRes;
 
@@ -117,6 +118,7 @@ struct DispatchParameters
 		SurfaceThickness = 0.005;
 		BilinearThreshold = 0.02;
 		ShadowContrast = 4;
+		Strength = 1;
 		IgnoreEdgePixels = false;
 		UsePrecisionOffset = false;
 		BilinearSamplingOffsetMode = false;
@@ -445,7 +447,7 @@ void WriteScreenSpaceShadow(DispatchParameters inParameters, int3 inGroupID, int
 	half result = dot(shadow_value, 0.25h);
 #endif
 
-	result = lerp(1.0h, result, distance_confidence);
+	result = lerp(1.0h, result, distance_confidence * saturate(inParameters.Strength));
 
 	// Asking the GPU to write scattered single-byte pixels isn't great,
 	// but latency is hidden by the ray work above.

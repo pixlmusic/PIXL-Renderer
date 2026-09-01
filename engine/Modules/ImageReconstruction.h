@@ -3,6 +3,7 @@
 #include "RenderModule.h"
 #include "ImageReconstruction/DX12SwapChain.h"
 #include "ImageReconstruction/FidelityFX.h"
+#include "ImageReconstruction/NeuralRendering.h"
 #include "ImageReconstruction/RCAS/RCAS.h"
 #include "ImageReconstruction/Streamline.h"
 #include <d3d11_4.h>
@@ -61,12 +62,12 @@ public:
 
 	struct Settings
 	{
-		uint upscaleMethod = (uint)UpscaleMethod::kDLSS;
+		uint upscaleMethod = (uint)UpscaleMethod::kFSR;
 		uint upscaleMethodNoDLSS = (uint)UpscaleMethod::kFSR;
-		uint qualityMode = 1;  // Default to Quality (1=Quality, 2=Balanced, 3=Performance, 4=Ultra Performance, 0=Native AA)
+		uint qualityMode = 2;  // Safe default: Balanced (1=Quality, 2=Balanced, 3=Performance, 4=Ultra Performance, 0=Native AA)
 		uint frameLimitMode = 1;
 		float frameLimitFPS = 60.0f;  // final presented FPS; FG schedules real frames at half this rate
-		uint frameGenerationMode = 1;
+		uint frameGenerationMode = 0;
 		uint frameGenerationForceEnable = 0;
 		bool frameGenerationAllowInMenus = false;
 		uint streamlineLogLevel = 0;  // 0=Off, 1=Default, 2=Verbose
@@ -75,6 +76,23 @@ public:
 		float sharpnessDLSS = 0.0f;
 		uint presetDLSS = 0;  // 0=Default, 1=J, 2=K, 3=L, 4=M, 5=F
 		bool forceLatestDLSSModelOnLegacyRTX = false;
+		// Experimental DLSS Neural Rendering 310.8 / NGX Feature 18.  The
+		// feature is capability-gated and bypasses to ordinary DLSS on failure.
+		bool neuralRenderingEnabled = false;
+		uint neuralRenderingPreset = 0;  // 0=Natural, 1=Balanced, 2=Detail, 3=Strong, 4=Custom
+		// Feature-creation controls recovered from the installed 310.8 runtime.
+		// Quality: 0=follow DLSS, 1=DLAA, 2=quality, 3=balanced,
+		// 4=performance, 5=ultra performance, 6=ultra quality.
+		uint neuralRenderingQualityMode = 0;
+		// 0=runtime default, 1..3=private runtime output presets.
+		uint neuralRenderingOutputPreset = 0;
+		float neuralRenderingIntensity = 0.8f;
+		float neuralRenderingLocalTone = 0.75f;
+		float neuralRenderingLocalStructure = 0.9f;
+		float neuralRenderingSkinStructure = 0.9f;
+		uint neuralRenderingStyle = 3;
+		bool neuralRenderingAutoMask = true;
+		bool neuralRenderingUICorrection = true;
 		bool reflexLowLatencyMode = false;
 		bool reflexLowLatencyBoost = false;
 		bool reflexUseMarkersToOptimize = false;
@@ -105,6 +123,14 @@ public:
 	bool lowRefreshRate = false;
 	bool fidelityFXMissing = false;
 	bool d3d12SwapChainActive = false;
+	bool frameGenerationRequestedAtBoot = false;
+	bool neuralRenderingRequestedAtBoot = false;
+	// Photo Finish can invoke Feature 18 without enabling it during gameplay.
+	// Provisioning owns the DX12 sidecar and shared resources; the live setting
+	// only decides whether the model runs continuously.
+	bool neuralRenderingProvisionedAtBoot = false;
+	uint neuralRenderingQualityModeAtBoot = 0;
+	uint neuralRenderingOutputPresetAtBoot = 0;
 
 	// Timing and scaling
 	double refreshRate = 0.0f;
@@ -117,6 +143,17 @@ public:
 	bool ShouldUseFrameGenerationThisFrame() const;
 	FrameGenerationState GetFrameGenerationState() const;
 	bool IsFrameGenerationTemporarilySuspended() const;
+	bool IsNeuralRenderingConfiguredForSession();
+	bool ShouldUseNeuralRenderingThisFrame();
+	bool CanUsePhotoNeuralRendering();
+	[[nodiscard]] bool IsPhotoNeuralRenderingActive() const
+	{
+		return photoCaptureNeuralOverrideActive.load(std::memory_order_acquire);
+	}
+	[[nodiscard]] uint GetEffectiveQualityMode() const
+	{
+		return IsPhotoNeuralRenderingActive() ? 0u : settings.qualityMode;
+	}
 	float GetFrameGenerationFrameTime() const;
 	bool IsUpscalingActive() const;
 
@@ -174,10 +211,15 @@ public:
 	void SetPhotoCaptureJitterSample(std::uint32_t sampleIndex);
 	void EndPhotoCaptureJitter();
 	[[nodiscard]] bool IsPhotoCaptureJitterActive() const { return photoCaptureJitterActive; }
+	void BeginPhotoCaptureRenderOverride(float minimumRenderScale, bool enableNeuralRendering);
+	void EndPhotoCaptureRenderOverride();
 
 	bool photoCaptureJitterActive = false;
 	std::uint32_t photoCaptureJitterIndex = 0;
 	std::uint32_t photoCaptureJitterPhaseCount = 32;
+	bool photoCaptureRenderOverrideActive = false;
+	float photoCaptureMinimumRenderScale = 0.0f;
+	std::atomic_bool photoCaptureNeuralOverrideActive{ false };
 
 	// D3D11 textures
 	Texture2D* reactiveMaskTexture = nullptr;
@@ -195,6 +237,7 @@ public:
 	static inline Streamline streamline;
 	static inline FidelityFX fidelityFX;  ///< Only for frame generation
 	static inline DX12SwapChain dx12SwapChain;
+	static inline NeuralRendering neuralRendering;
 	static inline RCAS rcas;  ///< Standalone RCAS sharpening for DLSS
 
 	winrt::com_ptr<ID3D11PixelShader> copyDepthToSharedBufferPS;
@@ -217,8 +260,9 @@ public:
 	 * use it, but the request applies to either reconstruction backend.
 	 */
 	std::atomic<bool> pendingDLSSReset{ false };
+	std::atomic<bool> pendingNeuralRenderingReset{ true };
 
-	void CopySharedD3D12Resources();
+	void CopySharedD3D12Resources(bool a_useNeuralGuides = false);
 	void PostDisplay();
 	void PerformUpscaling();
 	void UpscaleDepth();

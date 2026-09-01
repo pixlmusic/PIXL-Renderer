@@ -6,6 +6,7 @@
 #include "RenderModule.h"
 #include "Globals.h"
 #include "Menu.h"
+#include "Menu/TuningWorkspaceRenderer.h"
 #include "ShaderCache.h"
 #include "State.h"
 #include "Util.h"
@@ -613,6 +614,15 @@ struct BSInputDeviceManager_PollInputDevices
 		auto menu = globals::menu;
 
 		if (a_events) {
+			if (TuningWorkspaceRenderer::IsDirectorPhotoCaptureLocked()) {
+				// The offline photo transaction owns every input device, including the
+				// PIXL menu itself. This prevents a second request or an accidental
+				// settings/camera edit while the renderer is converging or saving.
+				constexpr RE::InputEvent* const dummy[]{ nullptr };
+				func(a_dispatcher, dummy);
+				return;
+			}
+
 			// Always give PIXL the complete event stream FIRST. Director hotkeys,
 			// focus controls and controller navigation therefore continue to work
 			// even though the corresponding events never reach Skyrim.

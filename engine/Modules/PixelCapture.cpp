@@ -394,6 +394,34 @@ namespace
 		return src;
 	}
 
+	CaptureSource SelectPhotoFinishSource(
+		winrt::com_ptr<ID3D11Texture2D>& holder,
+		bool useNeuralSource)
+	{
+		if (useNeuralSource) {
+			auto& swapChain = globals::pipeline::imageReconstruction.dx12SwapChain;
+			if (auto* texture = swapChain.GetCompletedNeuralOutput()) {
+				CaptureSource src;
+				src.texture = texture;
+				src.needsPreviewCache = false;
+				src.description = "completed PIXL neural presentation output";
+				return src;
+			}
+			// Capture setup needs dimensions/format before the first temporary
+			// Photo NR frame is published. The resource is never sampled until the
+			// serial synchronization below confirms a completed model evaluation.
+			if (auto* texture = swapChain.GetProvisionedNeuralOutput()) {
+				CaptureSource src;
+				src.texture = texture;
+				src.needsPreviewCache = false;
+				src.description = "provisioned PIXL neural Photo Finish output";
+				return src;
+			}
+		}
+
+		return SelectCaptureSource(holder, /*forCapture=*/true);
+	}
+
 	// True when our hotkey is the single PrintScreen key vanilla binds. Anything
 	// else (different key, chord, modifier) means the user wants both ours and
 	// vanilla independently.
@@ -1764,6 +1792,19 @@ void PixelCapture::LoadSettings(json& a_json)
 				a_json["PhotoFinishDetailStrength"],
 				0.0f,
 				1.0f);
+	if (a_json.contains("PhotoFinishNeuralEnabled"))
+		photoFinishNeuralEnabled = a_json["PhotoFinishNeuralEnabled"];
+	if (a_json.contains("PhotoFinishRenderScaleMode"))
+		photoFinishRenderScaleMode =
+			std::clamp<unsigned int>(a_json["PhotoFinishRenderScaleMode"], 0u, 2u);
+	if (a_json.contains("PhotoFinishLightingWarmupFrames")) {
+		const unsigned int requested = a_json["PhotoFinishLightingWarmupFrames"];
+		photoFinishLightingWarmupFrames =
+			requested >= 16u ? 16u : requested >= 8u ? 8u : requested >= 4u ? 4u : 0u;
+	}
+	if (a_json.contains("PhotoFinishNeuralFeedbackSteps"))
+		photoFinishNeuralFeedbackSteps =
+			std::clamp<unsigned int>(a_json["PhotoFinishNeuralFeedbackSteps"], 1u, 3u);
 
 	// Keep the legacy fields readable, but never reactivate the experimental
 	// depth resolve from an older configuration.
@@ -1833,6 +1874,7 @@ void PixelCapture::LoadSettings(json& a_json)
 			preset.motionEnabled = source.value("MotionEnabled", false);
 			preset.motionStrength = std::clamp(source.value("MotionStrength", 0.18f), 0.0f, 1.0f);
 			preset.motionAngleDegrees = std::clamp(source.value("MotionAngleDegrees", 0.0f), -180.0f, 180.0f);
+			preset.neuralPhotoEnabled = source.value("NeuralPhotoEnabled", false);
 		}
 	}
 
@@ -1854,6 +1896,10 @@ void PixelCapture::SaveSettings(json& a_json)
 		photoFinishTemporalSamples;
 	a_json["PhotoFinishDetailStrength"] =
 		photoFinishDetailStrength;
+	a_json["PhotoFinishNeuralEnabled"] = photoFinishNeuralEnabled;
+	a_json["PhotoFinishRenderScaleMode"] = photoFinishRenderScaleMode;
+	a_json["PhotoFinishLightingWarmupFrames"] = photoFinishLightingWarmupFrames;
+	a_json["PhotoFinishNeuralFeedbackSteps"] = photoFinishNeuralFeedbackSteps;
 	a_json["PhotoLensDofEnabled"] =
 		photoLensDofEnabled;
 	a_json["PhotoLensDofQuality"] =
@@ -1886,7 +1932,8 @@ void PixelCapture::SaveSettings(json& a_json)
 			{ "FieldOfView", preset.fieldOfView },
 			{ "MotionEnabled", preset.motionEnabled },
 			{ "MotionStrength", preset.motionStrength },
-			{ "MotionAngleDegrees", preset.motionAngleDegrees }
+			{ "MotionAngleDegrees", preset.motionAngleDegrees },
+			{ "NeuralPhotoEnabled", preset.neuralPhotoEnabled }
 		});
 	}
 	subrect.SaveSettings(a_json);
@@ -2110,6 +2157,11 @@ std::uint32_t PixelCapture::GetPendingCaptureCount() const
 
 void PixelCapture::RequestPhotoFinishCapture()
 {
+	// The photo renderer is transactional: never queue another capture while a
+	// request, GPU sampling burst, CPU resolve, encode, or save is in flight.
+	if (IsPhotoFinishBusy())
+		return;
+
 	if (!photoFinishEnabled) {
 		directorCaptureRequested.store(
 			true,
@@ -2131,6 +2183,17 @@ bool PixelCapture::IsPhotoFinishSampling() const
 		photoFinishSamplesTarget.load(
 			std::memory_order_acquire) >
 		0u;
+}
+
+bool PixelCapture::IsPhotoFinishBusy() const
+{
+	return
+		captureRequested.load(std::memory_order_acquire) ||
+		photoFinishRequested.load(std::memory_order_acquire) ||
+		directorCaptureRequested.load(std::memory_order_acquire) ||
+		photoFinishBurst.has_value() ||
+		pendingCaptureCount.load(std::memory_order_acquire) > 0u ||
+		GetPhotoFinishStage() != PhotoFinishStage::Idle;
 }
 
 std::uint32_t PixelCapture::GetPhotoFinishSamplesCaptured() const
@@ -2166,8 +2229,10 @@ float PixelCapture::GetPhotoFinishProgress() const
 const char* PixelCapture::GetPhotoFinishStageLabel() const
 {
 	switch (GetPhotoFinishStage()) {
+	case PhotoFinishStage::ConvergingLighting:
+		return "CONVERGING LIGHTING + POST EFFECTS";
 	case PhotoFinishStage::Accumulating:
-		return "ACCUMULATING LIGHT + TEMPORAL DETAIL";
+		return "ACCUMULATING FINAL TEMPORAL DETAIL";
 	case PhotoFinishStage::Resolving:
 		return "RESOLVING MULTI-FRAME IMAGE";
 	case PhotoFinishStage::LensDepthOfField:
@@ -2190,6 +2255,7 @@ bool PixelCapture::IsPhotoFinishProcessing() const
 	const auto stage =
 		GetPhotoFinishStage();
 	return stage != PhotoFinishStage::Idle &&
+		stage != PhotoFinishStage::ConvergingLighting &&
 		stage != PhotoFinishStage::Accumulating;
 }
 
@@ -2219,10 +2285,19 @@ void PixelCapture::StartPhotoFinishCapture()
 	winrt::com_ptr<ID3D11Texture2D>
 		sourceTextureKeepAlive;
 
+	auto& reconstruction = globals::pipeline::imageReconstruction;
+	const bool neuralSourceAvailable = reconstruction.CanUsePhotoNeuralRendering() &&
+		reconstruction.dx12SwapChain.GetProvisionedNeuralOutput();
+	const bool useNeuralSource = photoFinishNeuralEnabled && neuralSourceAvailable;
+	if (photoFinishNeuralEnabled && !useNeuralSource) {
+		logger::warn(
+			"Photo Finish Neural Reconstruction was requested but the PIXL DLSS sidecar/model is unavailable; using the universal Photo Finish path.");
+	}
+
 	const auto src =
-		SelectCaptureSource(
+		SelectPhotoFinishSource(
 			sourceTextureKeepAlive,
-			/*forCapture=*/true);
+			useNeuralSource);
 
 	if (!src.texture) {
 		logger::error(
@@ -2238,6 +2313,28 @@ void PixelCapture::StartPhotoFinishCapture()
 		&srcDesc);
 
 	PhotoFinishBurst burst;
+	burst.useNeuralSource = useNeuralSource;
+	burst.warmupFramesTotal =
+		photoFinishLightingWarmupFrames >= 16u ? 16u :
+		photoFinishLightingWarmupFrames >= 8u ? 8u :
+		photoFinishLightingWarmupFrames >= 4u ? 4u : 0u;
+	burst.warmupFramesRemaining = burst.warmupFramesTotal;
+	if (useNeuralSource && burst.warmupFramesTotal < 4u) {
+		burst.warmupFramesTotal = 4u;
+		burst.warmupFramesRemaining = 4u;
+	}
+	burst.neuralFeedbackSteps = useNeuralSource
+		? std::clamp(photoFinishNeuralFeedbackSteps, 1u, 3u)
+		: 1u;
+	burst.minimumRenderScale = photoFinishRenderScaleMode >= 2u
+		? 1.0f
+		: photoFinishRenderScaleMode >= 1u
+			? 0.85f
+			: 0.0f;
+	if (useNeuralSource)
+		burst.minimumRenderScale = 1.0f;
+	burst.lastNeuralFrameSerial =
+		reconstruction.dx12SwapChain.GetCompletedNeuralFrameSerial();
 	burst.format =
 		srcDesc.Format;
 	burst.sourceWidth =
@@ -2265,7 +2362,7 @@ void PixelCapture::StartPhotoFinishCapture()
 			region.h;
 	}
 
-	const unsigned int requestedSamples =
+	unsigned int requestedSamples =
 		photoFinishTemporalSamples >= 24u
 			? 24u
 			: photoFinishTemporalSamples >= 16u
@@ -2275,6 +2372,20 @@ void PixelCapture::StartPhotoFinishCapture()
 					: photoFinishTemporalSamples >= 4u
 						? 4u
 						: 1u;
+
+	// Feature 18 is temporally reconstructed. Additional quality tiers mean more
+	// independent, correctly guided DLAA+NR frames—not recursive re-evaluation of
+	// the previous neural image, which the model turns into cumulative blur.
+	const unsigned int neuralConvergenceFloor = useNeuralSource
+		? 8u * std::clamp(burst.neuralFeedbackSteps, 1u, 3u)
+		: 1u;
+	if (useNeuralSource && requestedSamples < neuralConvergenceFloor) {
+		logger::info(
+			"Photo Finish neural convergence raised from {} to {} fresh guided frame(s).",
+			requestedSamples,
+			neuralConvergenceFloor);
+		requestedSamples = neuralConvergenceFloor;
+	}
 
 	const std::uint64_t bytesPerPixel =
 		srcDesc.Format ==
@@ -2431,8 +2542,11 @@ void PixelCapture::StartPhotoFinishCapture()
 		burst.targetSamples);
 
 	auto& photoReconstruction = globals::pipeline::imageReconstruction;
-	photoReconstruction.BeginPhotoCaptureJitter(burst.targetSamples);
-	photoReconstruction.SetPhotoCaptureJitterSample(0u);
+	photoReconstruction.BeginPhotoCaptureRenderOverride(burst.minimumRenderScale, burst.useNeuralSource);
+	if (burst.warmupFramesRemaining == 0u) {
+		photoReconstruction.BeginPhotoCaptureJitter(burst.targetSamples);
+		photoReconstruction.SetPhotoCaptureJitterSample(0u);
+	}
 
 	photoFinishSamplesCaptured.store(
 		0u,
@@ -2447,22 +2561,30 @@ void PixelCapture::StartPhotoFinishCapture()
 			burst);
 
 	SetPhotoFinishStage(
-		PhotoFinishStage::Accumulating,
-		0.05f);
+		photoFinishBurst->warmupFramesRemaining > 0u
+			? PhotoFinishStage::ConvergingLighting
+			: PhotoFinishStage::Accumulating,
+		0.02f);
 
 	logger::info(
-		"Photo Finish started: {} actual sample(s), {}x output, detail {:.2f}, motion {}, projection jitter {}.",
+		"Photo Finish transaction started: {} lighting/post warmup frame(s), {} actual sample(s), {:.0f}% minimum internal render scale, {}x final output, neural convergence tier {}, detail {:.2f}, motion {}, projection jitter {}, neural source {}.",
+		photoFinishBurst->warmupFramesTotal,
 		photoFinishSamplesTarget.load(
 			std::memory_order_acquire),
+		photoFinishBurst->minimumRenderScale > 0.0f
+			? photoFinishBurst->minimumRenderScale * 100.0f
+			: reconstruction.resolutionScale.x * 100.0f,
 		photoFinishBurst->
 			outputScale,
+		photoFinishBurst->neuralFeedbackSteps,
 		photoFinishBurst->
 			detailStrength,
 		photoFinishBurst->
 			motionEnabled
 				? "on"
 				: "off",
-		photoReconstruction.IsPhotoCaptureJitterActive() ? "on" : "off");
+		photoReconstruction.IsPhotoCaptureJitterActive() ? "on" : "off",
+		photoFinishBurst->useNeuralSource ? "on" : "off");
 }
 
 void PixelCapture::CapturePhotoFinishSample()
@@ -2478,6 +2600,7 @@ void PixelCapture::CapturePhotoFinishSample()
 	if (!device ||
 		!context) {
 		globals::pipeline::imageReconstruction.EndPhotoCaptureJitter();
+		globals::pipeline::imageReconstruction.EndPhotoCaptureRenderOverride();
 		photoFinishBurst.reset();
 		photoFinishSamplesTarget =
 			0u;
@@ -2490,26 +2613,76 @@ void PixelCapture::CapturePhotoFinishSample()
 	auto& burst =
 		*photoFinishBurst;
 
+	if (burst.warmupFramesRemaining > 0u) {
+		--burst.warmupFramesRemaining;
+		const auto completedWarmup =
+			burst.warmupFramesTotal - burst.warmupFramesRemaining;
+		SetPhotoFinishStage(
+			PhotoFinishStage::ConvergingLighting,
+			0.02f + 0.10f *
+				(static_cast<float>(completedWarmup) /
+				 static_cast<float>(std::max(burst.warmupFramesTotal, 1u))));
+
+		if (burst.warmupFramesRemaining == 0u) {
+			auto& photoReconstruction = globals::pipeline::imageReconstruction;
+			photoReconstruction.BeginPhotoCaptureJitter(burst.targetSamples);
+			photoReconstruction.SetPhotoCaptureJitterSample(0u);
+			burst.awaitingFirstJitteredFrame = true;
+			SetPhotoFinishStage(PhotoFinishStage::Accumulating, 0.12f);
+		}
+		return;
+	}
+
 	if (burst.awaitingFirstJitteredFrame) {
 		burst.awaitingFirstJitteredFrame = false;
 		// The override was armed after the frame that triggered this request.
 		// Wait for Main_UpdateJitter to render sample 0 with the deterministic
 		// Director Halton offset before copying any color/depth data.
+		if (burst.useNeuralSource) {
+			burst.lastNeuralFrameSerial =
+				globals::pipeline::imageReconstruction.dx12SwapChain.GetCompletedNeuralFrameSerial();
+			burst.awaitingNeuralFrame = true;
+		}
 		return;
+	}
+
+	if (burst.useNeuralSource) {
+		auto& swapChain = globals::pipeline::imageReconstruction.dx12SwapChain;
+		const auto serial = swapChain.GetCompletedNeuralFrameSerial();
+		if (serial <= burst.lastNeuralFrameSerial || !swapChain.GetCompletedNeuralOutput()) {
+			if (++burst.neuralWaitFrames < 180u)
+				return;
+			logger::warn(
+				"Photo Finish timed out waiting for a fresh neural frame; continuing with the universal capture source.");
+			burst.useNeuralSource = false;
+			burst.awaitingNeuralFrame = false;
+		} else if (burst.awaitingNeuralFrame) {
+			// This published frame was rendered before the next deterministic jitter
+			// was armed. Use it only as a synchronization marker; the following
+			// neural frame contains the requested projection phase.
+			burst.lastNeuralFrameSerial = serial;
+			burst.neuralWaitFrames = 0;
+			burst.awaitingNeuralFrame = false;
+			return;
+		} else {
+			burst.lastNeuralFrameSerial = serial;
+			burst.neuralWaitFrames = 0;
+		}
 	}
 
 	winrt::com_ptr<ID3D11Texture2D>
 		sourceTextureKeepAlive;
 
 	const auto src =
-		SelectCaptureSource(
+		SelectPhotoFinishSource(
 			sourceTextureKeepAlive,
-			/*forCapture=*/true);
+			burst.useNeuralSource);
 
 	if (!src.texture) {
 		logger::error(
 			"Photo Finish sample failed to acquire capture source.");
 		globals::pipeline::imageReconstruction.EndPhotoCaptureJitter();
+		globals::pipeline::imageReconstruction.EndPhotoCaptureRenderOverride();
 		photoFinishBurst.reset();
 		photoFinishSamplesTarget =
 			0u;
@@ -2534,6 +2707,7 @@ void PixelCapture::CapturePhotoFinishSample()
 		logger::error(
 			"Photo Finish source changed during temporal sampling; capture cancelled.");
 		globals::pipeline::imageReconstruction.EndPhotoCaptureJitter();
+		globals::pipeline::imageReconstruction.EndPhotoCaptureRenderOverride();
 		photoFinishBurst.reset();
 		photoFinishSamplesTarget =
 			0u;
@@ -2573,6 +2747,7 @@ void PixelCapture::CapturePhotoFinishSample()
 		logger::error(
 			"Photo Finish failed to create staging sample.");
 		globals::pipeline::imageReconstruction.EndPhotoCaptureJitter();
+		globals::pipeline::imageReconstruction.EndPhotoCaptureRenderOverride();
 		photoFinishBurst.reset();
 		photoFinishSamplesTarget =
 			0u;
@@ -2710,12 +2885,15 @@ void PixelCapture::CapturePhotoFinishSample()
 	if (captured <
 		burst.targetSamples) {
 		globals::pipeline::imageReconstruction.SetPhotoCaptureJitterSample(captured);
+		if (burst.useNeuralSource)
+			burst.awaitingNeuralFrame = true;
 		return;
 	}
 
 	// Sampling is complete; release the projection override before the normal
 	// viewport resumes and report how much genuinely distinct sample coverage ran.
 	globals::pipeline::imageReconstruction.EndPhotoCaptureJitter();
+	globals::pipeline::imageReconstruction.EndPhotoCaptureRenderOverride();
 	std::size_t uniqueJitters = 0u;
 	std::vector<float2> uniqueOffsets;
 	for (const auto& offset : burst.jitterOffsets) {

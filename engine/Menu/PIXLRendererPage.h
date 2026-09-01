@@ -30,7 +30,7 @@ namespace PIXLRendererPage
 		"CAMERA"
 	};
 
-	inline constexpr std::array<Placement, 33> Placements{ {
+	inline constexpr std::array<Placement, 34> Placements{ {
 		{ "HybridGI", CategoryOrder[0], "INDIRECT LIGHT & REFLECTIONS", "Lighting controls are real time. Resolution and pipeline toggles automatically rebuild the affected compute shaders." },
 		{ "WorldProbes", CategoryOrder[0], "INDIRECT LIGHT & REFLECTIONS", "Environment probes update automatically with the scene. Probe-authoring tools are available only in Developer Mode." },
 		{ "SkyBounce", CategoryOrder[0], "INDIRECT LIGHT & REFLECTIONS", "Visibility controls are real time; zenith changes automatically queue a safe probe refresh." },
