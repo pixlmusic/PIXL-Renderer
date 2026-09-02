@@ -45,7 +45,7 @@ function Set-MenuTier([object]$Config, [int]$Tier) {
     }
 }
 
-function Apply-MediumContract([object]$Config) {
+function Apply-EnhancedContract([object]$Config) {
     # Keep the approved live image and reduce only real workload controls. These
     # values mirror engine/Renderer/QualityProfiles.cpp exactly.
     $gi = $Config.'Hybrid GI'
@@ -59,82 +59,86 @@ function Apply-MediumContract([object]$Config) {
     $gi.EnableSpecularOcclusion = $true
     $gi.EnableAdaptiveDenoiser = $true
     $gi.ResolutionMode = 0
-    $gi.NumSlices = 4
-    $gi.NumSteps = 8
-    $gi.WorldCacheSampleCount = 4
-    $gi.WorldCacheTraceSteps = 3
-    $gi.WorldCacheInjectionStride = 4
+    $gi.NumSlices = 5
+    $gi.NumSteps = 10
+    $gi.WorldCacheSampleCount = 6
+    $gi.WorldCacheTraceSteps = 4
+    $gi.WorldCacheInjectionStride = 3
     $gi.EnableWorldCacheSecondBounce = $true
-    $gi.ReflectionSteps = 24
+    $gi.ReflectionSteps = 32
     $gi.MaxAccumFrames = 20
-    $gi.BlurRadius = 2.5
-    $gi.RadianceFireflyClamp = 5.0
-    $gi.ReflectionFireflyClamp = 6.0
-    $gi.WorldCacheTemporalResponse = 0.10
+    $gi.BlurRadius = 2.2
+    $gi.RadianceFireflyClamp = 6.0
+    $gi.ReflectionFireflyClamp = 8.0
+    $gi.WorldCacheTemporalResponse = 0.12
     $Config.'Contact Shadows'.SampleCount = 2
     $Config.'Material Forge'.LocalContactShadowLightCount = 1
-    $Config.'Light Volumes'.ExteriorQuality = 1
-    $Config.'Light Volumes'.InteriorQuality = 1
+    $Config.'Light Volumes'.ExteriorQuality = 2
+    $Config.'Light Volumes'.InteriorQuality = 2
 
     $forge = $Config.'Material Forge'
     $forge.EnableSpecularAA = 1
-    $forge.SpecularAAStrength = 0.75
+    $forge.SpecularAAStrength = 1.00
     $forge.EnableGGXMultiScatter = 1
-    $forge.GGXMultiScatterStrength = 0.75
+    $forge.GGXMultiScatterStrength = 1.00
 
     $layers = $Config.'Material Layers'
     $layers.EnableComplexMaterial = 1
     $layers.EnableParallax = 1
-    $layers.EnableHeightBlending = 0
+    $layers.EnableHeightBlending = 1
     $layers.EnableShadows = 1
     $tuning = $layers.'PIXL Tuning'
-    $tuning.ObjectNearSteps = 6
-    $tuning.ObjectMaxSteps = 12
-    $tuning.ObjectRefinementSteps = 4
-    $tuning.TerrainNearSteps = 6
-    $tuning.TerrainMaxSteps = 14
-    $tuning.TerrainRefinementSteps = 4
+    $tuning.ObjectNearSteps = 9
+    $tuning.ObjectMaxSteps = 18
+    $tuning.ObjectRefinementSteps = 6
+    $tuning.TerrainNearSteps = 8
+    $tuning.TerrainMaxSteps = 22
+    $tuning.TerrainRefinementSteps = 6
     $tuning.EnableDetailReconstruction = 1
-    $tuning.DetailQuality = 1
+    $tuning.DetailQuality = 2
 
-    $Config.Atmosphere.volumetricGridPixelSize = 36
-    $Config.Atmosphere.volumetricGridSizeZ = 40
-    $Config.Atmosphere.volumetricHistoryMissSampleCount = 2
+    $Config.Atmosphere.volumetricGridPixelSize = 30
+    $Config.Atmosphere.volumetricGridSizeZ = 52
+    $Config.Atmosphere.volumetricHistoryMissSampleCount = 3
 
     $water = $Config.'Water Optics'
     $water.EnableEnhancedSSR = 1
     $water.EnableEnhancedCaustics = 1
-    $water.SSRDistanceScale = 0.90
-    $water.SSREdgeFade = 1.00
-    $water.CausticsDispersion = 0.45
+    $water.SSRDistanceScale = 1.20
+    $water.SSREdgeFade = 0.60
+    $water.CausticsDispersion = 0.65
 
     # Ground Response's authored coverage/depth/distance/material behavior is
     # immutable across release tiers. Only geometric subdivision is scalable.
     $ground = $Config.'Ground Response'
-    $ground.GeometryTessellationNear = 7.0
-    $ground.GeometryTessellationFar = 2.0
+    $ground.GeometryTessellationNear = 10.0
+    $ground.GeometryTessellationFar = 2.5
     $Config.'Terrain Detail'.enableLODTerrainTilingFix = 1
 
     $skin = $Config.'Skin Optics'
     $skin.EnableSkin = $true
     $skin.EnableSkinDetail = $true
     $skin.UseSSS = $true
-    $Config.'Tissue Diffusion'.BurleySamples = 12
+    $Config.'Tissue Diffusion'.BurleySamples = 18
     $Config.'Strand Shading'.Enabled = 1
-    $Config.'Strand Shading'.HairMode = 0
+    $Config.'Strand Shading'.HairMode = 1
     $Config.'Strand Shading'.EnableSelfShadow = 1
-    $Config.'Actor Surface Effects'.EffectQuality = 1
+    $Config.'Actor Surface Effects'.EffectQuality = 2
 
-    Set-MenuTier $Config 1
+    Set-MenuTier $Config 2
 
-    # Hardware-neutral release default: FSR 3.1 Balanced, no frame generation.
+    # Hardware-neutral release default: native PIXL TAA, no sidecar features.
     $reconstruction = $Config.ImageReconstruction
-    $reconstruction.upscaleMethod = 2
-    $reconstruction.upscaleMethodNoDLSS = 2
+    $reconstruction.upscaleMethod = 1
+    $reconstruction.upscaleMethodNoDLSS = 1
     $reconstruction.qualityMode = 2
     $reconstruction.frameGenerationMode = 0
     $reconstruction.frameGenerationForceEnable = 0
+    $reconstruction.neuralRenderingEnabled = $false
     $reconstruction.sharpnessFSR = 0.0
+    if ($Config.PSObject.Properties.Name -contains 'Pixel Capture') {
+        $Config.'Pixel Capture'.PhotoFinishNeuralEnabled = $false
+    }
 }
 
 function Flatten([object]$Node, [string]$Path = '') {
@@ -157,22 +161,22 @@ $ultra = Read-Baseline
 Remove-RetiredCompatibilityKeys $ultra
 Write-Config $ultra $ultraPath
 
-$medium = Read-Baseline
-Remove-RetiredCompatibilityKeys $medium
-Apply-MediumContract $medium
+$enhanced = Read-Baseline
+Remove-RetiredCompatibilityKeys $enhanced
+Apply-EnhancedContract $enhanced
 $defaultPath = Join-Path $distribution 'SettingsDefault.json'
-$mediumPath = Join-Path $presetDirectory 'PIXL-Renderer-Medium.json'
+$enhancedPath = Join-Path $presetDirectory 'PIXL-Renderer-Enhanced.json'
 $liveTestedPath = Join-Path $presetDirectory 'PIXL-Renderer-Live-Tested.json'
-Write-Config $medium $defaultPath
-Write-Config $medium $mediumPath
-# The live-tested/golden profile remains the user's approved Ultra image. Only
-# a fresh installation's default workload is Medium.
+Write-Config $enhanced $defaultPath
+Write-Config $enhanced $enhancedPath
+# The live-tested/golden profile remains the user's approved Ultra image. A
+# fresh installation starts on the coherent Enhanced tier and native TAA.
 Write-Config $ultra $liveTestedPath
 
 # Ensure no Ground Response visual/behavioral control was accidentally changed.
 $baseline = Read-Baseline
 $groundBefore = @(Flatten $baseline.'Ground Response' 'Ground Response')
-$groundAfter = @(Flatten $medium.'Ground Response' 'Ground Response')
+$groundAfter = @(Flatten $enhanced.'Ground Response' 'Ground Response')
 $groundBeforeMap = @{}; $groundBefore | ForEach-Object { $groundBeforeMap[$_.Path] = $_.Value }
 $groundChanges = @($groundAfter | Where-Object { $groundBeforeMap[$_.Path] -ne $_.Value } | ForEach-Object Path)
 $allowedGroundChanges = @(
@@ -192,7 +196,7 @@ if ((Get-FileHash -Algorithm SHA256 -LiteralPath $baselineResolved).Hash -ne $ba
     Baseline = $baselineResolved
     BaselineSHA256 = $baselineHash
     Ultra = $ultraPath
-    MediumDefault = $defaultPath
-    MediumPreset = $mediumPath
+    EnhancedDefault = $defaultPath
+    EnhancedPreset = $enhancedPath
     GroundChanges = ($groundChanges -join ', ')
 } | Format-List

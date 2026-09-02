@@ -38,6 +38,10 @@ public:
 	bool featureReflex = false;
 	bool featurePCL = false;
 	bool reflexSupportedOnCurrentAdapter = false;
+	// PIXL's current private Feature 18 integration is release-supported only on
+	// NVIDIA RTX 30-series and newer adapters. This is deliberately stricter
+	// than ordinary DLSS support; unsupported vendors/generations retain DLSS/TAA.
+	bool neuralRenderingSupportedOnCurrentAdapter = false;
 
 	sl::ViewportHandle viewport{ 0 };
 	static constexpr uint32_t MAX_RESOLUTION = 8192;
@@ -137,6 +141,7 @@ public:
 	 * @return True if the adapter is RTX 20xx or 30xx series.
 	 */
 	bool IsRTXAndBelow40Series(IDXGIAdapter* a_adapter);
+	bool IsRTX30SeriesOrNewer(IDXGIAdapter* a_adapter);
 
 	/**
 	 * @brief Configures DLSS quality mode and resolution options for a viewport.

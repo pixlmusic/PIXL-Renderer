@@ -62,8 +62,8 @@ public:
 
 	struct Settings
 	{
-		uint upscaleMethod = (uint)UpscaleMethod::kFSR;
-		uint upscaleMethodNoDLSS = (uint)UpscaleMethod::kFSR;
+		uint upscaleMethod = (uint)UpscaleMethod::kTAA;
+		uint upscaleMethodNoDLSS = (uint)UpscaleMethod::kTAA;
 		uint qualityMode = 2;  // Safe default: Balanced (1=Quality, 2=Balanced, 3=Performance, 4=Ultra Performance, 0=Native AA)
 		uint frameLimitMode = 1;
 		float frameLimitFPS = 60.0f;  // final presented FPS; FG schedules real frames at half this rate
@@ -146,6 +146,7 @@ public:
 	bool IsNeuralRenderingConfiguredForSession();
 	bool ShouldUseNeuralRenderingThisFrame();
 	bool CanUsePhotoNeuralRendering();
+	void ApplyNeuralRenderingPreset(uint preset);
 	[[nodiscard]] bool IsPhotoNeuralRenderingActive() const
 	{
 		return photoCaptureNeuralOverrideActive.load(std::memory_order_acquire);

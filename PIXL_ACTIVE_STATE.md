@@ -1,5 +1,13 @@
 # PIXL Renderer — Active Development State
 
+## Final Release Defaults / Public Neural Controls / Photo Resolve - 2026-09-02
+
+- The public Camera page now owns normal reconstruction, DLSS/FSR, Neural Rendering, frame generation, limiter and latency setup. Advanced model-conditioning controls remain behind one disclosure; ordinary users no longer need the Tuning Workspace. NR is visibly restricted to NVIDIA RTX 30-series or newer adapters and cannot be enabled on AMD, Intel or RTX 20-series hardware.
+- Fresh installations use the coordinated Enhanced quality contract with native TAA. Frame generation and real-time NR default off. A DLSS session provisions the optional sidecar after one restart; NR can then toggle live. Frame-generation swap-chain selection still requires restart.
+- Photo Finish keeps NR opt-in and can temporarily use it even when gameplay NR is off. Neural convergence means 8/16/24 complete, freshly rendered Feature 18 evaluations with correct temporal guides—not undocumented transformer-layer iteration or recursive RGB feedback. Multi-frame capture now performs a robust offline second-stage resolve around the arithmetic mean to suppress isolated neural/particle/material-phase outliers while retaining repeated fine detail.
+- The latest owner-edited live configuration was preserved unchanged at SHA-256 `80F4E2F0FAE74EC2CF485B0CB46B59D0B274A1E1C904E7AA8B6B98E79C6BFC08`; the byte-identical safety copy is `build/config-backups/UserGraphics-pre-final-20260902-134459.json`. Release-default generation reads this approved look but never writes the live file. Ground Response changes remain limited to quality-scalable tessellation values.
+- The latest renderer log shows disk-cache hits and no shader compilation failures. Waterbody rebuilt its separate world/load-order cache and completed normally. No shader source, permutation define, descriptor or CPU/GPU ABI changed in this checkpoint, so the live shader cache must remain intact; the release archive is intentionally compile-on-device.
+
 > Live engineering ledger for ongoing PIXL Renderer development.
 >
 > Codex should update this file after meaningful development work.

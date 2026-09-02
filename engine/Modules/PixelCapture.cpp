@@ -769,6 +769,83 @@ namespace
 			}
 		}
 
+		// A frozen photo can still contain particles, animated material phases and
+		// occasional neural-history outliers. A plain arithmetic mean turns those
+		// into translucent trails. For multi-frame captures, make a second offline
+		// pass and robustly weight each complete model result around the first-pass
+		// mean. This preserves repeated fine structure while rejecting isolated NR
+		// hallucinations; it never feeds processed RGB back into the transformer.
+		if (samples.size() >= 4u) {
+			DirectX::ScratchImage robust;
+			if (FAILED(robust.Initialize2D(kWorkingFormat, width, height, 1, 1)))
+				return false;
+			std::memset(robust.GetPixels(), 0, robust.GetPixelsSize());
+			const DirectX::Image* robustImage = robust.GetImage(0, 0, 0);
+			if (!robustImage)
+				return false;
+
+			for (const auto& staging : samples) {
+				DirectX::ScratchImage nativeImage;
+				if (!PopulateScratchImageFromStagingTexture(
+						context, staging.get(), format, width, height, nativeImage))
+					return false;
+				DirectX::ScratchImage floatImage;
+				if (!ConvertScratchToFloat(nativeImage, floatImage))
+					return false;
+				const DirectX::Image* src = floatImage.GetImage(0, 0, 0);
+				if (!src)
+					return false;
+
+				for (size_t y = 0; y < height; ++y) {
+					const auto* sampleRow = reinterpret_cast<const float*>(
+						src->pixels + y * src->rowPitch);
+					const auto* meanRow = reinterpret_cast<const float*>(
+						output.GetPixels() + y * accumulatorImage->rowPitch);
+					auto* robustRow = reinterpret_cast<float*>(
+						robust.GetPixels() + y * robustImage->rowPitch);
+
+					for (size_t x = 0; x < width; ++x) {
+						const size_t base = x * 4u;
+						const float sampleLuma =
+							sampleRow[base] * 0.2126f +
+							sampleRow[base + 1u] * 0.7152f +
+							sampleRow[base + 2u] * 0.0722f;
+						const float meanLuma =
+							meanRow[base] * 0.2126f +
+							meanRow[base + 1u] * 0.7152f +
+							meanRow[base + 2u] * 0.0722f;
+						const float normalizedDelta =
+							std::abs(sampleLuma - meanLuma) /
+							(0.025f + std::abs(meanLuma) * 0.16f);
+						const float weight = std::clamp(
+							1.0f / (1.0f + normalizedDelta * normalizedDelta * 2.25f),
+							0.06f,
+							1.0f);
+
+						robustRow[base] += sampleRow[base] * weight;
+						robustRow[base + 1u] += sampleRow[base + 1u] * weight;
+						robustRow[base + 2u] += sampleRow[base + 2u] * weight;
+						robustRow[base + 3u] += weight;
+					}
+				}
+			}
+
+			for (size_t y = 0; y < height; ++y) {
+				auto* dst = reinterpret_cast<float*>(
+					output.GetPixels() + y * accumulatorImage->rowPitch);
+				const auto* robustRow = reinterpret_cast<const float*>(
+					robust.GetPixels() + y * robustImage->rowPitch);
+				for (size_t x = 0; x < width; ++x) {
+					const size_t base = x * 4u;
+					const float weight = std::max(robustRow[base + 3u], 1.0e-5f);
+					dst[base] = robustRow[base] / weight;
+					dst[base + 1u] = robustRow[base + 1u] / weight;
+					dst[base + 2u] = robustRow[base + 2u] / weight;
+					dst[base + 3u] = 1.0f;
+				}
+			}
+		}
+
 		return true;
 	}
 

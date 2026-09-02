@@ -116,7 +116,7 @@ struct PixelCapture : public RenderModule
 	// Photo Mode-only preference. It is enabled by default but capability-gated:
 	// unsupported/TAA/FSR systems transparently retain the universal Photo Finish
 	// source, and the user can turn it off for direct A/B captures.
-	bool photoFinishNeuralEnabled = true;
+	bool photoFinishNeuralEnabled = false;
 	// Minimum internal render domain used while lighting/post histories converge:
 	// 0 current gameplay scale, 1 at least 85%, 2 native 100%.
 	unsigned int photoFinishRenderScaleMode = 2;

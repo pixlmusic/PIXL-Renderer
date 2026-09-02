@@ -69,9 +69,9 @@ PIXL currently contains **37 integrated rendering modules**, plus renderer-level
 
 ### Display, performance and creation tools
 
-- **Image Reconstruction** integrates TAA, NVIDIA DLSS/DLAA, AMD FidelityFX Super Resolution and supported frame-generation paths. The optional DX11/DX12 interop Neural Rendering path keeps depth, motion and UI resources synchronized through Present, exposes model precision/tuning controls, and provides a truthful DLSS/NR scene-input resolution selector for scaling its real geometry and guide workload.
+- **Image Reconstruction** integrates TAA, NVIDIA DLSS/DLAA, AMD FidelityFX Super Resolution and supported frame-generation paths. The optional DX11/DX12 interop Neural Rendering path keeps depth, motion and UI resources synchronized through Present, exposes the installed runtime's legitimate quality/tuning controls, and provides a truthful DLSS/NR scene-input quality selector. NVIDIA does not expose a safe application-side INT4/FP8 switch or transformer-layer count through the validated Feature 18 contract, so PIXL does not present invented controls.
 - **Camera Suite** supports HDR10 output, 16-bit intermediate rendering, histogram exposure, highlight protection, local adaptation and optional experimental lens/sensor behaviour.
-- **Pixel Capture** provides asynchronous lossless screenshots, HDR PNG output and a Director Photo Finish path with locked-camera temporal accumulation, temporary native/DLAA reconstruction and optional offline-quality Neural Rendering before the final composite is captured.
+- **Pixel Capture** provides asynchronous lossless screenshots, HDR PNG output and a Director Photo Finish path with locked camera/input, temporary native/DLAA reconstruction and optional offline-quality Neural Rendering before the final composite is captured. Its 8/16/24-frame neural convergence modes run complete fresh model evaluations with valid depth, motion, jitter and history, then use a robust offline resolve to reject isolated temporal outliers without recursively feeding processed RGB back into a temporal model.
 - **Pulse Profiler** exposes frame timing, FPS, draw calls, VRAM, shader timing and repeatable A/B performance comparisons.
 - **PIXL World Benchmark** runs repeatable scene fly-throughs, records samples/settings and captures reference frames for performance and visual-fidelity comparison.
 - **Quality Profiles** apply real Low/Medium/High/Ultra changes across renderer groups; a preset that does nothing is treated as a bug, not a feature.
@@ -92,7 +92,9 @@ PIXL is intended to own the engine-level shader pipeline. Do not combine it with
 
 A clean-cache package compiles shaders on the first launch. Let that process finish before judging performance or visuals. Ordinary HLSL changes should invalidate only affected permutations; deleting the whole pipeline library is reserved for deliberate cold-cache validation.
 
-The current compatibility baseline ships with the live-tested **Medium** quality profile and Skyrim-native **TAA** selected. Users can move upward to High/Ultra or select DLSS/FSR after confirming their own hardware and mod stack are stable.
+The release baseline ships with the coherent **Enhanced** quality profile and Skyrim-native **TAA** selected. Frame generation and Neural Rendering are off by default. NVIDIA RTX 30-series and newer users can select DLSS, restart once to provision PIXL's optional DX12 sidecar, and then toggle Neural Rendering live; AMD, Intel and RTX 20-series users retain the normal TAA/FSR/DLSS paths without the NR control. Frame-generation swap-chain changes still require a restart.
+
+The public **Camera** page contains reconstruction, DLSS/FSR, Neural Rendering, frame-generation, limiter and latency controls alongside normal camera finishing. Advanced engineering diagnostics remain in the Tuning Workspace, but ordinary setup and Photo Mode do not require entering it.
 
 ## Building from source
 

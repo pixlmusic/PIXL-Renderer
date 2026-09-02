@@ -201,6 +201,7 @@ void Streamline::LoadInterposer()
 		featureReflex = false;
 		featurePCL = false;
 		reflexSupportedOnCurrentAdapter = false;
+		neuralRenderingSupportedOnCurrentAdapter = false;
 		reflexOptionsCache = {};
 		lastReflexSleepFrame = UINT32_MAX;
 		logger::info("[Streamline] Successfully initialized Streamline");
@@ -213,6 +214,8 @@ void Streamline::CheckFeatures(IDXGIAdapter* a_adapter)
 	DXGI_ADAPTER_DESC adapterDesc;
 	a_adapter->GetDesc(&adapterDesc);
 	reflexSupportedOnCurrentAdapter = adapterDesc.VendorId == NVIDIA_VENDOR_ID;
+	isRTXBelow40series = false;
+	neuralRenderingSupportedOnCurrentAdapter = false;
 
 	sl::AdapterInfo adapterInfo;
 	adapterInfo.deviceLUID = (uint8_t*)&adapterDesc.AdapterLuid;
@@ -250,12 +253,16 @@ void Streamline::CheckFeatures(IDXGIAdapter* a_adapter)
 
 	if (featureDLSS) {
 		isRTXBelow40series = IsRTXAndBelow40Series(a_adapter);
+		neuralRenderingSupportedOnCurrentAdapter = IsRTX30SeriesOrNewer(a_adapter);
 
 		if (isRTXBelow40series)
 			logger::info("[Streamline] Older RTX GPU detected; PIXL runtime policy will follow the user's compatibility/latest-model preference");
 		else
 			logger::info("[Streamline] Newer RTX GPU detected, DLSS 4.5 will be used instead of DLSS 4.0");
 	}
+	logger::info(
+		"[Streamline] PIXL Neural Rendering hardware policy: {}",
+		neuralRenderingSupportedOnCurrentAdapter ? "RTX 30-series or newer - supported" : "unsupported (requires NVIDIA RTX 30-series or newer)");
 
 	logger::info("[Streamline] DLSS {} available", featureDLSS ? "is" : "is not");
 	if (reflexSupportedOnCurrentAdapter) {
@@ -434,6 +441,33 @@ bool Streamline::IsRTXAndBelow40Series(IDXGIAdapter* a_adapter)
 		return true;
 
 	return false;
+}
+
+bool Streamline::IsRTX30SeriesOrNewer(IDXGIAdapter* a_adapter)
+{
+	DXGI_ADAPTER_DESC adapterDesc{};
+	if (!a_adapter || FAILED(a_adapter->GetDesc(&adapterDesc)) ||
+		adapterDesc.VendorId != NVIDIA_VENDOR_ID)
+		return false;
+
+	// NVIDIA's marketing name is more stable here than an incomplete device-ID
+	// table and naturally covers laptop variants. Parse the two-digit RTX family
+	// so future generations do not require a PIXL binary update. RTX A-series and
+	// other professional names remain conservatively disabled until validated.
+	const std::wstring description(adapterDesc.Description);
+	const auto marker = description.find(L"RTX ");
+	if (marker == std::wstring::npos || marker + 6u > description.size())
+		return false;
+
+	const wchar_t tens = description[marker + 4u];
+	const wchar_t ones = description[marker + 5u];
+	if (tens < L'0' || tens > L'9' || ones < L'0' || ones > L'9')
+		return false;
+
+	const unsigned int family =
+		static_cast<unsigned int>(tens - L'0') * 10u +
+		static_cast<unsigned int>(ones - L'0');
+	return family >= 30u;
 }
 
 void Streamline::SetDLSSOptions(sl::ViewportHandle p_viewport, uint32_t width)

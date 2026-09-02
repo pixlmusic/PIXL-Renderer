@@ -864,9 +864,7 @@ namespace
 		bool changed = false;
 		bool restartNeeded = false;
 
-		// Presentation-only disclosure state. Experimental renderer options are
-		// intentionally hidden from the average-user path until requested.
-		static bool showExperimentalDisplayOptions = false;
+		static bool showAdvancedReconstruction = false;
 
 		SectionHeading("DISPLAY & PERFORMANCE");
 
@@ -931,6 +929,150 @@ namespace
 						quality);
 				changed = restartNeeded = true;
 			}
+		}
+
+		const bool dlssSelected =
+			*method == static_cast<uint>(ImageReconstruction::UpscaleMethod::kDLSS);
+		if (dlssSelected) {
+			const char* dlssPresets[] = { "DEFAULT", "PRESET J", "PRESET K", "PRESET F" };
+			int preset = settings.presetDLSS == 1u ? 1 :
+				settings.presetDLSS == 2u ? 2 : settings.presetDLSS == 5u ? 3 : 0;
+			if (CycleControl(
+					"DLSS model",
+					&preset,
+					dlssPresets,
+					static_cast<int>(std::size(dlssPresets)),
+					"Selects a model preset supported by the installed NVIDIA Streamline runtime. Changing it requires a restart.")) {
+				constexpr uint storedPresets[]{ 0u, 1u, 2u, 5u };
+				settings.presetDLSS = storedPresets[std::clamp(preset, 0, 3)];
+				changed = restartNeeded = true;
+			}
+
+			changed |= ToggleControl(
+				"DLSS sharpening",
+				&settings.sharpnessEnabledDLSS,
+				"Optional restrained RCAS sharpening after DLSS. Leave disabled unless the selected reconstruction looks soft.");
+			if (settings.sharpnessEnabledDLSS)
+				changed |= SliderControl("DLSS sharpness", &settings.sharpnessDLSS, 0.0f, 1.0f, "%.2f", false);
+		} else if (*method == static_cast<uint>(ImageReconstruction::UpscaleMethod::kFSR)) {
+			changed |= SliderControl(
+				"FSR sharpness",
+				&settings.sharpnessFSR,
+				0.0f,
+				1.0f,
+				"%.2f",
+				false);
+		}
+
+		SectionHeading("NEURAL RENDERING");
+		const bool nrHardwareSupported =
+			imageReconstruction.streamline.neuralRenderingSupportedOnCurrentAdapter;
+		const bool nrSessionProvisioned =
+			imageReconstruction.d3d12SwapChainActive &&
+			imageReconstruction.neuralRenderingProvisionedAtBoot;
+		const bool nrControlAvailable = nrHardwareSupported && dlssSelected;
+
+		ImGui::BeginDisabled(!nrControlAvailable);
+		if (ToggleControl(
+				"Neural Rendering",
+				&settings.neuralRenderingEnabled,
+				"Runs PIXL's native DLSS Neural Rendering path. RTX 30-series or newer NVIDIA hardware and a DLSS session are required.")) {
+			imageReconstruction.pendingNeuralRenderingReset.store(true, std::memory_order_release);
+			changed = true;
+			if (!nrSessionProvisioned)
+				restartNeeded = true;
+		}
+		ImGui::EndDisabled();
+
+		if (!nrHardwareSupported) {
+			ImGui::TextColored(
+				PIXLUI::ToVec4(PIXLUI::Colors::Warning),
+				"NR REQUIRES AN NVIDIA RTX 30-SERIES GPU OR NEWER");
+			ImGui::TextColored(
+				PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
+				"AMD, Intel and RTX 20-series adapters use PIXL's TAA/FSR/DLSS paths without Neural Rendering.");
+		} else if (!dlssSelected) {
+			ImGui::TextColored(
+				PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
+				"Select DLSS and restart once to provision the PIXL DX12 sidecar. NR can then be toggled live.");
+		} else if (!nrSessionProvisioned) {
+			ImGui::TextColored(
+				PIXLUI::ToVec4(PIXLUI::Colors::Warning),
+				"RESTART ONCE TO PROVISION THE DLSS NEURAL SIDECAR");
+		} else {
+			ImGui::TextColored(
+				PIXLUI::ToVec4(PIXLUI::Colors::Success),
+				"NEURAL SIDECAR READY - REAL-TIME AND PHOTO TOGGLES ARE LIVE");
+		}
+
+		ImGui::BeginDisabled(!nrControlAvailable);
+		const char* neuralPresets[] = { "NATURAL", "BALANCED", "DETAIL", "STRONG", "CUSTOM" };
+		int neuralPreset = static_cast<int>(std::min(settings.neuralRenderingPreset, 4u));
+		if (CycleControl(
+				"NR look",
+				&neuralPreset,
+				neuralPresets,
+				static_cast<int>(std::size(neuralPresets)),
+				"Natural is the restrained release-safe starting point. Strong is intentionally experimental.")) {
+			imageReconstruction.ApplyNeuralRenderingPreset(static_cast<uint>(neuralPreset));
+			changed = true;
+		}
+		if (SliderControl("NR intensity", &settings.neuralRenderingIntensity, 0.0f, 2.0f, "%.2f", false)) {
+			settings.neuralRenderingPreset = 4u;
+			imageReconstruction.pendingNeuralRenderingReset.store(true, std::memory_order_release);
+			changed = true;
+		}
+		ImGui::EndDisabled();
+
+		ToggleControl(
+			"Advanced image controls",
+			&showAdvancedReconstruction,
+			"Shows model conditioning, frame-generation compatibility, and latency controls. Normal users can leave these at their defaults.");
+		if (showAdvancedReconstruction) {
+			ImGui::PushID("AdvancedImageControls");
+			ImGui::Indent(PIXLUI::Ref(14.0f));
+			ImGui::BeginDisabled(!nrControlAvailable);
+			const char* nrContracts[] = {
+				"FOLLOW DLSS", "DLAA", "QUALITY", "BALANCED", "PERFORMANCE", "ULTRA PERFORMANCE", "ULTRA QUALITY"
+			};
+			int nrContract = static_cast<int>(std::min(settings.neuralRenderingQualityMode, 6u));
+			if (CycleControl("NR quality contract", &nrContract, nrContracts,
+				static_cast<int>(std::size(nrContracts)),
+				"Selects the model quality contract at Feature 18 creation. This is not a second output-resolution control.")) {
+				settings.neuralRenderingQualityMode = static_cast<uint>(nrContract);
+				changed = restartNeeded = true;
+			}
+			const char* nrOutputs[] = { "RUNTIME DEFAULT", "PRESET 1", "PRESET 2", "PRESET 3" };
+			int nrOutput = static_cast<int>(std::min(settings.neuralRenderingOutputPreset, 3u));
+			if (CycleControl("NR output preset", &nrOutput, nrOutputs,
+				static_cast<int>(std::size(nrOutputs)),
+				"Private runtime presets are numbered because NVIDIA does not publish stable semantic names for them.")) {
+				settings.neuralRenderingOutputPreset = static_cast<uint>(nrOutput);
+				changed = restartNeeded = true;
+			}
+			const auto markNeuralCustom = [&]() {
+				settings.neuralRenderingPreset = 4u;
+				imageReconstruction.pendingNeuralRenderingReset.store(true, std::memory_order_release);
+				changed = true;
+			};
+			if (SliderControl("Local tone", &settings.neuralRenderingLocalTone, 0.0f, 2.0f, "%.2f", false)) markNeuralCustom();
+			if (SliderControl("Local structure", &settings.neuralRenderingLocalStructure, 0.0f, 2.0f, "%.2f", false)) markNeuralCustom();
+			if (SliderControl("Skin structure", &settings.neuralRenderingSkinStructure, 0.0f, 2.0f, "%.2f", false)) markNeuralCustom();
+			int nrStyle = static_cast<int>(std::min(settings.neuralRenderingStyle, 3u));
+			const char* styles[] = { "0", "1", "2", "3" };
+			if (CycleControl("Model style", &nrStyle, styles, 4, "Selects the installed model's bounded style hint.")) {
+				settings.neuralRenderingStyle = static_cast<uint>(nrStyle);
+				markNeuralCustom();
+			}
+			changed |= ToggleControl("Automatic character mask", &settings.neuralRenderingAutoMask,
+				"Uses PIXL actor/material information to preserve faces and character detail.");
+			changed |= ToggleControl("UI correction", &settings.neuralRenderingUICorrection,
+				"Keeps HUD and menu composition from being interpreted as world detail.");
+			ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
+				"MODEL PRECISION: NVIDIA RUNTIME AUTOMATIC (NO SAFE APPLICATION INT4 CONTROL)");
+			ImGui::EndDisabled();
+			ImGui::Unindent(PIXLUI::Ref(14.0f));
+			ImGui::PopID();
 		}
 
 		bool vsync = false;
@@ -1009,38 +1151,53 @@ namespace
 					false);
 		}
 
-		if (ToggleControl(
-				"Experimental options",
-				&showExperimentalDisplayOptions,
-				"Shows PIXL display-path features intended for experienced users. Frame generation and future experimental upscaling controls live here.")) {
-			// UI disclosure only; no renderer state is changed here.
-		}
-
 		bool frameGeneration =
 			settings.frameGenerationMode != 0;
-
-		if (showExperimentalDisplayOptions) {
-			ImGui::PushID(
-				"ExperimentalDisplayOptions");
-
-			ImGui::Indent(
-				PIXLUI::Ref(14.0f));
-
+		if (ToggleControl(
+				"Frame generation",
+				&frameGeneration,
+				"Generates intermediate frames through PIXL's compatibility swapchain. Requires a restart after changing.")) {
+			settings.frameGenerationMode = frameGeneration ? 1u : 0u;
+			changed = restartNeeded = true;
+		}
+		if (showAdvancedReconstruction) {
+			bool forceLowRefresh = settings.frameGenerationForceEnable != 0u;
 			if (ToggleControl(
-					"Frame generation",
-					&frameGeneration,
-					"Generates intermediate frames through PIXL's compatibility swapchain. Requires a restart after changing.")) {
-				settings.frameGenerationMode =
-					frameGeneration ? 1u : 0u;
+					"Allow FG below 120 Hz",
+					&forceLowRefresh,
+					"Overrides PIXL's conservative high-refresh check. Generated frames are less useful on low-refresh displays.")) {
+				settings.frameGenerationForceEnable = forceLowRefresh ? 1u : 0u;
 				changed = restartNeeded = true;
 			}
+			changed |= ToggleControl(
+				"Allow FG in menus",
+				&settings.frameGenerationAllowInMenus,
+				"Keeps generation active over menus. Off avoids UI interpolation artifacts and is recommended.");
 
-			// This disclosure is intentionally the future home for optional
-			// upscaling experiments so the normal renderer page stays clean.
-			ImGui::Unindent(
-				PIXLUI::Ref(14.0f));
-
-			ImGui::PopID();
+			SectionHeading("LATENCY");
+			const bool reflexAvailable =
+				imageReconstruction.streamline.reflexSupportedOnCurrentAdapter &&
+				imageReconstruction.streamline.featureReflex &&
+				!imageReconstruction.d3d12SwapChainActive;
+			ImGui::BeginDisabled(!reflexAvailable);
+			changed |= ToggleControl(
+				"NVIDIA Reflex",
+				&settings.reflexLowLatencyMode,
+				"Reduces the render queue on supported NVIDIA hardware. The compatibility sidecar owns pacing while active.");
+			ImGui::BeginDisabled(!settings.reflexLowLatencyMode);
+			changed |= ToggleControl("Reflex boost", &settings.reflexLowLatencyBoost,
+				"Requests a more aggressive low-latency power state at additional power cost.");
+			changed |= ToggleControl("Marker optimization", &settings.reflexUseMarkersToOptimize,
+				"Uses PIXL frame markers for tighter Reflex timing when PCL is available.");
+			changed |= ToggleControl("Reflex FPS limiter", &settings.reflexUseFPSLimit,
+				"Uses NVIDIA's latency-aware limiter instead of an external cap.");
+			if (settings.reflexUseFPSLimit)
+				changed |= SliderControl("Reflex target FPS", &settings.reflexFPSLimit, 20.0f, 240.0f, "%.0f FPS", false);
+			ImGui::EndDisabled();
+			ImGui::EndDisabled();
+			if (!reflexAvailable)
+				ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
+					"REFLEX IS UNAVAILABLE ON THIS ADAPTER OR WHILE THE DX12 SIDECAR IS ACTIVE");
 		}
 
 		const auto frameGenerationState =
@@ -2078,6 +2235,8 @@ namespace
 				ImGui::TextWrapped("%s", directorUnavailableReason.c_str());
 		}
 		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(5.0f)));
+		DrawPerformanceControls();
+		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(10.0f)));
 		DrawFinishingControls();
 	}
 
@@ -2205,13 +2364,6 @@ namespace
 				0,
 				PIXLUI::Ref(5.0f)));
 
-		DrawPerformanceControls();
-
-		ImGui::Dummy(
-			ImVec2(
-				0,
-				PIXLUI::Ref(12.0f)));
-
 		SectionHeading("LOOK");
 
 		if (PIXLUI::ActionButton(
@@ -2290,6 +2442,7 @@ void PIXLRendererPage::Render()
 {
 	static PublicPage currentPage =
 		PublicPage::Quality;
+	bool pageChanged = false;
 
 	const float gap =
 		PIXLUI::Ref(8.0f);
@@ -2310,6 +2463,7 @@ void PIXLRendererPage::Render()
 				PIXLUI::Ref(40.0f)))) {
 		currentPage =
 			PublicPage::Quality;
+		pageChanged = true;
 	}
 
 	ImGui::SameLine(
@@ -2325,6 +2479,7 @@ void PIXLRendererPage::Render()
 				PIXLUI::Ref(40.0f)))) {
 		currentPage =
 			PublicPage::Camera;
+		pageChanged = true;
 	}
 
 	ImGui::SameLine(
@@ -2340,7 +2495,12 @@ void PIXLRendererPage::Render()
 				PIXLUI::Ref(40.0f)))) {
 		currentPage =
 			PublicPage::Renderer;
+		pageChanged = true;
 	}
+
+	if (pageChanged)
+		PIXLUI::SetAnimationValue("##PIXLPublicPageReveal", 0.0f);
+	const float pageReveal = PIXLUI::Animate01("##PIXLPublicPageReveal", true, 13.0f);
 
 	ImGui::Dummy(
 		ImVec2(
@@ -2351,11 +2511,9 @@ void PIXLRendererPage::Render()
 		ImGuiCol_ChildBg,
 		ImVec4(0, 0, 0, 0));
 
-	const ImGuiWindowFlags publicPageFlags =
-		currentPage == PublicPage::Renderer
-			? ImGuiWindowFlags_None
-			: ImGuiWindowFlags_NoScrollbar |
-				ImGuiWindowFlags_NoScrollWithMouse;
+	const ImGuiWindowFlags publicPageFlags = ImGuiWindowFlags_None;
+	ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.62f + 0.38f * pageReveal);
+	ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (1.0f - pageReveal) * PIXLUI::Ref(6.0f));
 
 	if (ImGui::BeginChild(
 			"##PIXLPublicPage",
@@ -2402,6 +2560,7 @@ void PIXLRendererPage::Render()
 	}
 
 	ImGui::EndChild();
+	ImGui::PopStyleVar();
 	ImGui::PopStyleColor();
 
 	FlushDeferredStateSave();

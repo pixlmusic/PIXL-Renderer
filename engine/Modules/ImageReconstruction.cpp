@@ -109,7 +109,8 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 	imageReconstruction.refreshRate = refreshRate;
 
 	const bool neuralRenderingProvisioned =
-		imageReconstruction.settings.upscaleMethod == static_cast<uint>(ImageReconstruction::UpscaleMethod::kDLSS);
+		imageReconstruction.settings.upscaleMethod == static_cast<uint>(ImageReconstruction::UpscaleMethod::kDLSS) &&
+		imageReconstruction.streamline.neuralRenderingSupportedOnCurrentAdapter;
 	if (shouldProxy) {
 		if (neuralRenderingProvisioned) {
 			// Neural Rendering reuses PIXL's DX12 sidecar but does not require a
@@ -1737,13 +1738,15 @@ bool ImageReconstruction::ShouldUseFrameGenerationThisFrame() const
 
 bool ImageReconstruction::IsNeuralRenderingConfiguredForSession()
 {
-	return d3d12SwapChainActive && neuralRenderingProvisionedAtBoot && settings.neuralRenderingEnabled &&
+	return streamline.neuralRenderingSupportedOnCurrentAdapter && d3d12SwapChainActive &&
+	       neuralRenderingProvisionedAtBoot && settings.neuralRenderingEnabled &&
 	       GetUpscaleMethod() == UpscaleMethod::kDLSS;
 }
 
 bool ImageReconstruction::CanUsePhotoNeuralRendering()
 {
-	if (!d3d12SwapChainActive || !neuralRenderingProvisionedAtBoot ||
+	if (!streamline.neuralRenderingSupportedOnCurrentAdapter ||
+		!d3d12SwapChainActive || !neuralRenderingProvisionedAtBoot ||
 		GetUpscaleMethod() != UpscaleMethod::kDLSS)
 		return false;
 	if (globals::pipeline::cameraSuite.loaded && globals::pipeline::cameraSuite.settings.enableHDR)
@@ -1767,6 +1770,40 @@ bool ImageReconstruction::ShouldUseNeuralRenderingThisFrame()
 	if (!settings.neuralRenderingEnabled && !IsPhotoNeuralRenderingActive())
 		return false;
 	return CanUsePhotoNeuralRendering();
+}
+
+void ImageReconstruction::ApplyNeuralRenderingPreset(uint preset)
+{
+	settings.neuralRenderingPreset = std::min(preset, 4u);
+	switch (settings.neuralRenderingPreset) {
+	case 0:
+		settings.neuralRenderingIntensity = 0.8f;
+		settings.neuralRenderingLocalTone = 0.75f;
+		settings.neuralRenderingLocalStructure = 0.9f;
+		settings.neuralRenderingSkinStructure = 0.9f;
+		break;
+	case 1:
+		settings.neuralRenderingIntensity = 1.0f;
+		settings.neuralRenderingLocalTone = 1.0f;
+		settings.neuralRenderingLocalStructure = 1.0f;
+		settings.neuralRenderingSkinStructure = 1.0f;
+		break;
+	case 2:
+		settings.neuralRenderingIntensity = 1.35f;
+		settings.neuralRenderingLocalTone = 0.9f;
+		settings.neuralRenderingLocalStructure = 1.6f;
+		settings.neuralRenderingSkinStructure = 1.15f;
+		break;
+	case 3:
+		settings.neuralRenderingIntensity = 1.75f;
+		settings.neuralRenderingLocalTone = 1.25f;
+		settings.neuralRenderingLocalStructure = 1.5f;
+		settings.neuralRenderingSkinStructure = 1.3f;
+		break;
+	default:
+		break;
+	}
+	pendingNeuralRenderingReset.store(true, std::memory_order_release);
 }
 
 ImageReconstruction::FrameGenerationState ImageReconstruction::GetFrameGenerationState() const
@@ -1856,6 +1893,11 @@ bool ImageReconstruction::IsBackendInitialized() const
 void ImageReconstruction::CheckBackendFeatures(IDXGIAdapter* adapter)
 {
 	streamline.CheckFeatures(adapter);
+	if (!streamline.neuralRenderingSupportedOnCurrentAdapter) {
+		// Preserve ordinary DLSS availability, but never leave the experimental
+		// Feature 18 master armed on an unsupported vendor/generation.
+		settings.neuralRenderingEnabled = false;
+	}
 }
 
 void ImageReconstruction::UpgradeBackendInterface(void** ppInterface)

@@ -10,6 +10,7 @@ Generated from the canonical CMake source globs and the release staging copy gra
 | `tools/CompareLiveShaders.ps1` | Build / Release | YES | NO | NO | NO | NO | NO | NO |
 | `tools/ExportPixlPublicSource.ps1` | Build / Release | YES | NO | NO | NO | NO | NO | NO |
 | `tools/StagePixlRendererStandalone.ps1` | Build / Release | YES | NO | NO | NO | NO | NO | NO |
+| `tools/GeneratePixlReleaseDefaults.ps1` | Build / Release | YES | YES | YES | YES | YES | YES | YES |
 | `.gitattributes` | Build / Release | YES | NO | NO | NO | NO | NO | NO |
 | `.gitignore` | Build / Release | YES | NO | NO | NO | NO | NO | NO |
 | `.gitmodules` | Build / Release | YES | NO | NO | NO | NO | NO | NO |
@@ -36,7 +37,7 @@ Generated from the canonical CMake source globs and the release staging copy gra
 | `cmake/XSEPlugin.cmake` | Build / Release | YES | NO | NO | NO | NO | NO | NO |
 | `CMakeLists.txt` | Build / Release | YES | NO | NO | NO | NO | NO | NO |
 | `CMakePresets.json` | Build / Release | YES | NO | NO | NO | NO | NO | NO |
-| `README.md` | Build / Release | YES | NO | NO | NO | NO | NO | NO |
+| `README.md` | Build / Release | YES | YES | YES | YES | YES | YES | YES |
 | `SOURCE_DEPENDENCIES.md` | Build / Release | YES | NO | NO | NO | NO | NO | NO |
 | `vcpkg.json` | Build / Release | YES | NO | NO | NO | NO | NO | NO |
 | `build/PIXL-12C/cmake/ModuleVersions.h` | Generated Build Inputs | YES | NO | NO | NO | NO | NO | NO |
@@ -137,9 +138,11 @@ Generated from the canonical CMake source globs and the release staging copy gra
 | `engine/Utils/WinApi.h` | Core Utilities | YES | NO | NO | NO | NO | NO | NO |
 | `ATTRIBUTION.md` | Release Package | YES | NO | NO | NO | NO | NO | NO |
 | `COPYING` | Release Package | YES | NO | NO | NO | NO | NO | NO |
-| `distribution/PIXL-RENDERER-README.md` | Release Package | YES | NO | NO | NO | NO | NO | NO |
-| `distribution/SKSE/Plugins/PIXLRenderer/Presets/PIXL-Renderer-Live-Tested.json` | Release Package | YES | NO | NO | NO | NO | NO | NO |
-| `distribution/SKSE/Plugins/PIXLRenderer/SettingsDefault.json` | Release Package | YES | NO | NO | NO | NO | NO | NO |
+| `distribution/PIXL-RENDERER-README.md` | Release Package | YES | YES | YES | YES | YES | YES | YES |
+| `distribution/SKSE/Plugins/PIXLRenderer/Presets/PIXL-Renderer-Live-Tested.json` | Release Package | YES | YES | YES | YES | YES | YES | YES |
+| `distribution/SKSE/Plugins/PIXLRenderer/SettingsDefault.json` | Release Package | YES | YES | YES | YES | YES | YES | YES |
+| `distribution/SKSE/Plugins/PIXLRenderer/Presets/PIXL-Renderer-Enhanced.json` | Release Package | YES | YES | YES | YES | YES | YES | YES |
+| `distribution/SKSE/Plugins/PIXLRenderer/Presets/PIXL-Renderer-Ultra.json` | Release Package | YES | YES | YES | YES | YES | YES | YES |
 | `distribution/SKSE/Plugins/PIXLRenderer/Themes/PIXL.json` | Release Package | YES | NO | NO | NO | NO | NO | NO |
 | `distribution/SKSE/Plugins/PIXLRenderer/Translations/en.json` | Release Package | YES | NO | NO | NO | NO | NO | NO |
 | `distribution/SOURCE-AND-CREDITS.md` | Release Package | YES | NO | NO | NO | NO | NO | NO |
@@ -387,8 +390,8 @@ Generated from the canonical CMake source globs and the release staging copy gra
 | `engine/Modules/ImageReconstruction/FidelityFX.h` | Image Reconstruction | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/ImageReconstruction/RCAS/RCAS.cpp` | Image Reconstruction | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/ImageReconstruction/RCAS/RCAS.h` | Image Reconstruction | YES | NO | NO | NO | NO | NO | NO |
-| `engine/Modules/ImageReconstruction/Streamline.cpp` | Image Reconstruction | YES | NO | NO | NO | NO | NO | NO |
-| `engine/Modules/ImageReconstruction/Streamline.h` | Image Reconstruction | YES | NO | NO | NO | NO | NO | NO |
+| `engine/Modules/ImageReconstruction/Streamline.cpp` | Image Reconstruction | YES | YES | YES | YES | YES | YES | YES |
+| `engine/Modules/ImageReconstruction/Streamline.h` | Image Reconstruction | YES | YES | YES | YES | YES | YES | YES |
 | `engine/Modules/AmbientProbe.cpp` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/AmbientProbe.h` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/Atmosphere.cpp` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
@@ -407,8 +410,8 @@ Generated from the canonical CMake source globs and the release staging copy gra
 | `engine/Modules/HorizonBlend.h` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/HybridGI.cpp` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/HybridGI.h` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
-| `engine/Modules/ImageReconstruction.cpp` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
-| `engine/Modules/ImageReconstruction.h` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
+| `engine/Modules/ImageReconstruction.cpp` | Module Infrastructure | YES | YES | YES | YES | YES | YES | YES |
+| `engine/Modules/ImageReconstruction.h` | Module Infrastructure | YES | YES | YES | YES | YES | YES | YES |
 | `engine/Modules/InteriorDaylight.cpp` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/InteriorDaylight.h` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/LightVolumes.cpp` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
@@ -420,8 +423,8 @@ Generated from the canonical CMake source globs and the release staging copy gra
 | `engine/Modules/NaturalLighting.cpp` | Module Infrastructure | YES | YES | NO | YES | YES | YES | YES |
 | `engine/Modules/NaturalLighting.h` | Module Infrastructure | YES | YES | NO | YES | YES | YES | YES |
 | `engine/Modules/OverlayFeature.h` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
-| `engine/Modules/PixelCapture.cpp` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
-| `engine/Modules/PixelCapture.h` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
+| `engine/Modules/PixelCapture.cpp` | Module Infrastructure | YES | YES | YES | YES | YES | YES | YES |
+| `engine/Modules/PixelCapture.h` | Module Infrastructure | YES | YES | YES | YES | YES | YES | YES |
 | `engine/Modules/PulseProfiler.cpp` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/PulseProfiler.h` | Module Infrastructure | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Modules/RadiantGrid.cpp` | Module Infrastructure | YES | YES | NO | YES | YES | YES | YES |
@@ -539,7 +542,7 @@ Generated from the canonical CMake source globs and the release staging copy gra
 | `extern/FidelityFX-SDK@054f0ade7bd443710644ecb2564936281821f532` | FidelityFX SDK | YES | NO | NO | NO | NO | NO | NO |
 | `extern/Streamline-DX12@a9ed1f58436864891f68b0458300464dc53d9a69` | NVIDIA Streamline | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Menu.cpp` | UI | YES | NO | NO | NO | NO | NO | NO |
-| `engine/Menu.h` | UI | YES | NO | NO | NO | NO | NO | NO |
+| `engine/Menu.h` | UI | YES | YES | YES | YES | YES | YES | YES |
 | `engine/Menu/BackgroundBlur.cpp` | UI | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Menu/BackgroundBlur.h` | UI | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Menu/CursorLoader.cpp` | UI | YES | NO | NO | NO | NO | NO | NO |
@@ -554,7 +557,7 @@ Generated from the canonical CMake source globs and the release staging copy gra
 | `engine/Menu/LaunchExperienceRenderer.h` | UI | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Menu/OverlayRenderer.cpp` | UI | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Menu/OverlayRenderer.h` | UI | YES | NO | NO | NO | NO | NO | NO |
-| `engine/Menu/PIXLRendererPage.cpp` | UI | YES | NO | NO | NO | NO | NO | NO |
+| `engine/Menu/PIXLRendererPage.cpp` | UI | YES | YES | YES | YES | YES | YES | YES |
 | `engine/Menu/PIXLRendererPage.h` | UI | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Menu/PIXLStyle.h` | UI | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Menu/PulsePanelRenderer.cpp` | UI | YES | NO | NO | NO | NO | NO | NO |
@@ -563,7 +566,7 @@ Generated from the canonical CMake source globs and the release staging copy gra
 | `engine/Menu/RuntimeSettingsRenderer.h` | UI | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Menu/ThemeManager.cpp` | UI | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Menu/ThemeManager.h` | UI | YES | NO | NO | NO | NO | NO | NO |
-| `engine/Menu/TuningWorkspaceRenderer.cpp` | UI | YES | NO | NO | NO | NO | NO | NO |
+| `engine/Menu/TuningWorkspaceRenderer.cpp` | UI | YES | YES | YES | YES | YES | YES | YES |
 | `engine/Menu/TuningWorkspaceRenderer.h` | UI | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Menu/WorkshopToolsRenderer.cpp` | UI | YES | NO | NO | NO | NO | NO | NO |
 | `engine/Menu/WorkshopToolsRenderer.h` | UI | YES | NO | NO | NO | NO | NO | NO |

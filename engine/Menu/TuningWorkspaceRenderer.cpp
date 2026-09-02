@@ -1635,7 +1635,7 @@ namespace
 			break;
 
 		case DirectorQuickOption::NeuralCapture:
-			if (capture) {
+			if (capture && globals::pipeline::imageReconstruction.streamline.neuralRenderingSupportedOnCurrentAdapter) {
 				capture->photoFinishNeuralEnabled =
 					!capture->photoFinishNeuralEnabled;
 
@@ -1924,6 +1924,8 @@ namespace
 			result.label = "Neural Final Composite";
 			if (!capture) {
 				result.value = "N/A";
+			} else if (!globals::pipeline::imageReconstruction.streamline.neuralRenderingSupportedOnCurrentAdapter) {
+				result.value = "RTX 30+ ONLY";
 			} else if (!capture->photoFinishNeuralEnabled) {
 				result.value = "OFF";
 			} else {
@@ -1938,6 +1940,8 @@ namespace
 			result.label = "Neural Convergence";
 			if (!capture)
 				result.value = "N/A";
+			else if (!globals::pipeline::imageReconstruction.streamline.neuralRenderingSupportedOnCurrentAdapter)
+				result.value = "RTX 30+ ONLY";
 			else if (!capture->photoFinishNeuralEnabled)
 				result.value = "OFF";
 			else
@@ -5257,6 +5261,10 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 						photoFinishEnabled);
 
 				auto& reconstruction = globals::pipeline::imageReconstruction;
+				const bool neuralHardwareSupported =
+					reconstruction.streamline.neuralRenderingSupportedOnCurrentAdapter;
+				if (!neuralHardwareSupported)
+					capture->photoFinishNeuralEnabled = false;
 				const bool neuralPhotoAvailable = reconstruction.CanUsePhotoNeuralRendering() &&
 					reconstruction.dx12SwapChain.GetProvisionedNeuralOutput();
 				// Keep the preference editable before a completed neural frame exists.
@@ -5264,6 +5272,7 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 				// the universal path without being locked out of the setting.
 				ImGui::BeginDisabled(
 					!capture->photoFinishEnabled ||
+					!neuralHardwareSupported ||
 					capture->IsPhotoFinishBusy());
 				const bool neuralToggleChanged = PIXLUI::LabeledToggle(
 					"Capture Neural Final Composite",
@@ -5274,7 +5283,11 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 				}
 				ImGui::EndDisabled();
 
-				if (!neuralPhotoAvailable) {
+				if (!neuralHardwareSupported) {
+					ImGui::TextColored(
+						PIXLUI::ToVec4(PIXLUI::Colors::Warning),
+						"PIXL Neural Rendering requires NVIDIA RTX 30-series or newer. AMD, Intel and RTX 20-series systems use universal Photo Finish.");
+				} else if (!neuralPhotoAvailable) {
 					ImGui::TextColored(
 						PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
 						capture->photoFinishNeuralEnabled
