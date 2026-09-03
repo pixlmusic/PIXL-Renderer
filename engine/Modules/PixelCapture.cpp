@@ -641,6 +641,7 @@ namespace
 		const std::vector<
 			winrt::com_ptr<
 				ID3D11Texture2D>>& samples,
+		const std::vector<float2>& jitterOffsets,
 		DXGI_FORMAT format,
 		uint32_t width,
 		uint32_t height,
@@ -677,8 +678,8 @@ namespace
 		if (!accumulatorImage)
 			return false;
 
-		for (const auto& staging :
-			 samples) {
+		for (size_t sampleIndex = 0; sampleIndex < samples.size(); ++sampleIndex) {
+			const auto& staging = samples[sampleIndex];
 			if (!staging)
 				return false;
 
@@ -714,9 +715,11 @@ namespace
 				return false;
 			}
 
-			for (size_t y = 0;
-				 y < height;
-				 ++y) {
+			const float2 jitter = sampleIndex < jitterOffsets.size()
+				? jitterOffsets[sampleIndex]
+				: float2{ 0.0f, 0.0f };
+
+			for (size_t y = 0; y < height; ++y) {
 				auto* dst =
 					reinterpret_cast<float*>(
 						output.GetPixels() +
@@ -724,21 +727,29 @@ namespace
 							accumulatorImage->
 								rowPitch);
 
-				const auto* sourceRow =
-					reinterpret_cast<
-						const float*>(
-							src->pixels +
-							y *
-								src->rowPitch);
+				// Reproject every phase to the frozen, unjittered camera before
+				// calculating temporal statistics. Positive projection jitter moves
+				// scene detail toward negative screen coordinates, hence pixel-jitter.
+				const float sy = std::clamp(static_cast<float>(y) - jitter.y, 0.0f, static_cast<float>(height - 1u));
+				const size_t y0 = static_cast<size_t>(std::floor(sy));
+				const size_t y1 = std::min(y0 + 1u, static_cast<size_t>(height - 1u));
+				const float ty = sy - static_cast<float>(y0);
+				const auto* row0 = reinterpret_cast<const float*>(src->pixels + y0 * src->rowPitch);
+				const auto* row1 = reinterpret_cast<const float*>(src->pixels + y1 * src->rowPitch);
 
-				for (size_t x = 0;
-					 x <
-					 static_cast<size_t>(
-						 width) *
-						 4u;
-					 ++x) {
-					dst[x] +=
-						sourceRow[x];
+				for (size_t x = 0; x < width; ++x) {
+					const float sx = std::clamp(static_cast<float>(x) - jitter.x, 0.0f, static_cast<float>(width - 1u));
+					const size_t x0 = static_cast<size_t>(std::floor(sx));
+					const size_t x1 = std::min(x0 + 1u, static_cast<size_t>(width - 1u));
+					const float tx = sx - static_cast<float>(x0);
+					const size_t dstBase = x * 4u;
+					const size_t srcBase0 = x0 * 4u;
+					const size_t srcBase1 = x1 * 4u;
+					for (size_t channel = 0; channel < 4u; ++channel) {
+						const float top = std::lerp(row0[srcBase0 + channel], row0[srcBase1 + channel], tx);
+						const float bottom = std::lerp(row1[srcBase0 + channel], row1[srcBase1 + channel], tx);
+						dst[dstBase + channel] += std::lerp(top, bottom, ty);
+					}
 				}
 			}
 		}
@@ -784,7 +795,8 @@ namespace
 			if (!robustImage)
 				return false;
 
-			for (const auto& staging : samples) {
+			for (size_t sampleIndex = 0; sampleIndex < samples.size(); ++sampleIndex) {
+				const auto& staging = samples[sampleIndex];
 				DirectX::ScratchImage nativeImage;
 				if (!PopulateScratchImageFromStagingTexture(
 						context, staging.get(), format, width, height, nativeImage))
@@ -795,21 +807,40 @@ namespace
 				const DirectX::Image* src = floatImage.GetImage(0, 0, 0);
 				if (!src)
 					return false;
+				const float2 jitter = sampleIndex < jitterOffsets.size()
+					? jitterOffsets[sampleIndex]
+					: float2{ 0.0f, 0.0f };
 
 				for (size_t y = 0; y < height; ++y) {
-					const auto* sampleRow = reinterpret_cast<const float*>(
-						src->pixels + y * src->rowPitch);
 					const auto* meanRow = reinterpret_cast<const float*>(
 						output.GetPixels() + y * accumulatorImage->rowPitch);
 					auto* robustRow = reinterpret_cast<float*>(
 						robust.GetPixels() + y * robustImage->rowPitch);
+					const float sy = std::clamp(static_cast<float>(y) - jitter.y, 0.0f, static_cast<float>(height - 1u));
+					const size_t y0 = static_cast<size_t>(std::floor(sy));
+					const size_t y1 = std::min(y0 + 1u, static_cast<size_t>(height - 1u));
+					const float ty = sy - static_cast<float>(y0);
+					const auto* row0 = reinterpret_cast<const float*>(src->pixels + y0 * src->rowPitch);
+					const auto* row1 = reinterpret_cast<const float*>(src->pixels + y1 * src->rowPitch);
 
 					for (size_t x = 0; x < width; ++x) {
 						const size_t base = x * 4u;
+						const float sx = std::clamp(static_cast<float>(x) - jitter.x, 0.0f, static_cast<float>(width - 1u));
+						const size_t x0 = static_cast<size_t>(std::floor(sx));
+						const size_t x1 = std::min(x0 + 1u, static_cast<size_t>(width - 1u));
+						const float tx = sx - static_cast<float>(x0);
+						const size_t srcBase0 = x0 * 4u;
+						const size_t srcBase1 = x1 * 4u;
+						float aligned[4]{};
+						for (size_t channel = 0; channel < 4u; ++channel) {
+							const float top = std::lerp(row0[srcBase0 + channel], row0[srcBase1 + channel], tx);
+							const float bottom = std::lerp(row1[srcBase0 + channel], row1[srcBase1 + channel], tx);
+							aligned[channel] = std::lerp(top, bottom, ty);
+						}
 						const float sampleLuma =
-							sampleRow[base] * 0.2126f +
-							sampleRow[base + 1u] * 0.7152f +
-							sampleRow[base + 2u] * 0.0722f;
+							aligned[0] * 0.2126f +
+							aligned[1] * 0.7152f +
+							aligned[2] * 0.0722f;
 						const float meanLuma =
 							meanRow[base] * 0.2126f +
 							meanRow[base + 1u] * 0.7152f +
@@ -822,9 +853,9 @@ namespace
 							0.06f,
 							1.0f);
 
-						robustRow[base] += sampleRow[base] * weight;
-						robustRow[base + 1u] += sampleRow[base + 1u] * weight;
-						robustRow[base + 2u] += sampleRow[base + 2u] * weight;
+						robustRow[base] += aligned[0] * weight;
+						robustRow[base + 1u] += aligned[1] * weight;
+						robustRow[base + 2u] += aligned[2] * weight;
 						robustRow[base + 3u] += weight;
 					}
 				}
@@ -918,13 +949,24 @@ namespace
 			}
 		}
 
-		auto nativeLumaAt = [native](size_t x, size_t y) {
-			const auto* row = reinterpret_cast<const float*>(
-				native->pixels + y * native->rowPitch);
-			const size_t base = x * 4u;
-			return row[base + 0u] * 0.2126f +
-				row[base + 1u] * 0.7152f +
-				row[base + 2u] * 0.0722f;
+		auto nativeLumaAt = [native](float x, float y) {
+			x = std::clamp(x, 0.0f, static_cast<float>(native->width - 1u));
+			y = std::clamp(y, 0.0f, static_cast<float>(native->height - 1u));
+			const size_t x0 = static_cast<size_t>(std::floor(x));
+			const size_t y0 = static_cast<size_t>(std::floor(y));
+			const size_t x1 = std::min(x0 + 1u, native->width - 1u);
+			const size_t y1 = std::min(y0 + 1u, native->height - 1u);
+			const float tx = x - static_cast<float>(x0);
+			const float ty = y - static_cast<float>(y0);
+			auto luma = [native](size_t px, size_t py) {
+				const auto* row = reinterpret_cast<const float*>(native->pixels + py * native->rowPitch);
+				const size_t base = px * 4u;
+				return row[base] * 0.2126f + row[base + 1u] * 0.7152f + row[base + 2u] * 0.0722f;
+			};
+			return std::lerp(
+				std::lerp(luma(x0, y0), luma(x1, y0), tx),
+				std::lerp(luma(x0, y1), luma(x1, y1), tx),
+				ty);
 		};
 
 		const float scale = static_cast<float>(outputScale);
@@ -959,7 +1001,9 @@ namespace
 					const float g = srcRow[srcBase + 1u];
 					const float b = srcRow[srcBase + 2u];
 					const float sampleLum = r * 0.2126f + g * 0.7152f + b * 0.0722f;
-					const float meanLum = nativeLumaAt(x, y);
+					const float meanLum = nativeLumaAt(
+						static_cast<float>(x) + jitter.x,
+						static_cast<float>(y) + jitter.y);
 					const float normalizedDelta =
 						std::abs(sampleLum - meanLum) /
 						(0.035f + std::abs(meanLum) * 0.20f);
@@ -1694,18 +1738,12 @@ namespace
 	{
 		DirectX::ScratchImage working;
 		if(reportProgress) reportProgress(PixelCapture::PhotoFinishStage::Resolving,0.30f);
-		if(!BuildTemporalAverage(context,samples,sourceFormat,width,height,working)) return false;
-
-		if(motionEnabled && reportProgress) reportProgress(PixelCapture::PhotoFinishStage::MotionFinish,0.48f);
-		if(motionEnabled && !ApplyDirectionalMotionFinish(working,motionStrength,motionAngleDegrees)) return false;
-
-		if(reportProgress) reportProgress(PixelCapture::PhotoFinishStage::DetailRecovery,0.58f);
-		if(!ApplyDetailReconstruction(working,detailStrength)) return false;
+		if(!BuildTemporalAverage(context,samples,jitterOffsets,sourceFormat,width,height,working)) return false;
 
 		outputScale = outputScale>=4 ? 4u : outputScale>=2 ? 2u : 1u;
 		DirectX::ScratchImage finalWorking;
 		if(outputScale>1u) {
-			if(reportProgress) reportProgress(PixelCapture::PhotoFinishStage::Upscaling,0.68f);
+			if(reportProgress) reportProgress(PixelCapture::PhotoFinishStage::Upscaling,0.52f);
 			if(!BuildJitterAwareSuperResolution(
 				context,samples,jitterOffsets,sourceFormat,width,height,outputScale,working,finalWorking)) {
 				logger::warn("Photo Finish V3 jitter-aware reconstruction failed; falling back to cubic resize.");
@@ -1714,33 +1752,41 @@ namespace
 				if(FAILED(DirectX::Resize(*native,static_cast<size_t>(width)*outputScale,
 					static_cast<size_t>(height)*outputScale,DirectX::TEX_FILTER_CUBIC,finalWorking))) return false;
 			}
-			// Restore local micro-contrast created by the jitter solve. Keep this
-			// bounded and before lens blur so defocused areas are never re-sharpened.
-			if(!ApplyDetailReconstruction(finalWorking,std::clamp(detailStrength*0.40f,0.0f,0.40f))) return false;
 		} else {
 			finalWorking=std::move(working);
 		}
 
+		// Recover detail once, on the final unjittered lattice. The old order
+		// sharpened a shifted native average before super-resolution and then
+		// sharpened again, amplifying NR halos and camera-turn brightness.
+		if(reportProgress) reportProgress(PixelCapture::PhotoFinishStage::DetailRecovery,0.66f);
+		if(!ApplyDetailReconstruction(finalWorking,detailStrength)) return false;
+
 		if(lensDofEnabled && depthStagingTexture) {
-			if(reportProgress) reportProgress(PixelCapture::PhotoFinishStage::LensDepthOfField,0.79f);
 			DirectX::ScratchImage depthNative,depthFloat,depthFinal;
+			const DirectX::ScratchImage* finalDepth=nullptr;
 			if(PopulateScratchImageFromStagingTexture(context,depthStagingTexture,depthFormat,width,height,depthNative) &&
 				ConvertDepthScratchToFloat(depthNative,depthFloat)) {
-				const DirectX::ScratchImage* lensDepth=&depthFloat;
+				finalDepth=&depthFloat;
 				if(outputScale>1u) {
 					const DirectX::Image* d=depthFloat.GetImage(0,0,0);
 					if(d && SUCCEEDED(DirectX::Resize(*d,static_cast<size_t>(width)*outputScale,
-						static_cast<size_t>(height)*outputScale,DirectX::TEX_FILTER_POINT,depthFinal))) lensDepth=&depthFinal;
+						static_cast<size_t>(height)*outputScale,DirectX::TEX_FILTER_POINT,depthFinal)))
+						finalDepth=&depthFinal;
 				}
-				if(!ApplyPhotoLensDepthOfField(finalWorking,*lensDepth,lensDofFocusDistance,lensDofFocusRange,
-					lensDofStrength,lensDofQuality,lensDofApertureBlades,lensDofHighlightBoost,
-					lensDofEdgeProtection,lensDofForegroundCoverage,lensDofCatEye,lensDofAnamorphicRatio,
-					static_cast<float>(outputScale)))
-					logger::warn("PIXL Photo Lens DOF skipped: offline lens resolve failed.");
-			} else {
-				logger::warn("PIXL Photo Lens DOF skipped: linear WorkingDepth staging could not be read.");
 			}
+			if(reportProgress) reportProgress(PixelCapture::PhotoFinishStage::LensDepthOfField,0.79f);
+			if(finalDepth && !ApplyPhotoLensDepthOfField(finalWorking,*finalDepth,lensDofFocusDistance,lensDofFocusRange,
+				lensDofStrength,lensDofQuality,lensDofApertureBlades,lensDofHighlightBoost,
+				lensDofEdgeProtection,lensDofForegroundCoverage,lensDofCatEye,lensDofAnamorphicRatio,
+				static_cast<float>(outputScale)))
+				logger::warn("PIXL Photo Lens DOF skipped: offline lens resolve failed.");
 		}
+
+		// Directional shutter blur is an explicitly creative final-lens operation.
+		// Keep it out of temporal rejection and the super-resolution prior.
+		if(motionEnabled && reportProgress) reportProgress(PixelCapture::PhotoFinishStage::MotionFinish,0.90f);
+		if(motionEnabled && !ApplyDirectionalMotionFinish(finalWorking,motionStrength,motionAngleDegrees)) return false;
 
 		const DirectX::Image* finalImage=finalWorking.GetImage(0,0,0);
 		if(!finalImage) return false;
@@ -1857,6 +1903,7 @@ void PixelCapture::LoadSettings(json& a_json)
 		const unsigned int requested =
 			a_json["PhotoFinishTemporalSamples"];
 		photoFinishTemporalSamples =
+			requested >= 32u ? 32u :
 			requested >= 24u ? 24u :
 			requested >= 16u ? 16u :
 			requested >= 8u ? 8u :
@@ -1881,7 +1928,7 @@ void PixelCapture::LoadSettings(json& a_json)
 	}
 	if (a_json.contains("PhotoFinishNeuralFeedbackSteps"))
 		photoFinishNeuralFeedbackSteps =
-			std::clamp<unsigned int>(a_json["PhotoFinishNeuralFeedbackSteps"], 1u, 3u);
+			std::clamp<unsigned int>(a_json["PhotoFinishNeuralFeedbackSteps"], 1u, 4u);
 
 	// Keep the legacy fields readable, but never reactivate the experimental
 	// depth resolve from an older configuration.
@@ -2401,7 +2448,7 @@ void PixelCapture::StartPhotoFinishCapture()
 		burst.warmupFramesRemaining = 4u;
 	}
 	burst.neuralFeedbackSteps = useNeuralSource
-		? std::clamp(photoFinishNeuralFeedbackSteps, 1u, 3u)
+		? std::clamp(photoFinishNeuralFeedbackSteps, 1u, 4u)
 		: 1u;
 	burst.minimumRenderScale = photoFinishRenderScaleMode >= 2u
 		? 1.0f
@@ -2440,7 +2487,9 @@ void PixelCapture::StartPhotoFinishCapture()
 	}
 
 	unsigned int requestedSamples =
-		photoFinishTemporalSamples >= 24u
+		photoFinishTemporalSamples >= 32u
+			? 32u
+			: photoFinishTemporalSamples >= 24u
 			? 24u
 			: photoFinishTemporalSamples >= 16u
 				? 16u
@@ -2450,15 +2499,15 @@ void PixelCapture::StartPhotoFinishCapture()
 						? 4u
 						: 1u;
 
-	// Feature 18 is temporally reconstructed. Additional quality tiers mean more
-	// independent, correctly guided DLAA+NR frames—not recursive re-evaluation of
-	// the previous neural image, which the model turns into cumulative blur.
+	// Each pass is a distinct completed Feature 18 frame with matching fresh
+	// DLAA guides. Processed model output is never recursively re-evaluated,
+	// because unchanged depth/motion guides turn that into cumulative blur.
 	const unsigned int neuralConvergenceFloor = useNeuralSource
-		? 8u * std::clamp(burst.neuralFeedbackSteps, 1u, 3u)
+		? 8u * std::clamp(burst.neuralFeedbackSteps, 1u, 4u)
 		: 1u;
 	if (useNeuralSource && requestedSamples < neuralConvergenceFloor) {
 		logger::info(
-			"Photo Finish neural convergence raised from {} to {} fresh guided frame(s).",
+			"Photo Finish neural convergence raised from {} to {} fresh completed frame(s).",
 			requestedSamples,
 			neuralConvergenceFloor);
 		requestedSamples = neuralConvergenceFloor;
@@ -2479,10 +2528,10 @@ void PixelCapture::StartPhotoFinishCapture()
 				burst.copyHeight) *
 			bytesPerPixel);
 
-	// Photo capture is allowed to be expensive, but do not let a high-res 24
+	// Photo capture is allowed to be expensive, but do not let a high-res 32
 	// sample burst allocate unbounded staging memory inside Skyrim.
 	constexpr std::uint64_t kPhotoFinishSampleBudget =
-		320ull * 1024ull * 1024ull;
+		512ull * 1024ull * 1024ull;
 
 	const unsigned int memorySafeSamples =
 		static_cast<unsigned int>(
@@ -2490,7 +2539,7 @@ void PixelCapture::StartPhotoFinishCapture()
 				kPhotoFinishSampleBudget /
 					bytesPerSample,
 				1ull,
-				24ull));
+				32ull));
 
 	burst.targetSamples =
 		std::max(
@@ -2619,7 +2668,9 @@ void PixelCapture::StartPhotoFinishCapture()
 		burst.targetSamples);
 
 	auto& photoReconstruction = globals::pipeline::imageReconstruction;
-	photoReconstruction.BeginPhotoCaptureRenderOverride(burst.minimumRenderScale, burst.useNeuralSource);
+	photoReconstruction.BeginPhotoCaptureRenderOverride(
+		burst.minimumRenderScale,
+		burst.useNeuralSource);
 	if (burst.warmupFramesRemaining == 0u) {
 		photoReconstruction.BeginPhotoCaptureJitter(burst.targetSamples);
 		photoReconstruction.SetPhotoCaptureJitterSample(0u);
@@ -2644,7 +2695,7 @@ void PixelCapture::StartPhotoFinishCapture()
 		0.02f);
 
 	logger::info(
-		"Photo Finish transaction started: {} lighting/post warmup frame(s), {} actual sample(s), {:.0f}% minimum internal render scale, {}x final output, neural convergence tier {}, detail {:.2f}, motion {}, projection jitter {}, neural source {}.",
+		"Photo Finish transaction started: {} lighting/post warmup frame(s), {} actual sample(s), {:.0f}% render scale, {}x output, neural convergence tier {}, detail {:.2f}, motion {}, projection jitter {}, neural source {}.",
 		photoFinishBurst->warmupFramesTotal,
 		photoFinishSamplesTarget.load(
 			std::memory_order_acquire),
@@ -2859,8 +2910,7 @@ void PixelCapture::CapturePhotoFinishSample()
 		&sourceRegion);
 
 
-	if (burst.samples.empty() &&
-		burst.photoLensDofEnabled) {
+	if (burst.samples.empty() && burst.photoLensDofEnabled) {
 		auto& hybridGI =
 			globals::pipeline::hybridGI;
 
@@ -2930,7 +2980,7 @@ void PixelCapture::CapturePhotoFinishSample()
 			}
 		}
 
-		if (!burst.depthStagingTexture) {
+		if (!burst.depthStagingTexture && burst.photoLensDofEnabled) {
 			logger::warn(
 				"PIXL Lens DOF depth unavailable; final photo will keep preview DOF only.");
 		}

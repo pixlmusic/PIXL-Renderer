@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$BaselinePath = 'H:\The Elder Scrolls - Skyrim - Special Edition\Data\SKSE\Plugins\PIXL\Config\UserGraphics.json',
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$BaselinePath,
     [string]$OutputDirectory = ''
 )
 

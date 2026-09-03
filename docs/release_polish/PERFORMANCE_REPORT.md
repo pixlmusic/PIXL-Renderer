@@ -8,7 +8,7 @@ Photo Finish deliberately trades time for quality. Its 8/16/24-frame convergence
 
 ## Shader/cache behavior
 
-The current runtime log reports disk-cache reuse, not continuous permutation compilation. No HLSL or permutation contract changed in this release checkpoint. Deleting the user's healthy cache would cause avoidable recompilation and is not recommended. The public package omits machine-specific cached pipelines and compiles on the target system.
+The current runtime log reports disk-cache reuse, not continuous permutation compilation. This release changes selected atmosphere, vegetation, water, reconstruction-input and eye/lighting shaders; their source fingerprints invalidate only affected permutations. Deleting a healthy cache repeatedly would cause avoidable recompilation and is not recommended. The public package deliberately omits machine-specific cached pipelines and compiles once on the target system.
 
 ## Claims and validation
 

@@ -7,7 +7,9 @@ class LaunchExperienceRenderer
 {
 public:
 	static bool ShouldShowFirstTimeSetup();
+	static bool ShouldShowControlReminder();
 	static void RenderFirstTimeSetupDialog();
+	static void RenderControlReminder();
 	static bool ShouldSkipKeyRelease(uint32_t key);
 
 private:

@@ -18,6 +18,14 @@
 
 namespace SIE
 {
+	// Increment whenever a shared shader ABI changes without changing the public
+	// plugin version: b5/b6 layouts, globally included structure definitions,
+	// register contracts, or permutation binary interpretation. Module versions
+	// alone cannot safely invalidate these changes because FeatureData offsets are
+	// shared by shader families which do not enable the changed module's define.
+	static constexpr const char* kPipelineCacheLayout = "PIXL.StageShard.v1";
+	static constexpr const char* kSharedShaderABI = "PIXL.SharedBuffers.20260902.1";
+
 	// Custom include handler to track all includes during shader compilation
 	class TrackingIncludeHandler : public ID3DInclude
 	{
@@ -2517,8 +2525,15 @@ namespace SIE
 			logger::info("Disk cache outdated: no plugin version found");
 			baseCacheValid = false;
 		}
-		if (auto layout = ini.GetValue("Cache", "Layout"); !layout || strcmp(layout, "PIXL.StageShard.v1") != 0) {
+		if (auto layout = ini.GetValue("Cache", "Layout"); !layout || strcmp(layout, kPipelineCacheLayout) != 0) {
 			logger::info("Disk cache outdated: pipeline layout changed");
+			baseCacheValid = false;
+		}
+		if (auto shaderABI = ini.GetValue("Cache", "ShaderABI"); !shaderABI || strcmp(shaderABI, kSharedShaderABI) != 0) {
+			logger::info(
+				"Disk cache outdated: shared shader ABI changed (current: {}, cached: {})",
+				kSharedShaderABI,
+				shaderABI ? shaderABI : "(missing)");
 			baseCacheValid = false;
 		}
 
@@ -2699,7 +2714,8 @@ namespace SIE
 		ini.SetValue("Cache", "PluginVersion", Plugin::VERSION.string().c_str());
 		globals::state->WriteDiskCacheInfo(ini);
 		std::filesystem::create_directories(L"Data/PIXL/PipelineLibrary");
-		ini.SetValue("Cache", "Layout", "PIXL.StageShard.v1");
+		ini.SetValue("Cache", "Layout", kPipelineCacheLayout);
+		ini.SetValue("Cache", "ShaderABI", kSharedShaderABI);
 		ini.SaveFile(L"Data\\PIXL\\PipelineLibrary\\Library.ini");
 		logger::info("Saved PIXL pipeline library metadata (plugin version: {})", Plugin::VERSION.string());
 	}

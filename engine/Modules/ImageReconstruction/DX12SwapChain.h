@@ -155,4 +155,5 @@ public:
 	[[nodiscard]] ID3D11Texture2D* GetCompletedNeuralOutput() const;
 	[[nodiscard]] ID3D11Texture2D* GetProvisionedNeuralOutput() const;
 	[[nodiscard]] std::uint64_t GetCompletedNeuralFrameSerial() const;
+
 };

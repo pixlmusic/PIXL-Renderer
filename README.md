@@ -25,7 +25,7 @@ Compiled pipelines are cached locally after first use. A clean install therefore
 
 ## Renderer features
 
-PIXL currently contains **37 integrated rendering modules**, plus renderer-level systems for dialogue focus, quality orchestration, benchmarking, tuning and capture.
+PIXL currently contains **38 integrated rendering modules**, plus renderer-level systems for dialogue focus, quality orchestration, benchmarking, tuning and capture.
 
 ### Lighting and atmosphere
 
@@ -39,19 +39,19 @@ PIXL currently contains **37 integrated rendering modules**, plus renderer-level
 - **Light Volumes** adds atmospheric scattering, volumetric depth and god rays for interiors and exteriors.
 - **Interior Daylight** allows supported interiors to receive sun/moon lighting and shadows while addressing culling-related leaks.
 - **Sky Bounce**, **Sky Continuity** and **Sky Veil** coordinate outdoor ambient light, celestial direction/moon state and moving cloud shadows.
-- **Atmosphere** provides height-aware fog and volumetric atmospheric integration.
+- **Atmosphere** provides weather-driven height fog and volumetric atmospheric integration with world-scale visibility protection, Mie-style directional response and stable temporal history during camera motion.
 
 ### Materials, characters and close-up detail
 
 - **Material Forge** unifies legacy and authored materials under an energy-conscious PBR response with roughness, metallic, displacement, clearcoat, fuzz, glints, decals and landscape support.
 - **Material Layers** handles parallax occlusion mapping, height blending, terrain heightmaps and parallax self-shadowing.
 - **Window Life** upgrades architectural glass with old-glass optics, recessed room atlases, curtains, furniture depth, varied occupants, stable architectural families and adaptive window fitting. It is designed to stay inside the actual pane instead of illuminating half of Solitude—which turns out to be quite an important detail lol.
-- **Skin Optics** adds layered skin response, dual specular lobes, micro detail and dynamic wetness.
+- **Skin Optics** adds layered skin response, dual specular lobes, micro detail and dynamic wetness. The eye path separately preserves sclera readability at grazing lid edges while keeping corneal reflections dielectric and stable at distance.
 - **Tissue Diffusion** provides material-aware subsurface light transport for natural skin and other translucent surfaces.
 - **Strand Shading** gives hair the stable legacy PIXL directional, tangent-based specular response and controllable highlight shift. The experimental Hair Reconstruction module has been retired from the shipping pipeline in favour of this known-good path.
 - **Thin Surface** supports directional transmission and multiple translucent fabric/surface models.
 - **Actor Surface Effects** adds bounded, contact-driven snow, mud and wetness accumulation to the player and nearby NPCs. Effects evolve over time, remain anchored in actor/model space, and share Ground Response and weather state rather than painting a fixed biome-height band onto every character.
-- **Foliage Dynamics** improves grass and vegetation lighting, GGX-style specular response, subsurface transmission, complex-grass normal handling and natural material controls.
+- **Foliage Dynamics** improves grass and vegetation lighting, directional screen-space shadow reception, GGX-style specular response, subsurface transmission, UV-safe complex-grass normal handling and natural material controls.
 - **Rain Response** coordinates world-stable rain, gust layers, impact splashes, wet materials, puddles, ripples, roof-edge runoff and rain mist.
 
 ### Terrain, snow, mud and water
@@ -63,7 +63,7 @@ PIXL currently contains **37 integrated rendering modules**, plus renderer-level
 - **Terrain Seam** blends terrain and intersecting objects more naturally.
 - **Terrain Occlusion** derives terrain shadowing from height data and current sun direction.
 - **Distance Blend** smooths the visual transition between full-detail objects and LOD.
-- **Water Optics** adds caustics, underwater lighting and improved surface response.
+- **Water Optics** adds surface-derived caustic bounce, underwater lighting, multi-scale flow response and high-resolution world-space contact/whitewater foam without a camera-following player decal.
 - **Waterbody** unifies close and distant water geometry/lighting to reduce the familiar water-LOD mismatch.
 - **Horizon Blend** cooperates with the separate HorizonBlend plugin when present and leaves vanilla far-water behaviour untouched when it is not.
 
@@ -85,16 +85,16 @@ The complete module ancestry—including every renamed Community Shaders system�
 1. Install the PIXL Renderer archive with a mod manager.
 2. Enable the included `PIXL-TerrainField.esp`.
 3. Launch Skyrim through SKSE.
-4. Press **End** to open PIXL Renderer.
+4. Complete the one-time control card, then use **Page Down** for PIXL Renderer and **Insert** for PIXL Director with the shipped bindings.
 5. Choose a quality profile, make any preferred Camera adjustments, then use **SAVE LOOK**.
 
 PIXL is intended to own the engine-level shader pipeline. Do not combine it with ENB, ReShade, Kreate, another shader-hook renderer or a second PIXL installation unless a future compatibility note explicitly says otherwise.
 
 A clean-cache package compiles shaders on the first launch. Let that process finish before judging performance or visuals. Ordinary HLSL changes should invalidate only affected permutations; deleting the whole pipeline library is reserved for deliberate cold-cache validation.
 
-The release baseline ships with the coherent **Enhanced** quality profile and Skyrim-native **TAA** selected. Frame generation and Neural Rendering are off by default. NVIDIA RTX 30-series and newer users can select DLSS, restart once to provision PIXL's optional DX12 sidecar, and then toggle Neural Rendering live; AMD, Intel and RTX 20-series users retain the normal TAA/FSR/DLSS paths without the NR control. Frame-generation swap-chain changes still require a restart.
+The release baseline is the current live-tested **Balanced** profile with **FSR 3.1 Native AA** selected. Frame generation and Neural Rendering are off by default. NVIDIA RTX 30-series and newer users can select DLSS, restart once to provision PIXL's optional DX12 sidecar, and then toggle Neural Rendering live from the Camera page or with **Alt+N**. AMD, Intel and RTX 20-series users retain the normal TAA/FSR/DLSS paths without the NR control. NR/FG presentation requires borderless mode; exclusive fullscreen remains disabled for the sidecar because its Alt-Tab ownership transition is not release-safe.
 
-The public **Camera** page contains reconstruction, DLSS/FSR, Neural Rendering, frame-generation, limiter and latency controls alongside normal camera finishing. Advanced engineering diagnostics remain in the Tuning Workspace, but ordinary setup and Photo Mode do not require entering it.
+The public **Camera** page puts reconstruction, DLSS/FSR, Neural Rendering, frame-generation, limiter and latency directly below the image-adjustment/viewfinder workspace. The Quality page uses real PIXL reference images on profile hover, with an Ultra+ comparison on Neural Rendering hover. Advanced engineering diagnostics remain behind an explicit support disclosure and in the Tuning Workspace; ordinary setup and Photo Mode do not require entering it.
 
 ## Building from source
 

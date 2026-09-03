@@ -1150,6 +1150,25 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 
 		data.HDRData = globals::pipeline::cameraSuite.GetSharedDataHDR();
 
+		// Keep water interaction anchored to the actor and world. A third-person
+		// camera orbit must never rotate or translate a wake through the river.
+		if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+			const auto playerPosition = player->GetPosition();
+			RE::NiPoint3 playerVelocity{};
+			player->GetLinearVelocity(playerVelocity);
+			const float horizontalSpeed = std::sqrt(
+				playerVelocity.x * playerVelocity.x +
+				playerVelocity.y * playerVelocity.y);
+			data.PlayerWaterPosition = {
+				playerPosition.x, playerPosition.y, playerPosition.z,
+				player->IsInWater() ? 1.0f : 0.0f
+			};
+			data.PlayerWaterVelocity = {
+				playerVelocity.x, playerVelocity.y, playerVelocity.z,
+				horizontalSpeed
+			};
+		}
+
 		sharedDataCB->Update(data);
 	}
 

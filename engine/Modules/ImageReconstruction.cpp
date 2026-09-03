@@ -101,9 +101,13 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 	}
 
 	bool shouldProxy = true;
-	if (shouldProxy)
-		if (!pSwapChainDesc->Windowed)
-			shouldProxy = false;
+	if (shouldProxy && !pSwapChainDesc->Windowed) {
+		// The DX11/DX12 shared presentation path is stable in windowed/borderless
+		// mode. Native exclusive mode survives initial creation but DXGI can fault
+		// during Alt-Tab ownership transitions, so never provision the sidecar there.
+		shouldProxy = false;
+		logger::warn("[ImageReconstruction] DX12 sidecar unavailable in exclusive fullscreen; use borderless for Neural Rendering or Frame Generation");
+	}
 
 	auto refreshRate = ImageReconstruction::GetRefreshRate(pSwapChainDesc->OutputWindow);
 	imageReconstruction.refreshRate = refreshRate;
@@ -312,13 +316,6 @@ void ImageReconstruction::DrawSettings()
 			ImGui::Text("AMD FSR 3.1");
 			ImGui::SameLine();
 			ImGui::TextColored(ImVec4(0.42f, 0.82f, 0.64f, 1.0f), "ACTIVE / DX11");
-			ImGui::BeginDisabled();
-			bool fsr4Unavailable = false;
-			ImGui::Checkbox("AMD FSR 4.1", &fsr4Unavailable);
-			ImGui::EndDisabled();
-			if (auto _tt = Util::HoverTooltipWrapper()) {
-				ImGui::TextWrapped("FSR 4.1 is shown for capability clarity but cannot run through Skyrim's Direct3D 11 render path. The official AMD integration requires Direct3D 12; selecting it would otherwise only disguise the existing FSR 3.1 path.");
-			}
 		} else if (upscaleMethod == UpscaleMethod::kDLSS) {
 			ImGui::Checkbox(T(TKEY("enable_sharpening"), "Enable Sharpening"), &settings.sharpnessEnabledDLSS);
 			if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -523,6 +520,11 @@ void ImageReconstruction::DrawSettings()
 						markCustom();
 					}
 					ImGui::Checkbox("Automatic Character Mask", &settings.neuralRenderingAutoMask);
+					if (auto _tt = Util::HoverTooltipWrapper())
+						ImGui::TextWrapped(
+							"Uses DLSSNR's learned character mask so Skin Structure is concentrated on people. "
+							"It is not a terrain mask: terrain and architecture use the global Local Tone and Local Structure controls. "
+							"PIXL conditions depth, motion and disocclusion guides separately for world stability.");
 					ImGui::Checkbox("UI Correction", &settings.neuralRenderingUICorrection);
 					ImGui::TreePop();
 				}
@@ -558,11 +560,8 @@ void ImageReconstruction::DrawSettings()
 
 		bool onlyRequiresRestart = true;
 
-		if (!isWindowed) {
-			Util::Text::Warning("Warning: Requires windowed mode");
-
-			onlyRequiresRestart = false;
-		}
+		if (!isWindowed)
+			ImGui::TextDisabled("Exclusive fullscreen is active. Changing display mode requires a restart while FG is enabled.");
 
 		if (lowRefreshRate && !settings.frameGenerationForceEnable) {
 			Util::Text::Warning("Warning: Requires a high refresh rate monitor or Force Enable Frame Generation");
@@ -1259,7 +1258,9 @@ void ImageReconstruction::EndPhotoCaptureJitter()
 	photoCaptureJitterIndex = 0u;
 }
 
-void ImageReconstruction::BeginPhotoCaptureRenderOverride(float minimumRenderScale, bool enableNeuralRendering)
+void ImageReconstruction::BeginPhotoCaptureRenderOverride(
+	float minimumRenderScale,
+	bool enableNeuralRendering)
 {
 	const bool activateNeural = enableNeuralRendering && CanUsePhotoNeuralRendering();
 	photoCaptureNeuralOverrideActive.store(activateNeural, std::memory_order_release);
@@ -1804,6 +1805,33 @@ void ImageReconstruction::ApplyNeuralRenderingPreset(uint preset)
 		break;
 	}
 	pendingNeuralRenderingReset.store(true, std::memory_order_release);
+}
+
+std::string ImageReconstruction::ToggleNeuralRenderingFromHotkey()
+{
+	if (!streamline.neuralRenderingSupportedOnCurrentAdapter)
+		return "Neural Rendering requires an NVIDIA RTX 30-series GPU or newer.";
+
+	if (GetUpscaleMethod() != UpscaleMethod::kDLSS)
+		return "Select DLSS in Camera > Reconstruction before enabling Neural Rendering.";
+
+	if (settings.neuralRenderingEnabled) {
+		settings.neuralRenderingEnabled = false;
+		pendingNeuralRenderingReset.store(true, std::memory_order_release);
+		if (globals::state)
+			globals::state->Save();
+		return "PIXL Neural Rendering disabled.";
+	}
+
+	settings.neuralRenderingEnabled = true;
+	pendingNeuralRenderingReset.store(true, std::memory_order_release);
+	if (globals::state)
+		globals::state->Save();
+
+	if (d3d12SwapChainActive && neuralRenderingProvisionedAtBoot)
+		return "PIXL Neural Rendering enabled.";
+
+	return "Neural Rendering armed. Restart Skyrim once to provision the sidecar.";
 }
 
 ImageReconstruction::FrameGenerationState ImageReconstruction::GetFrameGenerationState() const

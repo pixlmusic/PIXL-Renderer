@@ -47,18 +47,18 @@ namespace Atmosphere
 
 	float GetSceneDepthForFog(float3 positionWS, out float2 volumeUV, out float projectedDepth)
 	{
+		// Initialize out parameters before the dynamic branch. FXC's strict dataflow
+		// analysis otherwise reports a false potentially-uninitialized path when
+		// this helper is inlined into Water/Lighting permutations.
+		volumeUV = 0.0f.xx;
+		projectedDepth = 0.0f;
 		float4 clipPosition = mul(FrameBuffer::CameraViewProj, float4(positionWS, 1.0f));
-		[branch] if (clipPosition.w <= 0.0f)
-		{
-			volumeUV = 0.0f.xx;
-			projectedDepth = 0.0f;
-			return 0.0f;
-		}
-
-		projectedDepth = GetSceneDepthFromClip(clipPosition);
-		volumeUV = clipPosition.xy / clipPosition.w * float2(0.5f, -0.5f) + 0.5f;
-
-		volumeUV = saturate(volumeUV);
+		const bool validProjection = clipPosition.w > 0.0f;
+		float safeW = validProjection ? max(clipPosition.w, 1e-6f) : 1.0f;
+		projectedDepth = validProjection ? GetSceneDepthFromClip(clipPosition) : 0.0f;
+		volumeUV = validProjection ?
+			saturate(clipPosition.xy / safeW * float2(0.5f, -0.5f) + 0.5f) :
+			0.0f.xx;
 		return projectedDepth;
 	}
 
@@ -227,7 +227,9 @@ namespace Atmosphere
 	{
 		float4 volumetricFog = SampleVolumetricFog(positionWS);
 		float analyticalTransmittance = 1.0f - analyticalFog.w;
-		float combinedTransmittance = volumetricFog.a * analyticalTransmittance;
+		float combinedTransmittance = max(
+			volumetricFog.a * analyticalTransmittance,
+			GetMinimumTransmittance());
 		float combinedOpacity = saturate(1.0f - combinedTransmittance);
 		float3 analyticalPremultiplied = analyticalFog.rgb * analyticalFog.w;
 		float3 combinedPremultiplied = volumetricFog.rgb + volumetricFog.a * analyticalPremultiplied;
@@ -238,7 +240,9 @@ namespace Atmosphere
 	{
 		float4 volumetricFog = SampleVolumetricFog(screenPosition);
 		float analyticalTransmittance = 1.0f - analyticalFog.w;
-		float combinedTransmittance = volumetricFog.a * analyticalTransmittance;
+		float combinedTransmittance = max(
+			volumetricFog.a * analyticalTransmittance,
+			GetMinimumTransmittance());
 		float combinedOpacity = saturate(1.0f - combinedTransmittance);
 		float3 analyticalPremultiplied = analyticalFog.rgb * analyticalFog.w;
 		float3 combinedPremultiplied = volumetricFog.rgb + volumetricFog.a * analyticalPremultiplied;

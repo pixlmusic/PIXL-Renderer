@@ -217,14 +217,14 @@ void FoliageDynamics::DrawSettings()
 		static constexpr const char* grassModes[] = {
 			"Auto (Safe Multi-Sample)",
 			"Basic / Vanilla Texture",
-			"Force Complex (DirectX Y)",
-			"Force Complex (Flip Y)"
+			"Auto Layout (DirectX Y)",
+			"Auto Layout (Flip Y)"
 		};
 		int complexMode = static_cast<int>(std::min(settings.ComplexGrassMode, 3u));
 		if (ImGui::Combo("Grass Texture / Normal Mode", &complexMode, grassModes, static_cast<int>(std::size(grassModes))))
 			settings.ComplexGrassMode = static_cast<uint>(std::clamp(complexMode, 0, 3));
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Auto validates several pixels from the packed normal half before enabling Complex Grass. Basic/Vanilla never interprets the lower half of an ordinary diffuse texture as a normal map. The two Force modes are for known Complex Grass textures.");
+			ImGui::TextWrapped("Every Auto mode validates several pixels from the packed normal half before enabling Complex Grass. DirectX Y and Flip Y override only the normal convention after validation, so ordinary vegetation keeps its full diffuse UV range. Basic/Vanilla never interprets diffuse colour as a normal map.");
 		ImGui::SliderFloat(T(TKEY("detection_threshold"), "Detection Threshold"), &settings.ComplexGrassThreshold, 0.001f, 0.1f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("%s", T(TKEY("detection_threshold_tooltip"),

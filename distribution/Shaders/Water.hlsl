@@ -345,6 +345,9 @@ Texture2D<float4> FlowMapTex : register(t8);
 Texture2D<float4> FlowMapNormalsTex : register(t9);
 Texture2D<float4> SSRReflectionTex : register(t10);
 Texture2D<float4> RawSSRReflectionTex : register(t11);
+// WaterOptics reserves t65 for receiver caustics and t66 for this linear,
+// high-resolution foam-coverage mask. The mask contains no baked flow direction.
+Texture2D<float> WaterFoamStencil : register(t66);
 
 cbuffer PerTechnique : register(b0)
 {
@@ -1054,6 +1057,86 @@ float GetDynamicSurfaceCausticFocus(float3 normal, float3 worldPosition, float r
 	return lerp(1.0f, focusedLight, focusStrength);
 }
 
+float GetDynamicWaterFoam(PS_INPUT input, float3 surfaceNormal)
+{
+#			if !defined(REFRACTIONS) || defined(LOD) || defined(SIMPLE) || defined(UNDERWATER) || (defined(SPECULAR) && NUM_SPECULAR_LIGHTS != 0)
+	return 0.0f;
+#			else
+	if (SharedData::waterOpticsSettings.EnableDynamicFoam == 0)
+		return 0.0f;
+
+	float3 absolutePosition = input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz;
+	float foamScale = max(SharedData::waterOpticsSettings.FoamScale, 0.5f);
+	float2 flowDirection = 0.0f.xx;
+	float flowStrength = 0.0f;
+	float flowChange = 0.0f;
+
+#			if defined(FLOWMAP)
+	float4 flowSample = FlowMapTex.SampleLevel(FlowMapSampler, input.TexCoord2.zw, 0.0f);
+	float2 decodedFlow = -(flowSample.xy * 2.0f - 1.0f);
+	float decodedLengthSq = dot(decodedFlow, decodedFlow);
+	if (decodedLengthSq > 1e-6f)
+		flowDirection = decodedFlow * rsqrt(decodedLengthSq);
+	flowStrength = saturate(flowSample.w * sqrt(max(1.01f - flowSample.z, 0.0f)));
+
+	// Fixed flowmap-texel differences identify bends, convergence and colliding
+	// currents without introducing a screen-size or camera-orientation dependency.
+	uint flowWidth;
+	uint flowHeight;
+	FlowMapTex.GetDimensions(flowWidth, flowHeight);
+	float2 flowTexel = rcp(max(float2(flowWidth, flowHeight), 1.0f.xx));
+	float2 flowX = -(FlowMapTex.SampleLevel(FlowMapSampler, input.TexCoord2.zw + float2(flowTexel.x, 0.0f), 0.0f).xy * 2.0f - 1.0f);
+	float2 flowY = -(FlowMapTex.SampleLevel(FlowMapSampler, input.TexCoord2.zw + float2(0.0f, flowTexel.y), 0.0f).xy * 2.0f - 1.0f);
+	flowChange = saturate((length(flowX - decodedFlow) + length(flowY - decodedFlow)) * 1.8f) * flowStrength;
+#			endif
+
+	// Measure the opaque receiver immediately behind this water pixel. The former
+	// refracted-ray distance could become nearly constant over a coarse Skyrim water
+	// quad, exposing the mesh as large rectangular foam tiles. Unrefracted per-pixel
+	// scene depth creates a continuous contact band on the water surface instead.
+	float2 screenPosition =
+		FrameBuffer::DynamicResolutionParams1.xy *
+		(FrameBuffer::DynamicResolutionParams2.xy * input.HPosition.xy);
+	float sceneViewDepth = abs(GetScreenDepthWater(screenPosition));
+	float waterViewDepth = abs(mul(FrameBuffer::CameraView, float4(input.WPosition.xyz, 1.0f)).z);
+	float receiverSeparation = max(sceneViewDepth - waterViewDepth, 0.0f);
+	float validReceiver = (sceneViewDepth < 1000000.0f && sceneViewDepth >= waterViewDepth) ? 1.0f : 0.0f;
+	float shallowContact =
+		(1.0f - smoothstep(5.0f, 92.0f, receiverSeparation)) * validReceiver;
+
+	// Sample two differently oriented, flow-advected layers. Derivative-aware
+	// sampling selects the generated mip chain and keeps thin stencil filaments
+	// stable under TAA/DLSS rather than crawling at distance.
+	float2 flowAdvection =
+		flowDirection * SharedData::Timer * lerp(0.012f, 0.052f, flowStrength);
+	float2 foamUv0 = absolutePosition.xy * (0.0045f * foamScale) - flowAdvection;
+	float2 rotatedPosition = float2(
+		absolutePosition.x * 0.819152f - absolutePosition.y * 0.573576f,
+		absolutePosition.x * 0.573576f + absolutePosition.y * 0.819152f);
+	float2 foamUv1 = rotatedPosition * (0.0078f * foamScale) - flowAdvection.yx * float2(-0.73f, 0.73f);
+	float stencil0 = WaterFoamStencil.SampleGrad(
+		SampColorSampler, foamUv0, ddx_coarse(foamUv0), ddy_coarse(foamUv0));
+	float stencil1 = WaterFoamStencil.SampleGrad(
+		SampColorSampler, foamUv1, ddx_coarse(foamUv1), ddy_coarse(foamUv1));
+	float foamStencil = smoothstep(0.18f, 0.70f, stencil0 * 0.68f + stencil1 * 0.32f);
+
+	float surfaceActivity = saturate(
+		length(surfaceNormal.xy) * 4.25f +
+		flowStrength * 0.45f +
+		flowChange * 1.70f);
+	float contactActivity = smoothstep(0.06f, 0.55f, surfaceActivity);
+	float contactFoam = shallowContact * contactActivity;
+	float convergenceFoam = flowChange * smoothstep(0.22f, 0.75f, foamStencil);
+
+	// Foam is now entirely water-owned: no player-centred projected wake and no
+	// camera-relative component. Flow/contact coverage is applied as a pixel layer.
+	float foam = contactFoam * 0.82f + convergenceFoam * 0.58f;
+	return saturate(
+		foam * lerp(0.22f, 1.0f, foamStencil) *
+		SharedData::waterOpticsSettings.FoamStrength);
+#			endif
+}
+
 float3 GetSunColor(float3 normal, float3 viewDirection, float3 worldPosition)
 {
 #			if defined(UNDERWATER)
@@ -1350,10 +1433,13 @@ PS_OUTPUT main(PS_INPUT input)
 #				else
 
 	float3 sunColor = GetSunColor(normal, viewDirection, input.WPosition.xyz) * surfaceShadow;
+	float dynamicFoam = GetDynamicWaterFoam(input, normal);
+	float3 dynamicFoamColor = Color::Water(lerp(float3(0.62f, 0.68f, 0.69f), float3(0.88f, 0.91f, 0.90f), saturate(SunColor.w)));
 
 #					if defined(VC)
 	float specularFraction = lerp(1, fresnel * diffuseOutput.refractionMul, distanceBlendFactor);
 	float3 finalColorPreFog = lerp(diffuseColor, specularColor, specularFraction) + sunColor * depthControl.w;
+	finalColorPreFog = lerp(finalColorPreFog, dynamicFoamColor, dynamicFoam * (1.0f - fresnel * 0.45f));
 
 #						if !defined(WATERBODY)
 	float fogDistanceFactor = input.FogParam.w;
@@ -1405,6 +1491,7 @@ PS_OUTPUT main(PS_INPUT input)
 #					else
 	float specularFraction = lerp(1, fresnel, distanceBlendFactor);
 	float3 finalColorPreFog = lerp(diffuseOutput.refractionDiffuseColor, specularColor, specularFraction) + sunColor * depthControl.w;
+	finalColorPreFog = lerp(finalColorPreFog, dynamicFoamColor, dynamicFoam * (1.0f - fresnel * 0.45f));
 
 #						if !defined(WATERBODY)
 	float fogDistanceFactor = input.FogParam.w;

@@ -24,16 +24,28 @@ RWTexture2D<float> DepthOutput : register(u3);
 		return;
 
 	float2 taaMask = TAAMask[dispatchID.xy];
-	float transparencyCompositionMask = NormalsWaterMask[dispatchID.xy].z;
+	// Water's stencil pass stores its coverage in the blue channel of Skyrim's
+	// normal/TAA/SSR target.  Opaque pixels are cleared to zero by PIXL's
+	// deferred composite, so this is a transparency hint rather than glossiness
+	// at the point where reconstruction runs.
+	float transparencyCompositionMask = saturate(NormalsWaterMask[dispatchID.xy].z);
+	float reactiveMask = saturate(taaMask.x * 0.1 + taaMask.y);
 
 #if defined(DLSS)
 	float depth = DepthMask[dispatchID.xy];
-	float nearFactor = smoothstep(4096.0 * 2.5, 0.0, SharedData::GetScreenDepth(depth));
-
-	// Find longest motion vector in 5x5 neighborhood
 	float2 motionVector = MotionVectorMask[dispatchID.xy];
-	float2 longestMotionVector = motionVector;
-	float maxMotionLengthSq = dot(motionVector, motionVector);
+	float2 dilatedMotionVector = motionVector;
+
+	// Skyrim's standard depth is 0 at the near plane and 1 at clear/far sky.
+	// The old path compared non-linear device depth, selected the longest vector,
+	// and then trusted that result *more* with distance.  Tiny depth differences
+	// across distant terrain could consequently import unrelated motion from a
+	// five-pixel neighborhood.  NR then interpreted the unstable guide as world
+	// motion and changed reconstructed surface detail while the camera moved.
+	const bool centerHasGeometry = depth > 1e-6 && depth < 0.999999;
+	const float centerLinearDepth = centerHasGeometry ? SharedData::GetScreenDepth(depth) : 1e20;
+	float closestDeviceDepth = centerHasGeometry ? depth : 1.0;
+	bool foundCandidate = false;
 
 	[unroll] for (int y = -2; y <= 2; y++)
 	{
@@ -46,23 +58,46 @@ RWTexture2D<float> DepthOutput : register(u3);
 				continue;
 
 			float neighborDepth = DepthMask[samplePos];
+			const bool neighborHasGeometry = neighborDepth > 1e-6 && neighborDepth < 0.999999;
+			if (!neighborHasGeometry)
+				continue;
 
-			// Take neighbor if it's longer AND closer
-			if (neighborDepth < depth) {
-				float2 neighborMotionVector = MotionVectorMask[samplePos];
-
-				// Square motion vector for length
-				float motionLengthSq = dot(neighborMotionVector, neighborMotionVector);
-
-				if (motionLengthSq > maxMotionLengthSq) {
-					maxMotionLengthSq = motionLengthSq;
-					longestMotionVector = neighborMotionVector;
-				}
+			// Device depth is monotonic, so select the closest candidate first and
+			// linearize only that sample after the loop.  This avoids 25 divisions per
+			// pixel in a full-screen pass while retaining world-space validation.
+			if (neighborDepth < closestDeviceDepth) {
+				closestDeviceDepth = neighborDepth;
+				dilatedMotionVector = MotionVectorMask[samplePos];
+				foundCandidate = true;
 			}
 		}
 	}
 
-	MotionVectorOutput[dispatchID.xy] = lerp(longestMotionVector, motionVector, nearFactor);
+	float dilationWeight = 0.0;
+	if (foundCandidate) {
+		if (!centerHasGeometry) {
+			dilationWeight = 1.0;
+		} else {
+			float closestLinearDepth = SharedData::GetScreenDepth(closestDeviceDepth);
+			// Require a meaningful world-space separation on geometry.  The relative
+			// term scales to Skyrim's large exterior ranges; the absolute term keeps
+			// near-field thin geometry eligible without reacting to depth quantization.
+			float minimumSeparation = max(8.0, min(centerLinearDepth, 100000.0) * 0.004);
+			float depthSeparation = max(centerLinearDepth - closestLinearDepth, 0.0);
+			dilationWeight = smoothstep(minimumSeparation, minimumSeparation * 3.0, depthSeparation);
+		}
+	}
+
+	float2 conditionedMotion = lerp(motionVector, dilatedMotionVector, dilationWeight);
+	MotionVectorOutput[dispatchID.xy] = conditionedMotion;
+
+	// Bias reconstruction toward the current sample only where the silhouette
+	// actually has different motion.  Static depth edges retain full temporal
+	// detail, while moving actors, foliage and displaced surfaces reject stale
+	// background history without turning all terrain edges reactive.
+	float2 motionDeltaPixels = (dilatedMotionVector - motionVector) * TrueSamplingDim;
+	float motionDisagreement = saturate((length(motionDeltaPixels) - 0.25) / 1.5);
+	reactiveMask = max(reactiveMask, dilationWeight * motionDisagreement * 0.35);
 #endif
 
 #if defined(DEPTH_OUTPUT)
@@ -71,8 +106,7 @@ RWTexture2D<float> DepthOutput : register(u3);
 	DepthOutput[dispatchID.xy] = DepthMask[dispatchID.xy];
 #endif
 
-	float reactiveMask = taaMask.x * 0.1 + taaMask.y;
-	ReactiveMask[dispatchID.xy] = reactiveMask;
+	ReactiveMask[dispatchID.xy] = saturate(reactiveMask);
 
 	TransparencyCompositionMask[dispatchID.xy] = transparencyCompositionMask;
 }

@@ -1,6 +1,7 @@
 #include "WaterOptics.h"
 
 #include <DDSTextureLoader.h>
+#include <WICTextureLoader.h>
 
 #include "I18n/I18n.h"
 #include "State.h"
@@ -20,7 +21,11 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	SurfaceSSRStrength,
 	CausticsVisibility,
 	WaterTintStrength,
-	ReflectionBrightness)
+	ReflectionBrightness,
+	EnableDynamicFoam,
+	FoamStrength,
+	FoamScale,
+	PlayerWakeStrength)
 
 void WaterOptics::DrawSettings()
 {
@@ -74,6 +79,19 @@ void WaterOptics::DrawSettings()
 		ImGui::TreePop();
 	}
 
+	if (ImGui::TreeNodeEx("Flow & Contact Foam", ImGuiTreeNodeFlags_DefaultOpen)) {
+		changed |= Util::UIntCheckbox("Enable Dynamic Foam", &settings.EnableDynamicFoam);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Builds a high-resolution water-surface foam layer from shallow contacts and changing currents. It follows world-space flow, never camera rotation.");
+		ImGui::BeginDisabled(settings.EnableDynamicFoam == 0);
+		changed |= ImGui::SliderFloat("Foam Presence", &settings.FoamStrength, 0.0f, 2.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+		changed |= ImGui::SliderFloat("Foam Detail Scale", &settings.FoamScale, 0.5f, 2.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Foam remains attached to the water surface and is restricted to current convergence, turbulence and geometry contact. Player movement does not project a wake decal.");
+		ImGui::EndDisabled();
+		ImGui::TreePop();
+	}
+
 	if (changed)
 		globals::state->UpdateFeatureData(globals::state->inWorld);
 }
@@ -99,6 +117,12 @@ void WaterOptics::LoadSettings(json& o_json)
 	settings.CausticsVisibility = std::clamp(settings.CausticsVisibility, 0.0f, 2.5f);
 	settings.WaterTintStrength = std::clamp(settings.WaterTintStrength, 0.0f, 1.0f);
 	settings.ReflectionBrightness = std::clamp(settings.ReflectionBrightness, 0.5f, 1.15f);
+	settings.EnableDynamicFoam = settings.EnableDynamicFoam ? 1u : 0u;
+	settings.FoamStrength = std::clamp(settings.FoamStrength, 0.0f, 2.0f);
+	settings.FoamScale = std::clamp(settings.FoamScale, 0.5f, 2.0f);
+	// Retain the serialized lane for ABI/config compatibility, but player-centred
+	// wake projection is intentionally retired. Contact foam is water-owned.
+	settings.PlayerWakeStrength = 0.0f;
 }
 void WaterOptics::SaveSettings(json& o_json) { o_json = settings; }
 void WaterOptics::RestoreDefaultSettings() { settings = {}; }
@@ -119,6 +143,31 @@ void WaterOptics::SetupResources()
 	} else {
 		logger::info("[Water Optics] Loaded caustics texture: {}", "Data/Shaders/WaterOptics/watercaustics.dds");
 	}
+
+	foamStencilView = nullptr;
+	constexpr auto foamStencilPath = L"Data\\Shaders\\WaterOptics\\FoamStencil2K.png";
+	// Grayscale values are shader data, not display colour. Supplying the immediate
+	// context lets DirectXTK allocate and generate the complete mip chain, avoiding
+	// shimmer when the high-resolution mask recedes into the distance.
+	const auto foamResult = DirectX::CreateWICTextureFromFileEx(
+		device,
+		context,
+		foamStencilPath,
+		0,
+		D3D11_USAGE_DEFAULT,
+		D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET,
+		0,
+		D3D11_RESOURCE_MISC_GENERATE_MIPS,
+		DirectX::WIC_LOADER_IGNORE_SRGB,
+		nullptr,
+		foamStencilView.put());
+	if (FAILED(foamResult) || !foamStencilView) {
+		logger::warn(
+			"[PIXL Water Optics] Optional foam stencil unavailable (HRESULT 0x{:08X}); dynamic contact foam will remain disabled",
+			static_cast<std::uint32_t>(foamResult));
+	} else {
+		logger::info("[PIXL Water Optics] Loaded 2048x2048 flow/contact foam stencil with generated mips");
+	}
 }
 
 void WaterOptics::Prepass()
@@ -126,8 +175,8 @@ void WaterOptics::Prepass()
 	auto context = globals::d3d::context;
 	if (!context)
 		return;
-	auto srv = causticsView.get();
-	context->PSSetShaderResources(65, 1, &srv);
+	ID3D11ShaderResourceView* srvs[] = { causticsView.get(), foamStencilView.get() };
+	context->PSSetShaderResources(65, static_cast<UINT>(std::size(srvs)), srvs);
 }
 
 bool WaterOptics::HasShaderDefine(RE::BSShader::Type shaderType)

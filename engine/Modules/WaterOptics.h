@@ -24,11 +24,20 @@ public:
 		// settings offsets remain unchanged.
 		float WaterTintStrength = 0.35f;
 		float ReflectionBrightness = 0.88f;
+
+		uint32_t EnableDynamicFoam = true;
+		float FoamStrength = 0.78f;
+		float FoamScale = 1.0f;
+		// Retained as a zeroed compatibility lane; player-projected wake foam was
+		// removed in favour of water-owned flow and geometry contact.
+		float PlayerWakeStrength = 0.0f;
 	};
 	STATIC_ASSERT_ALIGNAS_16(Settings);
+	static_assert(sizeof(Settings) == 64, "WaterOptics settings must match the four-register FeatureData block.");
 
 	Settings settings;
 	winrt::com_ptr<ID3D11ShaderResourceView> causticsView;
+	winrt::com_ptr<ID3D11ShaderResourceView> foamStencilView;
 	virtual inline std::string GetName() override { return "Water Optics"; }
 	virtual std::string GetDisplayName() override { return T("feature.water_optics.name", "Water Optics"); }
 	/** @brief Returns the short identifier used for file paths and logging. */
@@ -58,10 +67,10 @@ public:
 		return stage == CachedShaderStage::Pixel && HasShaderDefine(shaderType);
 	}
 
-	/** @brief Loads the water caustics DDS texture from disk. */
+	/** @brief Loads the water caustics and linear foam-mask textures from disk. */
 	virtual void SetupResources() override;
 
-	/** @brief Binds the caustics texture SRV to the pixel shader for the current frame. */
+	/** @brief Binds the caustics and foam-mask SRVs to the pixel shader. */
 	virtual void Prepass() override;
 	virtual void DrawSettings() override;
 	virtual void LoadSettings(json& o_json) override;

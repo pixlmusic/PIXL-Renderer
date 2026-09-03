@@ -35,6 +35,10 @@ namespace SharedData
 		float4 AmbientSHG;
 		float4 AmbientSHB;
 		float4 HDRData;
+		// Appended world-space actor state for water interaction. Historical b5
+		// fields retain their offsets.
+		float4 PlayerWaterPosition;  // xyz absolute position, w in-water flag
+		float4 PlayerWaterVelocity;  // xyz world velocity, w horizontal speed
 	};
 
 	struct FoliageDynamicsSettings
@@ -235,6 +239,11 @@ namespace SharedData
 		float CausticsVisibility;
 		float WaterTintStrength;
 		float ReflectionBrightness;
+
+		uint EnableDynamicFoam;
+		float FoamStrength;
+		float FoamScale;
+		float PlayerWakeStrength;
 	};
 
 	struct PostProcessSettings
@@ -448,6 +457,11 @@ namespace SharedData
 		float mapDirectionalInscatteringMultiplier;
 		float mapSunlightAttenuationMultiplier;
 		float mapWorldProbeMultiplier;
+
+		uint automaticWeatherFog;
+		float automaticWeatherStrength;
+		float minimumAtmosphereTransmittance;
+		float weatherMieStrength;
 	};
 
 	struct MaterialForgeSettings

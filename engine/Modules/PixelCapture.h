@@ -124,7 +124,7 @@ struct PixelCapture : public RenderModule
 	// before any final-image sample is copied.
 	unsigned int photoFinishLightingWarmupFrames = 8;
 	// Fresh-frame neural convergence tier. Feature 18 is evaluated once per real
-	// jittered frame; tiers 1/2/3 require at least 8/16/24 independent neural
+	// jittered frame; tiers 1/2/3/4 require at least 8/16/24/32 independent neural
 	// outputs before the offline resolve. Recursive model feedback is intentionally
 	// avoided because it low-passes detail against unchanged temporal guides.
 	unsigned int photoFinishNeuralFeedbackSteps = 1;

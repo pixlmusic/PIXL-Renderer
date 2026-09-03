@@ -105,12 +105,22 @@ public:
 		float mapDirectionalInscatteringMultiplier = 0.35f;
 		float mapSunlightAttenuationMultiplier = 0.25f;
 		float mapWorldProbeMultiplier = 0.35f;
+
+		// Automatic mode preserves the authored sliders as a look/quality baseline,
+		// then adapts visibility, phase and range from Skyrim's live weather.
+		uint automaticWeatherFog = 1;
+		float automaticWeatherStrength = 1.0f;
+		float minimumAtmosphereTransmittance = 0.06f;
+		float weatherMieStrength = 0.75f;
 	} settings;
 	STATIC_ASSERT_ALIGNAS_16(Settings);
+	static_assert(sizeof(Settings) == 272, "Atmosphere settings must match the 17-register FeatureData block.");
 
 	Settings GetCommonBufferData() const;
 
 private:
+	Settings ResolveRuntimeSettings() const;
+
 	struct VolumetricFogCB
 	{
 		DirectX::XMUINT4 gridSizeAndFlags = {};

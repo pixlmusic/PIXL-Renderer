@@ -130,6 +130,7 @@ if ($includePipelineLibrary) {
     if (-not (Test-Path -LiteralPath $libraryIni)) { throw "Missing validated PIXL pipeline metadata: $libraryIni" }
     $metadata = Get-Content -LiteralPath $libraryIni -Raw
     if ($metadata -notmatch 'Layout\s*=\s*PIXL\.StageShard\.v1') { throw "Pipeline library is not PIXL.StageShard.v1" }
+    if ($metadata -notmatch 'ShaderABI\s*=\s*PIXL\.SharedBuffers\.20260902\.1') { throw "Pipeline library was built for an incompatible PIXL shared-shader ABI" }
     $pipelineCount = (Get-ChildItem -LiteralPath $pipelineRoot -File -Recurse -Filter "*.pixlbin").Count
     if ($pipelineCount -lt 3000) { throw "Pipeline library is incomplete ($pipelineCount stages; expected at least 3000)" }
     Copy-Tree $pipelineRoot (Join-Path $output "PIXL\PipelineLibrary")
@@ -160,6 +161,7 @@ $manifestFiles = Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object
     cacheMode = if ($includePipelineLibrary) { "preloaded" } else { "compile-on-device" }
     preloadedPipelineStages = $pipelineCount
     shaderCompilePattern = "PIXL.StageShard.v1"
+    shaderABI = "PIXL.SharedBuffers.20260902.1"
     generatedUtc = [DateTime]::UtcNow.ToString("o")
     files = $manifestFiles
 } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $output "PIXL-RENDERER.manifest.json") -Encoding utf8

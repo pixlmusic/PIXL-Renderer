@@ -364,8 +364,13 @@ public:
 		float4 AmbientSHG;
 		float4 AmbientSHB;
 		float4 HDRData;  // xyz + menu scene encoding in w â€” see CameraSuite::GetSharedDataHDR
+		float4 PlayerWaterPosition;
+		float4 PlayerWaterVelocity;
 	};
 	STATIC_ASSERT_ALIGNAS_16(SharedDataCB);
+	static_assert(sizeof(SharedDataCB) == 704, "SharedData b5 must match the HLSL 44-register layout.");
+	static_assert(offsetof(SharedDataCB, PlayerWaterPosition) == 672, "Player water position b5 offset mismatch.");
+	static_assert(offsetof(SharedDataCB, PlayerWaterVelocity) == 688, "Player water velocity b5 offset mismatch.");
 
 	ConstantBuffer* sharedDataCB = nullptr;
 	ConstantBuffer* featureDataCB = nullptr;

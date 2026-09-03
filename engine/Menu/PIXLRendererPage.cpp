@@ -47,15 +47,22 @@ namespace
 		"ULTRA"
 	};
 
+	constexpr std::array<const char*, 4> kProfileDescriptions{
+		"Responsive PIXL lighting and materials with the leanest coordinated effects budget.",
+		"The release baseline: stable image quality, balanced reconstruction and sensible GPU cost.",
+		"Higher lighting, atmosphere and surface fidelity for modern mid-range and high-end GPUs.",
+		"Maximum coordinated fidelity for screenshots, powerful GPUs and demanding visual testing."
+	};
+
 	using QualityGroup =
 		PIXLRenderer::QualityProfiles::Group;
 
 	struct QualityPreviewSelection
 	{
-		const char* assetKey = "Lighting";
-		const char* title = "LIGHTING";
-		const char* description = "Global illumination, reflections and shadow detail.";
-		int tier = 3;
+		const char* assetKey = "Profile";
+		const char* title = "ENHANCED";
+		const char* description = kProfileDescriptions[2];
+		int tier = 2;
 	};
 
 	struct QualityPreviewTexture
@@ -74,6 +81,34 @@ namespace
 				tier,
 				0,
 				3)];
+	}
+
+	QualityPreviewTexture* GetQualityPreviewTexture(
+		const char* assetKey,
+		int tier);
+
+	void DrawQualityImageTooltip(
+		const char* assetKey,
+		int tier,
+		const char* description)
+	{
+		if (!ImGui::IsItemHovered())
+			return;
+
+		ImGui::BeginTooltip();
+		ImGui::PushTextWrapPos(PIXLUI::Ref(520.0f));
+		if (description)
+			ImGui::TextWrapped("%s", description);
+
+		if (auto* texture = GetQualityPreviewTexture(assetKey, tier);
+			texture && texture->srv && texture->size.x > 0.0f && texture->size.y > 0.0f) {
+			ImGui::Dummy(ImVec2(0.0f, PIXLUI::Ref(4.0f)));
+			const float width = PIXLUI::Ref(500.0f);
+			const float height = width * texture->size.y / texture->size.x;
+			ImGui::Image(texture->srv.get(), ImVec2(width, height));
+		}
+		ImGui::PopTextWrapPos();
+		ImGui::EndTooltip();
 	}
 
 	QualityPreviewTexture* GetQualityPreviewTexture(
@@ -196,13 +231,16 @@ namespace
 				heading);
 
 		char context[96]{};
-		std::snprintf(
-			context,
-			sizeof(context),
-			"%s / %s",
-			preview.title,
-			QualityTierName(
-				preview.tier));
+		if (std::string_view(preview.assetKey) == "Profile") {
+			std::snprintf(context, sizeof(context), "%s", preview.title);
+		} else {
+			std::snprintf(
+				context,
+				sizeof(context),
+				"%s / %s",
+				preview.title,
+				QualityTierName(preview.tier));
+		}
 		const ImVec2 contextSize =
 			ImGui::CalcTextSize(
 				context);
@@ -260,6 +298,12 @@ namespace
 			ImVec2(
 				0,
 				PIXLUI::Ref(5.0f)));
+
+		ImGui::TextColored(
+			PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
+			"%s",
+			preview.description);
+		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(4.0f)));
 
 		const ImVec2 imageStart =
 			ImGui::GetCursorScreenPos();
@@ -466,7 +510,8 @@ namespace
 		const char* id,
 		int& value,
 		const char* const* labels,
-		int count)
+		int count,
+		int* hoveredIndex = nullptr)
 	{
 		ImGui::PushID(id);
 
@@ -500,6 +545,9 @@ namespace
 				value = i;
 				changed = true;
 			}
+
+			if (hoveredIndex && ImGui::IsItemHovered())
+				*hoveredIndex = i;
 		}
 
 		ImGui::PopID();
@@ -509,9 +557,7 @@ namespace
 	bool DrawQualitySlider(
 		const char* label,
 		int& value,
-		const char* assetKey,
-		const char* description,
-		QualityPreviewSelection& preview)
+		const char* description)
 	{
 		bool hovered = false;
 
@@ -524,16 +570,8 @@ namespace
 				kDetailNames.data(),
 				&hovered);
 
-		if (hovered || changed) {
-			preview.assetKey =
-				assetKey;
-			preview.title =
-				label;
-			preview.description =
-				description;
-			preview.tier =
-				value;
-		}
+		if (description && hovered)
+			ImGui::SetTooltip("%s", description);
 
 		return changed;
 	}
@@ -697,16 +735,6 @@ namespace
 
 		static QualityPreviewSelection preview{};
 
-		for (const auto& row : rows) {
-			if (std::string_view(
-					preview.assetKey) ==
-				row.assetKey) {
-				preview.tier =
-					*row.value;
-				break;
-			}
-		}
-
 		if (ImGui::BeginTable(
 				"##PIXLQualityWorkspace",
 				2,
@@ -742,11 +770,13 @@ namespace
 					0,
 					3);
 
+			int hoveredProfile = -1;
 			if (DrawChoiceButtons(
 					"GlobalQuality",
 					profile,
 					kProfileNames.data(),
-					4)) {
+					4,
+					&hoveredProfile)) {
 				settings.RendererQuality =
 					profile;
 
@@ -754,6 +784,15 @@ namespace
 					ApplyGlobal(
 						profile);
 			}
+
+			const int previewProfile = std::clamp(
+				hoveredProfile >= 0 ? hoveredProfile : settings.RendererQuality,
+				0,
+				3);
+			preview.assetKey = "Profile";
+			preview.title = kProfileNames[previewProfile];
+			preview.description = kProfileDescriptions[previewProfile];
+			preview.tier = previewProfile;
 
 			ImGui::Dummy(
 				ImVec2(
@@ -814,9 +853,7 @@ namespace
 				if (DrawQualitySlider(
 						row.name,
 						*row.value,
-						row.assetKey,
-						row.help,
-						preview)) {
+						row.help)) {
 					PIXLRenderer::QualityProfiles::
 						Apply(
 							row.group,
@@ -866,7 +903,7 @@ namespace
 
 		static bool showAdvancedReconstruction = false;
 
-		SectionHeading("DISPLAY & PERFORMANCE");
+		SectionHeading("IMAGE RECONSTRUCTION & DISPLAY");
 
 		uint* method =
 			imageReconstruction.streamline.featureDLSS
@@ -975,13 +1012,16 @@ namespace
 		ImGui::BeginDisabled(!nrControlAvailable);
 		if (ToggleControl(
 				"Neural Rendering",
-				&settings.neuralRenderingEnabled,
-				"Runs PIXL's native DLSS Neural Rendering path. RTX 30-series or newer NVIDIA hardware and a DLSS session are required.")) {
+				&settings.neuralRenderingEnabled)) {
 			imageReconstruction.pendingNeuralRenderingReset.store(true, std::memory_order_release);
 			changed = true;
 			if (!nrSessionProvisioned)
 				restartNeeded = true;
 		}
+		DrawQualityImageTooltip(
+			"Neural",
+			3,
+			"DLSS Neural Rendering adds the Ultra+ finish shown here. It requires NVIDIA RTX 30-series or newer hardware and an active DLSS session. Alt+N toggles it during gameplay; the first sidecar activation may require one restart.");
 		ImGui::EndDisabled();
 
 		if (!nrHardwareSupported) {
@@ -1004,6 +1044,11 @@ namespace
 				PIXLUI::ToVec4(PIXLUI::Colors::Success),
 				"NEURAL SIDECAR READY - REAL-TIME AND PHOTO TOGGLES ARE LIVE");
 		}
+		ImGui::TextColored(
+			PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
+			"ALT+N QUICK TOGGLE  |  DLSS SR  >  NR FINAL COMPOSITE  >  FRAME GENERATION  >  UI");
+		Tooltip(
+			"The installed Feature 18 contract consumes display-resolution, post-DLSS colour plus render-resolution depth and motion guides. A pre-DLSS mode would instead receive Skyrim's linear HDR render target, require a hard DX12-to-DX11 hand-back every frame, and invalidate the model's validated colour/extent contract. PIXL therefore keeps the stable gameplay order. Photo Finish accumulates synchronized completed neural frames and performs its larger offline output reconstruction afterward.");
 
 		ImGui::BeginDisabled(!nrControlAvailable);
 		const char* neuralPresets[] = { "NATURAL", "BALANCED", "DETAIL", "STRONG", "CUSTOM" };
@@ -1065,7 +1110,7 @@ namespace
 				markNeuralCustom();
 			}
 			changed |= ToggleControl("Automatic character mask", &settings.neuralRenderingAutoMask,
-				"Uses PIXL actor/material information to preserve faces and character detail.");
+				"Uses the installed model's learned character mask to concentrate skin structure on detected people. It is not a terrain mask.");
 			changed |= ToggleControl("UI correction", &settings.neuralRenderingUICorrection,
 				"Keeps HUD and menu composition from being interpreted as world detail.");
 			ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
@@ -2235,9 +2280,11 @@ namespace
 				ImGui::TextWrapped("%s", directorUnavailableReason.c_str());
 		}
 		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(5.0f)));
-		DrawPerformanceControls();
-		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(10.0f)));
 		DrawFinishingControls();
+		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(10.0f)));
+		// Reconstruction sits directly beneath the image-adjustment/viewfinder
+		// workspace so normal users never need the engineering tuner.
+		DrawPerformanceControls();
 	}
 
 	void DrawStatusPill(
@@ -2394,46 +2441,39 @@ namespace
 				0,
 				PIXLUI::Ref(14.0f)));
 
-		SectionHeading("ENGINEERING");
-
-		ImGui::TextColored(
-			PIXLUI::ToVec4(
-				PIXLUI::Colors::TextMuted),
-			"Module-level renderer controls, diagnostics and shader maintenance.");
-
-		ImGui::Dummy(
-			ImVec2(
-				0,
-				PIXLUI::Ref(8.0f)));
-
+		static bool showAdvancedSupport = false;
 		if (PIXLUI::ActionButton(
-				"OPEN PIXL TUNER",
-				ImVec2(
-					PIXLUI::Ref(190.0f),
-					PIXLUI::Ref(36.0f)),
+				showAdvancedSupport ? "HIDE ADVANCED / SUPPORT" : "ADVANCED / SUPPORT",
+				ImVec2(PIXLUI::Ref(210.0f), PIXLUI::Ref(34.0f)),
 				false)) {
-			globals::menu
-				->GetSettings()
-				.AdvancedMode = true;
-
-			globals::state->Save();
+			showAdvancedSupport = !showAdvancedSupport;
 		}
 
-		ImGui::SameLine(
-			0.0f,
-			PIXLUI::Ref(8.0f));
+		if (showAdvancedSupport) {
+			ImGui::Dummy(ImVec2(0, PIXLUI::Ref(8.0f)));
+			SectionHeading("ENGINEERING");
+			ImGui::TextColored(
+				PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
+				"Module diagnostics and shader maintenance. Most players never need these tools.");
+			ImGui::Dummy(ImVec2(0, PIXLUI::Ref(8.0f)));
 
-		if (PIXLUI::ActionButton(
-				"REBUILD SHADERS",
-				ImVec2(
-					PIXLUI::Ref(175.0f),
-					PIXLUI::Ref(36.0f)),
-				false)) {
-			Util::RequestClearShaderCacheConfirmation();
+			if (PIXLUI::ActionButton(
+					"OPEN PIXL TUNER",
+					ImVec2(PIXLUI::Ref(190.0f), PIXLUI::Ref(36.0f)),
+					false)) {
+				globals::menu->GetSettings().AdvancedMode = true;
+				globals::state->Save();
+			}
+
+			ImGui::SameLine(0.0f, PIXLUI::Ref(8.0f));
+			if (PIXLUI::ActionButton(
+					"REBUILD SHADERS",
+					ImVec2(PIXLUI::Ref(175.0f), PIXLUI::Ref(36.0f)),
+					false)) {
+				Util::RequestClearShaderCacheConfirmation();
+			}
+			Tooltip("Clears PIXL's shader library and rebuilds it from the installed renderer source.");
 		}
-
-		Tooltip(
-			"Clears PIXL's shader library and rebuilds it from the installed renderer source.");
 	}
 
 }

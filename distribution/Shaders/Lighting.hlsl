@@ -3584,6 +3584,15 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// Cornea behaves as a smooth dielectric shell (IOR approximately 1.376).
 	// Preserve the authored iris/sclera colour while constraining the optical
 	// lobe to plausible values and retaining the vanilla eye-parallax geometry.
+	const float pixlEyeRadialDistance =
+		length(diffuseUv - PIXL_EYE_IRIS_CENTER) /
+		max(PIXL_EYE_IRIS_RADIUS_UV, 1e-4f);
+	const float pixlEyeScleraWeight = smoothstep(0.96f, 1.18f, pixlEyeRadialDistance);
+	// A corneal shell and intraocular scatter return a little more diffuse energy
+	// than Skyrim's legacy eye path. Keep this chroma-preserving and restrained so
+	// dark irises remain dark instead of acquiring an artificial emissive floor.
+	material.BaseColor = saturate(
+		material.BaseColor * lerp(1.055f, 1.16f, pixlEyeScleraWeight));
 	material.F0 = 0.0253f.xxx;
 	material.Roughness = clamp(
 		material.Roughness * 0.35f *
@@ -3593,8 +3602,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			pixlDialogueFocus *
 			DialogueFocus::EyeQuality() *
 			DialogueFocus::EyeReflectionQuality()),
-		0.038f,
-		0.22f);
+		0.055f,
+		0.24f);
 	material.Metallic = 0.0f;
 #		endif
 #	endif
@@ -3713,7 +3722,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// Reassert after dynamic-cubemap metadata: the cornea remains a dielectric.
 	material.F0 = EyeRendering::CorneaF0().xxx;
 	material.Roughness = max(
-		0.038f,
+		0.055f,
 		EyeRendering::CorneaRoughness(uv) *
 		lerp(
 			1.0f,
@@ -3723,12 +3732,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			DialogueFocus::EyeReflectionQuality()));
 	material.Metallic = 0.0f;
 
-	// A tiny close-up reflection lift restores the wet corneal read without changing F0.
-	envColor *=
-		1.0f +
-		0.035f * pixlDialogueFocus *
-		DialogueFocus::EyeQuality() *
-		DialogueFocus::EyeReflectionQuality();
+	// Reflection energy is handled by the Fresnel-weighted eye branch below.
+	// Avoid dialogue-only reflection amplification, which made pupils look like
+	// dark mirrors when the close camera changed exposure and probe visibility.
 #	endif
 
 	ActorSurfaceEffects::ApplyMaterial(
@@ -4721,6 +4727,18 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif  // MULTI_LAYER_PARALLAX
 
 	float3 ambientNormal = worldNormal.xyz;
+#	if defined(EYE) && USE_PIXL_EYE_OPTICS
+	// Skyrim eye meshes curve sharply into the lids. At those grazing pixels the
+	// legacy normal can sample almost no directional ambient and turns the sclera
+	// edge charcoal, especially after temporal reconstruction. Preserve the eye's
+	// shape for direct/specular light, but gently wrap only its low-frequency
+	// ambient lookup toward the viewer where exposed sclera reaches the limbus.
+	const float3 pixlEyeViewDirection = normalize(viewDirection);
+	const float pixlEyeAmbientNoV = saturate(abs(dot(normalize(input.EyeNormal), pixlEyeViewDirection)));
+	const float pixlEyeAmbientWrap =
+		pixlEyeScleraWeight * (1.0f - pixlEyeAmbientNoV) * 0.45f;
+	ambientNormal = normalize(lerp(ambientNormal, pixlEyeViewDirection, pixlEyeAmbientWrap));
+#	endif
 #	if defined(HAIR) && defined(STRAND_SHADING)
 	if (SharedData::strandShadingSettings.Enabled) {
 		if (SharedData::strandShadingSettings.HairMode == 1)
@@ -4873,6 +4891,15 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 	color.xyz += indirectLobeWeights.diffuse * directionalAmbientColor;
+#	if defined(EYE) && USE_PIXL_EYE_OPTICS
+	// Approximate the broad, low-frequency scatter of the sclera/iris using only
+	// ambient irradiance already visible at the eye. This lifts readability in
+	// interiors without becoming self-lit when the scene is truly dark.
+	color.xyz +=
+		indirectLobeWeights.diffuse * directionalAmbientColor *
+		lerp(material.BaseColor, sqrt(saturate(material.BaseColor)), 0.18f) *
+		lerp(0.10f, 0.28f, pixlEyeScleraWeight);
+#	endif
 	color.xyz += transmissionColor;
 
 	color.xyz *= vertexColor;
@@ -4888,8 +4915,21 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		if defined(WORLD_PROBES)
 	if (!dynamicCubemap)
 #		endif
+	{
+#		if defined(EYE) && USE_PIXL_EYE_OPTICS
+		// Corneal reflection is independent of iris albedo. The legacy path
+		// multiplied the environment by diffuse illumination, causing reflections
+		// to collapse to black or flare as exposure changed. Apply the dielectric
+		// Fresnel term directly and leave diffuse irradiance separate.
+		float pixlEyeNoV = saturate(abs(dot(normalize(input.EyeNormal), normalize(viewDirection))));
+		float pixlEyeFresnel = EyeRendering::CorneaF0() +
+			(1.0f - EyeRendering::CorneaF0()) * BRDF::Pow5(1.0f - pixlEyeNoV);
+		specularColor += envColor * pixlEyeFresnel;
+#		else
 		specularColor += envColor * Color::IrradianceToLinear(diffuseColor);
-	indirectLobeWeights.diffuse += envColor;
+		indirectLobeWeights.diffuse += envColor;
+#		endif
+	}
 #	endif
 
 #	if defined(EMAT_ENVMAP)

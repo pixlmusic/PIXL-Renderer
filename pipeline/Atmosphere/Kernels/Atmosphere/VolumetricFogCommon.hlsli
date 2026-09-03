@@ -87,7 +87,9 @@ namespace Atmosphere
 
 	float GetMinimumTransmittance()
 	{
-		return IsMapAtmosphereActive() ? saturate(SharedData::atmosphereSettings.mapMinimumTransmittance) : 0.0f;
+		return IsMapAtmosphereActive() ?
+			saturate(SharedData::atmosphereSettings.mapMinimumTransmittance) :
+			saturate(SharedData::atmosphereSettings.minimumAtmosphereTransmittance);
 	}
 
 	float GetVolumetricStartDistance()

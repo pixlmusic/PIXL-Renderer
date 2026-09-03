@@ -1600,12 +1600,12 @@ namespace
 					capture->photoLensDofQuality = 2u;
 					break;
 				default:
-					capture->photoFinishTemporalSamples = 24u;
+					capture->photoFinishTemporalSamples = 32u;
 					capture->photoFinishScale = 4u;
 					capture->photoFinishDetailStrength = 0.82f;
 					capture->photoFinishRenderScaleMode = 2u;
 					capture->photoFinishLightingWarmupFrames = 16u;
-					capture->photoFinishNeuralFeedbackSteps = 3u;
+					capture->photoFinishNeuralFeedbackSteps = 4u;
 					capture->photoLensDofQuality = 3u;
 					break;
 				}
@@ -1651,9 +1651,9 @@ namespace
 		case DirectorQuickOption::NeuralRefinement:
 			if (capture) {
 				const int steps = static_cast<int>(
-					std::clamp(capture->photoFinishNeuralFeedbackSteps, 1u, 3u));
+					std::clamp(capture->photoFinishNeuralFeedbackSteps, 1u, 4u));
 				capture->photoFinishNeuralFeedbackSteps = static_cast<unsigned int>(
-					((steps - 1 + direction + 3) % 3) + 1);
+					((steps - 1 + direction + 4) % 4) + 1);
 			}
 			break;
 
@@ -1687,14 +1687,14 @@ namespace
 			if (capture) {
 				const auto samples = capture->photoFinishTemporalSamples;
 				if (capture->photoFinishNeuralEnabled) {
-					// Feature 18 capture always collects a useful convergence burst.
+					// Feature 18 capture always collects useful fresh completed frames.
 					capture->photoFinishTemporalSamples = direction > 0
-						? (samples < 16u ? 16u : samples < 24u ? 24u : 8u)
-						: (samples > 16u ? 16u : samples > 8u ? 8u : 24u);
+						? (samples < 16u ? 16u : samples < 24u ? 24u : samples < 32u ? 32u : 8u)
+						: (samples >= 32u ? 24u : samples > 16u ? 16u : samples > 8u ? 8u : 32u);
 				} else {
 					capture->photoFinishTemporalSamples = direction > 0
-						? (samples < 4u ? 4u : samples < 8u ? 8u : samples < 16u ? 16u : samples < 24u ? 24u : 1u)
-						: (samples >= 24u ? 16u : samples >= 16u ? 8u : samples >= 8u ? 4u : samples >= 4u ? 1u : 24u);
+						? (samples < 4u ? 4u : samples < 8u ? 8u : samples < 16u ? 16u : samples < 24u ? 24u : samples < 32u ? 32u : 1u)
+						: (samples >= 32u ? 24u : samples >= 24u ? 16u : samples >= 16u ? 8u : samples >= 8u ? 4u : samples >= 4u ? 1u : 32u);
 				}
 			}
 			break;
@@ -1947,7 +1947,7 @@ namespace
 			else
 				result.value = std::format(
 					"{} {}",
-					8u * std::clamp(capture->photoFinishNeuralFeedbackSteps, 1u, 3u),
+					8u * std::clamp(capture->photoFinishNeuralFeedbackSteps, 1u, 4u),
 					"FRESH FRAMES");
 			break;
 
@@ -5296,7 +5296,7 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 				} else if (capture->photoFinishNeuralEnabled) {
 					ImGui::TextColored(
 						PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft),
-						"Capture temporarily switches DLSS to native DLAA, enables Feature 18, and accumulates fresh guided neural frames. Gameplay settings are restored afterward.");
+						"Capture temporarily switches to native DLAA, enables Feature 18, and accumulates fresh guided neural frames. Gameplay settings are restored afterward.");
 				}
 
 				ImGui::BeginDisabled(
@@ -5344,10 +5344,11 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 				const char* refinementLabels[] = {
 					"8 fresh frames - Stable",
 					"16 fresh frames - Refined",
-					"24 fresh frames - Maximum"
+					"24 fresh frames - Cinematic",
+					"32 fresh frames - Extended"
 				};
 				int refinementIndex = static_cast<int>(
-					std::clamp(capture->photoFinishNeuralFeedbackSteps, 1u, 3u) - 1u);
+					std::clamp(capture->photoFinishNeuralFeedbackSteps, 1u, 4u) - 1u);
 				ImGui::BeginDisabled(!capture->photoFinishNeuralEnabled);
 				if (PIXLUI::CycleSelector(
 						"Neural temporal convergence",
@@ -5360,9 +5361,9 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 				ImGui::EndDisabled();
 
 				const char* resolutionLabels[] = {
-					"Native",
-					"2x Super Resolution",
-					"4x Ultra Resolution"
+					"Native / 100%",
+					"2x / 200% output",
+					"4x / 400% output"
 				};
 
 				int resolutionIndex =
@@ -5392,11 +5393,14 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 					"4 frame resolve",
 					"8 frame resolve",
 					"16 frame cinematic",
-					"24 frame ultra"
+					"24 frame ultra",
+					"32 frame extended"
 				};
 
 				int temporalIndex =
-					capture->photoFinishTemporalSamples >= 24u
+					capture->photoFinishTemporalSamples >= 32u
+						? 5
+						: capture->photoFinishTemporalSamples >= 24u
 						? 4
 						: capture->photoFinishTemporalSamples >= 16u
 							? 3
@@ -5416,7 +5420,9 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 							std::size(
 								temporalLabels)))) {
 					capture->photoFinishTemporalSamples =
-						temporalIndex == 4
+						temporalIndex == 5
+							? 32u
+							: temporalIndex == 4
 							? 24u
 							: temporalIndex == 3
 								? 16u
@@ -5434,12 +5440,12 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 				if (capture->photoFinishNeuralEnabled) {
 					ImGui::TextColored(
 						PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
-						"PIXL waits for at least 8 fresh completed neural frames before resolving and saving; higher counts improve convergence at additional capture time.");
+						"PIXL accumulates distinct completed neural frames with fresh DLAA depth, motion and jitter guides, then performs one restrained final detail resolve. Neural output is never recursively fed back into the model.");
 				}
 
 				ImGui::TextColored(
 					PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
-					"Capture is transactional: PIXL freezes the exact camera and all controls, temporarily selects native DLAA, raises internal rendering, converges lighting/post histories, accumulates fresh neural frames, reconstructs the final resolution, saves, then restores gameplay.");
+					"Capture is transactional: PIXL freezes the camera and controls, temporarily selects native DLAA, converges lighting/post histories, accumulates optional neural frames, reconstructs the final 100-400% output, saves, then restores gameplay.");
 
 				PIXLUI::SliderFloatField(
 					"Detail reconstruction",

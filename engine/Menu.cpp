@@ -20,6 +20,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <RE/S/SendHUDMessage.h>
+
 #include "Deferred.h"
 #include "RenderModule.h"
 #include "PipelineHealth.h"
@@ -1430,6 +1432,22 @@ void Menu::ProcessInputEventQueue()
 				TuningWorkspaceRenderer::
 					HandleDirectorKeyboardInput(
 						key)) {
+				continue;
+			}
+
+			// Alt+N is a deliberately fixed, discoverable release shortcut. It is
+			// omitted from first-run setup to keep onboarding focused on navigation;
+			// the launch reminder and Camera page advertise it when applicable.
+			if (event.IsDown() && key == 'N' &&
+				(GetAsyncKeyState(VK_MENU) & Constants::KEY_PRESSED_MASK)) {
+				const std::string status = globals::pipeline::imageReconstruction
+					.ToggleNeuralRenderingFromHotkey();
+				if (auto* task = SKSE::GetTaskInterface()) {
+					task->AddTask([status]() {
+						RE::SendHUDMessage::ShowHUDMessage(status.c_str(), nullptr, true);
+					});
+				}
+				_comboFiredKeys.insert(key);
 				continue;
 			}
 

@@ -147,6 +147,9 @@ public:
 	bool ShouldUseNeuralRenderingThisFrame();
 	bool CanUsePhotoNeuralRendering();
 	void ApplyNeuralRenderingPreset(uint preset);
+	// Release UI shortcut. Returns a concise user-facing status message and never
+	// exposes an unsupported/partially provisioned Feature 18 path.
+	[[nodiscard]] std::string ToggleNeuralRenderingFromHotkey();
 	[[nodiscard]] bool IsPhotoNeuralRenderingActive() const
 	{
 		return photoCaptureNeuralOverrideActive.load(std::memory_order_acquire);

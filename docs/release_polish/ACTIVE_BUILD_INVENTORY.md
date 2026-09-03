@@ -5,30 +5,22 @@ Baseline commit: `78df570e55a3772e355327cfd1653327654e1d47`
 Canonical source: repository root.
 Temporary build alias: an optional short `subst` mapping was used only for long-path tool compatibility.
 Build: Visual Studio 17 2022, x64, C++23, Release/LTCG, `x64-windows-static-md-release`.
-Renderer target: `PIXLRenderer.dll`; 36 integrated module descriptors.
+Renderer target: `PIXLRenderer.dll`; 38 integrated module descriptors.
 
 ## Active File Counts
 
-| Category | Files | Initial status |
+| Category | Files | Final status |
 | --- | ---: | --- |
-| Benchmark / Camera | 2 | NOT REVIEWED |
-| Build / Packaging | 4 | NOT REVIEWED |
-| Build System | 35 | NOT REVIEWED |
-| Configuration | 36 | NOT REVIEWED |
-| Core Renderer | 54 | NOT REVIEWED |
-| Packaging | 10 | NOT REVIEWED |
-| PBR / Materials | 11 | NOT REVIEWED |
-| Render Pipeline | 221 | NOT REVIEWED |
-| Renderer Module | 90 | NOT REVIEWED |
-| Runtime / Hooks | 10 | NOT REVIEWED |
-| Runtime / Third-party Interface | 18 | NOT REVIEWED |
-| Runtime Assets | 24 | NOT REVIEWED |
-| Shader Infrastructure | 14 | NOT REVIEWED |
-| Third-party Dependencies | 3 | NOT REVIEWED |
-| UI | 29 | NOT REVIEWED |
-| UI / Accessibility | 8 | NOT REVIEWED |
-| UI / Configuration | 4 | NOT REVIEWED |
-| **Total** | **573** | **NOT REVIEWED** |
+| Native C/C++ and resource source | 240 | REVIEWED |
+| HLSL shader source/includes | 180 | REVIEWED |
+| Build, configuration, licence and release text | 100 | REVIEWED |
+| Runtime binary/image/mesh/font assets | 63 | REVIEWED |
+| Pinned third-party submodule boundaries | 3 | REVIEWED |
+| **Total** | **586** | **REVIEWED** |
+
+The exact path/subsystem accounting remains in `FILE_REVIEW_MATRIX.md`. The final
+static pass opened 583 repository files, verified three exact submodule pins, and
+reported zero missing/unreadable entries or malformed JSON/binary signatures.
 
 ## Source Roots
 

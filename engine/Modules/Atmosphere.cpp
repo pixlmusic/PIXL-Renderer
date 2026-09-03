@@ -67,7 +67,11 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	mapAmbientInscatteringMultiplier,
 	mapDirectionalInscatteringMultiplier,
 	mapSunlightAttenuationMultiplier,
-	mapWorldProbeMultiplier)
+	mapWorldProbeMultiplier,
+	automaticWeatherFog,
+	automaticWeatherStrength,
+	minimumAtmosphereTransmittance,
+	weatherMieStrength)
 
 namespace
 {
@@ -150,6 +154,10 @@ void Atmosphere::LoadSettings(json& o_json)
 	settings.mapDirectionalInscatteringMultiplier = std::clamp(finiteOr(settings.mapDirectionalInscatteringMultiplier, 0.35f), 0.0f, 2.0f);
 	settings.mapSunlightAttenuationMultiplier = std::clamp(finiteOr(settings.mapSunlightAttenuationMultiplier, 0.25f), 0.0f, 1.0f);
 	settings.mapWorldProbeMultiplier = std::clamp(finiteOr(settings.mapWorldProbeMultiplier, 0.35f), 0.0f, 1.0f);
+	settings.automaticWeatherFog = settings.automaticWeatherFog ? 1u : 0u;
+	settings.automaticWeatherStrength = std::clamp(finiteOr(settings.automaticWeatherStrength, 1.0f), 0.0f, 1.0f);
+	settings.minimumAtmosphereTransmittance = std::clamp(finiteOr(settings.minimumAtmosphereTransmittance, 0.06f), 0.0f, 0.35f);
+	settings.weatherMieStrength = std::clamp(finiteOr(settings.weatherMieStrength, 0.75f), 0.0f, 1.0f);
 }
 
 void Atmosphere::SaveSettings(json& o_json)
@@ -159,12 +167,87 @@ void Atmosphere::SaveSettings(json& o_json)
 
 Atmosphere::Settings Atmosphere::GetCommonBufferData() const
 {
-	return settings;
+	return ResolveRuntimeSettings();
+}
+
+Atmosphere::Settings Atmosphere::ResolveRuntimeSettings() const
+{
+	Settings resolved = settings;
+	if (!settings.automaticWeatherFog || settings.automaticWeatherStrength <= 0.0f ||
+		Util::IsInterior() || !globals::game::sky) {
+		return resolved;
+	}
+
+	const auto* sky = globals::game::sky;
+	const float fogNear = std::isfinite(sky->fogNear) ? std::max(sky->fogNear, 0.0f) : 0.0f;
+	const float fogFar = std::isfinite(sky->fogFar) ? std::clamp(sky->fogFar, 8000.0f, 200000.0f) : 60000.0f;
+	const float strength = std::clamp(settings.automaticWeatherStrength, 0.0f, 1.0f);
+
+	// Skyrim has already blended fogNear/fogFar across weather and time of day.
+	// Treat that live visibility range as authoritative and adapt PIXL's optical
+	// depth conservatively around the user's chosen density.
+	const float visibilityDensityScale = std::clamp(std::sqrt(60000.0f / fogFar), 0.55f, 1.85f);
+	resolved.fogDensity = std::clamp(
+		settings.fogDensity * std::lerp(1.0f, visibilityDensityScale, strength),
+		0.0f, 1.0f);
+	resolved.startDistance = std::lerp(
+		settings.startDistance,
+		std::max(settings.startDistance, std::min(fogNear * 0.20f, fogFar * 0.08f)),
+		strength);
+	resolved.volumetricFogDistance = std::lerp(
+		settings.volumetricFogDistance,
+		std::clamp(fogFar * 1.15f, 18000.0f, 180000.0f),
+		strength);
+	resolved.volumetricFogNearFadeInDistance = std::lerp(
+		settings.volumetricFogNearFadeInDistance,
+		std::clamp(std::max(512.0f, fogNear * 0.18f), 512.0f, 3000.0f),
+		strength);
+
+	auto weatherMie = [](const RE::TESWeather* weather) {
+		float value = 0.52f;
+		if (!weather)
+			return value;
+		const auto flags = weather->data.flags;
+		if (flags.any(RE::TESWeather::WeatherDataFlag::kRainy))
+			value = 0.28f;
+		else if (flags.any(RE::TESWeather::WeatherDataFlag::kSnow))
+			value = 0.18f;
+		else if (flags.any(RE::TESWeather::WeatherDataFlag::kCloudy))
+			value = 0.38f;
+		return value;
+	};
+	const float weatherPct = std::clamp(sky->currentWeatherPct, 0.0f, 1.0f);
+	const float targetMie = std::lerp(
+		weatherMie(sky->lastWeather ? sky->lastWeather : sky->currentWeather),
+		weatherMie(sky->currentWeather),
+		weatherPct);
+	const float mieBlend = strength * std::clamp(settings.weatherMieStrength, 0.0f, 1.0f);
+	resolved.directionalInscatteringAnisotropy = std::lerp(
+		settings.directionalInscatteringAnisotropy, targetMie, mieBlend);
+	resolved.volumetricFogScatteringDistribution = std::lerp(
+		settings.volumetricFogScatteringDistribution, targetMie, mieBlend);
+	// Weather fog colour is the stable bridge between Skyrim's art direction and
+	// PIXL's physically evaluated transmittance.
+	resolved.originalFogColorAmount = std::lerp(
+		settings.originalFogColorAmount,
+		std::max(settings.originalFogColorAmount, 0.70f),
+		strength);
+	return resolved;
 }
 
 void Atmosphere::DrawSettings()
 {
 	Util::UIntCheckbox(T(TKEY("enable_exp_height_fog"), "Enable Atmosphere"), &settings.enabled);
+	Util::UIntCheckbox("Automatic Weather Atmosphere", &settings.automaticWeatherFog);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::TextWrapped("Recommended. Adapts visibility range, density and Mie phase from Skyrim's live blended weather while preserving the controls below as the artistic baseline.");
+	if (settings.automaticWeatherFog) {
+		ImGui::SliderFloat("Weather Response", &settings.automaticWeatherStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat("Mie Weather Coupling", &settings.weatherMieStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	}
+	ImGui::SliderFloat("Minimum World Visibility", &settings.minimumAtmosphereTransmittance, 0.0f, 0.35f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (auto _tt = Util::HoverTooltipWrapper())
+		ImGui::TextWrapped("Protects sky, mountains and navigation silhouettes from becoming fully opaque. Low values retain dense weather without turning the world into a white wall.");
 	Util::WeatherUI::SliderFloat(T(TKEY("start_distance"), "Start Distance"), this, "startDistance", &settings.startDistance, 0.0f, 100000.0f, "%.1f");
 	Util::WeatherUI::SliderFloat(T(TKEY("fog_height"), "Fog Height"), this, "fogHeight", &settings.fogHeight, -22000.0f, 22000.0f, "%.1f");
 	Util::WeatherUI::SliderFloat(T(TKEY("fog_height_falloff"), "Fog Height Falloff"), this, "fogHeightFalloff", &settings.fogHeightFalloff, 0.001f, 2.0f, "%.3f");
@@ -513,8 +596,9 @@ void Atmosphere::Prepass()
 		ReleaseVolumetricResources();
 		return;
 	}
+	const Settings runtimeSettings = ResolveRuntimeSettings();
 
-	if (!settings.enabled || !settings.volumetricFogEnabled || settings.volumetricFogExtinctionScale <= 0.0f) {
+	if (!runtimeSettings.enabled || !runtimeSettings.volumetricFogEnabled || runtimeSettings.volumetricFogExtinctionScale <= 0.0f) {
 		ReleaseVolumetricResources();
 		return;
 	}
@@ -552,7 +636,7 @@ void Atmosphere::Prepass()
 		return;
 	}
 
-	if (settings.fogDensity <= 0.0f) {
+	if (runtimeSettings.fogDensity <= 0.0f) {
 		hasLightScatteringHistory = false;
 		hasConservativeDepthHistory = false;
 		hasSceneClassHistory = false;
@@ -647,12 +731,12 @@ void Atmosphere::Prepass()
 		1.0f / static_cast<float>(currentGridSize.x),
 		1.0f / static_cast<float>(currentGridSize.y),
 		1.0f / static_cast<float>(currentGridSize.z),
-		settings.volumetricFogNearFadeInDistance > 0.0f ? 1.0f / settings.volumetricFogNearFadeInDistance : 100000000.0f
+		runtimeSettings.volumetricFogNearFadeInDistance > 0.0f ? 1.0f / runtimeSettings.volumetricFogNearFadeInDistance : 100000000.0f
 	};
 
 	const auto cameraData = Util::GetCameraData();
-	const double nearPlane = std::max(static_cast<double>(cameraData.y), static_cast<double>(std::max(settings.volumetricFogStartDistance, 0.0f)));
-	const double farPlane = std::max(nearPlane + 1.0, static_cast<double>(std::max(settings.volumetricFogDistance, settings.volumetricFogStartDistance + 1.0f)));
+	const double nearPlane = std::max(static_cast<double>(cameraData.y), static_cast<double>(std::max(runtimeSettings.volumetricFogStartDistance, 0.0f)));
+	const double farPlane = std::max(nearPlane + 1.0, static_cast<double>(std::max(runtimeSettings.volumetricFogDistance, runtimeSettings.volumetricFogStartDistance + 1.0f)));
 	const double nearWithOffset = nearPlane + 0.095 * 100.0;
 	const double depthDistributionScale = std::max(
 		static_cast<double>(settings.volumetricDepthDistributionScale),

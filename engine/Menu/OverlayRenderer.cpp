@@ -230,7 +230,8 @@ bool OverlayRenderer::ShouldSkipRendering()
 			 TuningWorkspaceRenderer::IsDirectorPhotoModeActive() ||
 			 (failed && !hide) ||
 			 globals::pipeline::pulseProfiler.settings.ShowInOverlay ||
-			 LaunchExperienceRenderer::ShouldShowFirstTimeSetup());
+			 LaunchExperienceRenderer::ShouldShowFirstTimeSetup() ||
+			 LaunchExperienceRenderer::ShouldShowControlReminder());
 }
 
 void OverlayRenderer::HandleFontReload(Menu& menu, float& cachedFontSize, float currentFontSize)
@@ -690,6 +691,8 @@ void OverlayRenderer::RenderFirstTimeSetupOverlay()
 {
 	if (LaunchExperienceRenderer::ShouldShowFirstTimeSetup()) {
 		LaunchExperienceRenderer::RenderFirstTimeSetupDialog();
+	} else if (LaunchExperienceRenderer::ShouldShowControlReminder()) {
+		LaunchExperienceRenderer::RenderControlReminder();
 	}
 }
 

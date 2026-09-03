@@ -1,6 +1,7 @@
 #include "LaunchExperienceRenderer.h"
 #include "PCH.h"
 
+#include <chrono>
 #include <imgui.h>
 
 #include "Globals.h"
@@ -12,6 +13,14 @@
 
 bool LaunchExperienceRenderer::isFirstTimeSetupShown = false;
 uint32_t LaunchExperienceRenderer::keyThatClosedDialog = 0;
+
+namespace
+{
+	using ReminderClock = std::chrono::steady_clock;
+	bool g_reminderStarted = false;
+	ReminderClock::time_point g_reminderStart{};
+	constexpr float kReminderDurationSeconds = 8.0f;
+}
 
 bool LaunchExperienceRenderer::ShouldSkipKeyRelease(uint32_t key)
 {
@@ -30,6 +39,22 @@ bool LaunchExperienceRenderer::ShouldShowFirstTimeSetup()
 	return menu && !menu->GetSettings().FirstTimeSetupCompleted;
 }
 
+bool LaunchExperienceRenderer::ShouldShowControlReminder()
+{
+	auto* menu = Menu::GetSingleton();
+	if (!menu || menu->IsEnabled || !globals::state || !globals::state->inWorld ||
+		!menu->GetSettings().FirstTimeSetupCompleted || isFirstTimeSetupShown)
+		return false;
+
+	if (!g_reminderStarted) {
+		g_reminderStarted = true;
+		g_reminderStart = ReminderClock::now();
+	}
+
+	const float elapsed = std::chrono::duration<float>(ReminderClock::now() - g_reminderStart).count();
+	return elapsed < kReminderDurationSeconds;
+}
+
 void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 {
 	if (!ShouldShowFirstTimeSetup())
@@ -45,7 +70,7 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	io.MouseDrawCursor = true;
 
 	const float scale = Util::GetUIScale();
-	const ImVec2 cardSize{ 520.0f * scale, 360.0f * scale };
+	const ImVec2 cardSize{ 640.0f * scale, 430.0f * scale };
 	ImGui::SetNextWindowPos({ io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f }, ImGuiCond_Always, { 0.5f, 0.5f });
 	ImGui::SetNextWindowSize(cardSize, ImGuiCond_Always);
 	ImGui::SetNextWindowFocus();
@@ -114,14 +139,19 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 		"FIRST RUN");
 	ImGui::Spacing();
 
+	ImGui::TextColored(
+		PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
+		"Two controls are all you need for normal play. Select the PIXL menu key now; Director remains on Insert.");
+	ImGui::Spacing();
+
 	const bool capturing = menu->settingToggleKey;
 	const std::string keyLabel = capturing ? "PRESS A KEY" : Util::Input::KeyIdToString(menu->GetSettings().ToggleKey);
-	const char* menuKeyLabel = "MENU KEY";
-	centerItem(ImGui::CalcTextSize(menuKeyLabel).x);
-	ImGui::TextDisabled("%s", menuKeyLabel);
-
-	const ImVec2 keyButtonSize{ 220.0f * scale, 38.0f * scale };
-	centerItem(keyButtonSize.x);
+	const ImVec2 keyButtonSize{ 245.0f * scale, 40.0f * scale };
+	const float controlGap = 18.0f * scale;
+	const float controlsWidth = keyButtonSize.x * 2.0f + controlGap;
+	centerItem(controlsWidth);
+	ImGui::BeginGroup();
+	ImGui::TextDisabled("PIXL RENDERER");
 	if (capturing) {
 		const auto pulse = Util::GetPulsingColor(menu->GetTheme().StatusPalette.CurrentHotkey);
 		ImGui::PushStyleColor(ImGuiCol_Button, pulse);
@@ -130,6 +160,15 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 		menu->settingToggleKey = true;
 	if (capturing)
 		ImGui::PopStyleColor();
+	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "Quality, camera and renderer controls");
+	ImGui::EndGroup();
+
+	ImGui::SameLine(0.0f, controlGap);
+	ImGui::BeginGroup();
+	ImGui::TextDisabled("PIXL DIRECTOR");
+	PIXLUI::ActionButton("INSERT", keyButtonSize, false);
+	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "Photo mode and high-quality capture");
+	ImGui::EndGroup();
 
 	ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 74.0f * scale);
 	const ImVec2 continueSize{ contentWidth, 38.0f * scale };
@@ -146,6 +185,46 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 
 	ImGui::End();
 	ImGui::PopStyleVar(3);
+}
+
+void LaunchExperienceRenderer::RenderControlReminder()
+{
+	if (!ShouldShowControlReminder())
+		return;
+
+	auto* menu = Menu::GetSingleton();
+	if (!menu)
+		return;
+
+	const float elapsed = std::chrono::duration<float>(ReminderClock::now() - g_reminderStart).count();
+	const float fadeIn = std::clamp(elapsed / 0.55f, 0.0f, 1.0f);
+	const float fadeOut = std::clamp((kReminderDurationSeconds - elapsed) / 1.5f, 0.0f, 1.0f);
+	const float alpha = std::min(fadeIn, fadeOut);
+	const float scale = Util::GetUIScale();
+	const auto& io = ImGui::GetIO();
+
+	ImGui::SetNextWindowPos(
+		ImVec2(io.DisplaySize.x - 28.0f * scale, io.DisplaySize.y - 28.0f * scale),
+		ImGuiCond_Always,
+		ImVec2(1.0f, 1.0f));
+	ImGui::SetNextWindowBgAlpha(0.88f * alpha);
+	ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f * scale, 14.0f * scale));
+	const auto flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+		ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+		ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing;
+
+	if (ImGui::Begin("##PIXLControlReminder", nullptr, flags)) {
+		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "PIXL RENDERER READY");
+		ImGui::Separator();
+		const std::string menuKey = Util::Input::KeyIdToString(menu->GetSettings().ToggleKey);
+		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::Text), "[ %-12s ]  PIXL MENU", menuKey.c_str());
+		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::Text), "[ INSERT       ]  PIXL DIRECTOR");
+		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::Text), "[ ALT + N      ]  NEURAL RENDERING");
+		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "NR requires DLSS and NVIDIA RTX 30-series or newer");
+	}
+	ImGui::End();
+	ImGui::PopStyleVar(2);
 }
 
 void LaunchExperienceRenderer::MarkFirstTimeSetupComplete(uint32_t closingKey)

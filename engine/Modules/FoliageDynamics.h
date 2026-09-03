@@ -58,7 +58,7 @@ public:
 		float GustSpeed = 1.0f;
 		float FlutterSpeed = 1.0f;
 		float SpecularAA = 0.65f;
-		// 0 Auto Safe, 1 Basic/Vanilla, 2 Force Complex DX, 3 Force Complex Flip-Y.
+		// 0 Auto Safe, 1 Basic/Vanilla, 2 Auto layout + DX Y, 3 Auto layout + Flip-Y.
 		uint ComplexGrassMode = 0;  // c4.w; replaces padding without changing FeatureData ABI
 	};
 	STATIC_ASSERT_ALIGNAS_16(Settings);

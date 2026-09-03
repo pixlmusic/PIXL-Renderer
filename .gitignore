@@ -5,6 +5,21 @@
 /Data/
 /PIXL_AUTONOMOUS/
 /checkpoints/
+/out/
+
+# Accidental in-source CMake / Visual Studio output
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/*.sln
+/*.vcxproj
+/*.vcxproj.filters
+*.vcxproj.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+*.lastbuildstate
+*.tlog
 
 # Local reference projects used for reverse engineering are not renderer source
 # and may retain their own licences/assets.
@@ -31,6 +46,9 @@ shadertoolsconfig.json
 
 # Folder view configuration files
 **/.DS_Store
+*.vortex_backup
+*.tmp
+*.bak
 .claude/settings.local.json
 
 # Python environments, caches, datasets, and trained model artifacts

@@ -621,21 +621,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	bool complex = false;
 	bool flipComplexNormalY = false;
 
-	[branch] if (complexMode == 1u)
+	[branch] if (complexMode != 1u)
 	{
-		// Basic/Vanilla: sample the full diffuse texture and use the card normal.
-		// This is the compatibility path for textures that are not vertically
-		// packed Complex Grass assets.
-		complex = false;
-	}
-	else if (complexMode >= 2u)
-	{
-		complex = true;
-		flipComplexNormalY = (complexMode == 3u);
-	}
-	else
-	{
-		// Safe automatic detection. The old single-pixel test could accidentally
+		// Safe packed-layout detection is mandatory even when the user overrides
+		// the normal-map Y convention. The previous Force modes treated ordinary
+		// full-height diffuse textures as two vertically packed images, which
+		// remapped their UVs and sampled albedo as a tangent-space normal.
+		// The old single-pixel test could accidentally
 		// classify an ordinary diffuse texel as a unit vector. Requiring at least
 		// two of three independent texels from the packed normal half makes that
 		// false-positive path dramatically less likely while retaining author data.
@@ -665,6 +657,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		}
 
 		complex = plausibleNormals >= 2u;
+		// Modes 2/3 override only the Y convention after layout validation.
+		flipComplexNormalY = complexMode == 3u;
 	}
 
 	float2 foliageDiffuseUV = complex
@@ -970,7 +964,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		dirDetailedShadow *= shadowColor.x;
 
 #			if defined(CONTACT_SHADOWS)
-	if (!SharedData::InInterior && dirLightAngle >= 0.0)
+	// Thin vegetation receives transmitted sunlight from its back face too, so
+	// receiver visibility cannot be gated by the diffuse N.L sign.
+	if (!SharedData::InInterior)
 		dirDetailedShadow *= ContactShadows::GetScreenSpaceShadow(input.HPosition.xyz, screenUV, screenNoise);
 #			endif  // CONTACT_SHADOWS
 
@@ -1016,10 +1012,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	float dirSoftShadow = dirDetailedShadow;
 #				if defined(SKY_BOUNCE_SHADOW_VIS)
-	// SkyBounce supplies a stable low-frequency visibility field, but it must not
-	// replace a valid lit raster sample. Camera-mode disagreement in the probe field
-	// previously removed all transmitted sunlight from nearby first-person grass.
-	dirSoftShadow = max(dirDetailedShadow, skylightingShadowVisibility);
+	// Preserve near-field screen-space sun shadows while adding a deliberately
+	// soft amount of the low-frequency probe visibility. The partial weight cannot
+	// black out first-person grass when a newly exposed probe has not converged.
+	dirSoftShadow = dirDetailedShadow * lerp(1.0f, saturate(skylightingShadowVisibility), 0.35f);
 #				endif
 
 	float3 subsurfaceColor = dirLightColor * dirSoftShadow * (GetSoftLightMultiplier(dirLightAngle, softLightRolloff)) * Color::VanillaNormalization();
