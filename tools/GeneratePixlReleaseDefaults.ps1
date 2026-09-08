@@ -115,6 +115,9 @@ function Apply-EnhancedContract([object]$Config) {
     $ground = $Config.'Ground Response'
     $ground.GeometryTessellationNear = 10.0
     $ground.GeometryTessellationFar = 2.5
+    # Slightly soften the snow coverage/deformation onset on the raised hull
+    # without changing its authored depth, resistance, or tessellation.
+    $ground.SnowCoverageFeather = 0.35
     $Config.'Terrain Detail'.enableLODTerrainTilingFix = 1
 
     $skin = $Config.'Skin Optics'
@@ -183,7 +186,8 @@ $groundBeforeMap = @{}; $groundBefore | ForEach-Object { $groundBeforeMap[$_.Pat
 $groundChanges = @($groundAfter | Where-Object { $groundBeforeMap[$_.Path] -ne $_.Value } | ForEach-Object Path)
 $allowedGroundChanges = @(
     'Ground Response.GeometryTessellationNear',
-    'Ground Response.GeometryTessellationFar'
+    'Ground Response.GeometryTessellationFar',
+    'Ground Response.SnowCoverageFeather'
 )
 $unexpectedGround = @($groundChanges | Where-Object { $_ -notin $allowedGroundChanges })
 if ($unexpectedGround.Count -ne 0) {

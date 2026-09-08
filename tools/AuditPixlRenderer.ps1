@@ -73,6 +73,8 @@ foreach ($retiredRoot in @("src", "features", "package")) {
 }
 
 $descriptorIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+$activeDescriptorIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+$retiredDescriptorIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 Get-ChildItem -LiteralPath (Join-Path $repo "pipeline") -Directory | ForEach-Object {
     $descriptor = Join-Path $_.FullName "Module.ini"
     if (-not (Test-Path -LiteralPath $descriptor)) {
@@ -88,15 +90,25 @@ Get-ChildItem -LiteralPath (Join-Path $repo "pipeline") -Directory | ForEach-Obj
     }
     $id = $match.Groups[1].Value.Trim()
     if (-not $descriptorIds.Add($id)) { Add-Error "Duplicate PIXL module Id: $id" }
+    $pipelineMatch = [regex]::Match($text, '(?m)^\s*Pipeline\s*=\s*([^\r\n]+?)\s*$')
+    if ($pipelineMatch.Success -and $pipelineMatch.Groups[1].Value.Trim() -ieq 'Retired') {
+        $null = $retiredDescriptorIds.Add($id)
+    } else {
+        $null = $activeDescriptorIds.Add($id)
+    }
 }
 
 $runtimeIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+$moduleIdByType = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
 $headers = @(Get-ChildItem -LiteralPath (Join-Path $repo "engine\Modules") -Recurse -File -Filter "*.h") + @(Get-Item (Join-Path $repo "engine\MaterialForge.h"))
 foreach ($header in $headers) {
     $text = Get-Content -LiteralPath $header.FullName -Raw
     foreach ($match in [regex]::Matches($text, 'GetShortName\s*\([^)]*\)[^{]*\{\s*return\s+"([A-Za-z0-9_]+)"')) {
         $id = $match.Groups[1].Value
-        if ($id -ne "Streamline") { $null = $runtimeIds.Add($id) }
+        if ($id -ne "Streamline") {
+            $null = $runtimeIds.Add($id)
+            $moduleIdByType[$header.BaseName] = $id
+        }
     }
 }
 foreach ($id in $descriptorIds) {
@@ -106,23 +118,71 @@ foreach ($id in $runtimeIds) {
     if (-not $descriptorIds.Contains($id)) { Add-Error "Runtime module has no descriptor: $id" }
 }
 
+# Header existence is not runtime registration. Resolve the explicit shipping
+# registry through Globals.cpp's concrete types and the module header IDs.
+# Fail closed if these source contracts change rather than silently count a
+# retired/unregistered class as a shipping feature.
+$registryText = Get-Content -LiteralPath (Join-Path $repo 'engine\RenderModule.cpp') -Raw
+$registryMatch = [regex]::Match($registryText,
+    '(?s)RenderModule::GetModuleList\(\)\s*\{\s*static std::vector<RenderModule\*> features\s*=\s*\{(.*?)\};')
+$globalsText = Get-Content -LiteralPath (Join-Path $repo 'engine\Globals.cpp') -Raw
+$typeByInstance = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+foreach ($match in [regex]::Matches($globalsText, '(?m)^\s*([A-Za-z0-9_]+)\s+([A-Za-z0-9_]+)\{\};')) {
+    $typeByInstance[$match.Groups[2].Value] = $match.Groups[1].Value
+}
+$registeredIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+if (-not $registryMatch.Success) {
+    Add-Error 'Unable to resolve the explicit RenderModule shipping registry'
+} else {
+    $registryBody = [regex]::Replace($registryMatch.Groups[1].Value, '(?m)//[^\r\n]*', '')
+    foreach ($match in [regex]::Matches($registryBody, '&globals::pipeline::([A-Za-z0-9_]+)')) {
+        $instance = $match.Groups[1].Value
+        if (-not $typeByInstance.ContainsKey($instance) -or -not $moduleIdByType.ContainsKey($typeByInstance[$instance])) {
+            Add-Error "Registered module cannot be mapped to its descriptor Id: $instance"
+            continue
+        }
+        $id = $moduleIdByType[$typeByInstance[$instance]]
+        if (-not $registeredIds.Add($id)) { Add-Error "Duplicate shipping module registration: $id" }
+    }
+    foreach ($id in $activeDescriptorIds) {
+        if (-not $registeredIds.Contains($id)) { Add-Error "Shipping descriptor has no active module registration: $id" }
+    }
+    foreach ($id in $registeredIds) {
+        if (-not $activeDescriptorIds.Contains($id)) { Add-Error "Registered module is not a shipping descriptor: $id" }
+    }
+}
+
 # Keep every literal runtime Data/Shaders reference backed by a staged source
 # asset. This catches incomplete renames before they can become scene-specific
 # null resources (for example, an exterior-only shader or probe texture).
 $availableRuntimeAssets = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+$shippingAssetSources = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
 $distributionShaderRoot = Join-Path $repo "distribution\Shaders"
 if (Test-Path -LiteralPath $distributionShaderRoot -PathType Container) {
     $distributionShaderPrefix = $distributionShaderRoot.TrimEnd('\') + '\'
     Get-ChildItem -LiteralPath $distributionShaderRoot -Recurse -File | ForEach-Object {
-        $null = $availableRuntimeAssets.Add($_.FullName.Substring($distributionShaderPrefix.Length))
+        $relative = $_.FullName.Substring($distributionShaderPrefix.Length)
+        $null = $availableRuntimeAssets.Add($relative)
+        $shippingAssetSources[$relative] = $_.FullName
     }
 }
 Get-ChildItem -LiteralPath (Join-Path $repo "pipeline") -Directory | ForEach-Object {
     $kernelRoot = Join-Path $_.FullName "Kernels"
+    $descriptorPath = Join-Path $_.FullName 'Module.ini'
+    $retired = (Test-Path -LiteralPath $descriptorPath) -and
+        ((Get-Content -LiteralPath $descriptorPath -Raw) -match '(?im)^\s*Pipeline\s*=\s*Retired\s*$')
     if (Test-Path -LiteralPath $kernelRoot -PathType Container) {
         $kernelPrefix = $kernelRoot.TrimEnd('\') + '\'
         Get-ChildItem -LiteralPath $kernelRoot -Recurse -File | ForEach-Object {
-            $null = $availableRuntimeAssets.Add($_.FullName.Substring($kernelPrefix.Length))
+            $relative = $_.FullName.Substring($kernelPrefix.Length)
+            $null = $availableRuntimeAssets.Add($relative)
+            if (-not $retired) {
+                if ($shippingAssetSources.ContainsKey($relative) -and
+                    (Get-FileHash -LiteralPath $shippingAssetSources[$relative]).Hash -ne (Get-FileHash -LiteralPath $_.FullName).Hash) {
+                    Add-Error "Conflicting shader overlay sources: $relative"
+                }
+                $shippingAssetSources[$relative] = $_.FullName
+            }
         }
     }
 }
@@ -225,6 +285,11 @@ if ($PackageDirectory) {
         Add-Error "Package directory does not exist: $PackageDirectory"
     } else {
         $package = (Resolve-Path -LiteralPath $PackageDirectory).Path
+        try {
+            & (Join-Path $PSScriptRoot 'VerifyPixlPackageManifest.ps1') -PackageDirectory $package
+        } catch {
+            Add-Error "Package manifest validation failed: $($_.Exception.Message)"
+        }
         foreach ($file in @(
             "COPYING",
             "EXCEPTIONS.md",
@@ -250,6 +315,77 @@ if ($PackageDirectory) {
 
         foreach ($assetRef in $runtimeAssetRefs) {
             Require-PackageFile $package ("Shaders\" + $assetRef)
+        }
+
+        # These files are copied verbatim by StagePixlRendererStandalone. Do not
+        # accept stale defaults/localization merely because their manifest is valid.
+        # Optional UserGraphics.json is deliberately not compared to public defaults.
+        $fixedSourceFiles = @{
+            'SKSE\Plugins\PIXL\Config\RendererDefaults.json' = 'distribution\SKSE\Plugins\PIXLRenderer\SettingsDefault.json'
+            'SKSE\Plugins\PIXL\Profiles\PIXL-Golden-Baseline.json' = 'distribution\SKSE\Plugins\PIXLRenderer\Presets\PIXL-Renderer-Live-Tested.json'
+            'SKSE\Plugins\PIXL\Interface\Themes\PIXL.json' = 'distribution\SKSE\Plugins\PIXLRenderer\Themes\PIXL.json'
+            'SKSE\Plugins\PIXL\Interface\Locale\en.json' = 'distribution\SKSE\Plugins\PIXLRenderer\Translations\en.json'
+            'COPYING' = 'COPYING'
+            'EXCEPTIONS.md' = 'EXCEPTIONS.md'
+            'ATTRIBUTION.md' = 'ATTRIBUTION.md'
+            'THIRD_PARTY_NOTICES.md' = 'THIRD_PARTY_NOTICES.md'
+        }
+        foreach ($entry in $fixedSourceFiles.GetEnumerator()) {
+            $stagedPath = Join-Path $package $entry.Key
+            if (-not (Test-Path -LiteralPath $stagedPath -PathType Leaf)) {
+                Add-Error "Required source-backed package file missing: $($entry.Key)"
+            } elseif ((Get-FileHash -LiteralPath (Join-Path $repo $entry.Value)).Hash -ne
+                (Get-FileHash -LiteralPath $stagedPath).Hash) {
+                Add-Error "Packaged runtime configuration/notice differs from source: $($entry.Key)"
+            }
+        }
+
+        # A manifest proves self-consistency, not that this is the current
+        # authoritative source. Verify every shipping shader/vendor asset too.
+        foreach ($asset in $shippingAssetSources.GetEnumerator()) {
+            $stagedPath = Join-Path $package ("Shaders\" + $asset.Key)
+            if (-not (Test-Path -LiteralPath $stagedPath -PathType Leaf)) {
+                Add-Error "Shipping shader asset not staged: $($asset.Key)"
+            } elseif ((Get-FileHash -LiteralPath $asset.Value).Hash -ne (Get-FileHash -LiteralPath $stagedPath).Hash) {
+                Add-Error "Packaged shader asset differs from source: $($asset.Key)"
+            }
+        }
+
+        $packageModuleRoot = Join-Path $package "Shaders\PIXL\Modules"
+        $packagedModuleIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        Get-ChildItem -LiteralPath $packageModuleRoot -File -Filter "*.ini" | ForEach-Object {
+            $null = $packagedModuleIds.Add($_.BaseName)
+        }
+        foreach ($id in $activeDescriptorIds) {
+            if (-not $packagedModuleIds.Contains($id)) { Add-Error "Active module descriptor was not staged: $id" }
+        }
+        foreach ($id in $packagedModuleIds) {
+            if (-not $activeDescriptorIds.Contains($id)) { Add-Error "Non-shipping module descriptor was staged: $id" }
+        }
+
+        # Validate the assembled package, not just the repository union. The
+        # one known retired include is exempt ONLY in its exact disabled guard;
+        # an unguarded use still fails. This is not a shader compiler substitute.
+        $packageShaderRoot = Join-Path $package "Shaders"
+        $packageShaderAssets = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        Get-ChildItem -LiteralPath $packageShaderRoot -Recurse -File | ForEach-Object {
+            $null = $packageShaderAssets.Add($_.FullName.Substring($packageShaderRoot.Length + 1))
+        }
+        Get-ChildItem -LiteralPath $packageShaderRoot -Recurse -File | Where-Object {
+            $_.Extension -in @('.hlsl', '.hlsli')
+        } | ForEach-Object {
+            $shaderText = Get-Content -LiteralPath $_.FullName -Raw
+            if ($_.Name -eq 'Lighting.hlsl' -and $retiredDescriptorIds.Contains('HairReconstruction')) {
+                $shaderText = [regex]::Replace($shaderText,
+                    '(?m)^#if defined\(HAIR_RECONSTRUCTION\)\r?\n#\s*include "HairReconstruction/HairReconstruction\.hlsli"\r?\n#endif\r?$', '')
+            }
+            foreach ($match in [regex]::Matches($shaderText, $includePattern)) {
+                $include = $match.Groups[1].Value.Replace('/', '\')
+                while ($include.Contains('\\')) { $include = $include.Replace('\\', '\') }
+                if (-not $packageShaderAssets.Contains($include)) {
+                    Add-Error "Packaged shader include is missing: $($_.FullName) -> $include"
+                }
+            }
         }
 
         $packageText = Get-ChildItem -LiteralPath $package -Recurse -File | Where-Object {
@@ -285,5 +421,6 @@ if ($errors.Count) {
 }
 
 Write-Host "PIXL Renderer audit passed"
-Write-Host "  Integrated modules: $($descriptorIds.Count)"
+Write-Host "  Shipping modules: $($activeDescriptorIds.Count)"
+Write-Host "  Retired source-only modules: $($retiredDescriptorIds.Count)"
 if (Test-Path -LiteralPath $builtDll) { Write-Host "  DLL: $builtDll" }

@@ -31,4 +31,13 @@ struct ISLCommon
 			return reinterpret_cast<RuntimeLightDataExt*>(&niLight->GetLightRuntimeData());
 		}
 	};
+
+	// This is an overlay of Skyrim's existing light data, not extra allocation.
+	// Catch layout drift before flags or attenuation data can overwrite another field.
+	static_assert(sizeof(RuntimeLightDataExt) == sizeof(RE::NiLight::LIGHT_RUNTIME_DATA));
+	static_assert(alignof(RuntimeLightDataExt) == alignof(RE::NiLight::LIGHT_RUNTIME_DATA));
+	static_assert(offsetof(RuntimeLightDataExt, diffuse) == offsetof(RE::NiLight::LIGHT_RUNTIME_DATA, diffuse));
+	static_assert(offsetof(RuntimeLightDataExt, radius) == offsetof(RE::NiLight::LIGHT_RUNTIME_DATA, radius));
+	static_assert(offsetof(RuntimeLightDataExt, fade) == offsetof(RE::NiLight::LIGHT_RUNTIME_DATA, fade));
+	static_assert(offsetof(RuntimeLightDataExt, unk138) == offsetof(RE::NiLight::LIGHT_RUNTIME_DATA, unk138));
 };

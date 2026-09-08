@@ -10,12 +10,14 @@ void HorizonBlend::DrawSettings()
 
 void HorizonBlend::PostPostLoad()
 {
+	if (!loaded)
+		return;
 	// The shader-side far-water support is only wanted while the HorizonBlend plugin is
 	// actually installed; without it water keeps the vanilla far-clip look. Checked here
 	// because every SKSE plugin has loaded by now and the shader disk cache has not been
 	// validated yet, so installing or removing the plugin invalidates the cache through
 	// regular feature validation.
-	if (loaded && GetModuleHandleW(L"HorizonBlend.dll") == nullptr) {
+	if (GetModuleHandleW(L"HorizonBlend.dll") == nullptr) {
 		loaded = false;
 		failedLoadedMessage = "HorizonBlend is not installed, compatibility is disabled.";
 		logger::info("[Horizon Blend] HorizonBlend plugin not detected, compatibility disabled");

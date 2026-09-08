@@ -63,6 +63,8 @@ struct ThinSurface final : RenderModule
 		float AlphaSoftness = 0.f;
 		float AlphaStrength = 0.f;
 	};
+	static_assert(sizeof(PerFrame) == 16, "ThinSurface::PerFrame must match SharedData::ThinSurfaceSettings");
+	static_assert(offsetof(PerFrame, AlphaStrength) == 12);
 
 	// Settings only in CPU
 	struct Settings : PerFrame

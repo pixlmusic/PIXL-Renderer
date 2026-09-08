@@ -266,12 +266,11 @@ namespace Util
 			DeletionResult result;
 			result.deletedDescription = description + ": " + path;
 
-			if (path.empty() || !std::filesystem::exists(path)) {
-				result.success = true;  // Consider non-existent files as successfully "deleted"
-				return result;
-			}
-
 			try {
+				if (path.empty() || !std::filesystem::exists(path)) {
+					result.success = true;  // Non-existent files are already gone.
+					return result;
+				}
 				if (std::filesystem::is_directory(path)) {
 					std::filesystem::remove_all(path);
 				} else {
@@ -328,9 +327,12 @@ namespace Util
 				"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
 			};
 
+			const auto extension = name.find('.');
+			const auto baseName = name.substr(0, extension);
 			for (const char* r : reserved) {
-				if (Util::IEquals(name, r)) {
-					name += '_';
+				if (Util::IEquals(baseName, r)) {
+					// Device names remain reserved when followed by an extension.
+					name.insert(extension == std::string::npos ? name.size() : extension, 1, '_');
 					break;
 				}
 			}

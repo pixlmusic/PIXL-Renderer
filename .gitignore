@@ -20,6 +20,22 @@
 *.VC.VC.opendb
 *.lastbuildstate
 *.tlog
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.iobj
+*.ipdb
+*.pch
+*.idb
+*.log
+*.dmp
+*.mdmp
+*.etl
+*.pixlbin
+*.vsp
+*.vspx
+*.diagsession
 
 # Local reference projects used for reverse engineering are not renderer source
 # and may retain their own licences/assets.
@@ -50,6 +66,12 @@ shadertoolsconfig.json
 *.tmp
 *.bak
 .claude/settings.local.json
+
+# Local captures and transient package archives
+/Screenshots/
+*.zip
+*.rar
+*.7z
 
 # Python environments, caches, datasets, and trained model artifacts
 **/__pycache__/

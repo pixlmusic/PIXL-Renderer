@@ -15,7 +15,7 @@ namespace SIE
 	{
 	public:
 		/**
-		 * @brief Records which includes a compiled .hlsl file depends on.
+		 * @brief Adds includes used by a compiled permutation of a .hlsl file.
 		 * @param hlslFile Path to the compiled .hlsl file.
 		 * @param includes Paths to all files included during compilation.
 		 */
@@ -23,18 +23,14 @@ namespace SIE
 		{
 			std::lock_guard lock(mutex);
 			std::string normalizedHlsl = Util::FixFilePath(hlslFile);
-			auto it = hlslToIncludes.find(normalizedHlsl);
-			if (it != hlslToIncludes.end()) {
-				for (const auto& oldInc : it->second) {
-					hlsliToHlsl[oldInc].erase(normalizedHlsl);
-					if (hlsliToHlsl[oldInc].empty())
-						hlsliToHlsl.erase(oldInc);
-				}
-			}
-			hlslToIncludes[normalizedHlsl].clear();
+			// A single entry file has many concurrently compiled permutations.
+			// Replacing its edges with the last permutation loses guarded includes
+			// used by earlier ones. Retain the union until explicit unregister/clear;
+			// an obsolete edge can over-invalidate, but cannot leave stale shaders.
+			auto& knownIncludes = hlslToIncludes[normalizedHlsl];
 			for (const auto& inc : includes) {
 				std::string normalizedInc = Util::FixFilePath(inc);
-				hlslToIncludes[normalizedHlsl].insert(normalizedInc);
+				knownIncludes.insert(normalizedInc);
 				hlsliToHlsl[normalizedInc].insert(normalizedHlsl);
 			}
 		}

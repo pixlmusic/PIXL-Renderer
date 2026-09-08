@@ -376,7 +376,7 @@
                             "ReceiverBlockerClearance":  2.0,
                             "ReceiverContactTolerance":  2.0,
                             "SnowCompactionDarkening":  0.30000001192092896,
-                            "SnowCoverageFeather":  0.30000001192092896,
+                            "SnowCoverageFeather":  0.35,
                             "SnowCoverageThreshold":  0.25,
                             "SnowFullResistanceDepth":  72.0,
                             "SnowMaximumDepth":  7.0,

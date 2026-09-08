@@ -748,6 +748,8 @@ void State::SetDefines(std::string a_defines)
 			continue;
 		}
 		name = pystring::strip(token[0]);
+		// A bare define must not inherit the previous token's replacement value.
+		definition.clear();
 		if (token.size() == 2) {
 			definition = pystring::strip(token[1]);
 		}

@@ -42,15 +42,27 @@ namespace SIE
 		HRESULT Open(D3D_INCLUDE_TYPE IncludeType, LPCSTR pFileName, LPCVOID /*pParentData*/, LPCVOID* ppData, UINT* pBytes) override
 		{
 			(void)IncludeType;
+			if (!pFileName || !ppData || !pBytes)
+				return E_INVALIDARG;
+			*ppData = nullptr;
+			*pBytes = 0;
 			try {
-				std::filesystem::path includePath = baseDir / pFileName;
-				// Normalize path to reduce duplicates (weakly_canonical may throw)
+				// Match the module compiler's include boundary. Shader source is
+				// local input, but must not read arbitrary files via ../ or links.
 				std::error_code ec;
-				auto canonical = std::filesystem::weakly_canonical(includePath, ec);
-				std::string pathStr = (ec ? includePath.string() : canonical.string());
+				const auto shaderRoot = std::filesystem::weakly_canonical(baseDir, ec);
+				if (ec)
+					return E_FAIL;
+				const auto canonical = std::filesystem::weakly_canonical(shaderRoot / pFileName, ec);
+				if (ec)
+					return E_FAIL;
+				const auto relative = canonical.lexically_relative(shaderRoot);
+				if (relative.empty() || *relative.begin() == L"..")
+					return E_ACCESSDENIED;
+				std::string pathStr = canonical.string();
 				// On Windows, normalize to lowercase for comparison
 #ifdef _WIN32
-				std::transform(pathStr.begin(), pathStr.end(), pathStr.begin(), [](unsigned char c) { return std::tolower(c); });
+				std::transform(pathStr.begin(), pathStr.end(), pathStr.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 #endif
 				includes.push_back(pathStr);
 
@@ -59,7 +71,8 @@ namespace SIE
 				if (!ifs)
 					return E_FAIL;
 				std::streamsize size = ifs.tellg();
-				if (size < 0)
+				constexpr std::streamsize kMaxShaderIncludeBytes = 16ll * 1024ll * 1024ll;
+				if (size < 0 || size > kMaxShaderIncludeBytes)
 					return E_FAIL;
 				ifs.seekg(0, std::ios::beg);
 				std::vector<char> buf(static_cast<size_t>(size));
@@ -1122,7 +1135,7 @@ namespace SIE
 			return -1;
 		}
 
-		static std::string MergeDefinesString(std::array<D3D_SHADER_MACRO, 64>& defines, bool a_sort = false)
+		static std::string MergeDefinesString(std::span<D3D_SHADER_MACRO> defines, bool a_sort = false)
 		{
 			std::string result;
 			if (a_sort)
@@ -1443,27 +1456,31 @@ namespace SIE
 				}
 			}
 
-			// prepare preprocessor defines
-			std::array<D3D_SHADER_MACRO, 64> defines{};
-			auto lastIndex = 0;
+			// Keep the engine's fixed-size macro contract separate from user input.
+			// Custom defines must not consume its capacity or write past the array.
+			std::array<D3D_SHADER_MACRO, 64> engineDefines{};
+			GetShaderDefines(shader, descriptor, std::span{ engineDefines });
+			const auto engineDefinesEnd = std::ranges::find_if(engineDefines,
+				[](const D3D_SHADER_MACRO& macro) { return macro.Name == nullptr; });
+			auto shaderDefines = globals::state->GetDefines();
+			std::vector<D3D_SHADER_MACRO> defines;
+			defines.reserve(shaderDefines->size() + engineDefines.size() + 4);
 			if (shaderClass == ShaderClass::Vertex) {
-				defines[lastIndex++] = { "VSHADER", nullptr };
+				defines.push_back({ "VSHADER", nullptr });
 			} else if (shaderClass == ShaderClass::Pixel) {
-				defines[lastIndex++] = { "PSHADER", nullptr };
+				defines.push_back({ "PSHADER", nullptr });
 			} else if (shaderClass == ShaderClass::Compute) {
-				defines[lastIndex++] = { "CSHADER", nullptr };
+				defines.push_back({ "CSHADER", nullptr });
 			}
 			if (globals::state->IsDeveloperMode()) {
-				defines[lastIndex++] = { "D3DCOMPILE_SKIP_OPTIMIZATION", nullptr };
-				defines[lastIndex++] = { "D3DCOMPILE_DEBUG", nullptr };
+				defines.push_back({ "D3DCOMPILE_SKIP_OPTIMIZATION", nullptr });
+				defines.push_back({ "D3DCOMPILE_DEBUG", nullptr });
 			}
-			auto shaderDefines = globals::state->GetDefines();
-			if (!shaderDefines->empty()) {
-				for (unsigned int i = 0; i < shaderDefines->size(); i++)
-					defines[lastIndex++] = { shaderDefines->at(i).first.c_str(), shaderDefines->at(i).second.c_str() };
+			for (const auto& [name, definition] : *shaderDefines) {
+				defines.push_back({ name.c_str(), definition.c_str() });
 			}
-			defines[lastIndex] = { nullptr, nullptr };  // do final entry
-			GetShaderDefines(shader, descriptor, std::span{ defines }.subspan(lastIndex));
+			defines.insert(defines.end(), engineDefines.begin(), engineDefinesEnd);
+			defines.push_back({ nullptr, nullptr });
 
 			const std::wstring path = GetShaderPath(
 				shader.shaderType == RE::BSShader::Type::ImageSpace ?

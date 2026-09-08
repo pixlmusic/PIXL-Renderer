@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <imgui.h>
 #include <imgui_internal.h>
 
@@ -112,6 +113,14 @@ namespace BackgroundBlur
 			float windowRect[4];    // x = minX, y = minY, z = maxX, w = maxY (in pixels)
 			float windowParams[4];  // x = cornerRadius, y = screenWidth, z = screenHeight, w = unused
 		};
+		static_assert(sizeof(BlurConstants) == 32 && offsetof(BlurConstants, blurParams) == 16);
+		static_assert(sizeof(WindowConstants) == 32 && offsetof(WindowConstants, windowParams) == 16);
+
+		bool HasVisibleWindowArea(ImVec2 minimum, ImVec2 maximum, UINT width, UINT height)
+		{
+			return (std::min)(maximum.x, static_cast<float>(width)) > (std::max)(minimum.x, 0.0f) &&
+			       (std::min)(maximum.y, static_cast<float>(height)) > (std::max)(minimum.y, 0.0f);
+		}
 
 		struct UIBufferViews
 		{
@@ -975,6 +984,9 @@ namespace BackgroundBlur
 			ImRect windowRect = window->Rect();
 			ImVec2 windowMin = windowRect.Min;
 			ImVec2 windowMax = windowRect.Max;
+			if (!HasVisibleWindowArea(windowMin, windowMax, texDesc.Width, texDesc.Height)) {
+				continue;
+			}
 
 			// Get window corner rounding from the window's style
 			float cornerRadius = window->WindowRounding;

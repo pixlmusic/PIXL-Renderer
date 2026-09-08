@@ -25,7 +25,7 @@ Compiled pipelines are cached locally after first use. A clean install therefore
 
 ## Renderer features
 
-PIXL currently contains **38 integrated rendering modules**, plus renderer-level systems for dialogue focus, quality orchestration, benchmarking, tuning and capture.
+PIXL currently ships **37 integrated rendering modules**, plus renderer-level systems for dialogue focus, quality orchestration, benchmarking, tuning and capture. One retired Hair Reconstruction source record remains solely for shared-shader ABI auditability and is not a runtime module.
 
 ### Lighting and atmosphere
 

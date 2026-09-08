@@ -33,9 +33,11 @@ void RCAS::CreateComputeShader()
 {
 	std::vector<std::pair<const char*, const char*>> defines;
 	rcasComputeShader.attach((ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\ImageReconstruction\\RCAS\\RCAS.hlsl", defines, "cs_5_0"));
+	if (!rcasComputeShader)
+		logger::warn("[RCAS] Compute shader unavailable; DLSS output will be resolved without sharpening");
 }
 
-void RCAS::ApplySharpen(
+bool RCAS::ApplySharpen(
 	ID3D11ShaderResourceView* inputSRV,
 	ID3D11UnorderedAccessView* outputUAV,
 	float sharpness,
@@ -50,10 +52,8 @@ void RCAS::ApplySharpen(
 	auto state = globals::state;
 	auto context = globals::d3d::context;
 
-	if (!rcasComputeShader) {
-		logger::warn("[RCAS] Compute shader not compiled");
-		return;
-	}
+	if (!rcasComputeShader || !rcasConfigCB || !inputSRV || !outputUAV || !std::isfinite(sharpness))
+		return false;
 
 	globals::profiler->BeginPass("ImageReconstruction::RCAS");
 	state->BeginPerfEvent("RCAS Sharpening");
@@ -62,8 +62,11 @@ void RCAS::ApplySharpen(
 	uint32_t screenHeight = globals::game::graphicsState->screenHeight;
 
 	RCASConfig config{};
-	config.sharpness = sharpness;
-	config.useConfidence = reactiveMask && transparencyMask && motionVectors && inputDimensions.x > 0.0f && inputDimensions.y > 0.0f;
+	// RCAS's resolve denominator remains positive for attenuation in [0, 1].
+	config.sharpness = std::clamp(sharpness, 0.0f, 1.0f);
+	config.useConfidence = reactiveMask && transparencyMask && motionVectors &&
+		std::isfinite(inputDimensions.x) && std::isfinite(inputDimensions.y) &&
+		inputDimensions.x > 0.0f && inputDimensions.y > 0.0f;
 	config.inputDimensions = config.useConfidence ? inputDimensions : float2{};
 
 	rcasConfigCB->Update(config);
@@ -92,4 +95,5 @@ void RCAS::ApplySharpen(
 
 	globals::profiler->EndPass();
 	state->EndPerfEvent();
+	return true;
 }

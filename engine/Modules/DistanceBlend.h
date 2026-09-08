@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 
 struct DistanceBlend : RenderModule
 {
@@ -29,8 +30,10 @@ struct DistanceBlend : RenderModule
 		float LODTerrainGamma = 1;
 		float LODObjectGamma = 1;
 		float LODObjectSnowGamma = 1;
-		float pad;
+		float pad = 0;
 	};
+	static_assert(sizeof(Settings) == 32);
+	static_assert(offsetof(Settings, DisableTerrainVertexColors) == 12 && offsetof(Settings, LODTerrainGamma) == 16);
 
 	Settings settings;
 

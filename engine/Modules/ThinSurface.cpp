@@ -134,11 +134,11 @@ void ThinSurface::DrawSettings()
 			ImGui::Text("%s", T(TKEY("softness_tooltip"), "Control the softness of the alpha increase, increase the softness reduce the increased amount of alpha."));
 		}
 
-		if (ImGui::SliderFloat(T(TKEY("blend_weight"), "Effect Strength"), &settings.AlphaStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp)) {
+		if (ImGui::SliderFloat(T(TKEY("blend_weight"), "Original Opacity Blend"), &settings.AlphaStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp)) {
 			changed = true;
 		}
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T(TKEY("blend_weight_tooltip"), "Overall strength of thin-surface opacity shaping. 0 disables the effect and preserves the original material."));
+			ImGui::Text("%s", T(TKEY("blend_weight_tooltip"), "Blends back toward the original material opacity. 0 applies full thin-surface shaping; 1 preserves the original opacity. Per-mesh material overrides remain independent."));
 		}
 
 		ImGui::Spacing();
@@ -150,6 +150,12 @@ void ThinSurface::DrawSettings()
 void ThinSurface::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	// Match UI bounds; in particular SoftClamp's limit must stay in [1, 2].
+	if (settings.AlphaMode > MaterialModel::AnisotropicFabric)
+		settings.AlphaMode = MaterialModel::Disabled;
+	settings.AlphaReduction = std::clamp(settings.AlphaReduction, 0.0f, 1.0f);
+	settings.AlphaSoftness = std::clamp(settings.AlphaSoftness, 0.0f, 1.0f);
+	settings.AlphaStrength = std::clamp(settings.AlphaStrength, 0.0f, 1.0f);
 }
 
 void ThinSurface::SaveSettings(json& o_json)

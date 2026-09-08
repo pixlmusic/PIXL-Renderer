@@ -2292,6 +2292,7 @@ void ImageReconstruction::ApplySharpening()
 
 	context->OMSetRenderTargets(0, nullptr, nullptr);
 
+	bool sharpened = false;
 	if (settings.sharpnessEnabledDLSS && settings.sharpnessDLSS > 0.0f && main.UAV) {
 		// Match FSR3's slider->RCAS conversion exactly (ffx_fsr3upscaler.cpp + FsrRcasCon):
 		//   sharpenessRemapped = -2*slider + 2   (sharpness in stops)
@@ -2305,7 +2306,7 @@ void ImageReconstruction::ApplySharpening()
 			static_cast<float>(globals::game::graphicsState->screenHeight)
 		};
 		const float2 inputDimensions = Util::ConvertToDynamic(outputDimensions);
-		rcas.ApplySharpen(
+		sharpened = rcas.ApplySharpen(
 			sharpenerTexture->srv.get(),
 			main.UAV,
 			currentSharpness,
@@ -2313,8 +2314,10 @@ void ImageReconstruction::ApplySharpening()
 			transparencyCompositionMaskTexture ? transparencyCompositionMaskTexture->srv.get() : nullptr,
 			motionVectorCopyTexture ? motionVectorCopyTexture->srv.get() : nullptr,
 			inputDimensions);
-	} else {
-		// Sharpening is disabled: resolve the DLSS output without altering it.
+	}
+	if (!sharpened) {
+		// Also resolve when optional RCAS resources are unavailable, so a shader
+		// compile failure cannot discard the current reconstructed frame.
 		context->CopyResource(main.texture, sharpenerTexture->resource.get());
 	}
 

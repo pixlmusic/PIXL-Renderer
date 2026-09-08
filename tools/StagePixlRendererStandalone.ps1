@@ -7,6 +7,8 @@ param(
     [string]$PipelineLibrary = "",
     [string]$UserConfigPath = "",
     [string]$AllowedOutputRoot = "",
+    [ValidateSet("LIVE-TEST", "RELEASE-CANDIDATE", "RELEASE")]
+    [string]$Channel = "LIVE-TEST",
     [switch]$SkipPipelineLibrary,
     [switch]$SkipArchive
 )
@@ -80,10 +82,11 @@ Get-ChildItem -LiteralPath (Join-Path $sourceRoot "pipeline") -Directory | Sort-
     $kernels = Join-Path $_.FullName "Kernels"
     if (-not (Test-Path -LiteralPath $descriptor)) { throw "Missing PIXL module descriptor: $descriptor" }
     $descriptorText = Get-Content -LiteralPath $descriptor -Raw
-    # Retired ABI stubs remain in source only so old shared-buffer layouts and
-    # cached shader includes can be inspected safely. They are not runtime modules
-    # and must not be copied into a public/game package.
-    if ($descriptorText -match '(?im)^\s*Pipeline\s*=\s*Retired\s*$') { return }
+    # Preserve the shipping boundary: retired source and descriptors are not
+    # runtime payloads. Guarded historical includes are checked by the audit.
+    if ($descriptorText -match '(?im)^\s*Pipeline\s*=\s*Retired\s*$') {
+        return
+    }
     $idMatch = [regex]::Match($descriptorText, '(?m)^\s*Id\s*=\s*([^\r\n]+?)\s*$')
     if (-not $idMatch.Success) { throw "Module descriptor has no Id: $descriptor" }
     $moduleId = $idMatch.Groups[1].Value.Trim()
@@ -154,7 +157,7 @@ $manifestFiles = Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object
     product = "PIXL Renderer"
     title = "PBR Rendering Engine v1.0"
     version = "1.0.0"
-    channel = "LIVE-TEST"
+    channel = $Channel
     executable = "SKSE/Plugins/PIXLRenderer.dll"
     dataRoot = "SKSE/Plugins/PIXL"
     exclusiveRenderer = $true
@@ -165,6 +168,8 @@ $manifestFiles = Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object
     generatedUtc = [DateTime]::UtcNow.ToString("o")
     files = $manifestFiles
 } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $output "PIXL-RENDERER.manifest.json") -Encoding utf8
+
+& (Join-Path $PSScriptRoot 'VerifyPixlPackageManifest.ps1') -PackageDirectory $output
 
 if ($mirror) {
     if (-not [string]::Equals($mirror, $output, [StringComparison]::OrdinalIgnoreCase)) {

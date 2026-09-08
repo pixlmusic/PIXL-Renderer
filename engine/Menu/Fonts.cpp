@@ -92,15 +92,20 @@ namespace MenuFonts
 	void NormalizeFontRoles(Menu::ThemeSettings& theme, bool themeProvidedFontRoles)
 	{
 		if (!themeProvidedFontRoles && !theme.FontName.empty()) {
-			theme.FontRoles[RoleIndex(Menu::FontRole::Body)].File = NormalizeFontFilePath(theme.FontName);
+			auto& body = theme.FontRoles[RoleIndex(Menu::FontRole::Body)];
+			body.File = NormalizeFontFilePath(theme.FontName);
+			// Legacy themes provide a file, not role metadata. Do not label a
+			// custom font with the default family's name in the font picker.
+			body.Family.clear();
+			body.Style.clear();
 		}
 
 		for (size_t i = 0; i < static_cast<size_t>(Menu::FontRole::Count); ++i) {
 			Menu::FontRole role = static_cast<Menu::FontRole>(i);
 			auto& settings = theme.FontRoles[i];
 			settings.File = NormalizeFontFilePath(settings.File);
-			ApplyRoleDefaults(settings, role);
 			DeriveFamilyAndStyle(settings);
+			ApplyRoleDefaults(settings, role);
 			settings.SizeScale = std::clamp(settings.SizeScale, 0.1f, 4.0f);
 		}
 
@@ -545,8 +550,9 @@ namespace Util
 				{ "medium", 4 },
 				{ "semibold", 5 },
 				{ "demibold", 5 },
-				{ "bold", 6 },
+				{ "extra bold", 7 },
 				{ "extrabold", 7 },
+				{ "bold", 6 },
 				{ "heavy", 7 },
 				{ "black", 8 }
 			};
@@ -599,8 +605,7 @@ namespace Util
 						continue;
 					}
 
-					auto extension = entry.path().extension().string();
-					std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+					auto extension = ToLowerCopy(entry.path().extension().string());
 					if (extension != ".ttf" && extension != ".otf") {
 						continue;
 					}
@@ -759,8 +764,7 @@ namespace Util
 			}
 
 			auto isValidExtension = [](const std::filesystem::path& candidate) {
-				auto extension = candidate.extension().string();
-				std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+				auto extension = ToLowerCopy(candidate.extension().string());
 				return extension == ".ttf" || extension == ".otf";
 			};
 

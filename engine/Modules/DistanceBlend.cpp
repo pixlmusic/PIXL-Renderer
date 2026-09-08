@@ -1,6 +1,8 @@
 #include "DistanceBlend.h"
 
 #include "../I18n/I18n.h"
+#include <algorithm>
+#include <cmath>
 
 #define I18N_KEY_PREFIX "feature.distance_blend."
 
@@ -34,6 +36,16 @@ void DistanceBlend::DrawSettings()
 void DistanceBlend::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	auto bounded = [](float value, float minimum, float maximum) {
+		return std::isfinite(value) ? std::clamp(value, minimum, maximum) : 1.0f;
+	};
+	settings.LODTerrainBrightness = bounded(settings.LODTerrainBrightness, 0.01f, 5.0f);
+	settings.LODObjectBrightness = bounded(settings.LODObjectBrightness, 0.01f, 5.0f);
+	settings.LODObjectSnowBrightness = bounded(settings.LODObjectSnowBrightness, 0.01f, 5.0f);
+	settings.LODTerrainGamma = bounded(settings.LODTerrainGamma, 0.1f, 3.0f);
+	settings.LODObjectGamma = bounded(settings.LODObjectGamma, 0.1f, 3.0f);
+	settings.LODObjectSnowGamma = bounded(settings.LODObjectSnowGamma, 0.1f, 3.0f);
+	settings.DisableTerrainVertexColors = settings.DisableTerrainVertexColors != 0 ? 1u : 0u;
 }
 
 void DistanceBlend::SaveSettings(json& o_json)

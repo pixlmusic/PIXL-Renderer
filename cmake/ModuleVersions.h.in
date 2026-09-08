@@ -6,27 +6,29 @@ namespace ModuleVersions
 {
 	using namespace std::literals::string_view_literals;
 
-	static const std::map<std::string_view, REL::Version> FEATURE_MINIMAL_VERSIONS
+	// Shared immutable metadata: this header is included by most renderer TUs.
+	// Internal-linkage containers would allocate a separate copy in every TU.
+	inline const std::map<std::string_view, REL::Version> FEATURE_MINIMAL_VERSIONS
 	{
 @FEATURE_VERSIONS@
 	};
 
-	static const std::unordered_set<std::string_view> FEATURE_CORE_NAMES
+	inline const std::unordered_set<std::string_view> FEATURE_CORE_NAMES
 	{
 @FEATURE_CORE_NAMES@
 	};
 
-	static const std::unordered_set<std::string_view> FEATURE_ALPHA_NAMES
+	inline const std::unordered_set<std::string_view> FEATURE_ALPHA_NAMES
 	{
 @FEATURE_ALPHA_NAMES@
 	};
 
-	static const std::unordered_set<std::string_view> FEATURE_BETA_NAMES
+	inline const std::unordered_set<std::string_view> FEATURE_BETA_NAMES
 	{
 @FEATURE_BETA_NAMES@
 	};
 
-	static const std::unordered_set<std::string_view> FEATURE_UNRELEASED_NAMES
+	inline const std::unordered_set<std::string_view> FEATURE_UNRELEASED_NAMES
 	{
 @FEATURE_UNRELEASED_NAMES@
 	};

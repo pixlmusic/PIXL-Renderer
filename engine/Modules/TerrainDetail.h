@@ -41,6 +41,7 @@ public:
 	};
 
 	STATIC_ASSERT_ALIGNAS_16(Settings);
+	static_assert(sizeof(Settings) == 16);
 
 	Settings settings;
 

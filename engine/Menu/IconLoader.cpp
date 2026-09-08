@@ -16,10 +16,12 @@ namespace Util
 {
 	bool LoadTextureFromFile(ID3D11Device* device, const char* filename, ID3D11ShaderResourceView** out_srv, ImVec2& out_size, bool loadAsTintableMask)
 	{
+		if (out_srv)
+			*out_srv = nullptr;
+		out_size = {};
 		if (!device || !filename || filename[0] == '\0' || !out_srv) {
 			return false;
 		}
-		*out_srv = nullptr;
 
 		int image_width = 0;
 		int image_height = 0;
@@ -34,6 +36,12 @@ namespace Util
 
 		unsigned char* image_data = stbi_load(filename, &image_width, &image_height, nullptr, 4);
 		if (image_data == nullptr) {
+			return false;
+		}
+		// The file may have changed between the metadata probe and decode.
+		if (image_width <= 0 || image_height <= 0 ||
+			image_width > kMaxInterfaceTextureDimension || image_height > kMaxInterfaceTextureDimension) {
+			stbi_image_free(image_data);
 			return false;
 		}
 
@@ -154,12 +162,14 @@ namespace Util::IconLoader
 			logger::trace("LoadThemeSpecificIcons: Checking for icon: {}", iconPath.string());
 
 			if (std::filesystem::exists(iconPath)) {
-				if (*iconDef.texture) {
-					(*iconDef.texture)->Release();
-					*iconDef.texture = nullptr;
-				}
-
-				if (Util::LoadTextureFromFile(device, iconPath.string().c_str(), iconDef.texture, *iconDef.size, iconDef.tintableMask)) {
+				winrt::com_ptr<ID3D11ShaderResourceView> replacement;
+				ImVec2 replacementSize{};
+				if (Util::LoadTextureFromFile(device, iconPath.string().c_str(), replacement.put(), replacementSize, iconDef.tintableMask)) {
+					// A broken optional override must not discard the working base icon.
+					if (*iconDef.texture)
+						(*iconDef.texture)->Release();
+					*iconDef.texture = replacement.detach();
+					*iconDef.size = replacementSize;
 					logger::debug("LoadThemeSpecificIcons: Loaded custom icon: {}", iconPath.filename().string());
 					iconsOverridden++;
 				}
@@ -247,6 +257,7 @@ namespace Util::IconLoader
 
 		LoadThemeSpecificIcons(menu, device, iconDefs);
 
-		return anyIconLoaded;
+		// A valid theme override can supply the icon when the base asset is absent.
+		return anyIconLoaded || std::any_of(iconDefs.begin(), iconDefs.end(), [](const auto& icon) { return *icon.texture != nullptr; });
 	}
 }

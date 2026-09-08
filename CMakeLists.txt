@@ -187,6 +187,19 @@ foreach(FEATURE_PATH ${FEATURE_CONFIG_FILES})
         message(FATAL_ERROR "Integrated module descriptor has no Id: ${FEATURE_PATH}")
     endif()
     set(FEATURE "${CMAKE_MATCH_2}")
+
+    # Retired descriptors remain in source only when they document a historical
+    # shader ABI or provide an inert compatibility include. They must not be
+    # advertised as integrated runtime modules or contribute version/visibility
+    # metadata to the shipping DLL.
+    string(REGEX MATCH "(^|[\r\n])[ \t]*Pipeline[ \t]*=[ \t]*([A-Za-z0-9_]+)" _PIXL_PIPELINE_MATCH "${CONFIG_VALUE}")
+    if(_PIXL_PIPELINE_MATCH)
+        string(TOLOWER "${CMAKE_MATCH_2}" _PIXL_PIPELINE)
+        if(_PIXL_PIPELINE STREQUAL "retired")
+            continue()
+        endif()
+    endif()
+
     if(CONFIG_VALUE)
         string(
             REGEX MATCH "[Vv]ersion = ([0-9]+)-([0-9]+)-([0-9]+)"

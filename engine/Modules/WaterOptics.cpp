@@ -69,13 +69,15 @@ void WaterOptics::DrawSettings()
 		changed |= ImGui::SliderFloat(T(TKEY("water_ssr_strength"), "Reflection Presence"), &settings.SurfaceSSRStrength, 0.0f, 1.5f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("water_ssr_strength_tooltip"), "Scales valid screen-space reflections when composited onto water. It does not brighten the cubemap fallback or invent reflections outside the screen."));
+		ImGui::EndDisabled();
+		// These affect the complete reflection/refraction lobes even with the
+		// enhanced SSR trace disabled; they must remain independently editable.
 		changed |= ImGui::SliderFloat("Reflection Balance", &settings.ReflectionBrightness, 0.5f, 1.15f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Balances the complete reflected lobe against Skyrim's authored refraction and weather lighting.");
 		changed |= ImGui::SliderFloat("Water Tint", &settings.WaterTintStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Controls depth-dependent colour absorption without replacing the underlying scene with a flat water colour.");
-		ImGui::EndDisabled();
 		ImGui::TreePop();
 	}
 

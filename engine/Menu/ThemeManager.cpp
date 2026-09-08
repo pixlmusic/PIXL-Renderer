@@ -364,14 +364,14 @@ bool ThemeManager::ReloadFont(const Menu& menu, float& cachedFontSize)
 
 	auto& themeSettings = menu.GetTheme();
 
-	ImGuiIO& io = ImGui::GetIO();
-
 	// Additional safety checks: ensure ImGui is in a valid state
 	ImGuiContext* ctx = ImGui::GetCurrentContext();
 	if (!ctx) {
 		logger::error("ReloadFont: No valid ImGui context");
 		return false;
 	}
+
+	ImGuiIO& io = ImGui::GetIO();
 
 	// Ensure we're not in the middle of a frame
 	if (ctx->WithinFrameScope) {
@@ -397,6 +397,17 @@ bool ThemeManager::ReloadFont(const Menu& menu, float& cachedFontSize)
 	io.Fonts->Clear();
 	MenuFonts::InvalidatePreviewFonts();
 	io.Fonts->TexGlyphPadding = 1;
+
+	struct SupplementalGlyphMerge
+	{
+		std::string locale;
+		std::vector<std::string> fontPaths;
+		ImVector<ImWchar> glyphRanges;
+	};
+	// ImFontConfig keeps the range pointer, including after Build(). Retain
+	// these arrays until the next atlas Clear(), not just the merge scope.
+	static std::vector<SupplementalGlyphMerge> supplementalGlyphMerges;
+	supplementalGlyphMerges.clear();
 
 	ImFontConfig font_config;
 	InitDefaultFontConfig(font_config);
@@ -524,14 +535,6 @@ bool ThemeManager::ReloadFont(const Menu& menu, float& cachedFontSize)
 		const ImWchar* primaryGlyphRanges = GetPrimaryCJKGlyphRanges(io.Fonts, locale);
 		auto primaryCJKFontPaths = primaryGlyphRanges ? GetCJKFontPathCandidates(locale) : std::vector<std::string>{};
 
-		struct SupplementalGlyphMerge
-		{
-			std::string locale;
-			std::vector<std::string> fontPaths;
-			ImVector<ImWchar> glyphRanges;
-		};
-
-		std::vector<SupplementalGlyphMerge> supplementalGlyphMerges;
 		for (const auto& [availableLocale, displayName] : i18n->GetAvailableLocales()) {
 			if (!ContainsNonAscii(displayName)) {
 				continue;
@@ -584,6 +587,9 @@ bool ThemeManager::ReloadFont(const Menu& menu, float& cachedFontSize)
 					mergeCfg.PixelSnapH = Constants::FCONF_PIXELSNAP_H;
 
 					for (const auto& cjkFontPath : fontPaths) {
+						if (!std::filesystem::is_regular_file(cjkFontPath)) {
+							continue;
+						}
 						if (io.Fonts->AddFontFromFileTTF(cjkFontPath.c_str(), roleSize, &mergeCfg, glyphRanges)) {
 							mergedAnyCJKFont = true;
 							return;
@@ -919,6 +925,10 @@ bool ThemeManager::SaveTheme(const std::string& themeName, const json& themeSett
 
 		file << fullTheme.dump(4);  // Pretty print with 4-space indentation
 		file.close();
+		if (!file) {
+			logger::warn("Failed to finish writing theme file: {}", filePath.string());
+			return false;
+		}
 
 		logger::info("Saved theme: {} to {}", themeName, filePath.string());
 

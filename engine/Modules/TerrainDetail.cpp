@@ -41,6 +41,7 @@ void TerrainDetail::PostPostLoad()
 void TerrainDetail::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	settings.enableLODTerrainTilingFix = settings.enableLODTerrainTilingFix != 0 ? 1u : 0u;
 }
 
 void TerrainDetail::SaveSettings(json& o_json)

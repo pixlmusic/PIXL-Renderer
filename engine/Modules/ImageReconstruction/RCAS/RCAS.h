@@ -37,8 +37,9 @@ public:
 	 * @param inputDimensions Valid dynamic-resolution input rectangle in pixels.
 	 *
 	 * The legacy RCAS path is retained exactly when any optional confidence input is unavailable.
+	 * @return True when sharpening was dispatched; false means the caller must resolve the input unchanged.
 	 */
-	void ApplySharpen(
+	[[nodiscard]] bool ApplySharpen(
 		ID3D11ShaderResourceView* inputTexture,
 		ID3D11UnorderedAccessView* outputUAV,
 		float sharpness,

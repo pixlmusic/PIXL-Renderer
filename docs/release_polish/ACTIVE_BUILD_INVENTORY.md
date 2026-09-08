@@ -1,13 +1,13 @@
 # PIXL Renderer Active Build Inventory
 
-Baseline commit: `78df570e55a3772e355327cfd1653327654e1d47`
+Baseline commit: `165ee9853e42a7f15ceabd83b8344618efae3998`. The September 7 working tree includes documented compiler, UI, build and packaging changes; it is not a completed release audit. See `CURRENT_PASS_STATUS.md` for current evidence.
 
 Canonical source: repository root.
 Temporary build alias: an optional short `subst` mapping was used only for long-path tool compatibility.
 Build: Visual Studio 17 2022, x64, C++23, Release/LTCG, `x64-windows-static-md-release`.
-Renderer target: `PIXLRenderer.dll`; 38 integrated module descriptors.
+Renderer target: `PIXLRenderer.dll`; 37 shipping module descriptors plus one source-only retired ABI record.
 
-## Active File Counts
+## Historical September 3 file counts (not current-pass completion)
 
 | Category | Files | Final status |
 | --- | ---: | --- |
@@ -18,9 +18,7 @@ Renderer target: `PIXLRenderer.dll`; 38 integrated module descriptors.
 | Pinned third-party submodule boundaries | 3 | REVIEWED |
 | **Total** | **586** | **REVIEWED** |
 
-The exact path/subsystem accounting remains in `FILE_REVIEW_MATRIX.md`. The final
-static pass opened 583 repository files, verified three exact submodule pins, and
-reported zero missing/unreadable entries or malformed JSON/binary signatures.
+The earlier report asserted these reviewed totals. Opening/scanning files and validating signatures does not establish semantic review. The exact path/subsystem accounting and separate current-pass scope are in `FILE_REVIEW_MATRIX.md`; newly added tests increase its row count. No historical REVIEWED status above is a current-pass completion claim.
 
 ## Source Roots
 
@@ -47,3 +45,10 @@ reported zero missing/unreadable entries or malformed JSON/binary signatures.
 - Ignored `PIXL_AUTONOMOUS/`, PixDiT research, build outputs, local Data mirrors, caches, and browser state are not public renderer inputs.
 
 The complete exact-path accounting is in `FILE_REVIEW_MATRIX.md` and the machine-readable `build/release-polish-work/active_file_inventory.csv`.
+
+## 2026-09-07 Revalidation
+
+- The inherited matrix contains 586 unique entries, including three submodule-pin records. Its historical review flags have not all been independently substantiated during this pass.
+- The complete Visual Studio 2022 Release/LTCG target rebuilt successfully and the integrated audit passed.
+- The canonical shader overlay contains 269 files. All 267 files shared with the live Skyrim tree are byte-identical; the two source-only entries belong to the retired Hair Reconstruction record. Live-only files are vendor runtime/manager artifacts rather than divergent authored shaders.
+- Generated runtime module metadata and package auditing now distinguish 37 shipping modules from the one retired source-only record.

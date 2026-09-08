@@ -1140,7 +1140,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #				endif
 
 				float localLightBoost = enhancedVegetation ? FoliageTuning::LocalLightBoost() : 1.0f;
-				float3 lightColor = Color::PointLight(light.color.xyz) * intensityMultiplier * light.fade * localLightBoost;
+				// Lights flagged by Natural Lighting already carry linear units.
+				// Preserve that contract just as the vanilla-compatible grass path does.
+				const bool isPointLightLinear = light.lightFlags & RadiantGrid::LightFlags::Linear;
+				float3 lightColor = Color::PointLight(light.color.xyz, isPointLightLinear) * intensityMultiplier * light.fade * localLightBoost;
 				float lightShadow = 1.0;
 
 				float shadowComponent = 1.0;

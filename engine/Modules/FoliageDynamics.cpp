@@ -119,10 +119,10 @@ void FoliageDynamics::DrawSettings()
 		ImGui::SliderFloat("Grass Card Specular Coherence", &settings.GrassMacroSpecular, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Blends direct/wet grass reflections toward the actual rasterized card plane. High values make both triangles of a grass quad share one coherent reflection instead of isolated corner glints.");
+		ImGui::EndDisabled();
 		Util::UIntCheckbox("Flip Tree Normal Y", &settings.TreeFlipNormalY);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Flips only animated-tree tangent-space normal maps. Grass has a separate format/convention control below.");
-		ImGui::EndDisabled();
 		ImGui::TreePop();
 	}
 
@@ -278,6 +278,9 @@ void FoliageDynamics::DrawSettings()
 void FoliageDynamics::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	// Legacy presets omit the extension. Reloading one must not retain grass
+	// material overrides from whichever configuration was loaded previously.
+	tuningSettings = {};
 	if (auto it = o_json.find("PIXLGrassTuning"); it != o_json.end() && it->is_object())
 		tuningSettings = *it;
 

@@ -2,6 +2,8 @@
 
 Every entry in FILE_REVIEW_MATRIX.md was opened or, for submodules, verified against its exact Git pin and clean worktree. This complements the semantic subsystem reports, Release/LTCG build, shader compile checks and staging audit; it does not claim runtime GPU timings.
 
+September 7 correction: the counts below are historical baseline evidence, not a new exhaustive review. The continuation has not independently substantiated all historical semantic-review flags. Current build/test results and outstanding gates are recorded in `CURRENT_PASS_STATUS.md`. The FidelityFX worktree now contains the reproducible configure-applied short-path patch; it is not clean, and its reverse-apply check succeeds.
+
 ## Coverage
 
 - Entries: 586

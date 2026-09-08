@@ -9,8 +9,47 @@
 namespace PipelineHealth
 {
 	// Forward declarations
-	static void DrawFeatureIssue(const FeatureIssueInfo& issue, const ImVec4& color);
+	static void DrawFeatureIssue(const FeatureIssueInfo& issue, const ImVec4& color, std::string& deletedIssue);
 	static bool IsVersionMismatchForCoreFeature(const FeatureIssueInfo& issue);
+
+	static bool IsModuleIdentifier(const std::string& name)
+	{
+		return !name.empty() && std::all_of(name.begin(), name.end(), [](unsigned char c) {
+			return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+			       (c >= '0' && c <= '9') || c == '_' || c == '-';
+		});
+	}
+
+	// Destructive diagnostics accept only the exact reconstructed module target,
+	// never a cached arbitrary path or a junction redirect. Fail closed on errors.
+	static bool IsExpectedModulePath(const std::string& path, const std::filesystem::path& expected,
+		const std::filesystem::path& allowedRoot = Util::PathHelpers::GetShadersPath())
+	{
+		try {
+			const auto actualPath = std::filesystem::absolute(path).lexically_normal();
+			const auto expectedPath = std::filesystem::absolute(expected).lexically_normal();
+			const auto root = std::filesystem::absolute(allowedRoot).lexically_normal();
+			if (path.empty() || _wcsicmp(actualPath.c_str(), expectedPath.c_str()) != 0 ||
+				_wcsicmp(expectedPath.c_str(), root.c_str()) == 0)
+				return false;
+			for (auto current = expectedPath; !current.empty(); current = current.parent_path()) {
+				const auto attributes = GetFileAttributesW(current.c_str());
+				if (attributes == INVALID_FILE_ATTRIBUTES) {
+					const auto error = GetLastError();
+					if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+						return false;
+				} else if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+					return false;
+				}
+				if (_wcsicmp(current.c_str(), root.c_str()) == 0)
+					return true;
+				if (current == current.parent_path())
+					break;
+			}
+		} catch (const std::filesystem::filesystem_error&) {
+		}
+		return false;
+	}
 
 	// Static storage for feature issues
 	static std::vector<FeatureIssueInfo> s_featureIssues;
@@ -132,6 +171,10 @@ namespace PipelineHealth
 		FeatureFileInfo info;
 		info.featureName = featureName;
 		info.latestTimestamp = std::filesystem::file_time_type::min();
+		if (!IsModuleIdentifier(featureName)) {
+			logger::warn("Refusing file lookup for invalid module identifier: {}", featureName);
+			return info;
+		}
 
 		auto updateTimestamp = [&info](const std::filesystem::path& filePath) {
 			try {
@@ -293,6 +336,24 @@ namespace PipelineHealth
 	}
 	bool DeleteFeatureFiles(const FeatureIssueInfo& issue)
 	{
+		// Validate every target before deleting either one, including stale UI data.
+		if (issue.IsOverrideFailed()) {
+			// Override failures reuse hasINI for a JSON file, not a shader module.
+			// Preserve mod names containing spaces/dots without allowing path syntax.
+			const auto root = Util::PathHelpers::GetOverridesPath();
+			if (issue.shortName.empty() || issue.shortName.find_first_of("\\/:*?\"<>|") != std::string::npos ||
+				std::any_of(issue.shortName.begin(), issue.shortName.end(), [](unsigned char c) { return c < 32; }) ||
+				issue.fileInfo.hasDeployedFolder || !issue.fileInfo.hasINI ||
+				!IsExpectedModulePath(issue.fileInfo.iniPath, root / (issue.shortName + ".json"), root)) {
+				logger::error("Refusing unsafe override cleanup target: {}", issue.shortName);
+				return false;
+			}
+		} else if (!IsModuleIdentifier(issue.shortName) ||
+			(issue.fileInfo.hasINI && !IsExpectedModulePath(issue.fileInfo.iniPath, Util::PathHelpers::GetModuleDescriptorPath(issue.shortName))) ||
+			(issue.fileInfo.hasDeployedFolder && !IsExpectedModulePath(issue.fileInfo.deployedFolderPath, Util::PathHelpers::GetModuleKernelPath(issue.shortName)))) {
+			logger::error("Refusing unsafe module cleanup target: {}", issue.shortName);
+			return false;
+		}
 		bool allSuccessful = true;
 		std::vector<std::string> deletedFiles;
 		std::vector<std::string> failedFiles;
@@ -344,6 +405,7 @@ namespace PipelineHealth
 		const auto& theme = menu->GetTheme();
 
 		const auto& featureIssues = GetPipelineHealth();
+		std::string deletedIssue;
 
 		if (featureIssues.empty()) {
 			ImGui::TextWrapped("%s", T("menu.issues.no_issues", "No feature issues found!"));
@@ -380,7 +442,7 @@ namespace PipelineHealth
 					"Deleting just the INI file will not fix compilation errors if core shaders were modified."),
 				theme.StatusPalette.Error, !shaderBreakingIssues.empty())) {
 			for (const auto* issue : shaderBreakingIssues) {
-				DrawFeatureIssue(*issue, theme.StatusPalette.Error);
+				DrawFeatureIssue(*issue, theme.StatusPalette.Error, deletedIssue);
 			}
 		}
 		// Unknown Features Section (potentially compilation breaking)
@@ -391,7 +453,7 @@ namespace PipelineHealth
 					"they should be removed as a precaution to prevent potential shader compilation failures."),
 				theme.StatusPalette.Error, !unknownIssues.empty())) {
 			for (const auto* issue : unknownIssues) {
-				DrawFeatureIssue(*issue, theme.StatusPalette.Error);
+				DrawFeatureIssue(*issue, theme.StatusPalette.Error, deletedIssue);
 			}
 		}
 		// Obsolete Features Section (non-shader-breaking)
@@ -401,7 +463,7 @@ namespace PipelineHealth
 					"These features have been removed or replaced in this PIXL build but do not modify core shaders."),
 				theme.StatusPalette.Warning, !obsoleteIssues.empty())) {
 			for (const auto* issue : obsoleteIssues) {
-				DrawFeatureIssue(*issue, theme.StatusPalette.Warning);
+				DrawFeatureIssue(*issue, theme.StatusPalette.Warning, deletedIssue);
 			}
 		}
 		// Version Mismatch Section
@@ -410,7 +472,7 @@ namespace PipelineHealth
 					"The following features have version compatibility issues and were disabled automatically. Please check for any updates or if the feature is considered obsolete."),
 				theme.StatusPalette.Warning, !versionIssues.empty())) {
 			for (const auto* issue : versionIssues) {
-				DrawFeatureIssue(*issue, theme.StatusPalette.Warning);
+				DrawFeatureIssue(*issue, theme.StatusPalette.Warning, deletedIssue);
 			}
 		}
 		// Override Failures Section
@@ -419,7 +481,7 @@ namespace PipelineHealth
 					"The following override files failed to load or apply. Check the file format and content."),
 				theme.StatusPalette.Error, !overrideIssues.empty())) {
 			for (const auto* issue : overrideIssues) {
-				DrawFeatureIssue(*issue, theme.StatusPalette.Error);
+				DrawFeatureIssue(*issue, theme.StatusPalette.Error, deletedIssue);
 			}
 		}
 
@@ -470,9 +532,13 @@ namespace PipelineHealth
 		ImGui::BulletText("%s", T("menu.issues.use_open_shaders_directory", "Use 'Open Shaders Directory' to check for orphaned shader folders"));
 		ImGui::BulletText("%s", T("menu.issues.use_open_logs", "Use 'Open Logs' to manually review the logs"));
 		ImGui::BulletText("%s", T("menu.issues.use_clear_issue_list", "Use 'Clear Issue List' to refresh after manual cleanup"));
+		// All categorized pointers must be finished before the backing vector moves.
+		if (!deletedIssue.empty()) {
+			std::erase_if(s_featureIssues, [&deletedIssue](const auto& issue) { return issue.shortName == deletedIssue; });
+		}
 	}
 
-	static void DrawFeatureIssue(const FeatureIssueInfo& issue, const ImVec4& color)
+	static void DrawFeatureIssue(const FeatureIssueInfo& issue, const ImVec4& color, std::string& deletedIssue)
 	{
 		// Get theme colors directly
 		auto menu = Menu::GetSingleton();
@@ -759,11 +825,7 @@ namespace PipelineHealth
 
 				if (ImGui::Button(T("menu.issues.delete", "Delete"), ImVec2(120, 0))) {
 					if (DeleteFeatureFiles(issue)) {
-						// Remove from issues list after successful deletion
-						auto& issues = const_cast<std::vector<FeatureIssueInfo>&>(GetPipelineHealth());
-						issues.erase(std::remove_if(issues.begin(), issues.end(),
-										 [&issue](const FeatureIssueInfo& i) { return i.shortName == issue.shortName; }),
-							issues.end());
+						deletedIssue = issue.shortName;
 					}
 					ImGui::CloseCurrentPopup();
 				}
@@ -1451,6 +1513,12 @@ namespace PipelineHealth
 
 			for (const auto& testInfo : testInis) {
 				try {
+					if (!IsModuleIdentifier(testInfo.featureName) ||
+						!IsExpectedModulePath(testInfo.testIniPath, Util::PathHelpers::GetModuleDescriptorPath(testInfo.featureName))) {
+						logger::warn("Refusing unsafe test INI restoration target: {}", testInfo.featureName);
+						success = false;
+						continue;
+					}
 					if (testInfo.isNewFile) {
 						// Remove the test INI file we created.
 						std::error_code ec;  // Use the error_code overload to avoid exceptions for non-critical errors like the file not existing.
@@ -1470,7 +1538,7 @@ namespace PipelineHealth
 							// Restore the original version
 							if (testInfo.originalVersion == "none") {
 								// Remove the version key if it wasn't there originally
-								ini.Delete("Info", "Version");
+								ini.Delete("PIXL Module", "Version");
 							} else {
 								// Restore the original version
 								ini.SetValue("PIXL Module", "Version", testInfo.originalVersion.c_str());
@@ -1491,7 +1559,13 @@ namespace PipelineHealth
 					logger::warn("Failed to restore INI {}: {}", testInfo.testIniPath, e.what());
 					success = false;
 				}
-			}  // Clear the active test INIs tracking and remove persistent state
+			}
+			if (!success) {
+				// Preserve recovery metadata when a file was locked, missing, or unsafe.
+				logger::warn("Test INI restoration incomplete; retained recovery state for retry");
+				return false;
+			}
+			// Clear the active test INIs tracking and remove persistent state
 			s_activeTestInis.clear();
 			const auto stateFilePath = GetTestStateFilePath();
 			const auto& stateFilePathString = Util::WStringToString(stateFilePath);
