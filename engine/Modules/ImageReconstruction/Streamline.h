@@ -14,6 +14,7 @@
 #include <sl.h>
 #include <sl_consts.h>
 #include <sl_dlss.h>
+#include <sl_dlss_g.h>
 #include <sl_matrix_helpers.h>
 #include <sl_reflex.h>
 #include <sl_version.h>
@@ -24,6 +25,9 @@ class Streamline
 {
 public:
 	static constexpr const wchar_t* PluginDir = L"Data\\Shaders\\ImageReconstruction\\Streamline";
+	sl::RenderAPI renderAPI = sl::RenderAPI::eD3D11;
+	std::wstring pluginDir = PluginDir;
+	std::string instanceTag = "DX11";
 
 	Streamline() = default;
 
@@ -37,6 +41,11 @@ public:
 	bool featureDLSS = false;
 	bool featureReflex = false;
 	bool featurePCL = false;
+	bool featureDLSSG = false;
+	uint32_t dlssgMaxFramesToGenerate = 1;
+	sl::DLSSGStatus lastDLSSGStatus = sl::DLSSGStatus::eOk;
+	int dlssgConfiguredState = -1;
+	uint32_t dlssgConfiguredFrames = 0;
 	bool reflexSupportedOnCurrentAdapter = false;
 	// PIXL's current private Feature 18 integration is release-supported only on
 	// NVIDIA RTX 30-series and newer adapters. This is deliberately stricter
@@ -70,6 +79,8 @@ public:
 	PFun_slDLSSGetOptimalSettings* slDLSSGetOptimalSettings{};
 	PFun_slDLSSGetState* slDLSSGetState{};
 	PFun_slDLSSSetOptions* slDLSSSetOptions{};
+	PFun_slDLSSGGetState* slDLSSGGetState{};
+	PFun_slDLSSGSetOptions* slDLSSGSetOptions{};
 
 	// Reflex specific functions
 	PFun_slReflexGetState* slReflexGetState{};
@@ -116,6 +127,7 @@ public:
 
 	/** @brief Loads the Streamline interposer DLL and initializes the SDK with feature preferences. */
 	void LoadInterposer();
+	[[nodiscard]] bool SetD3DDevice12(ID3D12Device* device);
 
 	/**
 	 * @brief Queries available Streamline features (DLSS, Reflex, PCL) on the given adapter.
@@ -160,7 +172,12 @@ public:
 	void Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_reactiveMask, ID3D11Resource* a_transparencyCompositionMask, ID3D11Resource* a_motionVectors, bool resetHistory);
 	/** @brief Updates Reflex latency reduction state and performs the Reflex sleep call. */
 	void UpdateReflex();
+	bool IsReflexAvailable() const;
 
 	/** @brief Frees DLSS viewport resources through the Streamline SDK. */
 	void DestroyDLSSResources();
+	void ConfigureDLSSG(bool enabled);
+	void EmitPCLMarker(sl::PCLMarker marker);
+	bool TagDX12Resources(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* depth, ID3D12Resource* mvec,
+		ID3D12Resource* uiColorAndAlpha, uint32_t width, uint32_t height);
 };

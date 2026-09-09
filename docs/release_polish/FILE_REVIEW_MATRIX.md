@@ -1,9 +1,33 @@
 # PIXL Renderer Active File Review Matrix
 
+September 9 Reflex/defaults follow-up: see `REFLEX_ATMOSPHERE_20260909.md` for
+the selected-path review and validation limitations. New validation file:
+
+| Path | Subsystem | Active | Reviewed | Modified | Security reviewed | Fidelity reviewed | Performance reviewed | Future suggestions | Scope |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `tools/TestPixlAtmosphereDefaults.ps1` | Atmosphere default parity | YES | YES | Added | YES | Values only | N/A | YES | Read-only 54-field schema/float32 test |
+
 Historical review ledger inherited from the September 3 baseline. The YES flags below record that earlier ledger's assertions, NOT proof of a fresh September 7 semantic review of every file. Some Modified flags also refer to earlier work. The September 7 pass has checked build/staging boundaries and selected source paths; its exhaustive per-file review is still incomplete. A module summary or automated content scan cannot establish a per-file semantic review. See `CURRENT_PASS_STATUS.md` for current evidence and outstanding release gates. Do not treat this matrix alone as a completion certificate.
+
+September 9 reconstruction work is recorded in `IMAGE_RECONSTRUCTION_20260909.md`.
+That report distinguishes startup tests from pending gameplay and full-file review;
+it does not supersede the incomplete September 7 audit.
 
 | File | Module | Build Active | Reviewed | Modified | Security | Fidelity | Perf | Future Ideas | September 7 scope |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `tools/SidecarSmoke.cpp` | Reconstruction diagnostic | Tool | YES | YES | Partial: vendor internals excluded | Pending GPU visuals | No benchmark | YES | Added September 9; full source |
+| `tools/BuildSidecarSmoke.cmd` | Reconstruction diagnostic | Tool | YES | YES | YES | N/A | N/A | YES | Added September 9; full source |
+| `tools/TestPixlSidecarRuntime.ps1` | Runtime validation | Tool | YES | YES | Metadata only | N/A | N/A | YES | Added September 9; full source |
+| `pipeline/ImageReconstruction/Kernels/ImageReconstruction/StreamlineDX12/sl.interposer.dll` | DLSS-G runtime | YES | Provenance only | Added | NOT audited internally | Pending | Pending | YES | September 9 official 2.10.3 |
+| `pipeline/ImageReconstruction/Kernels/ImageReconstruction/StreamlineDX12/sl.common.dll` | DLSS-G runtime | YES | Provenance only | Added | NOT audited internally | Pending | Pending | YES | September 9 official 2.10.3 |
+| `pipeline/ImageReconstruction/Kernels/ImageReconstruction/StreamlineDX12/sl.dlss_g.dll` | DLSS-G runtime | YES | Provenance only | Added | NOT audited internally | Pending | Pending | YES | September 9 official 2.10.3 |
+| `pipeline/ImageReconstruction/Kernels/ImageReconstruction/StreamlineDX12/sl.reflex.dll` | DLSS-G runtime | YES | Provenance only | Added | NOT audited internally | N/A | Pending | YES | September 9 official 2.10.3 |
+| `pipeline/ImageReconstruction/Kernels/ImageReconstruction/StreamlineDX12/sl.pcl.dll` | DLSS-G runtime | YES | Provenance only | Added | NOT audited internally | N/A | Pending | YES | September 9 official 2.10.3 |
+| `pipeline/ImageReconstruction/Kernels/ImageReconstruction/StreamlineDX12/nvngx_dlssg.dll` | NGX runtime | YES | Provenance only | Added | NOT audited internally | Pending | Pending | YES | September 9 official SDK bundle |
+| `pipeline/ImageReconstruction/Kernels/ImageReconstruction/StreamlineDX12/license.txt` | Vendor notices | YES | Retained | Added | N/A | N/A | N/A | N/A | September 9 official SDK bundle |
+| `pipeline/ImageReconstruction/Kernels/ImageReconstruction/StreamlineDX12/3rd-party-licenses.md` | Vendor notices | YES | Retained | Added | N/A | N/A | N/A | N/A | September 9 official SDK bundle |
+| `pipeline/ImageReconstruction/Kernels/ImageReconstruction/StreamlineDX12/nvngx_dlss.license.txt` | Vendor notices | YES | Retained | Added | N/A | N/A | N/A | N/A | September 9 official SDK bundle |
+| `pipeline/ImageReconstruction/Kernels/ImageReconstruction/StreamlineDX12/reflex.license.txt` | Vendor notices | YES | Retained | Added | N/A | N/A | N/A | N/A | September 9 official SDK bundle |
 | `engine/Renderer/WorldBenchmark.cpp` | World Benchmark | YES | YES | NO | YES | YES | YES | YES | Pending |
 | `engine/Renderer/WorldBenchmark.h` | World Benchmark | YES | YES | NO | YES | YES | YES | YES | Pending |
 | `tools/AuditPixlRenderer.ps1` | Build / Release | YES | YES | YES | YES | YES | YES | YES | Full source |

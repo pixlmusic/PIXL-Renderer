@@ -63,10 +63,22 @@ public:
 class DX12SwapChain
 {
 public:
+	enum class Presenter : std::uint8_t
+	{
+		kNone,
+		kFidelityFX,
+		kDLSSG,
+		kNeuralOnly
+	};
+
+	Presenter presenter = Presenter::kNone;
 	winrt::com_ptr<ID3D12Device> d3d12Device;
+	// Native device stays available to NGX Neural Rendering and shared resources.
+	// Only mandatory Streamline hooks use this separate device wrapper.
+	winrt::com_ptr<ID3D12Device> dlssgDevice;
 	winrt::com_ptr<ID3D12CommandQueue> commandQueue;
-	winrt::com_ptr<ID3D12CommandAllocator> commandAllocators[2];
-	winrt::com_ptr<ID3D12GraphicsCommandList4> commandLists[2];
+	winrt::com_ptr<ID3D12CommandAllocator> commandAllocators[3];
+	winrt::com_ptr<ID3D12GraphicsCommandList4> commandLists[3];
 
 	IDXGISwapChain4* swapChain = nullptr;
 
@@ -106,8 +118,10 @@ public:
 
 	winrt::com_ptr<ID3D11Fence> d3d11Fence;
 	winrt::com_ptr<ID3D12Fence> d3d12Fence;
+	winrt::handle allocatorFenceEvent;
+	UINT64 allocatorFenceValues[3]{};
 
-	winrt::com_ptr<ID3D12Resource> swapChainBuffers[2];
+	winrt::com_ptr<ID3D12Resource> swapChainBuffers[3];
 
 	UINT frameIndex = 0;
 	UINT64 fenceValue = 0;
@@ -121,7 +135,10 @@ public:
 	float GetFrameTime() const;
 
 	void CreateD3D12Device(IDXGIAdapter* a_adapter);
-	void CreateSwapChain(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC swapChainDesc);
+	void RecreateCommandQueue();
+	void RecreateCommandObjects();
+	void CreateSwapChain(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC swapChainDesc, Presenter requestedPresenter);
+	void CreateSwapChainDirect(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC swapChainDesc, Presenter requestedPresenter);
 
 	void CreateInterop();
 

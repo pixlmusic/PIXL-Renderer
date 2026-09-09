@@ -1665,8 +1665,18 @@ HRESULT CameraSuite::PresentToSwapChain(IDXGISwapChain* swapChain, UINT syncInte
 void CameraSuite::DrawImGuiForPresent(bool frameGenActive, bool hdrReady)
 {
 	if (frameGenActive) {
-		auto& data = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGET::kFRAMEBUFFER];
-		globals::d3d::context->OMSetRenderTargets(1, &data.RTV, nullptr);
+		// The sidecar invokes this after ApplyHDR has copied the finished scene.
+		// kFRAMEBUFFER is no longer the presented target at this stage.
+		auto& sidecar = globals::pipeline::imageReconstruction.dx12SwapChain;
+		if (sidecar.swapChainBufferWrapped && sidecar.swapChainBufferWrapped->rtv) {
+			auto* target = sidecar.swapChainBufferWrapped->rtv;
+			globals::d3d::context->OMSetRenderTargets(1, &target, nullptr);
+			D3D11_VIEWPORT viewport{};
+			viewport.Width = static_cast<float>(sidecar.swapChainDesc.Width);
+			viewport.Height = static_cast<float>(sidecar.swapChainDesc.Height);
+			viewport.MaxDepth = 1.0f;
+			globals::d3d::context->RSSetViewports(1, &viewport);
+		}
 	} else if (hdrReady && uiTexture && uiTexture->rtv && uiTexture->resource) {
 		ID3D11RenderTargetView* uiRTV = uiTexture->rtv.get();
 		D3D11_TEXTURE2D_DESC texDesc{};
@@ -2725,7 +2735,11 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 {
 	auto* ui = globals::game::ui;
 	bool isMainOrLoadingMenu = globals::state->IsDisplayReferredModelMenuOpen(ui);
-	bool skipUIComposite = IsFGCompositingThisFrame();
+	// FidelityFX composites UI onto its real/generated frames itself. DLSS-G
+	// expects the real backbuffer to already contain HUD pixels and uses the
+	// separate UI guide for interpolation, so it must not skip this composite.
+	bool skipUIComposite = IsFGCompositingThisFrame() &&
+		globals::pipeline::imageReconstruction.dx12SwapChain.presenter == DX12SwapChain::Presenter::kFidelityFX;
 	const float frameDelta = std::clamp(static_cast<float>(RE::GetSecondsSinceLastFrame()), 1.0f / 240.0f, 0.1f);
 	const std::uint32_t currentFrame = globals::state ? globals::state->frameCount : 0u;
 

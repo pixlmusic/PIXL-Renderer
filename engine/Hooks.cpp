@@ -608,6 +608,8 @@ struct BSInputDeviceManager_PollInputDevices
 		// Reflex sleep/cap runs here by design: this executes before rendering work for the frame.
 		// UpdateReflex() enforces "once per frame" internally in case this hook is hit multiple times.
 		globals::pipeline::imageReconstruction.streamline.UpdateReflex();
+		if (globals::pipeline::imageReconstruction.dx12SwapChain.presenter == DX12SwapChain::Presenter::kDLSSG)
+			globals::pipeline::imageReconstruction.streamlineDX12.UpdateReflex();
 
 		bool blockedDevice = true;
 

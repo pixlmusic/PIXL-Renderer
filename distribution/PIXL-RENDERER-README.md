@@ -6,4 +6,10 @@ Choose a Quality profile, make any preferred Camera adjustments, then press **SA
 
 Do not combine PIXL Renderer with another engine-level shader-hook renderer, ENB, ReShade, Kreate, or a second copy of PIXL Renderer. The clean-cache archive compiles pipelines for the machine on first launch. Let that first compilation complete; do not repeatedly delete a healthy cache, because ordinary shader changes invalidate only the affected permutations.
 
+DLSS-G offers 2x, 3x and 4x output (subject to the runtime limit). It automatically requests Reflex during generation. Camera's advanced latency controls now use the active DLSS-G DX12 runtime: Boost and the Reflex limiter remain available even when the optional always-on Reflex switch is off. The limiter caps rendered frames, not generated output; frame generation does not increase simulation or input-update speed. FSR3 retains its own pacing path.
+
+For RTX 30-series DLSS-G, install the upstream `sdli1995/dlssg_for_sm86` proxy (`version.dll` and `dlssg_sm86.ini`) beside SkyrimSE.exe, not inside Data. These proxy files are not bundled or overwritten by this package. The matched Streamline DX12 runtime is bundled. See `DLSSG_SM86_INTEGRATION.md` for setup and known validation limits.
+
+The September 9 atmosphere look is now the shipped and Restore Defaults baseline. Existing saved graphics settings are preserved; choose Restore Defaults for Atmosphere if you want the new baseline in an existing installation. Named historical quality/look profiles remain independent.
+
 Licensing, source availability, third-party notices and attribution are provided in `SOURCE-AND-CREDITS.md` and `COPYING`.

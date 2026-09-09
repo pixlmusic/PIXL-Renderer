@@ -856,7 +856,9 @@ namespace BackgroundBlur
 		bool useUpscalingBackbuffer = imageReconstruction.d3d12SwapChainActive;
 
 		auto* hdr = globals::pipeline::cameraSuite.loaded ? &globals::pipeline::cameraSuite : nullptr;
-		bool hdrActive = hdr &&
+		// Sidecar UI is drawn after the HDR composite. Blur the final sidecar
+		// target in that path, rather than an earlier scene/UI buffer.
+		bool hdrActive = !useUpscalingBackbuffer && hdr &&
 		                 (hdr->settings.enableHDR || hdr->settings.enablePhysicalCamera) && hdr->hdrDataCB && hdr->outputTexture &&
 		                 hdr->hdrTexture && hdr->hdrTexture->resource && hdr->hdrTexture->srv && hdr->hdrTexture->rtv;
 
@@ -895,9 +897,8 @@ namespace BackgroundBlur
 			currentRTV.copy_from(res.backbufferRTV);
 			sourceSRV = res.backbufferSRV;
 
-			// D3D12 HDR/FG can route vanilla UI into a separate buffer.
-			if (ShouldUseD3D12UIBufferForBlur())
-				uiBuffer = GetD3D12UIBufferViews(res);
+			// Vanilla UI has already been composited here. Do not composite it
+			// again or clear its separate interpolation input during menu blur.
 		} else {
 			// Normal path: get current render target
 			ID3D11RenderTargetView* rawRTV = nullptr;

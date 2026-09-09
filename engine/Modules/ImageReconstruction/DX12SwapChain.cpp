@@ -38,25 +38,118 @@ namespace
 
 void DX12SwapChain::CreateD3D12Device(IDXGIAdapter* a_adapter)
 {
-	DX::ThrowIfFailed(D3D12CreateDevice(a_adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&d3d12Device)));
+	// DLSS-G availability is probed against this device before the swap chain is
+	// created. Do not replace the device after Streamline has bound to it.
+	if (d3d12Device)
+		return;
 
+	DX::ThrowIfFailed(D3D12CreateDevice(a_adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&d3d12Device)));
+	RecreateCommandObjects();
+}
+
+void DX12SwapChain::RecreateCommandQueue()
+{
 	D3D12_COMMAND_QUEUE_DESC queueDesc = {};
 	queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 	queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
 	queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
 	queueDesc.NodeMask = 0;
 
-	DX::ThrowIfFailed(d3d12Device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&commandQueue)));
+	commandQueue = nullptr;
+	auto* queueDevice = dlssgDevice ? dlssgDevice.get() : d3d12Device.get();
+	DX::ThrowIfFailed(queueDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&commandQueue)));
+}
 
-	for (int i = 0; i < 2; i++) {
+void DX12SwapChain::RecreateCommandObjects()
+{
+	// Startup-only: rebuild command objects before submission begins. The
+	// upgraded device wraps the same native device; it does not replace the GPU.
+	// Queue creation through the wrapper registers the DLSS-G presentation queue.
+	for (auto& commandList : commandLists)
+		commandList = nullptr;
+	for (auto& commandAllocator : commandAllocators)
+		commandAllocator = nullptr;
+	RecreateCommandQueue();
+	for (int i = 0; i < 3; i++) {
 		DX::ThrowIfFailed(d3d12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocators[i])));
 		DX::ThrowIfFailed(d3d12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocators[i].get(), nullptr, IID_PPV_ARGS(&commandLists[i])));
-		commandLists[i]->Close();
+		DX::ThrowIfFailed(commandLists[i]->Close());
 	}
 }
 
-void DX12SwapChain::CreateSwapChain(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC a_swapChainDesc)
+void DX12SwapChain::CreateSwapChainDirect(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC a_swapChainDesc, Presenter requestedPresenter)
 {
+	const bool enableDLSSG = requestedPresenter == Presenter::kDLSSG;
+	if (!enableDLSSG && requestedPresenter != Presenter::kNeuralOnly) {
+		logger::critical("[DX12SwapChain] Invalid direct presenter requested");
+		DX::ThrowIfFailed(E_INVALIDARG);
+	}
+
+	CreateD3D12Device(adapter);
+	logger::info("[DX12SwapChain] Creating native {} swap chain", enableDLSSG ? "DLSS-G" : "Neural Rendering");
+	IDXGIFactory4* factoryRaw{};
+	DX::ThrowIfFailed(adapter->GetParent(IID_PPV_ARGS(&factoryRaw)));
+	if (enableDLSSG) {
+		// Streamline's DX12 manual hook must see the factory before the swap chain
+		// is created.  Upgrading the completed swap chain after CreateSwapChainForHwnd
+		// is too late for the DLSS-G presenter and can fault on the first Present.
+		logger::info("[Streamline DX12] Upgrading DXGI factory before native DLSS-G swap-chain creation");
+		auto& streamlineDX12 = globals::pipeline::imageReconstruction.streamlineDX12;
+		if (streamlineDX12.slUpgradeInterface) {
+			const sl::Result upgradeResult = streamlineDX12.slUpgradeInterface(
+				reinterpret_cast<void**>(&factoryRaw));
+			if (upgradeResult != sl::Result::eOk) {
+				factoryRaw->Release();
+				logger::error("[Streamline DX12] DXGI factory upgrade returned {}", magic_enum::enum_name(upgradeResult));
+				DX::ThrowIfFailed(E_FAIL);
+			}
+		}
+	}
+	winrt::com_ptr<IDXGIFactory4> dxgiFactory;
+	dxgiFactory.attach(factoryRaw);
+
+	DXGI_FORMAT format = DXGI_FORMAT_R10G10B10A2_UNORM;
+	D3D12_FEATURE_DATA_FORMAT_SUPPORT support{ format, D3D12_FORMAT_SUPPORT1_RENDER_TARGET, D3D12_FORMAT_SUPPORT2_NONE };
+	if (FAILED(d3d12Device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) ||
+		!(support.Support1 & D3D12_FORMAT_SUPPORT1_RENDER_TARGET))
+		format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	swapChainDesc = {};
+	swapChainDesc.Width = a_swapChainDesc.BufferDesc.Width;
+	swapChainDesc.Height = a_swapChainDesc.BufferDesc.Height;
+	swapChainDesc.Format = format;
+	swapChainDesc.SampleDesc.Count = 1;
+	swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+	swapChainDesc.BufferCount = enableDLSSG ? 3u : 2u;
+	swapChainDesc.SwapEffect = a_swapChainDesc.SwapEffect;
+	swapChainDesc.Flags = enableDLSSG ?
+		a_swapChainDesc.Flags & ~DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : a_swapChainDesc.Flags;
+	winrt::com_ptr<IDXGISwapChain1> nativeSwapChain;
+	logger::info("[DX12SwapChain] Calling CreateSwapChainForHwnd");
+	DX::ThrowIfFailed(dxgiFactory->CreateSwapChainForHwnd(commandQueue.get(), a_swapChainDesc.OutputWindow,
+		&swapChainDesc, nullptr, nullptr, nativeSwapChain.put()));
+	logger::info("[DX12SwapChain] Native swap chain created");
+	DX::ThrowIfFailed(nativeSwapChain->QueryInterface(IID_PPV_ARGS(&swapChain)));
+	logger::info("[DX12SwapChain] Native swap chain interface acquired");
+	for (UINT i = 0; i < swapChainDesc.BufferCount; ++i)
+		DX::ThrowIfFailed(swapChain->GetBuffer(i, IID_PPV_ARGS(&swapChainBuffers[i])));
+	frameIndex = swapChain->GetCurrentBackBufferIndex();
+	auto* hdr = globals::pipeline::cameraSuite.loaded ? &globals::pipeline::cameraSuite : nullptr;
+	SetColorSpace(hdr && hdr->settings.enableHDR && format == DXGI_FORMAT_R10G10B10A2_UNORM);
+	presenter = requestedPresenter;
+	logger::info("[DX12SwapChain] Created isolated native {} swap chain", enableDLSSG ? "DLSS-G" : "Neural Rendering");
+}
+
+void DX12SwapChain::CreateSwapChain(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC a_swapChainDesc, Presenter requestedPresenter)
+{
+	if (requestedPresenter == Presenter::kDLSSG || requestedPresenter == Presenter::kNeuralOnly) {
+		CreateSwapChainDirect(adapter, a_swapChainDesc, requestedPresenter);
+		return;
+	}
+	if (requestedPresenter != Presenter::kFidelityFX) {
+		logger::critical("[DX12SwapChain] Invalid FidelityFX presenter request");
+		DX::ThrowIfFailed(E_INVALIDARG);
+	}
+
 	CreateD3D12Device(adapter);
 
 	winrt::com_ptr<IDXGIFactory4> dxgiFactory;
@@ -96,37 +189,23 @@ void DX12SwapChain::CreateSwapChain(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC 
 	swapChainDesc.SwapEffect = a_swapChainDesc.SwapEffect;
 	swapChainDesc.Flags = a_swapChainDesc.Flags;
 
+	auto& fidelityFX = globals::pipeline::imageReconstruction.fidelityFX;
 	ffx::CreateContextDescFrameGenerationSwapChainForHwndDX12 ffxSwapChainDesc{};
-
 	ffxSwapChainDesc.desc = &swapChainDesc;
 	ffxSwapChainDesc.dxgiFactory = dxgiFactory.get();
 	ffxSwapChainDesc.fullscreenDesc = nullptr;
 	ffxSwapChainDesc.gameQueue = commandQueue.get();
 	ffxSwapChainDesc.hwnd = a_swapChainDesc.OutputWindow;
 	ffxSwapChainDesc.swapchain = &swapChain;
-
-	auto& fidelityFX = globals::pipeline::imageReconstruction.fidelityFX;
-
 	if (ffx::CreateContext(fidelityFX.swapChainContext, nullptr, ffxSwapChainDesc) != ffx::ReturnCode::Ok) {
 		logger::critical("[FidelityFX] Failed to create swap chain context!");
 		DX::ThrowIfFailed(E_FAIL);
 	}
 
-	// Manual Streamline integration must observe Present once per frame so its
-	// common plugin can retire frame-scoped tags and internal resources. Wrap
-	// the internal FidelityFX swap chain here while leaving PIXL's D3D11-facing
-	// DXGISwapChainProxy as the outermost interface returned to Skyrim.
-	auto& streamline = globals::pipeline::imageReconstruction.streamline;
-	if (streamline.initialized && streamline.slUpgradeInterface) {
-		const sl::Result upgradeResult = streamline.slUpgradeInterface(reinterpret_cast<void**>(&swapChain));
-		if (upgradeResult != sl::Result::eOk) {
-			logger::error(
-				"[Streamline] Failed to wrap the frame-generation swap chain: {}",
-				magic_enum::enum_name(upgradeResult));
-		} else {
-			logger::info("[Streamline] Frame-generation present path connected");
-		}
-	}
+	// This swap chain is owned solely by FidelityFX. Wrapping it with either
+	// Streamline instance creates two independent Present owners and can deadlock
+	// when Skyrim transitions from a loading screen to its first world frame.
+	presenter = Presenter::kFidelityFX;
 
 	DX::ThrowIfFailed(swapChain->GetBuffer(0, IID_PPV_ARGS(&swapChainBuffers[0])));
 	DX::ThrowIfFailed(swapChain->GetBuffer(1, IID_PPV_ARGS(&swapChainBuffers[1])));
@@ -149,6 +228,11 @@ void DX12SwapChain::CreateInterop()
 	DX::ThrowIfFailed(d3d12Device->CreateSharedHandle(d3d12Fence.get(), nullptr, GENERIC_ALL, nullptr, &sharedFenceHandle));
 	DX::ThrowIfFailed(d3d11Device->OpenSharedFence(sharedFenceHandle, IID_PPV_ARGS(&d3d11Fence)));
 	CloseHandle(sharedFenceHandle);
+	allocatorFenceEvent.attach(CreateEventW(nullptr, FALSE, FALSE, nullptr));
+	if (!allocatorFenceEvent)
+		DX::ThrowIfFailed(HRESULT_FROM_WIN32(GetLastError()));
+	for (auto& value : allocatorFenceValues)
+		value = 0;
 
 	swapChainProxy = std::make_unique<DXGISwapChainProxy>(swapChain);
 
@@ -208,6 +292,8 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	auto& imageReconstruction = globals::pipeline::imageReconstruction;
 	bool completedNeuralThisFrame = false;
 	std::uint32_t neuralOutputIndexThisFrame = UINT32_MAX;
+	static bool loggedFirstDLSSGPresent = false;
+	const bool traceDLSSGPresent = presenter == Presenter::kDLSSG && imageReconstruction.streamlineDX12.featureDLSSG && !loggedFirstDLSSGPresent;
 
 	// The proxy swap chain bypasses PIXL's native D3D11 Present detour. Draw the
 	// renderer overlay here so its input queue, compiler panel and settings menu
@@ -234,6 +320,23 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	fenceValue++;
 
 	// New frame, reset
+	// A GPU-side queue Wait does not make a CPU allocator Reset safe. Wait
+	// only for this backbuffer's previous submission before reusing its memory.
+	if (frameIndex >= swapChainDesc.BufferCount || frameIndex >= 3)
+		return DXGI_ERROR_INVALID_CALL;
+	const UINT64 allocatorCompletion = allocatorFenceValues[frameIndex];
+	const UINT64 completedFence = d3d12Fence->GetCompletedValue();
+	if (completedFence == UINT64_MAX)
+		return DXGI_ERROR_DEVICE_REMOVED;
+	if (allocatorCompletion && completedFence < allocatorCompletion) {
+		const HRESULT waitResult = d3d12Fence->SetEventOnCompletion(allocatorCompletion, allocatorFenceEvent.get());
+		if (FAILED(waitResult))
+			return waitResult;
+		if (WaitForSingleObject(allocatorFenceEvent.get(), 5000) != WAIT_OBJECT_0) {
+			logger::error("[DX12SwapChain] GPU allocator fence did not complete within five seconds");
+			return DXGI_ERROR_DEVICE_HUNG;
+		}
+	}
 	DX::ThrowIfFailed(commandAllocators[frameIndex]->Reset());
 	DX::ThrowIfFailed(commandLists[frameIndex]->Reset(commandAllocators[frameIndex].get(), nullptr));
 
@@ -246,7 +349,10 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 		ID3D12Resource* presentationSource = fakeSwapChain;
 		bool neuralTransitionsActive = false;
 
-		auto& neuralOutput = neuralRenderingOutputWrapped[frameIndex];
+		// DLSS-G uses three backbuffers while neural output remains deliberately
+		// double-buffered. Never index the neural array with the raw swap index.
+		const std::uint32_t neuralOutputIndex = static_cast<std::uint32_t>(frameIndex) & 1u;
+		auto& neuralOutput = neuralRenderingOutputWrapped[neuralOutputIndex];
 		if (imageReconstruction.ShouldUseNeuralRenderingThisFrame() &&
 			neuralOutput && neuralOutput->resource &&
 			neuralDepthBufferShared12 && neuralDepthBufferShared12->resource &&
@@ -375,18 +481,92 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 		}
 	}
 
-	imageReconstruction.fidelityFX.Present(imageReconstruction.ShouldUseFrameGenerationThisFrame(), isHDR);
+	if (presenter == Presenter::kDLSSG && imageReconstruction.streamlineDX12.featureDLSSG) {
+		auto& dlssg = imageReconstruction.streamlineDX12;
+		if (traceDLSSGPresent)
+			logger::info("[DX12SwapChain] DLSS-G present stage: begin frame setup");
+		const bool hasFrameToken = dlssg.EnsureFrameToken();
+		if (traceDLSSGPresent)
+			logger::info("[DX12SwapChain] DLSS-G present stage: frame token {}", hasFrameToken ? "ready" : "missing");
+		dlssg.EmitPCLMarker(sl::PCLMarker::eSimulationEnd);
+		dlssg.EmitPCLMarker(sl::PCLMarker::eRenderSubmitStart);
+		if (traceDLSSGPresent)
+			logger::info("[DX12SwapChain] DLSS-G present stage: PCL start markers emitted");
+		if (dlssg.CheckFrameConstants(dlssg.viewport, false)) {
+			if (traceDLSSGPresent)
+				logger::info("[DX12SwapChain] DLSS-G present stage: frame constants ready");
+			const bool tagsReady = dlssg.TagDX12Resources(commandLists[frameIndex].get(),
+				depthBufferShared12 ? depthBufferShared12->resource.get() : nullptr,
+				motionVectorBufferShared12 ? motionVectorBufferShared12->resource.get() : nullptr,
+				uiBufferWrapped ? uiBufferWrapped->resource.get() : nullptr,
+				swapChainDesc.Width, swapChainDesc.Height);
+			if (traceDLSSGPresent)
+				logger::info("[DX12SwapChain] DLSS-G present stage: resources tagged");
+			dlssg.ConfigureDLSSG(tagsReady && imageReconstruction.ShouldUseFrameGenerationThisFrame());
+			if (traceDLSSGPresent)
+				logger::info("[DX12SwapChain] DLSS-G present stage: options configured");
+		} else {
+			dlssg.ConfigureDLSSG(false);
+			if (traceDLSSGPresent)
+				logger::info("[DX12SwapChain] DLSS-G present stage: constants unavailable, disabled for frame");
+		}
+	} else if (presenter == Presenter::kFidelityFX) {
+		imageReconstruction.fidelityFX.Present(imageReconstruction.ShouldUseFrameGenerationThisFrame(), isHDR);
+	}
 
 	DX::ThrowIfFailed(commandLists[frameIndex]->Close());
+	if (traceDLSSGPresent)
+		logger::info("[DX12SwapChain] DLSS-G present stage: command list closed");
 
 	ID3D12CommandList* commandListsToExecute[] = { commandLists[frameIndex].get() };
 	commandQueue->ExecuteCommandLists(1, commandListsToExecute);
+	if (traceDLSSGPresent)
+		logger::info("[DX12SwapChain] DLSS-G present stage: command list executed");
+	if (presenter == Presenter::kDLSSG && imageReconstruction.streamlineDX12.featureDLSSG) {
+		imageReconstruction.streamlineDX12.EmitPCLMarker(sl::PCLMarker::eRenderSubmitEnd);
+		imageReconstruction.streamlineDX12.EmitPCLMarker(sl::PCLMarker::ePresentStart);
+		if (traceDLSSGPresent)
+			logger::info("[DX12SwapChain] DLSS-G present stage: submit/present markers emitted");
+		loggedFirstDLSSGPresent = true;
+	}
 
 	// Present the frame
 	DX::ThrowIfFailed(swapChain->Present(SyncInterval, Flags));
+	if (traceDLSSGPresent)
+		logger::info("[DX12SwapChain] DLSS-G present stage: swap chain present returned");
+	if (presenter == Presenter::kDLSSG && imageReconstruction.streamlineDX12.featureDLSSG)
+		imageReconstruction.streamlineDX12.EmitPCLMarker(sl::PCLMarker::ePresentEnd);
+	if (presenter == Presenter::kDLSSG && imageReconstruction.streamlineDX12.featureDLSSG) {
+		auto& dlssg = imageReconstruction.streamlineDX12;
+		sl::DLSSGState state{};
+		const auto result = dlssg.slDLSSGGetState(dlssg.viewport, state, nullptr);
+		if (result != sl::Result::eOk) {
+			logger::error("[Streamline DX12] Cannot retrieve input completion fence: {}", magic_enum::enum_name(result));
+			return E_FAIL;
+		}
+		dlssg.dlssgMaxFramesToGenerate = std::clamp(state.numFramesToGenerateMax, 1u, 3u);
+		// DLSS-G consumes tagged textures asynchronously. Skyrim writes those
+		// textures on D3D11, a non-presenting queue. Bridge SL's completion fence
+		// through our shared fence before allowing the next D3D11 writes.
+		if (state.inputsProcessingCompletionFence) {
+			DX::ThrowIfFailed(commandQueue->Wait(
+				static_cast<ID3D12Fence*>(state.inputsProcessingCompletionFence),
+				state.lastPresentInputsProcessingCompletionFenceValue));
+		}
+		if (state.status != dlssg.lastDLSSGStatus) {
+			logger::info("[Streamline DX12] DLSS-G status: {}", static_cast<uint32_t>(state.status));
+			dlssg.lastDLSSGStatus = state.status;
+		}
+		static bool loggedGeneratedFrames = false;
+		if (!loggedGeneratedFrames && dlssg.dlssgConfiguredState == 1 && state.numFramesActuallyPresented > 1) {
+			loggedGeneratedFrames = true;
+			logger::info("[Streamline DX12] DLSS-G reported {} frames presented since the previous present-thread query", state.numFramesActuallyPresented);
+		}
+	}
 
 	// Wait for D3D12 to finish
 	DX::ThrowIfFailed(commandQueue->Signal(d3d12Fence.get(), fenceValue));
+	allocatorFenceValues[frameIndex] = fenceValue;
 	DX::ThrowIfFailed(d3d11Context->Wait(d3d11Fence.get(), fenceValue));
 	fenceValue++;
 

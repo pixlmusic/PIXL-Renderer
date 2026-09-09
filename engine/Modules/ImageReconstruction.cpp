@@ -6,6 +6,7 @@
 #include "HybridGI.h"
 #include "Hooks.h"
 #include "State.h"
+#include "Menu.h"
 #include "ImageReconstruction/DX12SwapChain.h"
 #include "ImageReconstruction/FidelityFX.h"
 #include "ImageReconstruction/Streamline.h"
@@ -28,6 +29,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	frameLimitMode,
 	frameLimitFPS,
 	frameGenerationMode,
+	frameGenerationBackend,
+	dlssgGeneratedFrames,
 	frameGenerationForceEnable,
 	frameGenerationAllowInMenus,
 	streamlineLogLevel,
@@ -100,12 +103,11 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 		pSwapChainDesc->BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 	}
 
-	bool shouldProxy = true;
-	if (shouldProxy && !pSwapChainDesc->Windowed) {
+	bool sidecarAllowed = pSwapChainDesc->Windowed != FALSE;
+	if (!sidecarAllowed) {
 		// The DX11/DX12 shared presentation path is stable in windowed/borderless
 		// mode. Native exclusive mode survives initial creation but DXGI can fault
 		// during Alt-Tab ownership transitions, so never provision the sidecar there.
-		shouldProxy = false;
 		logger::warn("[ImageReconstruction] DX12 sidecar unavailable in exclusive fullscreen; use borderless for Neural Rendering or Frame Generation");
 	}
 
@@ -113,31 +115,71 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 	imageReconstruction.refreshRate = refreshRate;
 
 	const bool neuralRenderingProvisioned =
+		imageReconstruction.settings.neuralRenderingEnabled &&
 		imageReconstruction.settings.upscaleMethod == static_cast<uint>(ImageReconstruction::UpscaleMethod::kDLSS) &&
 		imageReconstruction.streamline.neuralRenderingSupportedOnCurrentAdapter;
-	if (shouldProxy) {
-		if (neuralRenderingProvisioned) {
-			// Neural Rendering reuses PIXL's DX12 sidecar but does not require a
-			// high-refresh display. Provision it for DLSS sessions even when the
-			// real-time master is off so Photo Finish can invoke it transactionally.
-			// Frame Generation remains independently gated.
-			shouldProxy = true;
-		} else if (imageReconstruction.settings.frameGenerationMode)
-			if (refreshRate >= 120)
-				shouldProxy = true;
-			else if (imageReconstruction.settings.frameGenerationForceEnable)
-				shouldProxy = true;
+	const bool frameGenerationRequested = imageReconstruction.settings.frameGenerationMode != 0;
+	const bool refreshAllowsFrameGeneration = refreshRate >= 120 || imageReconstruction.settings.frameGenerationForceEnable;
+	DX12SwapChain::Presenter requestedPresenter = DX12SwapChain::Presenter::kNone;
+
+	if (sidecarAllowed && frameGenerationRequested && refreshAllowsFrameGeneration) {
+		if (!imageReconstruction.UsesDLSSGFrameGeneration()) {
+			if (imageReconstruction.HasFrameGenModule())
+				requestedPresenter = DX12SwapChain::Presenter::kFidelityFX;
 			else
-				shouldProxy = false;
-		else
-			shouldProxy = false;
+				logger::warn("[Frame Generation] FSR3 runtime is unavailable; preserving the native D3D11 swap chain");
+		} else if (imageReconstruction.streamlineDX12.initialized && adapterDesc.VendorId == 0x10DE) {
+			// DLSS-G capability is only reliable after the D3D12 instance is bound to
+			// a real device. Probe the raw device first so a failed probe cannot taint
+			// the independent FidelityFX presenter.
+			auto& sidecar = imageReconstruction.dx12SwapChain;
+			auto& dlssg = imageReconstruction.streamlineDX12;
+			sidecar.CreateD3D12Device(pAdapter);
+			if (dlssg.SetD3DDevice12(sidecar.d3d12Device.get())) {
+				dlssg.CheckFeatures(pAdapter);
+				dlssg.PostDevice();
+				if (dlssg.featureDLSSG && dlssg.slUpgradeInterface) {
+					logger::info("[Streamline DX12] Upgrading D3D12 device for DLSS-G");
+					// Preserve the native device for NGX and resource allocation.
+					sidecar.dlssgDevice.copy_from(sidecar.d3d12Device.get());
+					auto* proxyDevice = sidecar.dlssgDevice.detach();
+					const sl::Result upgradeResult = dlssg.slUpgradeInterface(
+						reinterpret_cast<void**>(&proxyDevice));
+					sidecar.dlssgDevice.attach(proxyDevice);
+					if (upgradeResult == sl::Result::eOk) {
+						// The presentation queue must originate from the upgraded device.
+						sidecar.RecreateCommandObjects();
+						logger::info("[Streamline DX12] D3D12 device and presentation queue upgraded");
+						requestedPresenter = DX12SwapChain::Presenter::kDLSSG;
+					} else {
+						sidecar.dlssgDevice = nullptr;
+						logger::error("[Streamline DX12] D3D12 device upgrade failed: {}", magic_enum::enum_name(upgradeResult));
+					}
+				}
+			}
+			if (requestedPresenter != DX12SwapChain::Presenter::kDLSSG)
+				logger::warn("[Frame Generation] DLSS-G is unavailable; preserving the native D3D11 swap chain");
+		} else {
+			logger::warn("[Frame Generation] DLSS-G requires its DX12 Streamline runtime on an NVIDIA adapter; preserving the native D3D11 swap chain");
+		}
+	} else if (frameGenerationRequested && !refreshAllowsFrameGeneration) {
+		logger::info("[Frame Generation] Sidecar not provisioned below 120 Hz unless Force Enable is selected");
 	}
+
+	if (sidecarAllowed && requestedPresenter == DX12SwapChain::Presenter::kNone && neuralRenderingProvisioned) {
+		// Neural-only sessions use a plain native D3D12 swap chain. FidelityFX and
+		// the DLSS-G presentation hooks remain completely outside this path.
+		requestedPresenter = DX12SwapChain::Presenter::kNeuralOnly;
+	}
+	const bool shouldProxy = requestedPresenter != DX12SwapChain::Presenter::kNone;
 
 	imageReconstruction.lowRefreshRate = refreshRate < 120;
 	imageReconstruction.isWindowed = pSwapChainDesc->Windowed;
-	imageReconstruction.frameGenerationRequestedAtBoot = imageReconstruction.settings.frameGenerationMode != 0;
+	imageReconstruction.frameGenerationRequestedAtBoot =
+		requestedPresenter == DX12SwapChain::Presenter::kFidelityFX ||
+		requestedPresenter == DX12SwapChain::Presenter::kDLSSG;
 	imageReconstruction.neuralRenderingRequestedAtBoot = imageReconstruction.settings.neuralRenderingEnabled;
-	imageReconstruction.neuralRenderingProvisionedAtBoot = neuralRenderingProvisioned;
+	imageReconstruction.neuralRenderingProvisionedAtBoot = shouldProxy && neuralRenderingProvisioned;
 	imageReconstruction.neuralRenderingQualityModeAtBoot = imageReconstruction.settings.neuralRenderingQualityMode;
 	imageReconstruction.neuralRenderingOutputPresetAtBoot = imageReconstruction.settings.neuralRenderingOutputPreset;
 
@@ -150,8 +192,7 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 			imageReconstruction.settings.neuralRenderingEnabled,
 			imageReconstruction.neuralRenderingProvisionedAtBoot);
 
-		if (imageReconstruction.HasFrameGenModule()) {
-			DX::ThrowIfFailed(D3D11CreateDevice(
+		DX::ThrowIfFailed(D3D11CreateDevice(
 				pAdapter,
 				DriverType,
 				Software,
@@ -163,38 +204,24 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 				pFeatureLevel,
 				ppImmediateContext));
 
-			if (imageReconstruction.IsBackendInitialized()) {
-				// Bind Streamline's D3D11 device before creating the internal
-				// D3D12 swap chain. Upgrading that swap chain activates its
-				// Present hook immediately and therefore requires a bound device.
-				imageReconstruction.UpgradeBackendInterface((void**)&(*ppDevice));
-				imageReconstruction.SetBackendD3DDevice(*ppDevice);
-			}
+		// Interop must retain the real D3D11 device. Streamline's D3D11 wrapper is
+		// returned to Skyrim only after the sidecar and its shared fences exist.
+		imageReconstruction.SetProxyD3D11Device(*ppDevice);
+		imageReconstruction.SetProxyD3D11DeviceContext(*ppImmediateContext);
+		imageReconstruction.CreateProxySwapChain(pAdapter, *pSwapChainDesc, requestedPresenter);
+		imageReconstruction.CreateProxyInterop();
 
-			imageReconstruction.SetProxyD3D11Device(*ppDevice);
-			imageReconstruction.SetProxyD3D11DeviceContext(*ppImmediateContext);
-			imageReconstruction.CreateProxySwapChain(pAdapter, *pSwapChainDesc);
-			imageReconstruction.CreateProxyInterop();
+		*ppSwapChain = imageReconstruction.GetProxySwapChain();
+		imageReconstruction.d3d12SwapChainActive = true;
 
-			*ppSwapChain = imageReconstruction.GetProxySwapChain();
-
-			imageReconstruction.d3d12SwapChainActive = true;
-
-			if (imageReconstruction.IsBackendInitialized()) {
-				// The internal D3D12 swap chain was wrapped during creation so
-				// Streamline observes Present. Keep PIXL's D3D11-facing proxy
-				// outermost because other SKSE plugins rely on its GetDevice()
-				// override returning IID_ID3D11Device.
-				// Some features (notably Reflex/PCL) may report availability only after device bind.
-				imageReconstruction.CheckBackendFeatures(pAdapter);
-				imageReconstruction.PostBackendDevice();
-			}
-
-			return S_OK;
-		} else {
-			logger::warn("[Frame Generation] FidelityFX DLLs are not loaded, skipping proxy");
-			imageReconstruction.fidelityFXMissing = true;
+		if (imageReconstruction.IsBackendInitialized()) {
+			imageReconstruction.UpgradeBackendInterface(reinterpret_cast<void**>(ppDevice));
+			imageReconstruction.SetBackendD3DDevice(*ppDevice);
+			imageReconstruction.CheckBackendFeatures(pAdapter);
+			imageReconstruction.PostBackendDevice();
 		}
+
+		return S_OK;
 	}
 
 	auto ret = ptrD3D11CreateDeviceAndSwapChainUpscaling(pAdapter,
@@ -552,7 +579,18 @@ void ImageReconstruction::DrawSettings()
 							  "Uses AMD FSR Frame Generation technology"));
 		if (HasFrameGenModule())
 			ImGui::Text("%s", T(TKEY("frame_generation_available"),
-								  "AMD FSR Frame Generation is available."));
+					"AMD FSR Frame Generation is available."));
+		if (HasDLSSGModule())
+			ImGui::Text("NVIDIA DLSS Frame Generation is available (SM86 proxy compatible).");
+
+		const char* frameGenerationBackends[] = { "AMD FSR 3", "NVIDIA DLSSG (SM86)" };
+		int frameGenerationBackend = static_cast<int>(std::min<uint>(settings.frameGenerationBackend, 1u));
+		if (ImGui::Combo("Frame Generation backend", &frameGenerationBackend, frameGenerationBackends, _countof(frameGenerationBackends))) {
+			settings.frameGenerationBackend = static_cast<uint>(frameGenerationBackend);
+			settings.frameGenerationMode = settings.frameGenerationMode ? 1u : 0u;
+		}
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Selects the frame-generation runtime. DLSSG requires the SM86 version.dll and dlssg_sm86.ini beside SkyrimSE.exe; restart after changing this option.");
 		ImGui::Text("%s", T(TKEY("frame_generation_proxy_note"),
 							  "Requires a D3D11 to D3D12 proxy which can create compatibility issues"));
 		ImGui::Text("%s", T(TKEY("frame_generation_restart_note"),
@@ -569,7 +607,7 @@ void ImageReconstruction::DrawSettings()
 			onlyRequiresRestart = false;
 		}
 
-		if (fidelityFXMissing) {
+		if (fidelityFXMissing && !UsesDLSSGFrameGeneration()) {
 			Util::Text::Warning("Warning: FidelityFX DLLs are not loaded");
 
 			onlyRequiresRestart = false;
@@ -630,15 +668,25 @@ void ImageReconstruction::DrawSettings()
 			ImGui::TextUnformatted(T(TKEY("frame_generation_in_menus_tooltip_1"), "Keeps frame generation active while game menus are open."));
 			ImGui::TextUnformatted(T(TKEY("frame_generation_in_menus_tooltip_2"), "May feel smoother, but increases menu input latency."));
 		}
+		if (UsesDLSSGFrameGeneration()) {
+			const char* multipliers[] = { "2x", "3x", "4x" };
+			int multiplier = static_cast<int>(std::clamp(settings.dlssgGeneratedFrames, 1u, 3u)) - 1;
+			if (ImGui::Combo("DLSS-G frame multiplier", &multiplier, multipliers, _countof(multipliers)))
+				settings.dlssgGeneratedFrames = static_cast<uint>(multiplier + 1);
+		}
 
 		ImGui::TreePop();
 	}
 
 	if (streamline.reflexSupportedOnCurrentAdapter && ImGui::TreeNodeEx(T(TKEY("nvidia_reflex"), "NVIDIA Reflex"), ImGuiTreeNodeFlags_DefaultOpen)) {
-		const bool reflexBlockedByFrameGeneration = frameGenerationDx12PathActive;
-		const bool reflexAvailable = streamline.initialized && streamline.featureReflex;
+		const bool dlssgReflex = dx12SwapChain.presenter == DX12SwapChain::Presenter::kDLSSG;
+		const auto& reflexRuntime = dlssgReflex ? streamlineDX12 : streamline;
+		const bool reflexBlockedByFrameGeneration = frameGenerationDx12PathActive && !dlssgReflex;
+		const bool reflexAvailable = reflexRuntime.IsReflexAvailable();
 		const bool reflexControlsAvailable = reflexAvailable && !reflexBlockedByFrameGeneration;
-		const bool markerOptimizationAvailable = reflexControlsAvailable && streamline.featurePCL;
+		const bool markerOptimizationAvailable = reflexControlsAvailable && reflexRuntime.featurePCL;
+		if (dlssgReflex)
+			ImGui::TextWrapped("DLSS-G automatically enables Reflex during generation. Boost and the limiter use its DX12 runtime; the cap is rendered FPS, not generated output.");
 		if (reflexBlockedByFrameGeneration) {
 			ImGui::TextDisabled("%s", T(TKEY("reflex_blocked_by_fg"), "Reflex is unavailable while the DX12 frame-generation swapchain is active."));
 		}
@@ -656,7 +704,7 @@ void ImageReconstruction::DrawSettings()
 			ImGui::TextUnformatted(T(TKEY("low_latency_mode_tooltip_2"), "Can reduce max FPS a little, but usually feels more responsive."));
 		}
 
-		if (!settings.reflexLowLatencyMode)
+		if (!settings.reflexLowLatencyMode && !dlssgReflex)
 			ImGui::BeginDisabled();
 
 		ImGui::Checkbox(T(TKEY("low_latency_boost"), "Low Latency Boost"), &settings.reflexLowLatencyBoost);
@@ -687,7 +735,7 @@ void ImageReconstruction::DrawSettings()
 			ImGui::TextUnformatted(T(TKEY("use_fps_limit_tooltip_2"), "Can lower latency versus uncapped rendering."));
 		}
 
-		if (!settings.reflexLowLatencyMode)
+		if (!settings.reflexLowLatencyMode && !dlssgReflex)
 			ImGui::EndDisabled();
 
 		if (!settings.reflexUseFPSLimit)
@@ -1718,23 +1766,34 @@ bool ImageReconstruction::IsFrameGenerationDx12PathActive() const
 
 bool ImageReconstruction::IsFrameGenerationActive() const
 {
-	return IsFrameGenerationDx12PathActive() && frameGenerationRequestedAtBoot && settings.frameGenerationMode &&
-	       !fidelityFX.frameGenerationRuntimeFault && fidelityFX.isFrameGenActive;
+	if (!IsFrameGenerationDx12PathActive() || !frameGenerationRequestedAtBoot || !settings.frameGenerationMode)
+		return false;
+	if (dx12SwapChain.presenter == DX12SwapChain::Presenter::kDLSSG)
+		return streamlineDX12.featureDLSSG && streamlineDX12.dlssgConfiguredState == 1;
+	return dx12SwapChain.presenter == DX12SwapChain::Presenter::kFidelityFX &&
+		!fidelityFX.frameGenerationRuntimeFault && fidelityFX.isFrameGenActive;
 }
 
 bool ImageReconstruction::IsFrameGenerationTemporarilySuspended() const
 {
 	auto* ui = globals::game::ui;
 	auto* state = globals::state;
-	const bool menuOpen = (ui && ui->GameIsPaused()) || (state && state->IsMainOrLoadingMenuOpen(ui));
+	const bool menuOpen = (globals::menu && globals::menu->IsEnabled) ||
+		(ui && ui->GameIsPaused()) || (state && state->IsMainOrLoadingMenuOpen(ui));
+	const bool presenterAvailable = dx12SwapChain.presenter == DX12SwapChain::Presenter::kDLSSG ?
+		streamlineDX12.featureDLSSG :
+		(dx12SwapChain.presenter == DX12SwapChain::Presenter::kFidelityFX && !fidelityFX.frameGenerationRuntimeFault);
 	return IsFrameGenerationDx12PathActive() && frameGenerationRequestedAtBoot && settings.frameGenerationMode &&
-	       !fidelityFX.frameGenerationRuntimeFault && menuOpen && !settings.frameGenerationAllowInMenus;
+		presenterAvailable && menuOpen && !settings.frameGenerationAllowInMenus;
 }
 
 bool ImageReconstruction::ShouldUseFrameGenerationThisFrame() const
 {
+	const bool presenterAvailable = dx12SwapChain.presenter == DX12SwapChain::Presenter::kDLSSG ?
+		streamlineDX12.featureDLSSG :
+		(dx12SwapChain.presenter == DX12SwapChain::Presenter::kFidelityFX && !fidelityFX.frameGenerationRuntimeFault);
 	return IsFrameGenerationDx12PathActive() && frameGenerationRequestedAtBoot && settings.frameGenerationMode &&
-	       !fidelityFX.frameGenerationRuntimeFault && !IsFrameGenerationTemporarilySuspended();
+		presenterAvailable && !IsFrameGenerationTemporarilySuspended();
 }
 
 bool ImageReconstruction::IsNeuralRenderingConfiguredForSession()
@@ -1768,6 +1827,10 @@ bool ImageReconstruction::CanUsePhotoNeuralRendering()
 
 bool ImageReconstruction::ShouldUseNeuralRenderingThisFrame()
 {
+	// Live neural processing must not filter the late-drawn settings UI.
+	// Explicit photo processing retains its separate capture workflow.
+	if (globals::menu && globals::menu->IsEnabled && !IsPhotoNeuralRenderingActive())
+		return false;
 	if (!settings.neuralRenderingEnabled && !IsPhotoNeuralRenderingActive())
 		return false;
 	return CanUsePhotoNeuralRendering();
@@ -1900,6 +1963,18 @@ void ImageReconstruction::LoadUpscalingSDKs()
 	// This ensures all SDKs are available before any D3D device creation
 	streamline.LoadInterposer();
 	fidelityFX.LoadFFX();  // Only for frame generation now
+	if (!settings.frameGenerationMode || !UsesDLSSGFrameGeneration()) {
+		// Do not load the experimental second Streamline interposer for ordinary
+		// DLSS/DLAA startup or for the FSR3 backend. Skyrim remains on its stable
+		// D3D11 presentation path until DLSS-G is explicitly requested.
+		return;
+	}
+	streamlineDX12.renderAPI = sl::RenderAPI::eD3D12;
+	// Streamline keeps process-global interposer state. DLSS-G must therefore
+	// use a physically separate runtime directory from the D3D11 DLSS instance.
+	streamlineDX12.pluginDir = L"Data\\Shaders\\ImageReconstruction\\StreamlineDX12";
+	streamlineDX12.instanceTag = "DX12";
+	streamlineDX12.LoadInterposer();
 }
 
 HANDLE ImageReconstruction::GetFrameLatencyWaitableObject() const
@@ -1951,6 +2026,16 @@ bool ImageReconstruction::HasFrameGenModule() const
 	return fidelityFX.featureFSR3FG;
 }
 
+bool ImageReconstruction::HasDLSSGModule() const
+{
+	return streamlineDX12.featureDLSSG;
+}
+
+bool ImageReconstruction::UsesDLSSGFrameGeneration() const
+{
+	return settings.frameGenerationBackend == static_cast<uint>(Settings::FrameGenerationBackend::kDLSSG);
+}
+
 // Proxy interface methods
 void ImageReconstruction::SetProxyD3D11Device(ID3D11Device* device)
 {
@@ -1962,9 +2047,12 @@ void ImageReconstruction::SetProxyD3D11DeviceContext(ID3D11DeviceContext* contex
 	dx12SwapChain.SetD3D11DeviceContext(context);
 }
 
-void ImageReconstruction::CreateProxySwapChain(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC swapChainDesc)
+void ImageReconstruction::CreateProxySwapChain(
+	IDXGIAdapter* adapter,
+	DXGI_SWAP_CHAIN_DESC swapChainDesc,
+	DX12SwapChain::Presenter presenter)
 {
-	dx12SwapChain.CreateSwapChain(adapter, swapChainDesc);
+	dx12SwapChain.CreateSwapChain(adapter, swapChainDesc, presenter);
 }
 
 void ImageReconstruction::CreateProxyInterop()

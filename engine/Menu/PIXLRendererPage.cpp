@@ -1203,7 +1203,29 @@ namespace
 				&frameGeneration,
 				"Generates intermediate frames through PIXL's compatibility swapchain. Requires a restart after changing.")) {
 			settings.frameGenerationMode = frameGeneration ? 1u : 0u;
+				changed = restartNeeded = true;
+		}
+		const char* frameGenerationBackends[] = { "FSR 3 Frame Generation", "DLSSG (SM86 / version.dll)" };
+		int frameGenerationBackend = static_cast<int>(std::min<uint>(settings.frameGenerationBackend, 1u));
+		ImGui::BeginDisabled(!frameGeneration);
+		if (ImGui::Combo("Frame generation backend", &frameGenerationBackend, frameGenerationBackends, _countof(frameGenerationBackends))) {
+			settings.frameGenerationBackend = static_cast<uint>(frameGenerationBackend);
 			changed = restartNeeded = true;
+		}
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("DLSSG requires version.dll and dlssg_sm86.ini beside SkyrimSE.exe. Restart Skyrim after changing the backend.");
+		if (imageReconstruction.UsesDLSSGFrameGeneration()) {
+			const char* multipliers[] = { "2x (1 generated frame)", "3x (2 generated frames)", "4x (3 generated frames)" };
+			int multiplier = static_cast<int>(std::clamp(settings.dlssgGeneratedFrames, 1u, 3u)) - 1;
+			if (ImGui::Combo("DLSS-G frame multiplier", &multiplier, multipliers, _countof(multipliers))) {
+				settings.dlssgGeneratedFrames = static_cast<uint>(multiplier + 1);
+				changed = true;
+			}
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("Total output frames per rendered frame. Higher multipliers increase GPU work and do not improve input response. Limited by the runtime and MaxGeneratedFrames in dlssg_sm86.ini; applied when generation resumes.");
+			if (imageReconstruction.HasDLSSGModule())
+				ImGui::Text("Runtime limit: %ux", imageReconstruction.streamlineDX12.dlssgMaxFramesToGenerate + 1u);
 		}
 		if (showAdvancedReconstruction) {
 			bool forceLowRefresh = settings.frameGenerationForceEnable != 0u;
@@ -1220,16 +1242,18 @@ namespace
 				"Keeps generation active over menus. Off avoids UI interpolation artifacts and is recommended.");
 
 			SectionHeading("LATENCY");
-			const bool reflexAvailable =
-				imageReconstruction.streamline.reflexSupportedOnCurrentAdapter &&
-				imageReconstruction.streamline.featureReflex &&
-				!imageReconstruction.d3d12SwapChainActive;
+			const bool dlssgReflex = imageReconstruction.dx12SwapChain.presenter == DX12SwapChain::Presenter::kDLSSG;
+			const auto& reflexRuntime = dlssgReflex ? imageReconstruction.streamlineDX12 : imageReconstruction.streamline;
+			const bool reflexAvailable = reflexRuntime.IsReflexAvailable() &&
+				(!imageReconstruction.IsFrameGenerationDx12PathActive() || dlssgReflex);
+			if (dlssgReflex)
+				ImGui::TextWrapped("DLSS-G automatically enables Reflex during generation. Boost and the limiter below use its DX12 runtime. The limiter targets rendered frames, not generated output.");
 			ImGui::BeginDisabled(!reflexAvailable);
 			changed |= ToggleControl(
 				"NVIDIA Reflex",
 				&settings.reflexLowLatencyMode,
-				"Reduces the render queue on supported NVIDIA hardware. The compatibility sidecar owns pacing while active.");
-			ImGui::BeginDisabled(!settings.reflexLowLatencyMode);
+				"Reduces the render queue on supported NVIDIA hardware. DLSS-G requires it during generation; this switch also keeps it on when generation is paused.");
+			ImGui::BeginDisabled(!settings.reflexLowLatencyMode && !dlssgReflex);
 			changed |= ToggleControl("Reflex boost", &settings.reflexLowLatencyBoost,
 				"Requests a more aggressive low-latency power state at additional power cost.");
 			changed |= ToggleControl("Marker optimization", &settings.reflexUseMarkersToOptimize,
@@ -1242,7 +1266,7 @@ namespace
 			ImGui::EndDisabled();
 			if (!reflexAvailable)
 				ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
-					"REFLEX IS UNAVAILABLE ON THIS ADAPTER OR WHILE THE DX12 SIDECAR IS ACTIVE");
+					"REFLEX IS UNAVAILABLE ON THIS RUNTIME (FSR3 OWNS ITS OWN PACING)");
 		}
 
 		const auto frameGenerationState =

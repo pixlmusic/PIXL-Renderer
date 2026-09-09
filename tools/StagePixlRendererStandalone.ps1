@@ -94,6 +94,12 @@ Get-ChildItem -LiteralPath (Join-Path $sourceRoot "pipeline") -Directory | Sort-
     if (Test-Path -LiteralPath $kernels) { Copy-Tree $kernels $shaderRoot }
 }
 
+# Validate the optional DLSS-G runtime as a coherent package before release.
+$sidecarRuntime = Join-Path $shaderRoot 'ImageReconstruction\StreamlineDX12'
+if (Test-Path -LiteralPath $sidecarRuntime) {
+    & (Join-Path $PSScriptRoot 'TestPixlSidecarRuntime.ps1') -RuntimeDirectory $sidecarRuntime
+}
+
 # Native data paths that Skyrim or the corresponding PIXL hook consumes directly.
 Copy-Tree (Join-Path $sourceRoot "pipeline\Radiant Grid\Assets\LightProfiles") (Join-Path $output "ParticleLights")
 Copy-Tree (Join-Path $sourceRoot "pipeline\Terrain Occlusion\Assets\HeightMaps") (Join-Path $output "textures\heightmaps")
@@ -142,6 +148,7 @@ if ($includePipelineLibrary) {
 foreach ($document in @("PIXL-RENDERER-README.md", "SOURCE-AND-CREDITS.md")) {
     Copy-Item -LiteralPath (Join-Path $sourceRoot "distribution\$document") -Destination $output -Force
 }
+Copy-Item -LiteralPath (Join-Path $sourceRoot "docs\ImageReconstruction\DLSSG_SM86_INTEGRATION.md") -Destination $output -Force
 foreach ($document in @("COPYING", "EXCEPTIONS.md", "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md")) {
     Copy-Item -LiteralPath (Join-Path $sourceRoot $document) -Destination $output -Force
 }

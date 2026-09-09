@@ -62,12 +62,19 @@ public:
 
 	struct Settings
 	{
+		enum class FrameGenerationBackend : uint32_t
+		{
+			kFSR3,
+			kDLSSG
+		};
 		uint upscaleMethod = (uint)UpscaleMethod::kTAA;
 		uint upscaleMethodNoDLSS = (uint)UpscaleMethod::kTAA;
 		uint qualityMode = 2;  // Safe default: Balanced (1=Quality, 2=Balanced, 3=Performance, 4=Ultra Performance, 0=Native AA)
 		uint frameLimitMode = 1;
 		float frameLimitFPS = 60.0f;  // final presented FPS; FG schedules real frames at half this rate
 		uint frameGenerationMode = 0;
+		uint frameGenerationBackend = (uint)FrameGenerationBackend::kFSR3;
+		uint dlssgGeneratedFrames = 1;  // 1/2/3 extra frames = 2x/3x/4x output.
 		uint frameGenerationForceEnable = 0;
 		bool frameGenerationAllowInMenus = false;
 		uint streamlineLogLevel = 0;  // 0=Off, 1=Default, 2=Verbose
@@ -239,6 +246,9 @@ public:
 
 	// Static instances instead of singletons
 	static inline Streamline streamline;
+	// Separate D3D12 Streamline instance used only by native DLSS-G. The
+	// existing instance remains D3D11-only for DLSS reconstruction/Reflex.
+	static inline Streamline streamlineDX12;
 	static inline FidelityFX fidelityFX;  ///< Only for frame generation
 	static inline DX12SwapChain dx12SwapChain;
 	static inline NeuralRendering neuralRendering;
@@ -298,11 +308,13 @@ public:
 
 	// Module availability methods
 	bool HasFrameGenModule() const;
+	bool HasDLSSGModule() const;
+	bool UsesDLSSGFrameGeneration() const;
 
 	// Proxy interface methods
 	void SetProxyD3D11Device(ID3D11Device* device);
 	void SetProxyD3D11DeviceContext(ID3D11DeviceContext* context);
-	void CreateProxySwapChain(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC swapChainDesc);
+	void CreateProxySwapChain(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC swapChainDesc, DX12SwapChain::Presenter presenter);
 	void CreateProxyInterop();
 	IDXGISwapChain* GetProxySwapChain();
 
