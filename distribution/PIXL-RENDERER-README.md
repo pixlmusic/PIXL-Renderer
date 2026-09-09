@@ -1,5 +1,9 @@
 # PIXL Renderer v1.0
 
+September 10 release package: includes Hybrid GI's zero-safe denoising basis and corrected temporal-history scaling for better preservation of settled indirect-light detail. The exact corresponding source revision and URL are recorded in `PIXL-RENDERER.manifest.json`; a matching source archive is supplied separately.
+
+Validation limits: the GI correction passed shader compilation and reference-math tests, but still needs broad in-game visual regression testing. Optional DLSS-G SM86 remains experimental, with limited hardware and long-session coverage. Frame generation and real-time Neural Rendering remain off by default. A RELEASE package label does not imply an exhaustive security, compatibility or performance certification.
+
 PIXL Renderer is a standalone PBR rendering engine for Skyrim Special Edition. Install one ZIP with a mod manager, enable the included `PIXL-TerrainField.esp`, and launch through SKSE. The one-time welcome card shows the shipped controls: `Page Down` opens PIXL Renderer and `Insert` opens PIXL Director.
 
 Choose a Quality profile, make any preferred Camera adjustments, then press **SAVE LOOK**. The current live-tested Balanced profile with FSR 3.1 Native AA is the safe default; frame generation and Neural Rendering start off. Reconstruction, NR/FG and latency controls are available below the Camera viewfinder, while Photo Mode can temporarily use Neural Rendering on supported NVIDIA RTX 30-series-or-newer hardware even when real-time NR is disabled. `Alt+N` toggles NR after a DLSS sidecar session has been provisioned. NR/FG use borderless presentation; exclusive fullscreen is intentionally excluded because Alt-Tab is not stable across the DX11/DX12 ownership boundary.

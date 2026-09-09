@@ -1,5 +1,11 @@
 # PIXL Renderer Active File Review Matrix
 
+September 10 scoped Hybrid GI blur review: `HYBRID_GI_BLUR_20260910.md` records
+the shader changes, unchanged binding contract, tests and deferred cache work.
+`tools/TestPixlHybridGIBlur.ps1` is active, reviewed, added, security-reviewed
+(explicit local paths; build-only outputs), fidelity-reviewed (numeric contract),
+performance-reviewed (no runtime workload change), with future GPU tests recorded.
+
 September 9 Reflex/defaults follow-up: see `REFLEX_ATMOSPHERE_20260909.md` for
 the selected-path review and validation limitations. New validation file:
 

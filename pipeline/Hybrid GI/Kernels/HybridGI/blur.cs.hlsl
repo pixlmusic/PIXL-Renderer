@@ -38,7 +38,8 @@ float GaussianWeight(float r)
 // http://marc-b-reynolds.github.io/quaternions/2016/07/06/Orthonormal.html
 float3x3 getBasis(float3 N)
 {
-	float sz = sign(N.z);
+	// sign(0) is zero: an equatorial normal would divide by zero below.
+	float sz = N.z >= 0.0f ? 1.0f : -1.0f;
 	float a = 1.0 / (sz + N.z);
 	float ya = N.y * a;
 	float b = N.x * ya;
@@ -114,7 +115,11 @@ float2x2 getRotationMatrix(float noise)
 	TvBv[0] *= worldRadius;
 	TvBv[1] *= worldRadius;
 #ifdef TEMPORAL_DENOISER
-	halfAngle *= 1 - lerp(0, 0.8, sqrt(accumFrames / (float)MaxAccumFrames));
+	// History is stored in an R8_UNORM texture as frameCount / 255.
+	// Decode before comparing with the frame-count budget, keeping the encoded
+	// value unchanged for the history texture written at the end of this pass.
+	float historyFraction = saturate((accumFrames * 255.0f) / max((float)MaxAccumFrames, 1.0f));
+	halfAngle *= 1.0f - 0.8f * sqrt(historyFraction);
 #endif
 
 	const float4 ilY = srcIlY[dtid];

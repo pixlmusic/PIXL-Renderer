@@ -15,6 +15,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$sourceCommit = (& git -C $sourceRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or -not $sourceCommit) { throw "Unable to resolve package source commit." }
 $allowedRoot = [IO.Path]::GetFullPath($(if ($AllowedOutputRoot) { $AllowedOutputRoot } else { Join-Path $sourceRoot "dist" }))
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $allowedRoot "PIXL-Renderer-v1.0-Clean-Cache" }
 if (-not $ArchivePath) { $ArchivePath = Join-Path $allowedRoot "PIXL-Renderer-v1.0-Clean-Cache.zip" }
@@ -164,6 +166,8 @@ $manifestFiles = Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object
     product = "PIXL Renderer"
     title = "PBR Rendering Engine v1.0"
     version = "1.0.0"
+    sourceCommit = $sourceCommit
+    sourceUrl = "https://github.com/pixlmusic/PIXL-Renderer/tree/$sourceCommit"
     channel = $Channel
     executable = "SKSE/Plugins/PIXLRenderer.dll"
     dataRoot = "SKSE/Plugins/PIXL"
