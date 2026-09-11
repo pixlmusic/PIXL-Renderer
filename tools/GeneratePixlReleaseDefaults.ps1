@@ -136,7 +136,7 @@ function Apply-EnhancedContract([object]$Config) {
     $reconstruction = $Config.ImageReconstruction
     $reconstruction.upscaleMethod = 1
     $reconstruction.upscaleMethodNoDLSS = 1
-    $reconstruction.qualityMode = 2
+    $reconstruction.qualityMode = 0
     $reconstruction.frameGenerationMode = 0
     $reconstruction.frameGenerationForceEnable = 0
     $reconstruction.neuralRenderingEnabled = $false

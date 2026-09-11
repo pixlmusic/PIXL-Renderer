@@ -25,6 +25,7 @@
 #include "Globals.h"
 #include "Menu.h"
 #include "Menu/TuningWorkspaceRenderer.h"
+#include "Menu/LaunchExperienceRenderer.h"
 #include "Renderer/QualityProfiles.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -2510,6 +2511,11 @@ void PIXLRendererPage::Render()
 
 	const float gap =
 		PIXLUI::Ref(8.0f);
+
+	if (PIXLUI::ActionButton("QUICK SETUP", ImVec2(PIXLUI::Ref(150.0f), PIXLUI::Ref(30.0f)), false))
+		LaunchExperienceRenderer::OpenQuickSetup();
+	Util::AddTooltip("Reopen the guided setup card to change the quality profile or image reconstruction path. Changes are saved when you continue.");
+	ImGui::Dummy(ImVec2(0.0f, PIXLUI::Ref(5.0f)));
 
 	const float pageWidth =
 		std::max(

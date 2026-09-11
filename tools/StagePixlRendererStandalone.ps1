@@ -55,6 +55,10 @@ Assert-PackageTarget $output
 if ($mirror) { Assert-PackageTarget $mirror }
 if (-not $SkipArchive -and $archive) { Assert-PackageTarget $archive }
 
+if ($Channel -eq 'RELEASE' -and [string]::IsNullOrWhiteSpace($PipelineLibrary)) {
+    throw 'A RELEASE package must provide a validated preloaded PipelineLibrary. Use RELEASE-CANDIDATE for compile-on-device testing.'
+}
+
 $dll = Join-Path $BuildDirectory "PIXLRenderer.dll"
 $required = @(
     $dll,
@@ -145,6 +149,13 @@ if ($includePipelineLibrary) {
     $pipelineCount = (Get-ChildItem -LiteralPath $pipelineRoot -File -Recurse -Filter "*.pixlbin").Count
     if ($pipelineCount -lt 3000) { throw "Pipeline library is incomplete ($pipelineCount stages; expected at least 3000)" }
     Copy-Tree $pipelineRoot (Join-Path $output "PIXL\PipelineLibrary")
+
+    # ShaderCache uses file mtimes as a fast source-change check when the file
+    # watcher is disabled. Stamp validated binaries after the source payload is
+    # copied so archive extraction cannot make a valid cache look stale.
+    $cacheStamp = [DateTime]::UtcNow
+    Get-ChildItem -LiteralPath (Join-Path $output "PIXL\PipelineLibrary") -File -Recurse -Filter '*.pixlbin' |
+        ForEach-Object { $_.LastWriteTimeUtc = $cacheStamp }
 }
 
 foreach ($document in @("PIXL-RENDERER-README.md", "SOURCE-AND-CREDITS.md")) {

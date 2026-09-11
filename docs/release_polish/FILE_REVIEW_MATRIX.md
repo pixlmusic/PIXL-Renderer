@@ -9,6 +9,10 @@ performance-reviewed (no runtime workload change), with future GPU tests recorde
 September 9 Reflex/defaults follow-up: see `REFLEX_ATMOSPHERE_20260909.md` for
 the selected-path review and validation limitations. New validation file:
 
+September 11 consumer-release pass: `CONSUMER_RELEASE_READINESS_20260911.md`
+records first-run setup, public defaults, release cache staging, package
+cleanliness, and current validation limits.
+
 | Path | Subsystem | Active | Reviewed | Modified | Security reviewed | Fidelity reviewed | Performance reviewed | Future suggestions | Scope |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `tools/TestPixlAtmosphereDefaults.ps1` | Atmosphere default parity | YES | YES | Added | YES | Values only | N/A | YES | Read-only 54-field schema/float32 test |
@@ -176,14 +180,14 @@ it does not supersede the incomplete September 7 audit.
 | `engine/Utils/WinApi.h` | Core Utilities | YES | YES | NO | YES | YES | YES | YES | Pending |
 | `ATTRIBUTION.md` | Release Package | YES | YES | NO | YES | YES | YES | YES | Pending |
 | `COPYING` | Release Package | YES | YES | NO | YES | YES | YES | YES | Pending |
-| `distribution/PIXL-RENDERER-README.md` | Release Package | YES | YES | YES | YES | YES | YES | YES | Pending |
+| `distribution/PIXL-RENDERER-README.md` | Release Package | YES | YES | YES | YES | YES | YES | YES | Full source |
 | `distribution/SKSE/Plugins/PIXLRenderer/Presets/PIXL-Renderer-Live-Tested.json` | Release Package | YES | YES | YES | YES | YES | YES | YES | Pending |
-| `distribution/SKSE/Plugins/PIXLRenderer/SettingsDefault.json` | Release Package | YES | YES | YES | YES | YES | YES | YES | Pending |
+| `distribution/SKSE/Plugins/PIXLRenderer/SettingsDefault.json` | Release Package | YES | YES | YES | YES | YES | YES | YES | Full source |
 | `distribution/SKSE/Plugins/PIXLRenderer/Presets/PIXL-Renderer-Enhanced.json` | Release Package | YES | YES | YES | YES | YES | YES | YES | Pending |
 | `distribution/SKSE/Plugins/PIXLRenderer/Presets/PIXL-Renderer-Ultra.json` | Release Package | YES | YES | YES | YES | YES | YES | YES | Pending |
 | `distribution/SKSE/Plugins/PIXLRenderer/Themes/PIXL.json` | Release Package | YES | YES | NO | YES | YES | YES | YES | Pending |
 | `distribution/SKSE/Plugins/PIXLRenderer/Translations/en.json` | Release Package | YES | YES | YES | YES | YES | YES | YES | Partial |
-| `distribution/SOURCE-AND-CREDITS.md` | Release Package | YES | YES | NO | YES | YES | YES | YES | Pending |
+| `distribution/SOURCE-AND-CREDITS.md` | Release Package | YES | YES | YES | YES | YES | YES | YES | Full source |
 | `EXCEPTIONS.md` | Release Package | YES | YES | NO | YES | YES | YES | YES | Pending |
 | `THIRD_PARTY_NOTICES.md` | Release Package | YES | YES | NO | YES | YES | YES | YES | Full source |
 | `engine/MaterialForge.cpp` | MaterialForge | YES | YES | YES | YES | YES | YES | YES | Pending |
@@ -594,11 +598,11 @@ it does not supersede the incomplete September 7 audit.
 | `engine/Menu/FontSelector.h` | UI | YES | YES | NO | YES | YES | YES | YES | Full source |
 | `engine/Menu/IconLoader.cpp` | UI | YES | YES | YES | YES | YES | YES | YES | Full source |
 | `engine/Menu/IconLoader.h` | UI | YES | YES | NO | YES | YES | YES | YES | Full source |
-| `engine/Menu/LaunchExperienceRenderer.cpp` | UI | YES | YES | NO | YES | YES | YES | YES | Pending |
-| `engine/Menu/LaunchExperienceRenderer.h` | UI | YES | YES | NO | YES | YES | YES | YES | Pending |
+| `engine/Menu/LaunchExperienceRenderer.cpp` | UI | YES | YES | YES | YES | YES | YES | YES | Full source |
+| `engine/Menu/LaunchExperienceRenderer.h` | UI | YES | YES | YES | YES | YES | YES | YES | Full source |
 | `engine/Menu/OverlayRenderer.cpp` | UI | YES | YES | NO | YES | YES | YES | YES | Pending |
 | `engine/Menu/OverlayRenderer.h` | UI | YES | YES | NO | YES | YES | YES | YES | Pending |
-| `engine/Menu/PIXLRendererPage.cpp` | UI | YES | YES | YES | YES | YES | YES | YES | Pending |
+| `engine/Menu/PIXLRendererPage.cpp` | UI | YES | YES | YES | YES | YES | YES | YES | Full source |
 | `engine/Menu/PIXLRendererPage.h` | UI | YES | YES | NO | YES | YES | YES | YES | Pending |
 | `engine/Menu/PIXLStyle.h` | UI | YES | YES | NO | YES | YES | YES | YES | Pending |
 | `engine/Menu/PulsePanelRenderer.cpp` | UI | YES | YES | NO | YES | YES | YES | YES | Pending |

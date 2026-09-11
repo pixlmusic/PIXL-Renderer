@@ -10,9 +10,12 @@
 #include "PIXLStyle.h"
 #include "Fonts.h"
 #include "Utils/Input.h"
+#include "Modules/ImageReconstruction.h"
+#include "Renderer/QualityProfiles.h"
 
 bool LaunchExperienceRenderer::isFirstTimeSetupShown = false;
 uint32_t LaunchExperienceRenderer::keyThatClosedDialog = 0;
+bool LaunchExperienceRenderer::quickSetupRequested = false;
 
 namespace
 {
@@ -33,10 +36,16 @@ bool LaunchExperienceRenderer::ShouldSkipKeyRelease(uint32_t key)
 
 bool LaunchExperienceRenderer::ShouldShowFirstTimeSetup()
 {
-	if (isFirstTimeSetupShown)
+	if (isFirstTimeSetupShown && !quickSetupRequested)
 		return false;
 	const auto* menu = Menu::GetSingleton();
-	return menu && !menu->GetSettings().FirstTimeSetupCompleted;
+	return menu && (quickSetupRequested || !menu->GetSettings().FirstTimeSetupCompleted);
+}
+
+void LaunchExperienceRenderer::OpenQuickSetup()
+{
+	quickSetupRequested = true;
+	isFirstTimeSetupShown = false;
 }
 
 bool LaunchExperienceRenderer::ShouldShowControlReminder()
@@ -70,7 +79,7 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	io.MouseDrawCursor = true;
 
 	const float scale = Util::GetUIScale();
-	const ImVec2 cardSize{ 640.0f * scale, 430.0f * scale };
+	const ImVec2 cardSize{ 700.0f * scale, 590.0f * scale };
 	ImGui::SetNextWindowPos({ io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f }, ImGuiCond_Always, { 0.5f, 0.5f });
 	ImGui::SetNextWindowSize(cardSize, ImGuiCond_Always);
 	ImGui::SetNextWindowFocus();
@@ -141,7 +150,31 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 
 	ImGui::TextColored(
 		PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
-		"Two controls are all you need for normal play. Select the PIXL menu key now; Director remains on Insert.");
+		"Choose a release-safe image path and quality profile. You can reopen this card later with QUICK SETUP.");
+	ImGui::Spacing();
+
+	static int setupQuality = 2;
+	static int setupUpscaler = 0;
+	if (!quickSetupRequested && menu->GetSettings().FirstTimeSetupCompleted) {
+		setupQuality = std::clamp(menu->GetSettings().RendererQuality, 0, 3);
+		const auto current = globals::pipeline::imageReconstruction.settings.upscaleMethodNoDLSS;
+		setupUpscaler = current == static_cast<uint>(ImageReconstruction::UpscaleMethod::kFSR) ? 1 : 0;
+	}
+
+	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "IMAGE PATH");
+	const char* upscalerNames[] = { "TAA (universal)", "FSR 3.1 Quality" };
+	ImGui::SetNextItemWidth(-1.0f);
+	ImGui::Combo("##PIXLSetupUpscaler", &setupUpscaler, upscalerNames, IM_ARRAYSIZE(upscalerNames));
+	Util::AddTooltip("TAA works on every supported Skyrim setup. FSR 3.1 Quality renders below display resolution for more performance and needs the bundled FidelityFX runtime.");
+
+	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "QUALITY PROFILE");
+	const char* qualityNames[] = { "Fast", "Balanced", "Enhanced", "Cinematic" };
+	ImGui::SetNextItemWidth(-1.0f);
+	ImGui::Combo("##PIXLSetupQuality", &setupQuality, qualityNames, IM_ARRAYSIZE(qualityNames));
+	Util::AddTooltip("Enhanced is the recommended default: higher lighting and material fidelity with a controlled performance budget. Cinematic is intended for powerful systems and photo work.");
+
+	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
+		"Photo Mode is PIXL Director on Insert: pause the scene, compose a shot, adjust camera and finish settings, then capture without changing your normal gameplay profile.");
 	ImGui::Spacing();
 
 	const bool capturing = menu->settingToggleKey;
@@ -174,14 +207,27 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	const ImVec2 continueSize{ contentWidth, 38.0f * scale };
 	const bool continuePressed =
 		PIXLUI::ActionButton(
-			"CONTINUE WITH HIGH QUALITY",
+			"SAVE & CONTINUE",
 			continueSize,
 			true);
 
 	const bool escapePressed = ImGui::IsKeyPressed(ImGuiKey_Escape);
 	const bool enterPressed = ImGui::IsKeyPressed(ImGuiKey_Enter);
-	if (!capturing && (continuePressed || enterPressed || escapePressed))
+	if (!capturing && (continuePressed || enterPressed || escapePressed)) {
+		if (!escapePressed) {
+			PIXLRenderer::QualityProfiles::ApplyGlobal(std::clamp(setupQuality, 0, 3));
+			auto& reconstruction = globals::pipeline::imageReconstruction.settings;
+			const uint selectedMethod = setupUpscaler == 1 ?
+				static_cast<uint>(ImageReconstruction::UpscaleMethod::kFSR) :
+				static_cast<uint>(ImageReconstruction::UpscaleMethod::kTAA);
+			reconstruction.upscaleMethod = selectedMethod;
+			reconstruction.upscaleMethodNoDLSS = selectedMethod;
+			reconstruction.qualityMode = setupUpscaler == 1 ? 1u : 0u;
+			if (globals::state)
+				globals::state->Save();
+		}
 		MarkFirstTimeSetupComplete(escapePressed ? VK_ESCAPE : (enterPressed ? VK_RETURN : 0));
+	}
 
 	ImGui::End();
 	ImGui::PopStyleVar(3);
@@ -237,5 +283,6 @@ void LaunchExperienceRenderer::MarkFirstTimeSetupComplete(uint32_t closingKey)
 	if (globals::state)
 		globals::state->Save();
 	isFirstTimeSetupShown = true;
+	quickSetupRequested = false;
 	keyThatClosedDialog = closingKey;
 }

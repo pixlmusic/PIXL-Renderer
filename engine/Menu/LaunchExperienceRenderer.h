@@ -10,6 +10,7 @@ public:
 	static bool ShouldShowControlReminder();
 	static void RenderFirstTimeSetupDialog();
 	static void RenderControlReminder();
+	static void OpenQuickSetup();
 	static bool ShouldSkipKeyRelease(uint32_t key);
 
 private:
@@ -17,4 +18,5 @@ private:
 
 	static bool isFirstTimeSetupShown;
 	static uint32_t keyThatClosedDialog;
+	static bool quickSetupRequested;
 };

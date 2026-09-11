@@ -15,3 +15,5 @@ identify the exact PIXL source tag or commit used to build its binary.
 Skyrim and related marks belong to Bethesda Softworks LLC. PIXL Renderer
 branding and PIXL-authored assets belong to PIXL Studio; upstream and
 third-party work retains its original provenance and applicable licence.
+
+Project source and release provenance: https://github.com/pixlmusic/PIXL-Renderer
