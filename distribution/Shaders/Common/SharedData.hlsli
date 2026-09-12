@@ -436,7 +436,8 @@ namespace SharedData
 		float volumetricSampleJitterMultiplier;
 		float volumetricUpsampleJitterMultiplier;
 		float volumetricLocalLightScatteringIntensity;
-		float2 pad0;
+		float skyProtection;
+		float pad0;
 
 		uint volumetricUseDisplayResolutionGrid;
 		uint volumetricDepthAwareUpsampling;

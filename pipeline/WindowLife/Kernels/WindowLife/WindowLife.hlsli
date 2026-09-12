@@ -1011,7 +1011,7 @@ namespace WindowLife
     {
         Result result = (Result)0;
         if (!IsCandidate() || SharedData::InMapMenu ||
-            (SharedData::InInterior && GetInterior0().w < 0.5f))
+            (SharedData::InInterior && GetInterior0().w < 0.5f && GetAsset0().y < 0.5f))
             return result;
 
         float3 N = normalize(geometricNormal);
@@ -1069,8 +1069,8 @@ namespace WindowLife
             float2(instanceSalt * 311.7f, instanceSalt * 173.3f));
         result.authoredLayoutState = 0.0f;
         bool roomLayoutSafe = true;
-        bool allowOccupants = fullInteriorTier;
-        bool allowCurtains = true;
+        bool allowOccupants = fullInteriorTier && (!SharedData::InInterior || GetInterior0().w > 0.5f);
+        bool allowCurtains = !SharedData::InInterior;
         float nativeLayerWeight = 1.0f;
 
         // A native texture-derived guide is not an authored dependency: it follows
@@ -1124,7 +1124,9 @@ namespace WindowLife
         // Depth remains visible but cannot become a camera-following slide across
         // a narrow pane. The room-size-relative cap is the maximum physical recess;
         // the per-layer projector below applies a second angular/travel bound.
-        float maxUsefulDepth = max(minRoomExtent * 0.34f, 10.0f);
+        // Preserve the accepted exterior room projection; indoor outdoor views
+        // have their own deeper budget and independent CPU setting.
+        float maxUsefulDepth = max(minRoomExtent * (SharedData::InInterior ? 0.65f : 0.34f), 10.0f);
         float configuredDepth = min(GetOptics0().x, maxUsefulDepth);
         float refractScale = saturate(minRoomExtent / 72.0f);
         float2 refractVector =
@@ -1253,7 +1255,41 @@ namespace WindowLife
         // visible camera parallax while mask clipping keeps it inside real glass.
         float roomTile = SelectRoomTile(roomSeed, GetAsset0().x);
         float roomFloorLocal = 0.12f;
-        [branch] if (GetAsset0().y > 0.5f && GetAsset0().z > 1.0e-4f)
+        [branch] if (SharedData::InInterior && GetFidelity1().w > 0.5f && GetAsset0().y > 0.5f && GetAsset0().z > 1.0e-4f)
+        {
+            // The same t126 now contains outdoor artwork, never warm room art.
+            // One back plane avoids doubled trees; passers remain a nearer layer.
+            float2 outdoorLocal = ConstrainRoomLocal(baseRoomLocal,
+                StableRoomParallaxOffset(viewPlane, facing, configuredDepth,
+                    refractVector, roomSize, float2(0.34f, 0.28f)));
+            float2 artSpan = float2(0.72f, 0.72f);
+            float aspect = clamp(roomSize.x / max(roomSize.y, 1.0f), 0.5f, 2.0f);
+            artSpan *= aspect < 1.0f ? float2(aspect, 1.0f) : float2(1.0f, rcp(aspect));
+            float2 artUV = float2(0.5f, 0.45f) + (float2(outdoorLocal.x, 1.0f - outdoorLocal.y) - 0.5f) * artSpan;
+            uint width, height, mipCount;
+            WindowLifeRoomAtlas.GetDimensions(0, width, height, mipCount);
+            float footprint = max(length(ddx_coarse(artUV) * float2(width, height) * 0.25f),
+                                  length(ddy_coarse(artUV) * float2(width, height) * 0.25f));
+            float mip = clamp(log2(max(footprint, 1.0f)) + 0.25f, 0.0f, min(max((float)mipCount - 1.0f, 0.0f), 7.0f));
+            float inset = min(max(3.0f, exp2(mip) * 1.25f) / 512.0f, 0.18f);
+            // Regional families are hints, not claims of the actual view outside.
+            float family = GetAsset0().x;
+            float row = family == 2.0f ? 1.0f : (family == 3.0f ? 2.0f : (family == 4.0f ? 3.0f : 0.0f));
+            float column = floor(Hash11(roomSeed * 193.7f) * 3.999f);
+            float2 atlasUV = (float2(column, row) + clamp(artUV, inset.xx, (1.0f - inset).xx)) * 0.25f;
+            float4 outdoorSample = WindowLifeRoomAtlas.SampleLevel(SampGlowSampler, atlasUV, mip);
+            float night = saturate(GetLayout0().z);
+            // t124 is curtains outside, matching night artwork inside. No new SRV slot.
+            uint nightWidth, nightHeight, nightMips;
+            WindowLifeCurtainAtlas.GetDimensions(0, nightWidth, nightHeight, nightMips);
+            float3 nightColor = outdoorSample.rgb * float3(0.075f, 0.10f, 0.16f);
+            if (nightWidth == width && nightHeight == height && nightMips > 0)
+                nightColor = WindowLifeCurtainAtlas.SampleLevel(SampGlowSampler, atlasUV, min(mip, (float)nightMips - 1.0f)).rgb;
+            result.roomColor = max(lerp(outdoorSample.rgb, nightColor, night), 0.0f) * clamp(GetPresentation0().y, 0.0f, 8.0f);
+            result.roomColorWeight = outdoorSample.a * interiorPane * verticalSurface * grazingFade * distanceFade *
+                GetAsset0().z * (roomLayoutSafe ? 1.0f : 0.0f);
+        }
+        [branch] if (!SharedData::InInterior && GetAsset0().y > 0.5f && GetAsset0().z > 1.0e-4f)
         {
             float2 authoredRoomLocal = ConstrainRoomLocal(
                 baseRoomLocal,

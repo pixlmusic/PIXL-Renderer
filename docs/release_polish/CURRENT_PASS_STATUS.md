@@ -1,5 +1,12 @@
 # September 7 release-polish continuation
 
+September 12 superseding package status: the owner has requested final RELEASE
+packaging and source push. See `FINAL_RELEASE_20260912.md` for the current verified
+build, scoped tests and compatible 3475-stage cache snapshot. The public package
+excludes UserGraphics. Historical no-cache/no-publication statements below describe
+September 7, not the current artifact. Outstanding exhaustive-review and runtime
+limitations remain explicitly documented rather than represented as completed.
+
 Status: **release candidate built and deployed for owner testing; no commit/push/tag/publication**.
 
 This file supersedes unsupported completion claims in earlier continuation notes. The inherited September 3 matrix has 586 entries; reading hashes, scanning patterns, or summarizing a module is not a semantic review of every file. The required exhaustive file review, five substantiated investigations per module, UI control tracing and runtime shader permutation coverage remain open.

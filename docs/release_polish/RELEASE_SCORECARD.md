@@ -1,6 +1,11 @@
 # Release Scorecard
 
-Current pass is a RELEASE CANDIDATE, not a final public release. `CONSUMER_RELEASE_READINESS_20260911.md` records the new first-run/package work and the remaining cache/runtime gates. `CURRENT_PASS_STATUS.md` still takes precedence over historical claims in the report set.
+September 12: owner requested the final RELEASE package. `FINAL_RELEASE_20260912.md`
+records the successful build, native weather tests, validated 3475-stage live cache
+snapshot and public-package guards. No UserGraphics is shipped. This supersedes the
+September 11 missing-cache/package status below, not the explicit broad runtime,
+security or exhaustive-file-review limitations. Final weather tuning still needs
+in-game visual confirmation; no new full-audit certification is claimed.
 
 | Area | Status | Evidence / remaining risk |
 | --- | --- | --- |

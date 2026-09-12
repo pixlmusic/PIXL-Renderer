@@ -50,10 +50,10 @@ public:
 	{
 		uint enabled = 1;
 		uint useWorldProbes = 1;
-		float startDistance = 24505.0f;
-		float fogHeight = 14056.599609375f;
-		float fogHeightFalloff = 1.3600000143051147f;
-		float fogDensity = 0.24699999392032623f;
+		float startDistance = 10500.0f;
+		float fogHeight = 22000.0f;
+		float fogHeightFalloff = 0.30f;
+		float fogDensity = 0.27f;
 		float directionalInscatteringMultiplier = 1.3600000143051147f;
 		float directionalInscatteringAnisotropy = 0.26600000262260437f;
 		float4 inscatteringTint = { 1.0f, 1.0f, 1.0f, 0.45490196347236633f };
@@ -82,7 +82,8 @@ public:
 		float volumetricSampleJitterMultiplier = 0.0f;
 		float volumetricUpsampleJitterMultiplier = 1.0f;
 		float volumetricLocalLightScatteringIntensity = 1.4900000095367432f;
-		float2 pad0;
+		float skyProtection = 0.25f;
+		float pad0 = 0.0f;
 
 		// Atmosphere 2.0 reconstruction / temporal quality.
 		uint volumetricUseDisplayResolutionGrid = 1;

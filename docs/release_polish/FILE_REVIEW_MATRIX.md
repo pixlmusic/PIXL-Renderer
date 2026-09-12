@@ -1,5 +1,20 @@
 # PIXL Renderer Active File Review Matrix
 
+Final September 12 packaging/weather/tips pass: [FINAL_RELEASE_20260912.md](FINAL_RELEASE_20260912.md)
+records the additional active-file review, native weather tests, cache provenance,
+public release guards and remaining validation limitations.
+
+September 12 startup/fog follow-up: [scoped file accounting](STARTUP_FOG_WINDOW_EMISSION_20260912.md)
+records each changed active file, config provenance, cache-preserving deployment,
+validation and future work for DLSS/Off setup, Photo Mode labels, current defaults,
+fog tuning and interior background emission.
+
+September 12 scoped RC follow-up: [per-file review and validation](RC_WINDOWLIFE_DAY_NIGHT_20260912.md)
+contains the active/modified file accounting for setup, camera layout, WindowLife
+day/night assets, ambient lighting, casting lights and sky protection. Every listed
+file received scoped correctness, security, fidelity, performance and future-work
+review; this does not claim a new exhaustive review of unrelated active files.
+
 September 10 scoped Hybrid GI blur review: `HYBRID_GI_BLUR_20260910.md` records
 the shader changes, unchanged binding contract, tests and deferred cache work.
 `tools/TestPixlHybridGIBlur.ps1` is active, reviewed, added, security-reviewed

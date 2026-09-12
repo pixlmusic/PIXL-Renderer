@@ -10,6 +10,7 @@
 - A `RELEASE` package now refuses to stage without a validated preloaded PipelineLibrary. Compile-on-device output remains available under `RELEASE-CANDIDATE`.
 - Validated preloaded `.pixlbin` files are timestamped after the shader tree is staged. This prevents a valid cache from being treated as older than its matching copied HLSL source by the runtime's fast mtime check. ABI, plugin-version, module, and family validation remain active.
 - Added the project GitHub URL to the consumer credits document.
+- Documented Engine Fixes as a hard external prerequisite. `XSEPlugin.cpp` loads `Data/SKSE/Plugins/EngineFixes.dll` before installing PIXL hooks; the package manifest now records this dependency without claiming ownership of or redistributing the third-party DLL.
 
 ## Validation
 

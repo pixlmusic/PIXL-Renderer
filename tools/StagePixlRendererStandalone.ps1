@@ -55,7 +55,10 @@ Assert-PackageTarget $output
 if ($mirror) { Assert-PackageTarget $mirror }
 if (-not $SkipArchive -and $archive) { Assert-PackageTarget $archive }
 
-if ($Channel -eq 'RELEASE' -and [string]::IsNullOrWhiteSpace($PipelineLibrary)) {
+if ($Channel -eq 'RELEASE' -and (![string]::IsNullOrWhiteSpace($UserConfigPath))) {
+    throw 'Public RELEASE packages must not include UserGraphics.json. Ship RendererDefaults.json only.'
+}
+if ($Channel -eq 'RELEASE' -and ($SkipPipelineLibrary -or [string]::IsNullOrWhiteSpace($PipelineLibrary))) {
     throw 'A RELEASE package must provide a validated preloaded PipelineLibrary. Use RELEASE-CANDIDATE for compile-on-device testing.'
 }
 
@@ -148,7 +151,31 @@ if ($includePipelineLibrary) {
     if ($metadata -notmatch 'ShaderABI\s*=\s*PIXL\.SharedBuffers\.20260902\.1') { throw "Pipeline library was built for an incompatible PIXL shared-shader ABI" }
     $pipelineCount = (Get-ChildItem -LiteralPath $pipelineRoot -File -Recurse -Filter "*.pixlbin").Count
     if ($pipelineCount -lt 3000) { throw "Pipeline library is incomplete ($pipelineCount stages; expected at least 3000)" }
-    Copy-Tree $pipelineRoot (Join-Path $output "PIXL\PipelineLibrary")
+    # Public caches contain compiled stages and identity metadata, never mod-manager
+    # markers or unrelated files from the owner's live installation.
+    $cacheOutput = Join-Path $output 'PIXL\PipelineLibrary'
+    New-Item -ItemType Directory -Path $cacheOutput -Force | Out-Null
+    Copy-Item -LiteralPath $libraryIni -Destination (Join-Path $cacheOutput 'Library.ini')
+    $cacheSections = @{}
+    $section = ''
+    foreach ($line in ($metadata -split "`r?`n")) {
+        if ($line -match '^\s*\[([^\]]+)\]') { $section = $matches[1]; $cacheSections[$section] = @{} }
+        elseif ($section -and $line -match '^\s*([^=]+?)\s*=\s*(.*?)\s*$') { $cacheSections[$section][$matches[1]] = $matches[2] }
+    }
+    if ($cacheSections['Cache']['PluginVersion'] -ne '1-0-0-0') { throw 'Cache plugin identity does not match release 1.0.0.' }
+    foreach ($descriptor in Get-ChildItem -LiteralPath $moduleCatalog -Filter '*.ini' -File) {
+        $moduleText = Get-Content -LiteralPath $descriptor.FullName -Raw
+        $id = [regex]::Match($moduleText, '(?m)^\s*Id\s*=\s*([^\r\n]+)').Groups[1].Value.Trim()
+        $version = [regex]::Match($moduleText, '(?m)^\s*Version\s*=\s*([^\r\n]+)').Groups[1].Value.Trim()
+        if (!$cacheSections.ContainsKey($id) -or $cacheSections[$id]['Version'] -ne $version) { throw "Stale/missing module cache identity: $id (expected $version)" }
+    }
+    foreach ($stage in Get-ChildItem -LiteralPath $pipelineRoot -File -Recurse -Filter '*.pixlbin') {
+        $relative = $stage.FullName.Substring($pipelineRoot.TrimEnd('\').Length + 1)
+        if ($relative -notmatch '^(Vertex|Pixel|Compute)[\\/]') { throw "Unrecognized cache stage path: $relative" }
+        $cacheDestination = Join-Path $cacheOutput $relative
+        New-Item -ItemType Directory -Path (Split-Path -Parent $cacheDestination) -Force | Out-Null
+        Copy-Item -LiteralPath $stage.FullName -Destination $cacheDestination
+    }
 
     # ShaderCache uses file mtimes as a fast source-change check when the file
     # watcher is disabled. Stamp validated binaries after the source payload is
@@ -158,6 +185,9 @@ if ($includePipelineLibrary) {
         ForEach-Object { $_.LastWriteTimeUtc = $cacheStamp }
 }
 
+if ($Channel -eq 'RELEASE' -and (Get-ChildItem -LiteralPath $output -Recurse -File -Filter 'UserGraphics.json')) {
+    throw 'Public release unexpectedly contains UserGraphics.json.'
+}
 foreach ($document in @("PIXL-RENDERER-README.md", "SOURCE-AND-CREDITS.md")) {
     Copy-Item -LiteralPath (Join-Path $sourceRoot "distribution\$document") -Destination $output -Force
 }
@@ -177,6 +207,12 @@ $manifestFiles = Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object
     product = "PIXL Renderer"
     title = "PBR Rendering Engine v1.0"
     version = "1.0.0"
+    requirements = @([ordered]@{
+        id = "EngineFixes"
+        path = "SKSE/Plugins/EngineFixes.dll"
+        required = $true
+        note = "Install the Engine Fixes release matching the user's Skyrim SE runtime; PIXL does not bundle this third-party dependency."
+    })
     sourceCommit = $sourceCommit
     sourceUrl = "https://github.com/pixlmusic/PIXL-Renderer/tree/$sourceCommit"
     channel = $Channel

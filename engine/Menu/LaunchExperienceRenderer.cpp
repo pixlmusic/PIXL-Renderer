@@ -79,10 +79,12 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	io.MouseDrawCursor = true;
 
 	const float scale = Util::GetUIScale();
-	const ImVec2 cardSize{ 700.0f * scale, 590.0f * scale };
+	const ImVec2 cardSize{ std::min(700.0f * scale, io.DisplaySize.x - 24.0f), std::min(760.0f * scale, io.DisplaySize.y - 24.0f) };
+	if (!ImGui::IsPopupOpen("##PIXLLaunchExperience"))
+		ImGui::OpenPopup("##PIXLLaunchExperience");
 	ImGui::SetNextWindowPos({ io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f }, ImGuiCond_Always, { 0.5f, 0.5f });
 	ImGui::SetNextWindowSize(cardSize, ImGuiCond_Always);
-	ImGui::SetNextWindowFocus();
+	// Modal ordering isolates setup without stealing focus from its combo popups.
 
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 2.0f * scale);
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 34.0f * scale, 26.0f * scale });
@@ -91,8 +93,7 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	                   ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
 	                   ImGuiWindowFlags_NoTitleBar;
 
-	if (!ImGui::Begin("##PIXLLaunchExperience", nullptr, flags)) {
-		ImGui::End();
+	if (!ImGui::BeginPopupModal("##PIXLLaunchExperience", nullptr, flags)) {
 		ImGui::PopStyleVar(3);
 		return;
 	}
@@ -148,24 +149,35 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 		"FIRST RUN");
 	ImGui::Spacing();
 
-	ImGui::TextColored(
-		PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
+	ImGui::TextWrapped(
 		"Choose a release-safe image path and quality profile. You can reopen this card later with QUICK SETUP.");
 	ImGui::Spacing();
 
 	static int setupQuality = 2;
 	static int setupUpscaler = 0;
-	if (!quickSetupRequested && menu->GetSettings().FirstTimeSetupCompleted) {
+	const bool dlssAvailable = globals::pipeline::imageReconstruction.streamline.featureDLSS;
+	if (ImGui::IsWindowAppearing()) {
 		setupQuality = std::clamp(menu->GetSettings().RendererQuality, 0, 3);
-		const auto current = globals::pipeline::imageReconstruction.settings.upscaleMethodNoDLSS;
-		setupUpscaler = current == static_cast<uint>(ImageReconstruction::UpscaleMethod::kFSR) ? 1 : 0;
+		const auto& reconstruction = globals::pipeline::imageReconstruction.settings;
+		const auto current = dlssAvailable ? reconstruction.upscaleMethod : reconstruction.upscaleMethodNoDLSS;
+		setupUpscaler = std::clamp(static_cast<int>(current), 0, dlssAvailable ? 3 : 2);
 	}
 
 	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "IMAGE PATH");
-	const char* upscalerNames[] = { "TAA (universal)", "FSR 3.1 Quality" };
+	const char* upscalerNames[] = { "Off (native, no temporal AA)", "TAA (native)", "FSR 3.1 Quality", "DLSS Quality" };
 	ImGui::SetNextItemWidth(-1.0f);
-	ImGui::Combo("##PIXLSetupUpscaler", &setupUpscaler, upscalerNames, IM_ARRAYSIZE(upscalerNames));
-	Util::AddTooltip("TAA works on every supported Skyrim setup. FSR 3.1 Quality renders below display resolution for more performance and needs the bundled FidelityFX runtime.");
+	if (ImGui::BeginCombo("##PIXLSetupUpscaler", upscalerNames[setupUpscaler])) {
+		for (int index = 0; index < IM_ARRAYSIZE(upscalerNames); ++index) {
+			const bool unavailable = index == static_cast<int>(ImageReconstruction::UpscaleMethod::kDLSS) && !dlssAvailable;
+			ImGui::BeginDisabled(unavailable);
+			if (ImGui::Selectable(upscalerNames[index], setupUpscaler == index)) setupUpscaler = index;
+			ImGui::EndDisabled();
+			if (unavailable && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+				ImGui::SetTooltip("DLSS requires supported NVIDIA hardware and an available DLSS runtime.");
+		}
+		ImGui::EndCombo();
+	}
+	Util::AddTooltip("Off disables temporal reconstruction. TAA uses native resolution. FSR and DLSS use Quality mode. DLSS is enabled when supported by the current device/runtime.");
 
 	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "QUALITY PROFILE");
 	const char* qualityNames[] = { "Fast", "Balanced", "Enhanced", "Cinematic" };
@@ -173,8 +185,8 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	ImGui::Combo("##PIXLSetupQuality", &setupQuality, qualityNames, IM_ARRAYSIZE(qualityNames));
 	Util::AddTooltip("Enhanced is the recommended default: higher lighting and material fidelity with a controlled performance budget. Cinematic is intended for powerful systems and photo work.");
 
-	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
-		"Photo Mode is PIXL Director on Insert: pause the scene, compose a shot, adjust camera and finish settings, then capture without changing your normal gameplay profile.");
+	ImGui::TextWrapped(
+		"Press Home for Photo Mode: pause the scene, compose a shot, adjust camera and finish settings, then capture without changing your normal gameplay profile. Page Down opens PIXL Renderer by default.");
 	ImGui::Spacing();
 
 	const bool capturing = menu->settingToggleKey;
@@ -198,12 +210,12 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 
 	ImGui::SameLine(0.0f, controlGap);
 	ImGui::BeginGroup();
-	ImGui::TextDisabled("PIXL DIRECTOR");
-	PIXLUI::ActionButton("INSERT", keyButtonSize, false);
+	ImGui::TextDisabled("PHOTO MODE");
+	PIXLUI::ActionButton("HOME", keyButtonSize, false);
 	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "Photo mode and high-quality capture");
 	ImGui::EndGroup();
 
-	ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 74.0f * scale);
+	ImGui::Spacing();
 	const ImVec2 continueSize{ contentWidth, 38.0f * scale };
 	const bool continuePressed =
 		PIXLUI::ActionButton(
@@ -211,25 +223,27 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 			continueSize,
 			true);
 
-	const bool escapePressed = ImGui::IsKeyPressed(ImGuiKey_Escape);
-	const bool enterPressed = ImGui::IsKeyPressed(ImGuiKey_Enter);
+	const bool escapePressed = ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Escape);
+	const bool enterPressed = ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter);
 	if (!capturing && (continuePressed || enterPressed || escapePressed)) {
 		if (!escapePressed) {
-			PIXLRenderer::QualityProfiles::ApplyGlobal(std::clamp(setupQuality, 0, 3));
+			// Do not replace the owner's tuned release defaults just by accepting setup.
+			if (setupQuality != menu->GetSettings().RendererQuality)
+				PIXLRenderer::QualityProfiles::ApplyGlobal(std::clamp(setupQuality, 0, 3));
 			auto& reconstruction = globals::pipeline::imageReconstruction.settings;
-			const uint selectedMethod = setupUpscaler == 1 ?
-				static_cast<uint>(ImageReconstruction::UpscaleMethod::kFSR) :
-				static_cast<uint>(ImageReconstruction::UpscaleMethod::kTAA);
+			const uint selectedMethod = static_cast<uint>(std::clamp(setupUpscaler, 0, dlssAvailable ? 3 : 2));
 			reconstruction.upscaleMethod = selectedMethod;
-			reconstruction.upscaleMethodNoDLSS = selectedMethod;
-			reconstruction.qualityMode = setupUpscaler == 1 ? 1u : 0u;
+			if (selectedMethod != static_cast<uint>(ImageReconstruction::UpscaleMethod::kDLSS))
+				reconstruction.upscaleMethodNoDLSS = selectedMethod;
+			reconstruction.qualityMode = selectedMethod >= static_cast<uint>(ImageReconstruction::UpscaleMethod::kFSR) ? 1u : 0u;
 			if (globals::state)
 				globals::state->Save();
 		}
 		MarkFirstTimeSetupComplete(escapePressed ? VK_ESCAPE : (enterPressed ? VK_RETURN : 0));
+		ImGui::CloseCurrentPopup();
 	}
 
-	ImGui::End();
+	ImGui::EndPopup();
 	ImGui::PopStyleVar(3);
 }
 
@@ -265,7 +279,7 @@ void LaunchExperienceRenderer::RenderControlReminder()
 		ImGui::Separator();
 		const std::string menuKey = Util::Input::KeyIdToString(menu->GetSettings().ToggleKey);
 		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::Text), "[ %-12s ]  PIXL MENU", menuKey.c_str());
-		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::Text), "[ INSERT       ]  PIXL DIRECTOR");
+		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::Text), "[ HOME         ]  PHOTO MODE");
 		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::Text), "[ ALT + N      ]  NEURAL RENDERING");
 		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "NR requires DLSS and NVIDIA RTX 30-series or newer");
 	}

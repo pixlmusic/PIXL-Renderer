@@ -4661,6 +4661,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			0.0f.xxx);
 		float pixlRoomCompositeWeight =
 			pow(saturate(pixlWindowLife.roomColorWeight * 1.34f), 0.72f) * 0.995f;
+		// Outdoor views retain authored day/night luminance, without the lit-room exposure boost.
+		if (SharedData::InInterior && WindowLife::GetFidelity1().w > 0.5f)
+			pixlRoomTarget = pixlRoomColor;
 		// The underlying diffuse texture is the source of the opaque yellow-paint
 		// read. Retain only a restrained stained-glass/weathering trace once an
 		// authored room is trustworthy; the glass optics still contribute their
@@ -4810,6 +4813,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #	endif
 
+	// Modest enclosed ambient trim; direct lighting and emissives are unchanged.
+	if (SharedData::InInterior && !inReflection)
+		directionalAmbientColor *= 0.92f;
 	float3 reflectionDiffuseColor = diffuseColor + directionalAmbientColor;
 
 #	if defined(MATERIAL_FORGE) && defined(LOD_LAND_BLEND) && !defined(DEFERRED)

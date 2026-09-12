@@ -72,7 +72,11 @@ struct WindowLife : RenderModule
         float LateNightActivity = 0.18f;
 
         // Interior optical illusion.
-        float ParallaxDepth = 28.0f;
+        float ParallaxDepth = 50.0f; // Exterior observer looking into rooms.
+        float InteriorParallaxDepth = 80.0f; // Interior observer looking outdoors.
+        bool EnableOutdoorViews = true;
+        float OutdoorViewStrength = 0.78f;
+        float OutdoorViewEmission = 2.5f;
         float Refraction = 2.5f;
         float SilhouetteSoftness = 0.055f;
         float HumanScale = 0.95f;
@@ -162,7 +166,7 @@ struct WindowLife : RenderModule
         // c10: x regional room family, y atlas ready/enabled, z authored-room blend,
         //      w geometry layout hint (-1 facade, 0 unknown, 1 dedicated aperture)
         float4 Asset0{};
-		// c11: x authored-room contrast, y authored-room emission,
+		// c11: x authored-room contrast, y exterior-room or interior-outdoor emission,
 		//      z authored-occupant opacity, w automatic room-art scale
 		float4 Presentation0{};
 		// c12: x stable per-instance salt, y cached material layout policy,
@@ -172,7 +176,7 @@ struct WindowLife : RenderModule
 		//      z weathered glass response, w sun glint strength
 		float4 Fidelity0{};
 		// c14: x directional reveal, y per-room variation,
-		//      z close cutout feather, w reserved
+		//      z close cutout feather, w outdoor atlas selected (interior view)
 		float4 Fidelity1{};
     };
 	static_assert(sizeof(PerGeometryData) == 240, "WindowLife per-draw payload must be exactly 240 bytes.");
@@ -233,6 +237,8 @@ private:
     winrt::com_ptr<ID3D11ShaderResourceView> occupantAtlasSRV;
     winrt::com_ptr<ID3D11ShaderResourceView> curtainAtlasSRV;
     winrt::com_ptr<ID3D11ShaderResourceView> roomAtlasSRV;
+    winrt::com_ptr<ID3D11ShaderResourceView> outdoorAtlasSRV;
+    winrt::com_ptr<ID3D11ShaderResourceView> outdoorNightAtlasSRV;
     PerGeometryData frameBaseData{};
     PerGeometryData currentActiveData{};
     bool activeDataValid = false;

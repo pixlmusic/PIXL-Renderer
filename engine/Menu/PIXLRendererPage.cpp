@@ -1866,7 +1866,7 @@ namespace
 			ImGui::PopID();
 
 			// -------------------------------------------------------------
-			// CENTRE — live scene preview + depth of field
+			// CENTRE — live scene preview
 			// -------------------------------------------------------------
 			ImGui::TableNextColumn();
 			ImGui::PushID(
@@ -1879,15 +1879,6 @@ namespace
 					0,
 					PIXLUI::Ref(4.0f)));
 
-			SectionHeading(
-				"DEPTH OF FIELD");
-
-			changed |=
-				ToggleControl(
-					"Skyrim depth of field",
-					&camera.settings
-						.enableSkyrimDepthOfField,
-					"Uses Skyrim's native image-space depth of field. PIXL's experimental full-screen DOF path is disabled for this release.");
 			ImGui::PopID();
 
 			// -------------------------------------------------------------
@@ -1896,6 +1887,12 @@ namespace
 			ImGui::TableNextColumn();
 			ImGui::PushID(
 				"PostEffectsColumn");
+
+			SectionHeading("DEPTH OF FIELD");
+			changed |= ToggleControl(
+				"Skyrim depth of field",
+				&camera.settings.enableSkyrimDepthOfField,
+				"Uses Skyrim's native image-space depth of field. PIXL's experimental full-screen DOF path is disabled for this release.");
 
 			SectionHeading(
 				"OCCLUSION & REFLECTIONS");
@@ -2287,14 +2284,14 @@ namespace
 			TuningWorkspaceRenderer::IsDirectorPhotoModeAvailable(
 				&directorUnavailableReason);
 
-		SectionHeading("PIXL DIRECTOR");
+		SectionHeading("PHOTO MODE");
 		ImGui::TextColored(
 			PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
 			"Cinematic free camera, live shot controls and clean high-quality capture.");
 		ImGui::SameLine();
 		ImGui::BeginDisabled(!directorAvailable);
 		if (PIXLUI::ActionButton(
-				directorActive ? "RETURN TO DIRECTOR" : "OPEN PIXL DIRECTOR",
+				directorActive ? "RETURN TO PHOTO MODE" : "OPEN PHOTO MODE",
 				ImVec2(PIXLUI::Ref(190.0f), PIXLUI::Ref(32.0f)),
 				true)) {
 			TuningWorkspaceRenderer::OpenDirectorPhotoMode();
@@ -2306,9 +2303,9 @@ namespace
 		}
 		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(5.0f)));
 		DrawFinishingControls();
+		// Keep reconstruction directly below the compact camera workspace so the
+		// active upscaling path is easier to find than in the engineering tuner.
 		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(10.0f)));
-		// Reconstruction sits directly beneath the image-adjustment/viewfinder
-		// workspace so normal users never need the engineering tuner.
 		DrawPerformanceControls();
 	}
 
