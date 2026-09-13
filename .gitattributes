@@ -1,4 +1,6 @@
 # Private monorepo files that must not enter the public GPL source archive.
+/PIXL_Preset_Experiments/** export-ignore
+/tools/GeneratePixlPresetExperiments.ps1 export-ignore
 /AGENTS.md export-ignore
 /AI-INSTRUCTIONS.md export-ignore
 /PIXL_ACTIVE_STATE.md export-ignore
