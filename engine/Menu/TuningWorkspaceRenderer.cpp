@@ -2244,7 +2244,7 @@ namespace
 
 		const auto lens = GetDirectorQuickReadout(DirectorQuickOption::CameraLens);
 		const std::string label = std::format(
-			"PIXL DIRECTOR  {}  |  MOVE {:.0f}%",
+			"PHOTO MODE  {}  |  MOVE {:.0f}%",
 			lens.value,
 			GetDirectorCameraMoveSpeed() * 100.0f);
 
@@ -2351,7 +2351,7 @@ namespace
 				x + 15.0f * scale,
 				y + 10.0f * scale),
 			PIXLUI::Colors::Text,
-			"PIXL DIRECTOR");
+			"PHOTO MODE");
 
 		draw->AddText(
 			ImVec2(
@@ -4936,7 +4936,7 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 				ImGui::TextColored(
 					PIXLUI::ToVec4(
 						PIXLUI::Colors::Text),
-					"PIXL DIRECTOR");
+					"PHOTO MODE");
 				ImGui::SetWindowFontScale(1.0f);
 			}
 
@@ -5002,7 +5002,7 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 					ImGui::TextColored(
 						PIXLUI::ToVec4(
 							PIXLUI::Colors::TextDim),
-						"Exit the existing free-camera session before PIXL Director takes control.");
+						"Exit the existing free-camera session before Photo Mode takes control.");
 				} else if (!photoModeAvailable) {
 					ImGui::TextColored(
 						PIXLUI::ToVec4(

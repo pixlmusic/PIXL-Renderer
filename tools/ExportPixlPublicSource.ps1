@@ -75,6 +75,9 @@ foreach ($path in $required) {
 }
 
 $forbiddenPatterns = @(
+    '^PIXL-Renderer-v1\.0-Source/PIXL_Preset_Experiments/',
+    '^PIXL-Renderer-v1\.0-Source/tools/GeneratePixlPresetExperiments\.ps1$',
+    '^PIXL-Renderer-v1\.0-Source/docs/(release_polish|reports|PIXL_GUI_Audit|Crysis3Pipeline|DynamicFire|HairReconstruction)/',
     '^PIXL-Renderer-v1\.0-Source/tools/PixDiTEnhance/',
     '^PIXL-Renderer-v1\.0-Source/(build|bin|dist|Data)/',
     '^PIXL-Renderer-v1\.0-Source/\.playwright-cli/',

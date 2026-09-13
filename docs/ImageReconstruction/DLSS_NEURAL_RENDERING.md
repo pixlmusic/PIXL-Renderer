@@ -45,7 +45,7 @@ Two shared neural output textures alternate with the swap-chain back-buffer inde
 
 The 310.8 binary contains a private `DLSSNR.ControlMask` resource name, but it does not publish the resource format, channel semantics or interaction with the learned mask. PIXL deliberately does not bind an invented mask. The release-safe Skyrim adaptation instead improves the supported scene representation: linear-depth silhouette velocity dilation, bounded disocclusion/current-color confidence, water transparency coverage and correct dynamic-resolution subrects.
 
-The detailed source and risk audit is recorded in `docs/release_polish/NEURAL_RENDERING_MASK_TERRAIN_AUDIT_20260902.md`.
+Neural Rendering remains experimental. Hardware-specific validation is required; private runtime controls with undocumented resource contracts are intentionally not exposed.
 
 ## Runtime discovery
 

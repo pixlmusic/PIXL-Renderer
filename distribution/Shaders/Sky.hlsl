@@ -311,7 +311,7 @@ PS_OUTPUT main(PS_INPUT input)
 	if (inReflection && SharedData::atmosphereSettings.enabled) {
 		float3 skyFogPosition = normalize(input.FogPosition.xyz) * SharedData::CameraData.x;
 		float4 atmosphere = Atmosphere::GetAtmosphereWithoutVolumes(skyFogPosition, FrameBuffer::CameraPosAdjust.xyz, psout.Color.xyz, float4(input.Position.xy * FrameBuffer::DynamicResolutionParams2.xy, input.Position.z, 1));
-		psout.Color.xyz = lerp(psout.Color.xyz, atmosphere.xyz, atmosphere.w);
+		psout.Color.xyz = lerp(psout.Color.xyz, atmosphere.xyz, atmosphere.w * (1.0f - saturate(SharedData::atmosphereSettings.skyProtection)));
 	}
 #	endif
 

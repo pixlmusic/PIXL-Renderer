@@ -116,19 +116,21 @@ cbuffer PIXLMaterialLayersTuningCB : register(b9)
 	// c18
 	float PIXLML_TerrainReliefGamma;
 	float PIXLML_TerrainSyntheticGain;
-	float PIXLML_pad3;
-	float PIXLML_pad4;
+	float PIXLML_ObjectVirtualDepthStrength;
+	float PIXLML_ObjectVirtualDepthMaxWorld;
 };
 
 namespace MaterialLayersTuning
 {
 	static const uint Magic = 0x504D4C54u;
-	static const uint Version = 2u;
+	static const uint Version = 3u;
 
 	bool IsValid()
 	{
 		return PIXLML_Magic == Magic && PIXLML_Version == Version;
 	}
+	float ObjectVirtualDepthStrength() { return IsValid() ? clamp(PIXLML_ObjectVirtualDepthStrength, 0.0f, 2.0f) : 0.0f; }
+	float ObjectVirtualDepthMaxWorld() { return IsValid() ? clamp(PIXLML_ObjectVirtualDepthMaxWorld, 1.0f, 16.0f) : 4.0f; }
 
 	uint TerrainHeightMode()
 	{

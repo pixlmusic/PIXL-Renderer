@@ -3,6 +3,20 @@
 #include "RadiantGrid.h"
 #include <numbers>
 
+namespace
+{
+	bool IsPlayerCastingLight(RE::BSLight* light)
+	{
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		if (!player || !light) return false;
+		for (auto hand : { RE::MagicSystem::CastingSource::kLeftHand, RE::MagicSystem::CastingSource::kRightHand }) {
+			auto* caster = skyrim_cast<RE::ActorMagicCaster*>(player->GetMagicCaster(hand));
+			if (caster && caster->light.get() == light) return true;
+		}
+		return false;
+	}
+}
+
 void NaturalLighting::PostPostLoad()
 {
 	stl::detour_thunk<CreatePointLight>(REL::RelocationID(17208, 17610));
@@ -70,6 +84,16 @@ void NaturalLighting::ProcessLight(RadiantGrid::LightData& light, RE::BSLight* b
 		// light.color *= runtimeData->fade;
 		light.fade = runtimeData->fade;
 	}
+	// Match the actual hand caster light, never asset names or all practicals.
+	// Keep the source softer nearby and retire it over a wider useful radius.
+	if (IsPlayerCastingLight(bsLight)) {
+		light.fade *= 0.65f;
+		light.radius = std::max(light.radius * 1.5f, 180.0f);
+		light.invRadius = 1.0f / light.radius;
+		light.fadeZone = 1.0f / std::max(light.radius * 0.35f, 1.0f);
+		if (isInvSq)
+			light.sizeBias = std::max(light.sizeBias, ScaledUnitsSq * 2.0f);
+	}
 }
 
 float NaturalLighting::CalculateRadius(const float intensity, const bool shadowCaster, const float cutoffOverride, const float size)
@@ -115,8 +139,12 @@ float NaturalLighting::BSLight_GetLuminance::thunk(RE::BSLight* bsLight, RE::NiP
 		return func(bsLight, targetPosition, refLight);
 
 	const float dist = niLight->world.translate.GetDistance(*targetPosition);
-	const float attenuation = GetAttenuation(dist, runtimeData->radius, runtimeData->size);
-	const float luminance = (runtimeData->diffuse.red + runtimeData->diffuse.green + runtimeData->diffuse.blue) * runtimeData->fade * 4 * attenuation * (1.0f / 3.0f);
+	const bool handLight = IsPlayerCastingLight(bsLight);
+	const float radius = handLight ? std::max(runtimeData->radius * 1.5f, 180.0f) : runtimeData->radius;
+	const float size = handLight ? std::max(runtimeData->size, 2.0f) : runtimeData->size;
+	const float sourceAttenuation = ScaledUnitsSq / std::max(dist * dist + ScaledUnitsSq * size * size / 2.0f, 1.0f);
+	const float attenuation = handLight ? sourceAttenuation * SmoothStep(0.0f, radius * 0.35f, radius - dist) : GetAttenuation(dist, radius, size);
+	const float luminance = (runtimeData->diffuse.red + runtimeData->diffuse.green + runtimeData->diffuse.blue) * runtimeData->fade * (handLight ? 2.6f : 4.0f) * attenuation * (1.0f / 3.0f);
 	bsLight->luminance = luminance;
 
 	return luminance;

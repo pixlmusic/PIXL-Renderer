@@ -12,6 +12,7 @@
 #include "Menu.h"
 #include "State.h"
 #include "MaterialForge.h"
+#include "MaterialLayers.h"
 #include "Renderer/QualityProfiles.h"
 #include "Util.h"
 #include "../Menu/PIXLStyle.h"
@@ -1836,7 +1837,7 @@ void HybridGI::DrawHybridGI()
 	{
 		TracyD3D11Zone(globals::state->tracyCtx, "HybridGI - Prefilter Depths");
 
-		srvs.at(0) = Util::GetCurrentSceneDepthSRV();
+		srvs.at(0) = globals::pipeline::materialLayers.GetEffectsDepth(Util::GetCurrentSceneDepthSRV());
 		for (int i = 0; i < 5; ++i)
 			uavs.at(i) = uavWorkingDepth[i].get();
 

@@ -1,4 +1,5 @@
 #include "WindowLife.h"
+#include "AtmosphereWeather.h"
 
 #include "Globals.h"
 #include "State.h"
@@ -24,6 +25,10 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
     EveningActivity,
     LateNightActivity,
     ParallaxDepth,
+    InteriorParallaxDepth,
+    EnableOutdoorViews,
+    OutdoorViewStrength,
+    OutdoorViewEmission,
     Refraction,
     SilhouetteSoftness,
     HumanScale,
@@ -190,7 +195,14 @@ void WindowLife::DrawSettings()
 
     ImGui::Spacing();
     ImGui::Text("%s", T("feature.window_life.optics", "Interior Depth"));
-    ImGui::SliderFloat(T("feature.window_life.parallax", "Interior Parallax Depth"), &settings.ParallaxDepth, 0.0f, 216.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SliderFloat("Exterior View: Room Depth", &settings.ParallaxDepth, 0.0f, 216.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::Checkbox("Interior View: Outdoor Backgrounds", &settings.EnableOutdoorViews);
+    ImGui::SliderFloat("Interior View: Parallax Depth", &settings.InteriorParallaxDepth, 0.0f, 240.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+    Util::AddTooltip("Depth of the outdoor scene and passers seen from inside. Higher values reveal more movement behind the glass as you move; shader cost is unchanged.");
+    ImGui::SliderFloat("Outdoor Background Visibility", &settings.OutdoorViewStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    Util::AddTooltip("Blends authored northern landscapes behind interior windows. Requires OutdoorAtlas; missing artwork retains the original glass and passers.");
+    ImGui::SliderFloat("Interior View: Background Emission", &settings.OutdoorViewEmission, 0.0f, 8.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    Util::AddTooltip("Brightens the day/night landscape seen from inside through refracted glass. Does not change exterior room images, opacity or parallax. No extra texture samples.");
     ImGui::SliderFloat(T("feature.window_life.refraction", "Interior Refraction"), &settings.Refraction, 0.0f, 8.0f, "%.2f");
     ImGui::SliderFloat(T("feature.window_life.softness", "Silhouette Softness"), &settings.SilhouetteSoftness, 0.015f, 0.16f, "%.3f");
     ImGui::SliderFloat(T("feature.window_life.human_scale", "Human Scale"), &settings.HumanScale, 0.65f, 1.35f, "%.2f");
@@ -199,17 +211,17 @@ void WindowLife::DrawSettings()
     ImGui::Checkbox(T("feature.window_life.authored_rooms", "Authored Room Backgrounds"), &settings.EnableAuthoredRooms);
     ImGui::SliderFloat(T("feature.window_life.authored_room_strength", "Authored Room Visibility"), &settings.AuthoredRoomStrength, 0.0f, 1.0f, "%.2f");
 	ImGui::SliderFloat(T("feature.window_life.interior_contrast", "Interior Contrast"), &settings.InteriorContrast, 0.50f, 2.0f, "%.2f");
-	ImGui::SliderFloat(T("feature.window_life.interior_emission", "Interior Emission"), &settings.InteriorEmission, 0.0f, 3.0f, "%.2fx");
+	ImGui::SliderFloat("Exterior View: Room Emission", &settings.InteriorEmission, 0.0f, 3.0f, "%.2fx");
 	ImGui::SliderFloat(T("feature.window_life.interior_scale", "Interior Scale"), &settings.InteriorScale, 1.0f, 2.50f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
 	ImGui::SliderFloat(T("feature.window_life.interior_lighting_response", "Interior Lighting Response"), &settings.InteriorLightingResponse, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextWrapped("Interior Scale crops or expands the room artwork in both manual and automatic sizing modes without changing the detected glass boundary or room identity. Contrast separates furniture and walls; emission controls readability through the original glass.");
 	}
     ImGui::Checkbox(T("feature.window_life.auto_room_sizing", "Automatic Room Sizing"), &settings.AutomaticRoomSizing);
-    ImGui::Checkbox(T("feature.window_life.interior_passers", "Interior View Passers-by"), &settings.EnableInteriorPassers);
     if (auto _tt = Util::HoverTooltipWrapper()) {
-        ImGui::TextWrapped("Automatic mode groups mullioned panes from the currently installed native window texture, reconstructs one stable world-space aperture, and falls back to PIXL's calibrated geometry layout only when that evidence is uncertain. Rooms, curtains and occupants share the same fit.");
+        ImGui::TextWrapped("Optional texture-based aperture fitting. Manual sizing is the default. Automatic mode accepts only confident, plausibly sized fits; texture atlases can still need manual Room Width/Height. Rooms, curtains and occupants share the fit.");
     }
+    ImGui::Checkbox(T("feature.window_life.interior_passers", "Interior View Passers-by"), &settings.EnableInteriorPassers);
 
     ImGui::Spacing();
     ImGui::Text("%s", T("feature.window_life.masking", "Pane Mask & Distance"));
@@ -512,6 +524,18 @@ void WindowLife::SetupResources()
         roomAtlasSRV,
         false);
     loadAtlas(
+        "Data\\Shaders\\WindowLife\\OutdoorAtlas_2k.dds",
+        "Data\\Shaders\\WindowLife\\OutdoorAtlas.png",
+        "Outdoor view",
+        outdoorAtlasSRV,
+        false);
+    loadAtlas(
+        "Data\\Shaders\\WindowLife\\OutdoorAtlasNight_2k.dds",
+        "Data\\Shaders\\WindowLife\\OutdoorAtlasNight.png",
+        "Outdoor night view",
+        outdoorNightAtlasSRV,
+        false);
+    loadAtlas(
         {},
         "Data\\Shaders\\WindowLife\\OccupantAtlas.png",
         "Occupant",
@@ -581,6 +605,17 @@ void WindowLife::SetupResources()
 
 float WindowLife::GetDayNightBlend(float hour)
 {
+    if (!std::isfinite(hour))
+        hour = 12.0f;
+    // Calendar continues indoors; the active climate supplies twilight timing
+    // for both the outdoor-view atlas and exterior room lighting.
+    if (const auto* sky = globals::game::sky; sky && sky->currentClimate) {
+        const auto& timing = sky->currentClimate->timing;
+        const float daylight = PIXL::AtmosphereWeather::DirectionalFogScale(
+            hour, timing.sunrise.begin / 6.0f, timing.sunrise.end / 6.0f,
+            timing.sunset.begin / 6.0f, timing.sunset.end / 6.0f);
+        return std::clamp((1.0f - daylight) / 0.95f, 0.0f, 1.0f);
+    }
     hour = std::fmod(std::max(hour, 0.0f), 24.0f);
     if (hour < 5.0f)
         return 1.0f;
@@ -638,6 +673,9 @@ void WindowLife::RefreshFrameBaseData()
     const float activity = std::clamp(GetActivityForHour(hour, settings), 0.0f, 1.0f);
 
     frameBaseData = {};
+    // Match SharedData::InInterior exactly. Select the atlas once per frame and
+    // reuse t126: no additional resource slots or per-draw ABI growth.
+    const bool interiorView = Util::IsInterior();
     frameBaseData.Runtime0 = {
         settings.EnableWindowLife ? 1.0f : 0.0f,
         0.6180339887f,
@@ -645,7 +683,7 @@ void WindowLife::RefreshFrameBaseData()
         activity
     };
     frameBaseData.Optics0 = {
-        std::clamp(settings.ParallaxDepth, 0.0f, 240.0f),
+        std::clamp(interiorView ? settings.InteriorParallaxDepth : settings.ParallaxDepth, 0.0f, 240.0f),
         std::clamp(settings.SilhouetteSoftness, 0.005f, 0.25f),
         std::clamp(settings.Refraction, 0.0f, 12.0f),
         std::clamp(settings.HumanScale, 0.5f, 1.6f)
@@ -688,13 +726,13 @@ void WindowLife::RefreshFrameBaseData()
     };
     frameBaseData.Asset0 = {
         0.0f,
-        settings.EnableAuthoredRooms && roomAtlasSRV ? 1.0f : 0.0f,
-        std::clamp(settings.AuthoredRoomStrength, 0.0f, 1.0f),
+        (interiorView ? settings.EnableOutdoorViews && outdoorAtlasSRV : settings.EnableAuthoredRooms && roomAtlasSRV) ? 1.0f : 0.0f,
+        std::clamp(interiorView ? settings.OutdoorViewStrength : settings.AuthoredRoomStrength, 0.0f, 1.0f),
         0.0f
     };
 	frameBaseData.Presentation0 = {
 		std::clamp(settings.InteriorContrast, 0.50f, 2.0f),
-		std::clamp(settings.InteriorEmission, 0.0f, 3.0f),
+		interiorView ? std::clamp(settings.OutdoorViewEmission, 0.0f, 8.0f) : std::clamp(settings.InteriorEmission, 0.0f, 3.0f),
 		std::clamp(settings.OccupantOpacity, 0.0f, 1.0f),
 		std::clamp(settings.InteriorScale, 1.0f, 2.5f)
 	};
@@ -717,7 +755,7 @@ void WindowLife::RefreshFrameBaseData()
         std::clamp(settings.DirectionalRevealStrength, 0.0f, 0.60f),
         std::clamp(settings.RoomVariationStrength, 0.0f, 0.35f),
         std::clamp(settings.CloseLayerFeather, 0.0f, 1.5f),
-        0.0f
+        interiorView ? 1.0f : 0.0f
     };
 
     activeDataFrame = frame;
@@ -743,7 +781,7 @@ void WindowLife::BindNeutral() const
         occupantAtlasSRV.get(),
         curtainAtlasSRV.get(),
         nullptr,
-        settings.EnableAuthoredRooms ? roomAtlasSRV.get() : nullptr,
+        nullptr,
         neutralSRV.get()
     };
     globals::d3d::context->PSSetShaderResources(kGlassGrimeSRVSlot, 6, srvs);
@@ -764,9 +802,9 @@ void WindowLife::BindActive(const Classification& classification) const
     ID3D11ShaderResourceView* srvs[6] = {
         glassGrimeSRV.get(),
         occupantAtlasSRV.get(),
-        curtainAtlasSRV.get(),
+        frameBaseData.Fidelity1.w > 0.5f ? outdoorNightAtlasSRV.get() : curtainAtlasSRV.get(),
         GetAuthoredMaskSRV(classification),
-        settings.EnableAuthoredRooms ? roomAtlasSRV.get() : nullptr,
+        frameBaseData.Asset0.y > 0.5f ? (frameBaseData.Fidelity1.w > 0.5f ? outdoorAtlasSRV.get() : roomAtlasSRV.get()) : nullptr,
         activeSRV.get()
     };
     globals::d3d::context->PSSetShaderResources(kGlassGrimeSRVSlot, 6, srvs);

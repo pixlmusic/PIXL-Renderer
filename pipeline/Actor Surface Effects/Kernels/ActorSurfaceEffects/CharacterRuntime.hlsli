@@ -14,6 +14,9 @@ namespace PIXLCharacterRuntime
 		float4 LocalCenterRadius;
 		float4 VerticalAmounts;
 		float4 State;
+		float4 WorldToDeposit0;
+		float4 WorldToDeposit1;
+		float4 WorldToDeposit2;
 	};
 
 #if !defined(LANDSCAPE) && (defined(SKINNED) || defined(SKIN) || defined(EYE) || defined(HAIR))

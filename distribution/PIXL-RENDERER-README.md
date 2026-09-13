@@ -1,19 +1,48 @@
-# PIXL Renderer v1.0
+# PIXL Renderer 1.0
 
-September 11 release candidate: includes Hybrid GI's zero-safe denoising basis, corrected temporal-history scaling, guided first-run setup, and clean package staging. The exact corresponding source revision and URL are recorded in `PIXL-RENDERER.manifest.json`; a matching source archive is supplied separately.
+An integrated DirectX 11 renderer for Skyrim Special Edition.
 
-Validation limits: the GI correction passed shader compilation and reference-math tests, but still needs broad in-game visual regression testing. Optional DLSS-G SM86 remains experimental, with limited hardware and long-session coverage. Frame generation and real-time Neural Rendering remain off by default. A RELEASE package label does not imply an exhaustive security, compatibility or performance certification.
+## Installation
 
-PIXL Renderer is a standalone PBR rendering engine for Skyrim Special Edition. Install one ZIP with a mod manager, enable the included `PIXL-TerrainField.esp`, and launch through SKSE. The one-time welcome card shows the shipped controls: `Page Down` opens PIXL Renderer and `Insert` opens PIXL Director.
+### Requirements
 
-On first launch, PIXL opens a guided setup card. The safe universal default is Enhanced quality with native TAA; FSR 3.1 Quality is available when its bundled runtime is present. The card can be reopened from **QUICK SETUP** in the PIXL Renderer control centre. Choose a Quality profile, make any preferred Camera adjustments, then press **SAVE LOOK**. Frame generation and Neural Rendering start off. Reconstruction, NR/FG and latency controls are available below the Camera viewfinder, while Photo Mode can temporarily use Neural Rendering on supported NVIDIA RTX 30-series-or-newer hardware even when real-time NR is disabled. `Alt+N` toggles NR after a DLSS sidecar session has been provisioned. Changing FSR, DLSS, frame generation, or a sidecar-backed option requires closing and relaunching Skyrim through your mod manager after saving. NR/FG use borderless presentation; exclusive fullscreen is intentionally excluded because Alt-Tab is not stable across the DX11/DX12 ownership boundary.
+- Skyrim Special Edition on Windows, with SKSE matching your game runtime.
+- Engine Fixes and its prerequisites, matching that same runtime. PIXL checks for `Data/SKSE/Plugins/EngineFixes.dll`; it is not bundled.
+- A DirectX 11-capable GPU. DLSS/DLAA require supported NVIDIA hardware and an available runtime.
+- Borderless/windowed mode for frame generation and the optional Neural Rendering sidecar.
 
-Do not combine PIXL Renderer with another engine-level shader-hook renderer, ENB, ReShade, Kreate, or a second copy of PIXL Renderer. A RELEASE archive includes a validated preloaded pipeline library; a RELEASE-CANDIDATE archive may compile pipelines on the first launch. Let any required first compilation complete and do not repeatedly delete a healthy cache, because ordinary shader changes invalidate only the affected permutations.
+The owner-tested baseline is Skyrim SE 1.5.97. Other runtimes and mod combinations require validation; build support alone is not a compatibility guarantee.
 
-DLSS-G offers 2x, 3x and 4x output (subject to the runtime limit). It automatically requests Reflex during generation. Camera's advanced latency controls now use the active DLSS-G DX12 runtime: Boost and the Reflex limiter remain available even when the optional always-on Reflex switch is off. The limiter caps rendered frames, not generated output; frame generation does not increase simulation or input-update speed. FSR3 retains its own pacing path.
+### Install and first launch
 
-For RTX 30-series DLSS-G, install the upstream `sdli1995/dlssg_for_sm86` proxy (`version.dll` and `dlssg_sm86.ini`) beside SkyrimSE.exe, not inside Data. These proxy files are not bundled or overwritten by this package. The matched Streamline DX12 runtime is bundled. See `DLSSG_SM86_INTEGRATION.md` for setup and known validation limits.
+1. Close Skyrim. Install the release ZIP with Vortex or Mod Organizer 2 as a normal **Data** mod. For manual installation, extract its contents into Skyrim's `Data` directory, not beside `SkyrimSE.exe`.
+2. Enable the included `PIXL-TerrainField.esp`. Install required dependencies separately.
+3. Disable other engine-level shader renderers and duplicate PIXL installations. Do not combine this release with Community Shaders, ENB, ReShade or Kreate.
+4. Launch using your normal SKSE/mod-manager shortcut.
+5. Complete Quick Setup: choose Off, TAA, FSR Quality, DLSS Quality or **DLAA**. DLAA uses native-resolution DLSS anti-aliasing rather than upscaling. NVIDIA options are disabled when unavailable.
+6. Optionally check **Enable frame generation**. If setup requests a restart, save your game and relaunch normally. The confirmed exit option saves PIXL settings, **not game progress**, and does not automatically relaunch.
+7. Use **Page Down** for PIXL Renderer, **Home** for Photo Mode, and **SAVE LOOK** to keep adjustments. Reopen **QUICK SETUP** whenever needed.
 
-The September 9 atmosphere look is now the shipped and Restore Defaults baseline. Existing saved graphics settings are preserved; choose Restore Defaults for Atmosphere if you want the new baseline in an existing installation. Named historical quality/look profiles remain independent.
+The release ships owner-tuned fog and POM defaults, with reconstruction set to **Off/None**, frame generation off and real-time Neural Rendering off. Accepting the existing quality selection preserves the tuned look. The advanced tuner remains optional.
 
-Licensing, source availability, third-party notices and attribution are provided in `SOURCE-AND-CREDITS.md` and `COPYING`.
+### Optional DLSS frame-generation proxy
+
+The third-party [DLSSG proxy project](https://github.com/sdli1995/dlssg_for_sm86) is **not bundled** and is not required for ordinary DLSS/DLAA or FSR frame generation. Consult its [English installation guide](https://github.com/sdli1995/dlssg_for_sm86/blob/main/README.en.md) for current requirements and supported configurations.
+
+For a compatible proxy setup, close Skyrim and install the upstream proxy DLL and `dlssg_sm86.ini` **beside `SkyrimSE.exe`, not inside Data**. Do not overwrite another mod's proxy DLL; use only an upstream-supported alternative entry point if appropriate. Install only one proxy from that project. Relaunch, select the DLSSG backend in PIXL's Camera controls and enable frame generation; another restart may be required to provision the sidecar.
+
+PIXL greys out DLSSG when neither native support nor the expected proxy files are detected. File detection is not proof of compatibility. This optional path remains experimental and needs hardware-specific testing. Use FSR frame generation if the DLSSG path is unavailable.
+
+### Cache and updating
+
+The release includes a snapshot of the live-tested `PIXL/PipelineLibrary`. Missing or invalidated permutations compile as needed; the bundled cache cannot cover every mod combination. Let compilation finish before evaluating performance. Do not routinely delete the cache: module-scoped updates preserve unaffected stages, while shared ABI/layout changes may require wider recompilation.
+
+Update through your mod manager with Skyrim closed. Existing `SKSE/Plugins/PIXL/Config/UserGraphics.json` settings take precedence over new defaults. For a fresh default test, back up that file outside Data and remove the live copy while Skyrim is closed. The ZIP never ships a user config.
+
+Required runtime folders retain their existing paths; moving them breaks shader/resource loading. Package documentation and licence notices are grouped under `SKSE/Plugins/PIXL/Documentation`. The package manifest records exact source revision and payload hashes. Logs, developer reports, build tools and debug symbols are not part of the plugin payload.
+
+
+Source: [PIXL Renderer on GitHub](https://github.com/pixlmusic/PIXL-Renderer).
+Licences, attribution and source notices are included in
+`SKSE/Plugins/PIXL/Documentation`. This release has owner live-test coverage,
+not an exhaustive hardware, security or mod-compatibility certification.

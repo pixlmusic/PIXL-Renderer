@@ -309,6 +309,7 @@ public:
 	// Module availability methods
 	bool HasFrameGenModule() const;
 	bool HasDLSSGModule() const;
+	bool DrawFrameGenerationBackendSelector();
 	bool UsesDLSSGFrameGeneration() const;
 
 	// Proxy interface methods

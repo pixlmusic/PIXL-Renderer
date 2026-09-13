@@ -1,4 +1,5 @@
 #include "Atmosphere.h"
+#include "AtmosphereWeather.h"
 #include "RainResponse.h"
 
 #include "Deferred.h"
@@ -71,7 +72,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	automaticWeatherFog,
 	automaticWeatherStrength,
 	minimumAtmosphereTransmittance,
-	weatherMieStrength)
+	weatherMieStrength,
+	skyProtection)
 
 namespace
 {
@@ -157,6 +159,7 @@ void Atmosphere::LoadSettings(json& o_json)
 	settings.automaticWeatherFog = settings.automaticWeatherFog ? 1u : 0u;
 	settings.automaticWeatherStrength = std::clamp(finiteOr(settings.automaticWeatherStrength, 1.0f), 0.0f, 1.0f);
 	settings.minimumAtmosphereTransmittance = std::clamp(finiteOr(settings.minimumAtmosphereTransmittance, 0.06f), 0.0f, 0.35f);
+	settings.skyProtection = std::clamp(finiteOr(settings.skyProtection, 0.25f), 0.0f, 1.0f);
 	settings.weatherMieStrength = std::clamp(finiteOr(settings.weatherMieStrength, 0.75f), 0.0f, 1.0f);
 }
 
@@ -183,16 +186,40 @@ Atmosphere::Settings Atmosphere::ResolveRuntimeSettings() const
 	const float fogFar = std::isfinite(sky->fogFar) ? std::clamp(sky->fogFar, 8000.0f, 200000.0f) : 60000.0f;
 	const float strength = std::clamp(settings.automaticWeatherStrength, 0.0f, 1.0f);
 
+	if (sky->currentClimate) {
+		const auto& timing = sky->currentClimate->timing;
+		const float sourceScale = PIXL::AtmosphereWeather::DirectionalFogScale(
+			sky->currentGameHour, timing.sunrise.begin / 6.0f, timing.sunrise.end / 6.0f,
+			timing.sunset.begin / 6.0f, timing.sunset.end / 6.0f);
+		const float scale = std::lerp(1.0f, sourceScale, strength);
+		resolved.directionalInscatteringMultiplier *= scale;
+		resolved.volumetricDirectionalScatteringIntensity *= scale;
+	}
+
 	// Skyrim has already blended fogNear/fogFar across weather and time of day.
 	// Treat that live visibility range as authoritative and adapt PIXL's optical
 	// depth conservatively around the user's chosen density.
-	const float visibilityDensityScale = std::clamp(std::sqrt(60000.0f / fogFar), 0.55f, 1.85f);
+	auto weatherProfile = [](const RE::TESWeather* weather) {
+		if (!weather) return PIXL::AtmosphereWeather::ForWeather(false, false, false);
+		const auto flags = weather->data.flags;
+		return PIXL::AtmosphereWeather::ForWeather(
+			flags.any(RE::TESWeather::WeatherDataFlag::kRainy),
+			flags.any(RE::TESWeather::WeatherDataFlag::kSnow),
+			flags.any(RE::TESWeather::WeatherDataFlag::kCloudy));
+	};
+	const float weatherPct = std::isfinite(sky->currentWeatherPct) ? std::clamp(sky->currentWeatherPct, 0.0f, 1.0f) : 1.0f;
+	const auto profile = PIXL::AtmosphereWeather::Blend(
+		weatherProfile(sky->lastWeather ? sky->lastWeather : sky->currentWeather),
+		weatherProfile(sky->currentWeather), weatherPct);
+	// Blend precipitation as well as engine visibility so weather mods with long
+	// fogFar values still gain a denser rain/snow layer, without transition pops.
+	const float visibilityDensityScale = PIXL::AtmosphereWeather::DensityScale(fogFar, profile);
 	resolved.fogDensity = std::clamp(
 		settings.fogDensity * std::lerp(1.0f, visibilityDensityScale, strength),
 		0.0f, 1.0f);
 	resolved.startDistance = std::lerp(
 		settings.startDistance,
-		std::max(settings.startDistance, std::min(fogNear * 0.20f, fogFar * 0.08f)),
+		std::max(settings.startDistance, std::min(fogNear * 0.20f, fogFar * 0.08f)) * profile.startDistance,
 		strength);
 	resolved.volumetricFogDistance = std::lerp(
 		settings.volumetricFogDistance,
@@ -216,7 +243,6 @@ Atmosphere::Settings Atmosphere::ResolveRuntimeSettings() const
 			value = 0.38f;
 		return value;
 	};
-	const float weatherPct = std::clamp(sky->currentWeatherPct, 0.0f, 1.0f);
 	const float targetMie = std::lerp(
 		weatherMie(sky->lastWeather ? sky->lastWeather : sky->currentWeather),
 		weatherMie(sky->currentWeather),
@@ -240,7 +266,7 @@ void Atmosphere::DrawSettings()
 	Util::UIntCheckbox(T(TKEY("enable_exp_height_fog"), "Enable Atmosphere"), &settings.enabled);
 	Util::UIntCheckbox("Automatic Weather Atmosphere", &settings.automaticWeatherFog);
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::TextWrapped("Recommended. Adapts visibility range, density and Mie phase from Skyrim's live blended weather while preserving the controls below as the artistic baseline.");
+		ImGui::TextWrapped("Adapts visibility, density and scattering to live weather. Directional fog fades to 5% overnight through the current climate's dawn/dusk times; ambient fog and normal moonlight remain unchanged. Controls below are the daytime baseline.");
 	if (settings.automaticWeatherFog) {
 		ImGui::SliderFloat("Weather Response", &settings.automaticWeatherStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat("Mie Weather Coupling", &settings.weatherMieStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -248,9 +274,17 @@ void Atmosphere::DrawSettings()
 	ImGui::SliderFloat("Minimum World Visibility", &settings.minimumAtmosphereTransmittance, 0.0f, 0.35f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::TextWrapped("Protects sky, mountains and navigation silhouettes from becoming fully opaque. Low values retain dense weather without turning the world into a white wall.");
+	ImGui::SliderFloat("Sky Protection", &settings.skyProtection, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	Util::AddTooltip("Reduces PIXL fog over the sky only. Mountains and scene fog keep their depth. No extra texture samples.");
 	Util::WeatherUI::SliderFloat(T(TKEY("start_distance"), "Start Distance"), this, "startDistance", &settings.startDistance, 0.0f, 100000.0f, "%.1f");
+    Util::AddTooltip("Distance before analytical height fog starts. Volumetric fog covers the nearer range separately. A very large start distance can leave distant terrain too clear.");
 	Util::WeatherUI::SliderFloat(T(TKEY("fog_height"), "Fog Height"), this, "fogHeight", &settings.fogHeight, -22000.0f, 22000.0f, "%.1f");
+    Util::AddTooltip("World-space height of the dense fog layer, not its thickness. Use lower Height Falloff for a taller layer; use Sky Protection to preserve the sky independently.");
 	Util::WeatherUI::SliderFloat(T(TKEY("fog_height_falloff"), "Fog Height Falloff"), this, "fogHeightFalloff", &settings.fogHeightFalloff, 0.001f, 2.0f, "%.3f");
+    Util::AddTooltip("Lower values keep fog higher above the layer. Higher values make a thin, sharply bounded layer. This changes vertical coverage without adding samples.");
+    const auto fogPreview = ResolveRuntimeSettings();
+    ImGui::TextDisabled("Half-density height: %.0f units above layer", 1000.0f / std::max(fogPreview.fogHeightFalloff, 0.001f));
+    ImGui::TextDisabled("Weather-resolved density %.3f | volume range %.0f", fogPreview.fogDensity, fogPreview.volumetricFogDistance);
 	Util::WeatherUI::ColorEdit4(T(TKEY("fog_inscattering_color"), "Fog Inscattering Color"), this, "fogInscatteringColor", (float*)&settings.fogInscatteringColor);
 	Util::WeatherUI::SliderFloat(T(TKEY("original_fog_color_amount"), "Original Fog Color Amount"), this, "originalFogColorAmount", &settings.originalFogColorAmount, 0.0f, 1.0f, "%.2f");
 	Util::WeatherUI::SliderFloat(T(TKEY("fog_density"), "Fog Density"), this, "fogDensity", &settings.fogDensity, 0.0f, 1.0f, "%.3f");

@@ -450,7 +450,7 @@ public:
 
 	struct Settings
 	{
-		std::vector<InputCombo> ToggleKey = { InputCombo::Keyboard(VK_END) };
+		std::vector<InputCombo> ToggleKey = { InputCombo::Keyboard(VK_NEXT) };  // Page Down; Home opens Photo Mode.
 		std::vector<InputCombo> SkipCompilationKey = { InputCombo::Keyboard(VK_ESCAPE) };
 		std::vector<InputCombo> EffectToggleKey = { InputCombo::Keyboard(VK_MULTIPLY) };    // toggle all effects
 		std::vector<InputCombo> OverlayToggleKey = { InputCombo::Keyboard(VK_F10) };        // Global overlay toggle key for all overlays

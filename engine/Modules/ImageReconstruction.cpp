@@ -18,6 +18,7 @@
 #include <cmath>
 #include <directx/d3dx12.h>
 #include <format>
+#include <filesystem>
 
 #define I18N_KEY_PREFIX "feature.image_reconstruction."
 
@@ -583,14 +584,7 @@ void ImageReconstruction::DrawSettings()
 		if (HasDLSSGModule())
 			ImGui::Text("NVIDIA DLSS Frame Generation is available (SM86 proxy compatible).");
 
-		const char* frameGenerationBackends[] = { "AMD FSR 3", "NVIDIA DLSSG (SM86)" };
-		int frameGenerationBackend = static_cast<int>(std::min<uint>(settings.frameGenerationBackend, 1u));
-		if (ImGui::Combo("Frame Generation backend", &frameGenerationBackend, frameGenerationBackends, _countof(frameGenerationBackends))) {
-			settings.frameGenerationBackend = static_cast<uint>(frameGenerationBackend);
-			settings.frameGenerationMode = settings.frameGenerationMode ? 1u : 0u;
-		}
-		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Selects the frame-generation runtime. DLSSG requires the SM86 version.dll and dlssg_sm86.ini beside SkyrimSE.exe; restart after changing this option.");
+		DrawFrameGenerationBackendSelector();
 		ImGui::Text("%s", T(TKEY("frame_generation_proxy_note"),
 							  "Requires a D3D11 to D3D12 proxy which can create compatibility issues"));
 		ImGui::Text("%s", T(TKEY("frame_generation_restart_note"),
@@ -620,8 +614,11 @@ void ImageReconstruction::DrawSettings()
 			Util::Text::Warning("Warning: Requires restart");
 
 		bool fgEnabled = settings.frameGenerationMode != 0;
-		if (ImGui::Checkbox(T(TKEY("frame_generation"), "Frame Generation"), &fgEnabled))
+		if (ImGui::Checkbox(T(TKEY("frame_generation"), "Frame Generation"), &fgEnabled)) {
 			settings.frameGenerationMode = fgEnabled ? 1 : 0;
+			if (fgEnabled)
+				settings.frameGenerationForceEnable = 1;
+		}
 
 		switch (GetFrameGenerationState()) {
 		case FrameGenerationState::Active:
@@ -2029,6 +2026,56 @@ bool ImageReconstruction::HasFrameGenModule() const
 bool ImageReconstruction::HasDLSSGModule() const
 {
 	return streamlineDX12.featureDLSSG;
+}
+
+bool ImageReconstruction::DrawFrameGenerationBackendSelector()
+{
+	// Installation hint only, not a capability check. Do not load third-party DLLs
+	// just to populate the menu. A restart is required after installing a proxy.
+	static const bool proxyFilesPresent = [] {
+		wchar_t executable[32768]{};
+		const auto length = GetModuleFileNameW(nullptr, executable, _countof(executable));
+		if (!length || length >= _countof(executable))
+			return false;
+		const auto directory = std::filesystem::path(executable).parent_path();
+		std::error_code error;
+		if (!std::filesystem::is_regular_file(directory / L"dlssg_sm86.ini", error))
+			return false;
+		for (const auto* name : { L"version.dll", L"winmm.dll", L"dinput8.dll", L"winhttp.dll", L"dxgi.dll" }) {
+			error.clear();
+			if (std::filesystem::is_regular_file(directory / name, error))
+				return true;
+		}
+		return false;
+	}();
+	const bool available = HasDLSSGModule() || proxyFilesPresent;
+	const char* labels[] = { "FSR 3 Frame Generation", "DLSSG (optional mod)" };
+	const auto selected = std::min<uint>(settings.frameGenerationBackend, 1u);
+	bool changed = false;
+	if (ImGui::BeginCombo("Frame generation backend", labels[selected])) {
+		for (uint index = 0; index < 2; ++index) {
+			ImGui::BeginDisabled(index == 1 && !available);
+			if (ImGui::Selectable(labels[index], selected == index)) {
+				settings.frameGenerationBackend = index;
+				changed = true;
+			}
+			ImGui::EndDisabled();
+		}
+		ImGui::EndCombo();
+	}
+	if (!available) {
+		ImGui::TextWrapped("DLSSG unavailable: optional mod not detected. Use FSR 3, or install DLSSG separately and restart Skyrim. Not bundled with PIXL.");
+	} else if (!HasDLSSGModule()) {
+		ImGui::TextWrapped("DLSSG files detected; runtime support is not yet confirmed. Select DLSSG and restart to check compatibility.");
+	}
+	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+		ImGui::BeginTooltip();
+		ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
+		ImGui::TextUnformatted("Optional SM86 mod: github.com/sdli1995/dlssg_for_sm86\nFollow its installation instructions beside SkyrimSE.exe, not in Data. Do not overwrite an existing proxy DLL. See DLSSG_SM86_INTEGRATION.md in the PIXL package. File detection does not guarantee GPU/runtime compatibility.");
+		ImGui::PopTextWrapPos();
+		ImGui::EndTooltip();
+	}
+	return changed;
 }
 
 bool ImageReconstruction::UsesDLSSGFrameGeneration() const

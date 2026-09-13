@@ -447,6 +447,13 @@ typedef VS_OUTPUT PS_INPUT;
 // depth shards. Authored PARALLAX permutations keep their dedicated depth path.
 #	define PIXL_PARALLAX_DEPTH_MATERIAL_FORGE 0
 #endif
+#ifndef PIXL_PARALLAX_DEPTH_AUTHORED
+// Authored UV parallax is safe to retain, but reconstructing hardware depth
+// from its UV shift can expose holes at overlapping architectural surfaces
+// (Markarth oldrock2 / Silver-Blood Inn). Keep this experimental resolve opt-in
+// until it is consistent with the engine's depth/prepass and layered geometry.
+#	define PIXL_PARALLAX_DEPTH_AUTHORED 0
+#endif
 #ifndef PIXL_PARALLAX_DEPTH_LANDSCAPE
 // Generic terrain-POM hardware depth is deliberately opt-in. Ground deformation
 // has its own bounded world-space depth path below and must not depend on UV POM.
@@ -465,10 +472,15 @@ typedef VS_OUTPUT PS_INPUT;
 #if USE_PIXL_PARALLAX_DEPTH_CORRECTION && defined(DEFERRED) && !defined(DO_ALPHA_TEST) && !defined(DEPTH_WRITE_DECALS) && \
 	!defined(SKIN) && !defined(HAIR) && !defined(EYE) && !defined(TREE_ANIM) && !defined(WORLD_MAP) && \
 	((!defined(LANDSCAPE) && \
-	  ((PIXL_PARALLAX_DEPTH_AUTO && defined(PIXL_AUTO_PARALLAX)) || defined(PARALLAX) || \
+	  ((PIXL_PARALLAX_DEPTH_AUTO && defined(PIXL_AUTO_PARALLAX)) || (PIXL_PARALLAX_DEPTH_AUTHORED && defined(PARALLAX)) || \
 	   (PIXL_PARALLAX_DEPTH_MATERIAL_FORGE && defined(MATERIAL_FORGE)))) || \
 	 (defined(LANDSCAPE) && defined(MATERIAL_LAYERS) && PIXL_PARALLAX_DEPTH_LANDSCAPE))
 #	define PIXL_PARALLAX_DEPTH
+#endif
+
+#if defined(DEFERRED) && defined(MATERIAL_LAYERS) && !defined(DO_ALPHA_TEST) && !defined(DEPTH_WRITE_DECALS) && !defined(SKINNED) && !defined(MODELSPACENORMALS) && !defined(TREE_ANIM) && !defined(WORLD_MAP) && !defined(LOD)
+// Effects-only relief: never emits SV_Depth or changes motion vectors.
+#	define PIXL_PARALLAX_EFFECTS_DEPTH
 #endif
 
 #if defined(PIXL_PARALLAX_DEPTH) || defined(PIXL_GROUND_DEFORMATION_DEPTH)
@@ -1125,7 +1137,7 @@ float GetSnowParameterY(float texProjTmp, float alpha)
 
 #	include "Common/LightingEval.hlsli"
 
-#	if defined(PIXL_PARALLAX_DEPTH)
+#	if defined(PIXL_PARALLAX_DEPTH) || defined(PIXL_PARALLAX_EFFECTS_DEPTH)
 // Convert a POM UV intersection into a bounded world-space point on the camera ray.
 // The UV->world Jacobian supplies the metric ordinary POM lacks. Grazing views are
 // explicitly suppressed because tiny UV errors become large world-space depth errors.
@@ -1148,7 +1160,11 @@ float3 PixlResolveParallaxDepthPosition(
 
 	float determinant =
 		duvdx.x * duvdy.y - duvdx.y * duvdy.x;
-	if (abs(determinant) <= 1e-8f)
+	// Test UV-frame conditioning, not absolute texel density. A fixed 1e-8
+	// determinant rejects valid large surfaces and changes with resolution.
+	float derivativeScale = sqrt(dot(duvdx, duvdx) * dot(duvdy, duvdy));
+	if (!isfinite(determinant) || derivativeScale <= 1e-20f ||
+		abs(determinant) <= derivativeScale * 1e-4f)
 		return baseWorldPosition;
 
 	float invDet = rcp(determinant);
@@ -1216,15 +1232,15 @@ float3 PixlResolveParallaxDepthPosition(
 #else
 	float maximumTravel =
 		min(
-			PIXL_PARALLAX_DEPTH_MAX_WORLD,
+			MaterialLayersTuning::ObjectVirtualDepthMaxWorld(),
 			max(
 				uvWorldScale * PIXL_PARALLAX_DEPTH_MAX_UV,
 				1e-3f));
 	rayTravel = clamp(
-		rayTravel * PIXL_PARALLAX_DEPTH_SCALE,
+		rayTravel * MaterialLayersTuning::ObjectVirtualDepthStrength(),
 		-maximumTravel,
 		maximumTravel);
-#	if !PIXL_PARALLAX_DEPTH_ALLOW_PROTRUSION
+#	if !PIXL_PARALLAX_DEPTH_ALLOW_PROTRUSION && !defined(PIXL_PARALLAX_EFFECTS_DEPTH)
 	rayTravel = max(rayTravel, 0.0f);
 #	endif
 #endif
@@ -1241,7 +1257,7 @@ float3 PixlResolveParallaxDepthPosition(
 }
 #	endif
 
-#	if defined(PIXL_VIRTUAL_DEPTH_OUTPUT)
+#	if defined(PIXL_VIRTUAL_DEPTH_OUTPUT) || defined(PIXL_PARALLAX_EFFECTS_DEPTH)
 float PixlProjectVirtualDepth(
 	float3 worldPosition,
 	float fallbackDepth)
@@ -1589,7 +1605,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float2 uv = input.TexCoord0.xy;
 	float2 uvOriginal = uv;
 
-#	if defined(PIXL_PARALLAX_DEPTH)
+#	if defined(PIXL_PARALLAX_DEPTH) || defined(PIXL_PARALLAX_EFFECTS_DEPTH)
 	// Derivatives must be evaluated in uniform control flow, before the material-specific POM branches.
 	float3 pixlParallaxDPdx = ddx(input.WorldPosition.xyz);
 	float3 pixlParallaxDPdy = ddy(input.WorldPosition.xyz);
@@ -1805,6 +1821,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	bool autoParallaxAllowed = inWorld && !inReflection && !SharedData::InMapMenu &&
 		SharedData::materialLayerSettings.EnableParallax &&
 		MaterialLayersTuning::ObjectAutoPOMEnabled();
+#		if defined(DO_ALPHA_TEST)
+	// Cutout architectural atlases have real holes and independent UV islands.
+	// Synthetic relief/depth cannot infer their topology from albedo. Preserve
+	// their authored silhouette instead of shifting into transparent islands.
+	// Dedicated authored parallax remains in its own path above.
+	autoParallaxAllowed = false;
+#		endif
 #		if defined(EMAT_ENVMAP)
 	// Complex Material masks may already describe an authored layered surface.
 	// Never stack synthesized POM on top of that path.
@@ -1902,8 +1925,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		envMaskBase = TexEnvMaskSampler.Sample(SampEnvMaskSampler, uv).x;
 #	endif
 
-#	if defined(PIXL_PARALLAX_DEPTH) && !defined(LANDSCAPE)
-	bool pixlAllowDepthResolve = inWorld && !inReflection && !SharedData::InMapMenu;
+#	if (defined(PIXL_PARALLAX_DEPTH) || defined(PIXL_PARALLAX_EFFECTS_DEPTH)) && !defined(LANDSCAPE)
+	bool pixlAllowDepthResolve = inWorld && !inReflection && !SharedData::InMapMenu && MaterialLayersTuning::ObjectVirtualDepthStrength() > 0.0f;
 #		if defined(MATERIAL_FORGE) && !defined(LODLANDSCAPE)
 	// Interlayer parallax describes refraction beneath a coat, not the outer geometric surface.
 	// It must never move the hardware depth buffer.
@@ -2051,7 +2074,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		endif  // EMAT
 #	endif      // LANDSCAPE
 
-#	if defined(PIXL_PARALLAX_DEPTH) && defined(LANDSCAPE)
+#	if (defined(PIXL_PARALLAX_DEPTH) || defined(PIXL_PARALLAX_EFFECTS_DEPTH)) && defined(LANDSCAPE)
 	// Landscape POM happens after the generic object/material POM block. Resolve
 	// virtual hardware depth from the final displaced terrain UV here.
 	bool pixlAllowTerrainDepthResolve =
@@ -4661,6 +4684,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			0.0f.xxx);
 		float pixlRoomCompositeWeight =
 			pow(saturate(pixlWindowLife.roomColorWeight * 1.34f), 0.72f) * 0.995f;
+		// Outdoor views retain authored day/night luminance, without the lit-room exposure boost.
+		if (SharedData::InInterior && WindowLife::GetFidelity1().w > 0.5f)
+			pixlRoomTarget = pixlRoomColor;
 		// The underlying diffuse texture is the source of the opaque yellow-paint
 		// read. Retain only a restrained stained-glass/weathering trace once an
 		// authored room is trustworthy; the glass optics still contribute their
@@ -4810,6 +4836,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #	endif
 
+	// Modest enclosed ambient trim; direct lighting and emissives are unchanged.
+	if (SharedData::InInterior && !inReflection)
+		directionalAmbientColor *= 0.92f;
 	float3 reflectionDiffuseColor = diffuseColor + directionalAmbientColor;
 
 #	if defined(MATERIAL_FORGE) && defined(LOD_LAND_BLEND) && !defined(DEFERRED)
@@ -5295,6 +5324,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// Stored as 1 - vertexAO so the cleared default (0) means no occlusion
 	// for pixels that do not write to this RT (sky, water, grass, effects).
 	psout.Masks2 = float4(1.0 - vertexAO, 0, 0, psout.Diffuse.w);
+#	if defined(PIXL_PARALLAX_EFFECTS_DEPTH)
+	// GBuffer y carries signed linear-view depth relief, not hardware depth.
+	// Transform the displacement as a vector. Subtracting projected depths
+	// quantizes small relief to zero, especially far from the camera.
+	float pixlEffectsOffset = mul(FrameBuffer::CameraView,
+		float4(pixlParallaxWorldPosition - input.WorldPosition.xyz, 0.0f)).z;
+	psout.Masks2.y = isfinite(pixlEffectsOffset) ? clamp(pixlEffectsOffset, -64.0f, 64.0f) : 0.0f;
+#	endif
 
 	float stochasticBlend = (screenNoise * screenNoise) < psout.Diffuse.w ? 1.0 : 0.0;
 	psout.NormalGlossiness.w = stochasticBlend;

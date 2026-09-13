@@ -6,12 +6,12 @@
 
 // Actor-anchored analytical contamination. Events are generated from accepted
 // Ground Response body contacts, then transformed into actor local space on the
-// CPU. No screen-space history or per-actor texture is involved, which keeps the
-// result stable under DLSS, camera changes, equipment swaps and perspective swaps.
+// CPU. Supported skeletons also transform each deposit with its contact bone,
+// so limb animation does not move the mesh through an actor-root volume.
 namespace ActorSurfaceEffects
 {
 	static const uint RuntimeMagic = 0x46555341u;
-	static const uint RuntimeVersion = 0x00010000u;
+	static const uint RuntimeVersion = 0x00010001u;
 
 	struct SurfaceSample
 	{
@@ -74,7 +74,7 @@ namespace ActorSurfaceEffects
 		return saturate(current + addition * (1.0f - current));
 	}
 
-	SurfaceSample EvaluateLocal(float3 localPosition)
+	SurfaceSample EvaluateLocal(float3 localPosition, float3 worldPosition)
 	{
 		SurfaceSample result;
 		result.SnowFresh = 0.0f;
@@ -99,13 +99,20 @@ namespace ActorSurfaceEffects
 		for (uint index = 0u; index < eventCount; ++index) {
 			PIXLCharacterRuntime::SurfaceEvent eventData =
 				PIXLCharacterRuntime::ActorSurfaceEvents[index];
-			float3 delta = result.LocalPosition - eventData.LocalCenterRadius.xyz;
+			bool boneAnchored = dot(eventData.WorldToDeposit0.xyz, eventData.WorldToDeposit0.xyz) > 1e-8f;
+			float3 depositPosition = localPosition;
+			if (boneAnchored) {
+				float4 surfacePoint = float4(worldPosition, 1.0f);
+				depositPosition = float3(dot(eventData.WorldToDeposit0, surfacePoint),
+					dot(eventData.WorldToDeposit1, surfacePoint), dot(eventData.WorldToDeposit2, surfacePoint));
+			}
+			float3 delta = depositPosition - eventData.LocalCenterRadius.xyz;
 			float horizontalRadius = max(eventData.LocalCenterRadius.w, 1.0f);
 			float verticalRadius = max(eventData.VerticalAmounts.x, 1.0f);
 			float2 normalizedXY = delta.xy / horizontalRadius;
 			float normalizedZ = abs(delta.z) / verticalRadius;
 			float ellipsoidSquared = dot(normalizedXY, normalizedXY) + normalizedZ * normalizedZ;
-			float breakup = StableBreakup(result.LocalPosition, eventData.State.z) * breakupStrength;
+			float breakup = StableBreakup(depositPosition, eventData.State.z) * breakupStrength;
 			float inner = max(1.0f - softness, 0.05f);
 			float outer = 1.0f + softness;
 			float coverage = 1.0f - smoothstep(inner * inner, outer * outer, ellipsoidSquared + breakup);
@@ -131,9 +138,17 @@ namespace ActorSurfaceEffects
 			result.Wetness = UnionCoverage(result.Wetness, coverage * eventData.State.y);
 
 			float3 micro = float3(
-				sin(result.LocalPosition.y * 0.19f + eventData.State.z * 11.0f),
-				sin(result.LocalPosition.z * 0.17f - eventData.State.z * 13.0f),
-				sin(result.LocalPosition.x * 0.21f + eventData.State.z * 7.0f));
+				sin(depositPosition.y * 0.19f + eventData.State.z * 11.0f),
+				sin(depositPosition.z * 0.17f - eventData.State.z * 13.0f),
+				sin(depositPosition.x * 0.21f + eventData.State.z * 7.0f));
+			if (boneAnchored) {
+				micro = normalize(eventData.WorldToDeposit0.xyz) * micro.x +
+					normalize(eventData.WorldToDeposit1.xyz) * micro.y + normalize(eventData.WorldToDeposit2.xyz) * micro.z;
+			} else {
+				float c = PIXLCharacterRuntime::ActorRotationHeight.x;
+				float s = PIXLCharacterRuntime::ActorRotationHeight.y;
+				micro.xy = float2(c * micro.x - s * micro.y, s * micro.x + c * micro.y);
+			}
 			result.NormalDetail += micro * coverage *
 				(eventData.VerticalAmounts.y * snowEnabled * 0.035f +
 				 eventData.VerticalAmounts.w * mudEnabled * 0.065f +
@@ -149,14 +164,14 @@ namespace ActorSurfaceEffects
 
 	SurfaceSample Evaluate(float3 worldPosition)
 	{
-		return EvaluateLocal(ToActorLocal(worldPosition));
+		return EvaluateLocal(ToActorLocal(worldPosition), worldPosition);
 	}
 
 	SurfaceSample EvaluateSkinned(float3 worldPosition)
 	{
 		// Compatibility wrapper for older call sites. Skyrim's separately-authored
 		// head/body/equipment meshes do not share bind-space origins, so persistent
-		// contamination is always reconstructed from actor-relative world position.
+		// contamination is reconstructed from world position in each deposit frame.
 		return Evaluate(worldPosition);
 	}
 
@@ -164,14 +179,7 @@ namespace ActorSurfaceEffects
 	{
 		if (sample.Combined <= 0.001f)
 			return worldNormal;
-		float cosine = PIXLCharacterRuntime::ActorRotationHeight.x;
-		float sine = PIXLCharacterRuntime::ActorRotationHeight.y;
-		float3 localDetail = sample.NormalDetail;
-		float3 worldDetail = float3(
-			cosine * localDetail.x - sine * localDetail.y,
-			sine * localDetail.x + cosine * localDetail.y,
-			localDetail.z);
-		return normalize(worldNormal + worldDetail);
+		return normalize(worldNormal + sample.NormalDetail);
 	}
 
 	void ApplyMaterial(

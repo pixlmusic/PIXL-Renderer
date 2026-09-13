@@ -1,4 +1,31 @@
 # Generated build, staging, and local runtime mirrors
+# Local experiments, agent instructions, work logs and internal review reports.
+# Keep these on the development machine, not in the public source tree.
+/PIXL_Preset_Experiments/
+/tools/GeneratePixlPresetExperiments.ps1
+/AGENTS.md
+/AI-INSTRUCTIONS.md
+/PIXL_ACTIVE_STATE.md
+/PIXL_DEVELOPMENT_WORKFLOW.md
+/PIXL_ENGINEERING_CONTEXT.md
+/PIXL_RELEASE_PREP_REPORT.md
+/PIXL_RELEASE_STATE.md
+/START_CODEX_ACTIVE_DEVELOPMENT.md
+/PRIVATE_COMPONENTS.md
+/docs/release_polish/
+/docs/reports/
+/docs/PIXL_GUI_Audit/
+/docs/Crysis3Pipeline/
+/docs/DynamicFire/
+/docs/ActorSurfaceEffects_Implementation_Report.md
+/docs/ActorSurfaceEffects_LIVE_TEST_QUEUE.md
+/docs/WindowLife_20Item_Implementation_Report.md
+/docs/HairReconstruction/
+/docs/ImageReconstruction/FINAL_INPUT_AUDIT.md
+/docs/ImageReconstruction/NEURAL_PIPELINE_AUDIT_2026-09-01.md
+/docs/PIXL-ULTIMATE-PRESET.md
+/docs/PIXL-GOLDEN-BASELINE-CALIBRATION.md
+
 /build/
 /bin/
 /dist/

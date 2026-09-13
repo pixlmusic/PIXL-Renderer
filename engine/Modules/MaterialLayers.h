@@ -69,7 +69,7 @@ struct MaterialLayers : RenderModule
 	Settings settings;
 
 	static constexpr uint TuningMagic = 0x504D4C54u;  // "PMLT"
-	static constexpr uint TuningVersion = 2u;
+	static constexpr uint TuningVersion = 3u;
 
 	/**
 	 * @brief PIXL material tuning data bound through a dedicated PS constant buffer (b9).
@@ -190,14 +190,31 @@ struct MaterialLayers : RenderModule
 		// c18 — relief shaping
 		float TerrainReliefGamma = 0.85f;
 		float TerrainSyntheticGain = 1.75f;
-		float pad3 = 0.0f;
-		float pad4 = 0.0f;
+		float ObjectVirtualDepthStrength = 0.0f;
+		float ObjectVirtualDepthMaxWorld = 4.0f;
 	};
 	STATIC_ASSERT_ALIGNAS_16(TuningSettings);
-	static_assert(sizeof(TuningSettings) == 304, "MaterialLayers::TuningSettings must match PS b9 v2.");
+	static_assert(sizeof(TuningSettings) == 304, "MaterialLayers::TuningSettings must match PS b9 v3.");
+	static_assert(offsetof(TuningSettings, ObjectVirtualDepthStrength) == 296);
+	static_assert(offsetof(TuningSettings, ObjectVirtualDepthMaxWorld) == 300);
 
 	TuningSettings tuningSettings;
 	ConstantBuffer* tuningCB = nullptr;
+	winrt::com_ptr<ID3D11Texture2D> effectsDepth;
+	winrt::com_ptr<ID3D11ShaderResourceView> effectsDepthSRV;
+	winrt::com_ptr<ID3D11UnorderedAccessView> effectsDepthUAV;
+	winrt::com_ptr<ID3D11ComputeShader> effectsDepthCS;
+	bool effectsDepthReady = false;
+	bool effectsDepthFailed = false;
+	bool showEffectsDepthDebug = false; // Session-only; never saved into release defaults.
+	std::array<float, 8> lastEffectsDepthSettings{};
+	void ResolveEffectsDepth(ID3D11ShaderResourceView* depth, ID3D11ShaderResourceView* masks);
+	ID3D11ShaderResourceView* GetEffectsDepth(ID3D11ShaderResourceView* fallback) const
+	{
+		return effectsDepthReady ? effectsDepthSRV.get() : fallback;
+	}
+	void Reset() override { effectsDepthReady = false; }
+	void ClearShaderCache() override { effectsDepthCS = nullptr; effectsDepthFailed = false; effectsDepthReady = false; }
 
 	/** @brief Enables bLandSpecular INI setting when terrain parallax is active. */
 	virtual void DataLoaded() override;

@@ -195,6 +195,8 @@ PS_OUTPUT main(PS_INPUT input)
 	if (exponentialHeightFogEnabled) {
 		float4 fogScreenPosition = float4(monoUV * SharedData::BufferDim.xy, depth, 1.0f);
 		atmosphere = Atmosphere::GetAtmosphere(positionWS.xyz, FrameBuffer::CameraPosAdjust.xyz, fogColor, fogScreenPosition);
+		if (!isGeometryDepth)
+			atmosphere.w *= 1.0f - saturate(SharedData::atmosphereSettings.skyProtection);
 	}
 	if (isGeometryDepth || exponentialHeightFogEnabled) {
 		float fogFade = exponentialHeightFogEnabled ? Atmosphere::GetVanillaFogFade(FogNearColor.w) : FogNearColor.w;

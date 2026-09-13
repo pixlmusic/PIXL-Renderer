@@ -812,11 +812,14 @@ void Menu::DrawSettings()
 
 		ImGui::SetNextWindowPos(
 			ImGui::GetMainViewport()->GetCenter(),
-			ImGuiCond_Always,
+			layoutCond,
 			ImVec2(0.5f, 0.5f));
 		ImGui::SetNextWindowSize(
 			fixedSize,
-			ImGuiCond_Always);
+			layoutCond);
+		ImGui::SetNextWindowSizeConstraints(
+			fixedSize,
+			ImGui::GetMainViewport()->WorkSize);
 	} else {
 		ImGui::SetNextWindowPos(
 			Util::GetNativeViewportSizeScaled(0.5f),
@@ -843,11 +846,8 @@ void Menu::DrawSettings()
 		ImGuiWindowFlags_NoDocking |
 		ImGuiWindowFlags_NoTitleBar;
 
-	if (settings.AdvancedMode) {
-		windowFlags |=
-			ImGuiWindowFlags_NoResize |
-			ImGuiWindowFlags_NoMove;
-	}
+	// Advanced tuning is resizable; keep the reference scale independent of user
+	// size so enlarging the canvas adds usable space rather than larger controls.
 
 	// Only hide title bar when not docked.
 	if (settings.AdvancedMode) {
