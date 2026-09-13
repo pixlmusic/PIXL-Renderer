@@ -3326,7 +3326,7 @@ void GroundResponse::DrawSettings()
 	if (ImGui::TreeNodeEx(T(TKEY("grass_collision"), "Ground Response"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		changed |= ImGui::Checkbox(T(TKEY("enable"), "Enable Ground Response"), &settings.EnableGroundResponse);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Bends grass around nearby actors using the shared world-space interaction field. Applies immediately.");
+			ImGui::TextWrapped("Bends nearby terrain grass around actors. Built into PIXL; no separate grass interaction mod or Complex Grass textures are required. Applies to grass rendered through Skyrim's grass shader, not every shrub or distant LOD. Applies immediately.");
 		ImGui::TreePop();
 	}
 

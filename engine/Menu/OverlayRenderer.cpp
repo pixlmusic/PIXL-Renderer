@@ -227,7 +227,7 @@ bool OverlayRenderer::ShouldSkipRendering()
 	return !(foregroundCompilation ||
 			 Menu::GetSingleton()->IsEnabled ||
 			 TuningWorkspaceRenderer::IsDirectorPhotoModeActive() ||
-			 (failed && !hide) ||
+			 (failed && !hide && !shaderCache->backgroundCompilation) ||
 			 globals::pipeline::pulseProfiler.settings.ShowInOverlay ||
 			 LaunchExperienceRenderer::ShouldShowFirstTimeSetup() ||
 			 LaunchExperienceRenderer::ShouldShowControlReminder());
@@ -624,7 +624,8 @@ void OverlayRenderer::RenderShaderCompilationStatus(const std::function<const ch
 
 	if (!shaderCache->IsCompiling() &&
 		failed &&
-		!hide) {
+		!hide &&
+		(!shaderCache->backgroundCompilation || Menu::GetSingleton()->IsEnabled)) {
 		ImGui::SetNextWindowPos(ImVec2(pos, pos));
 		if (!ImGui::Begin("ShaderCompilationInfo", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings)) {
 			ImGui::End();

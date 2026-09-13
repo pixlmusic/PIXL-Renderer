@@ -207,6 +207,8 @@ $documentationRoot = Join-Path $pluginRoot 'Documentation'
 New-Item -ItemType Directory -Path $documentationRoot -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'distribution\PIXL-RENDERER-README.md') -Destination $output -Force
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'distribution\SOURCE-AND-CREDITS.md') -Destination $documentationRoot -Force
+Copy-Item -LiteralPath (Join-Path $sourceRoot 'docs\MOD_COMPATIBILITY.md') -Destination $documentationRoot -Force
+Copy-Item -LiteralPath (Join-Path $sourceRoot 'extern\ReShade\LICENSE.md') -Destination (Join-Path $documentationRoot 'ReShade-API-LICENSE.md') -Force
 Copy-Item -LiteralPath (Join-Path $sourceRoot "docs\ImageReconstruction\DLSSG_SM86_INTEGRATION.md") -Destination $documentationRoot -Force
 foreach ($document in @("COPYING", "EXCEPTIONS.md", "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md")) {
     Copy-Item -LiteralPath (Join-Path $sourceRoot $document) -Destination $documentationRoot -Force

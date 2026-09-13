@@ -10,6 +10,7 @@
 #include "SeasonIntegration.h"
 #include "ShaderCache.h"
 #include "State.h"
+#include "Renderer/ExternalPostProcessing.h"
 
 #include "ENB/ENBSeriesAPI.h"
 
@@ -38,6 +39,9 @@ namespace
 			shaderCache->WriteDiskCacheInfo();
 
 		RenderModule::ForEachLoadedModule("DataLoaded", [](RenderModule* feature) { feature->DataLoaded(); });
+		// Foreground preparation belongs to startup only. Waiting for it to finish
+		// must release the compiler screen just like choosing ENTER SKYRIM does.
+		shaderCache->backgroundCompilation = true;
 		logger::info("Renderer DataLoaded finalization complete");
 	}
 
@@ -127,7 +131,10 @@ extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_s
 	}
 	SKSE::Init(a_skse);
 	SKSE::AllocTrampoline(1 << 10);
-	return Load();
+	const bool loaded = Load();
+	if (loaded && errors.empty())
+		ExternalPostProcessing::Initialize();
+	return loaded;
 }
 
 extern "C" DLLEXPORT constinit auto SKSEPlugin_Version = []() noexcept {
@@ -196,8 +203,16 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 
 			break;
 		}
+	case SKSE::MessagingInterface::kPreLoadGame:
+		// A save can be selected while startup work is still pending. Release the
+		// presentation gate before loading discovers new shader combinations.
+		if (globals::shaderCache)
+			globals::shaderCache->backgroundCompilation = true;
+		break;
 	case SKSE::MessagingInterface::kPostLoadGame:
 	case SKSE::MessagingInterface::kNewGame:
+		if (globals::shaderCache)
+			globals::shaderCache->backgroundCompilation = true;
 		SeasonIntegration::GetSingleton().RequestGameStateRefresh();
 		break;
 	}
@@ -206,8 +221,14 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 bool Load()
 {
 	if (ENB_API::RequestENBAPI()) {
-		logger::info("ENB detected, disabling all hooks and features");
-		return true;
+		logger::error("ENB detected: PIXL Renderer cannot initialize alongside ENB. PIXL effects and menu are unavailable.");
+		MessageBoxW(nullptr,
+			L"PIXL Renderer cannot start while ENB is installed. Its effects and menu will be unavailable.\n\n"
+			L"Close Skyrim and disable the ENB renderer before testing PIXL. "
+			L"Weather plugins and texture or mesh mods are separate; do not remove them just because they were used with ENB.\n\n"
+			L"See PIXLRenderer.log and the compatibility guide for details.",
+			L"PIXL Renderer - ENB conflict", MB_OK | MB_ICONWARNING);
+		return false;
 	}
 
 	auto privateProfileRedirectorVersion = Util::GetDllVersion(L"Data/SKSE/Plugins/PrivateProfileRedirector.dll");

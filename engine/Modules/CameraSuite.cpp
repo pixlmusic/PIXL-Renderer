@@ -12,6 +12,7 @@
 #include "SkyBounce.h"
 #include "State.h"
 #include "ImageReconstruction.h"
+#include "Renderer/ExternalPostProcessing.h"
 #include "Util.h"
 #include <algorithm>
 #include <dxgi1_4.h>
@@ -373,6 +374,7 @@ void from_json(const nlohmann::json& json, CameraSuite::Settings& settings)
 
 void CameraSuite::DrawSettings()
 {
+	ExternalPostProcessing::DrawSettings();
 	auto hdrWarningPopupTitle = std::format("{}##CameraSuite", T(TKEY("warning_popup_title"), "HDR Warning"));
 
 	if (isHDRMonitor) {

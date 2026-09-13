@@ -105,7 +105,7 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	// Keep the follow-up inside this modal so setup still owns input capture.
 	if (g_setupRestartNotice) {
 		PIXLUI::SectionBanner("RESTART NEEDED");
-		ImGui::TextWrapped("Your graphics choices have been applied. Restart Skyrim to apply the frame-generation sidecar change. You can keep playing and restart later.");
+		ImGui::TextWrapped("Your graphics choices have been saved. Restart Skyrim to prepare Frame Generation or Neural Rendering. You can keep playing with the currently available image path and restart later.");
 		ImGui::TextWrapped("Exit does not save your game. Save any progress first, then relaunch through your usual SKSE or mod-manager shortcut.");
 		ImGui::Checkbox("I understand: exit without saving game progress", &g_setupExitConfirmed);
 		ImGui::BeginDisabled(!g_setupExitConfirmed);
@@ -194,6 +194,7 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	static int setupQuality = 2;
 	static int setupUpscaler = 0;
 	static bool setupFrameGeneration = false;
+	static bool setupNeuralRendering = false;
 	const bool dlssAvailable = globals::pipeline::imageReconstruction.streamline.featureDLSS;
 	if (ImGui::IsWindowAppearing()) {
 		setupQuality = std::clamp(menu->GetSettings().RendererQuality, 0, 3);
@@ -203,6 +204,7 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 		if (setupUpscaler == 3 && reconstruction.qualityMode == 0)
 			setupUpscaler = 4;
 		setupFrameGeneration = reconstruction.frameGenerationMode != 0;
+		setupNeuralRendering = reconstruction.neuralRenderingEnabled;
 	}
 
 	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "IMAGE PATH");
@@ -227,6 +229,20 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 		ImGui::TextWrapped("Uses your selected frame-generation backend. First activation may require a restart; borderless/windowed mode and a compatible runtime are required.");
 		if (!globals::pipeline::imageReconstruction.isWindowed)
 			ImGui::TextWrapped("Exclusive fullscreen detected: switch to borderless/windowed before relaunching. Restarting alone will not enable frame generation.");
+	}
+
+	const auto& reconstructionRuntime = globals::pipeline::imageReconstruction;
+	const bool neuralAvailable = dlssAvailable && reconstructionRuntime.streamline.neuralRenderingSupportedOnCurrentAdapter;
+	ImGui::BeginDisabled(!neuralAvailable);
+	if (ImGui::Checkbox("Enable Neural Rendering (experimental)", &setupNeuralRendering) && setupNeuralRendering && setupUpscaler < 3)
+		setupUpscaler = 4;  // NR requires DLSS; preserve native resolution with DLAA.
+	ImGui::EndDisabled();
+	if (!neuralAvailable)
+		ImGui::TextWrapped("Neural Rendering requires supported NVIDIA hardware and the installed NR runtime.");
+	if (setupNeuralRendering) {
+		ImGui::TextWrapped("Requires DLSS or DLAA and SDR. First activation requires a restart to prepare Neural Rendering; use borderless/windowed mode. Normal DLSS remains the fallback if NR is unavailable.");
+		if (setupUpscaler < 3)
+			ImGui::TextWrapped("Select DLSS or DLAA above to enable Neural Rendering.");
 	}
 
 	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "QUALITY PROFILE");
@@ -288,11 +304,14 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 				reconstruction.upscaleMethodNoDLSS = selectedMethod;
 			reconstruction.qualityMode = !selectedDLAA && selectedMethod >= static_cast<uint>(ImageReconstruction::UpscaleMethod::kFSR) ? 1u : 0u;
 			reconstruction.frameGenerationMode = setupFrameGeneration ? 1u : 0u;
+			reconstruction.neuralRenderingEnabled = setupNeuralRendering && neuralAvailable && selectedMethod == 3u;
 			if (setupFrameGeneration)
 				reconstruction.frameGenerationForceEnable = 1;
 			if (globals::state)
 				globals::state->Save();
 			g_setupRestartNotice = globals::pipeline::imageReconstruction.GetFrameGenerationState() == ImageReconstruction::FrameGenerationState::RestartRequired;
+			g_setupRestartNotice |= reconstruction.neuralRenderingEnabled &&
+				(!reconstructionRuntime.d3d12SwapChainActive || !reconstructionRuntime.neuralRenderingProvisionedAtBoot);
 		}
 		if (!g_setupRestartNotice) {
 			MarkFirstTimeSetupComplete(escapePressed ? VK_ESCAPE : (enterPressed ? VK_RETURN : 0));

@@ -64,3 +64,9 @@ binary or asset. The release publisher must separately confirm compliance with
 the NVIDIA SDK/DLSS terms and any required pre-release notification; this is a
 publisher/legal review item, not a claim that those terms have been satisfied
 by source inspection alone.
+# Optional ReShade API bridge
+
+The API declarations in `extern/ReShade/include` are Copyright (C) Patrick Mours,
+licensed BSD-3-Clause OR MIT. See `extern/ReShade/LICENSE.md` and provenance in
+`extern/ReShade/README.md`. Release packages include `ReShade-API-LICENSE.md`.
+The ReShade renderer and third-party presets are not distributed with PIXL.

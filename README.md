@@ -89,13 +89,13 @@ The complete module ancestryâ€”including every renamed Community Shaders systemâ
 - A DirectX 11-capable GPU. DLSS/DLAA require supported NVIDIA hardware and an available runtime.
 - Borderless/windowed mode for frame generation and the optional Neural Rendering sidecar.
 
-The owner-tested baseline is Skyrim SE 1.5.97. Other runtimes and mod combinations require validation; build support alone is not a compatibility guarantee.
+Owner testing covers Skyrim SE 1.5.97 and a reported successful GOG test whose executable was verified as 1.6.1179.0. Steam 1.6.1170 remains a separate validation target. See [mod compatibility and troubleshooting](docs/MOD_COMPATIBILITY.md) for assets, weather, grass interaction, WindowLife and ENB/ReShade distinctions.
 
 ### Install and first launch
 
 1. Close Skyrim. Install the release ZIP with Vortex or Mod Organizer 2 as a normal **Data** mod. For manual installation, extract its contents into Skyrim's `Data` directory, not beside `SkyrimSE.exe`.
 2. Enable the included `PIXL-TerrainField.esp`. Install required dependencies separately.
-3. Disable other engine-level shader renderers and duplicate PIXL installations. Do not combine this release with Community Shaders, ENB, ReShade or Kreate.
+3. Disable other engine-level shader renderers and duplicate PIXL installations. Do not combine this release with Community Shaders, ENB or Kreate. ReShade is unvalidated; use a ReShade-free setup for the supported baseline. `SSEReShadeHelper.dll` is explicitly incompatible. Weather plugins and texture/mesh mods are separate from these renderers.
 4. Launch using your normal SKSE/mod-manager shortcut.
 5. Complete Quick Setup: choose Off, TAA, FSR Quality, DLSS Quality or **DLAA**. DLAA uses native-resolution DLSS anti-aliasing rather than upscaling. NVIDIA options are disabled when unavailable.
 6. Optionally check **Enable frame generation**. If setup requests a restart, save your game and relaunch normally. The confirmed exit option saves PIXL settings, **not game progress**, and does not automatically relaunch.

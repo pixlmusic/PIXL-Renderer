@@ -14,6 +14,7 @@
 
 #include "RenderModule.h"
 #include "Modules/CameraSuite.h"
+#include "Renderer/ExternalPostProcessing.h"
 #include "Modules/WorldProbes.h"
 #include "Modules/GroundResponse.h"
 #include "Modules/HybridGI.h"
@@ -2272,6 +2273,7 @@ namespace
 
 	void DrawCameraControls()
 	{
+		ExternalPostProcessing::DrawSettings();
 		std::string directorUnavailableReason;
 		const bool directorActive =
 			TuningWorkspaceRenderer::IsDirectorPhotoModeActive();

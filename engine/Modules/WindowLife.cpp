@@ -144,6 +144,7 @@ namespace
 
 void WindowLife::DrawSettings()
 {
+	ImGui::TextWrapped("WindowLife includes its room artwork; no separate parallax-window mod is required. It applies to recognized architectural glass. Replacement materials with unrecognized texture names may need compatibility work; boarded windows and shadow-mask helper meshes are excluded.");
     ImGui::Checkbox(T("feature.window_life.enable", "Enable Window Life"), &settings.EnableWindowLife);
     if (auto _tt = Util::HoverTooltipWrapper()) {
         ImGui::TextWrapped("%s", T("feature.window_life.enable_tooltip", "Upgrades architectural glass and adds subtle moving occupants behind suitable exterior and interior windows."));
