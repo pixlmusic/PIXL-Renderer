@@ -16,7 +16,7 @@
 namespace
 {
 	constexpr std::uint32_t kActorSurfaceMagic = 0x46555341u;    // "ASUF"
-	constexpr std::uint32_t kActorSurfaceVersion = 0x00010000u;  // 1.0
+	constexpr std::uint32_t kActorSurfaceVersion = 0x00010001u;  // bone-anchored events
 	constexpr std::size_t kMaximumGPUEvents = 12;
 	constexpr float kEventEpsilon = 1.0e-4f;
 
@@ -137,8 +137,9 @@ namespace
 		float4 LocalCenterRadius{};
 		float4 VerticalAmounts{};  // x vertical radius, y fresh snow, z melting snow, w wet mud
 		float4 State{};            // x dry mud, y wetness, z stable seed, w splash
+		std::array<float4, 3> WorldToDeposit{}; // camera-relative world -> contact reference frame
 	};
-	static_assert(sizeof(ActorSurfaceGPUEvent) == 48);
+	static_assert(sizeof(ActorSurfaceGPUEvent) == 96);
 
 	struct alignas(16) CharacterRuntimeGPUData
 	{
@@ -158,11 +159,16 @@ namespace
 		std::array<ActorSurfaceGPUEvent, kMaximumGPUEvents> Events{};
 	};
 	static_assert(offsetof(CharacterRuntimeGPUData, Magic) == sizeof(DialogueFocus::GPUData));
-	static_assert(sizeof(CharacterRuntimeGPUData) == 752, "CharacterRuntimeGPUData must match CharacterRuntime.hlsli");
+	static_assert(sizeof(CharacterRuntimeGPUData) == 1328, "CharacterRuntimeGPUData must match CharacterRuntime.hlsli");
+	static_assert(offsetof(CharacterRuntimeGPUData, Events) == 176);
 
 	struct LocalEffectLobe
 	{
 		RE::NiPoint3 localCenter{};
+		RE::BSFixedString anchorBone;
+		RE::NiMatrix3 referenceRotation;
+		RE::NiPoint3 referenceOrigin{};
+		float referenceScale = 1.0f;
 		float horizontalRadius = 1.0f;
 		float verticalRadius = 1.0f;
 		float snowFresh = 0.0f;
@@ -191,6 +197,41 @@ namespace
 		float lastVisibleSeconds = 0.0f;
 		bool prepared = false;
 	};
+
+	RE::NiAVObject* FindContactBone(RE::Actor* actor, const RE::NiPoint3& position, float reach)
+	{
+		static const std::array<RE::BSFixedString, 13> names{
+			"NPC L Foot [Lft ]", "NPC R Foot [Rft ]", "NPC L Calf [LClf]", "NPC R Calf [RClf]",
+			"NPC L Thigh [LThg]", "NPC R Thigh [RThg]", "NPC Pelvis [Pelv]",
+			"NPC Spine2 [Spn2]", "NPC Head [Head]", "NPC L Hand [LHnd]", "NPC R Hand [RHnd]",
+			"NPC L Forearm [LLar]", "NPC R Forearm [RLar]" };
+		RE::NiAVObject* nearest = nullptr;
+		float best = reach * reach;
+		for (const auto& name : names) {
+			auto* bone = actor->GetNodeByName(name);
+			if (!bone || !IsFinite(bone->world.translate) || !std::isfinite(bone->world.scale) || bone->world.scale <= 0.001f)
+				continue;
+			const float distance = position.GetSquaredDistance(bone->world.translate);
+			if (distance < best) { best = distance; nearest = bone; }
+		}
+		return nearest;
+	}
+
+	bool DepositFrame(RE::Actor* actor, const LocalEffectLobe& lobe, RE::NiMatrix3& rotation, RE::NiPoint3& origin)
+	{
+		if (lobe.anchorBone.empty())
+			return false;
+		auto* bone = actor->GetNodeByName(lobe.anchorBone);
+		if (!bone || !IsFinite(bone->world.translate) || !std::isfinite(bone->world.scale) || bone->world.scale <= 0.001f)
+			return false;
+		rotation = (lobe.referenceRotation * bone->world.rotate.Transpose()) * (lobe.referenceScale / bone->world.scale);
+		for (const auto& row : rotation.entry)
+			for (const float value : row)
+				if (!std::isfinite(value))
+					return false;
+		origin = bone->world.translate;
+		return true;
+	}
 
 	void IndexActorSkeleton(
 		RE::Actor* a_actor,
@@ -372,6 +413,7 @@ bool ActorSurfaceEffects::AddSurfaceEffect(RE::Actor* a_actor, const SurfaceInte
 		std::max(a_event.verticalRadius, a_event.contactDepth * 0.50f + 1.0f),
 		1.0f,
 		96.0f);
+	auto* contactBone = FindContactBone(a_actor, a_event.worldPosition, std::max(radius, verticalRadius) + 24.0f);
 	const float amount = Saturate(a_event.intensity * settings.AccumulationStrength);
 	if (amount <= kEventEpsilon)
 		return false;
@@ -433,10 +475,17 @@ bool ActorSurfaceEffects::AddSurfaceEffect(RE::Actor* a_actor, const SurfaceInte
 	LocalEffectLobe* mergeTarget = nullptr;
 	float bestDistance = std::numeric_limits<float>::max();
 	for (auto& lobe : state.lobes) {
+		if (lobe.anchorBone != (contactBone ? contactBone->name : RE::BSFixedString{}))
+			continue;
+		RE::NiPoint3 mergePosition = localPosition;
+		RE::NiMatrix3 depositRotation;
+		RE::NiPoint3 depositOrigin;
+		if (DepositFrame(a_actor, lobe, depositRotation, depositOrigin))
+			mergePosition = depositRotation * (a_event.worldPosition - depositOrigin) + lobe.referenceOrigin;
 		const RE::NiPoint3 delta{
-			lobe.localCenter.x - localPosition.x,
-			lobe.localCenter.y - localPosition.y,
-			lobe.localCenter.z - localPosition.z
+			lobe.localCenter.x - mergePosition.x,
+			lobe.localCenter.y - mergePosition.y,
+			lobe.localCenter.z - mergePosition.z
 		};
 		const float mergeRadius = std::max(lobe.horizontalRadius, radius) * 0.78f;
 		const float distanceSquared = LengthSquared(delta);
@@ -466,6 +515,17 @@ bool ActorSurfaceEffects::AddSurfaceEffect(RE::Actor* a_actor, const SurfaceInte
 			mergeTarget = &state.lobes.back();
 		}
 		mergeTarget->localCenter = localPosition;
+		if (contactBone) {
+			mergeTarget->anchorBone = contactBone->name;
+			const float yaw = a_actor->GetAngleZ();
+			RE::NiMatrix3 actorInverse;
+			actorInverse.entry[0][0] = actorInverse.entry[1][1] = std::cos(yaw);
+			actorInverse.entry[0][1] = std::sin(yaw);
+			actorInverse.entry[1][0] = -std::sin(yaw);
+			mergeTarget->referenceRotation = actorInverse * contactBone->world.rotate;
+			mergeTarget->referenceOrigin = ToActorLocal(a_actor, contactBone->world.translate);
+			mergeTarget->referenceScale = contactBone->world.scale;
+		}
 		mergeTarget->horizontalRadius = radius;
 		mergeTarget->verticalRadius = verticalRadius;
 		const std::uint32_t seedBits = formID * 1664525u +
@@ -710,6 +770,21 @@ void ActorSurfaceEffects::Prepass()
 		for (std::uint32_t index = 0; index < data.EventCount; ++index) {
 			const auto& source = state.lobes[index];
 			auto& target = data.Events[index];
+			if (!source.anchorBone.empty()) {
+				RE::NiMatrix3 depositRotation;
+				RE::NiPoint3 depositOrigin;
+				// Resolve names against the live skeleton; never retain bone pointers
+				// across equipment swaps or unloaded/replaced actor scene graphs.
+				if (!DepositFrame(actor.get(), source, depositRotation, depositOrigin))
+					continue; // Missing anchor: suppress this lobe, do not project it in the wrong space.
+				depositOrigin -= RE::NiPoint3{ cameraAdjust.x, cameraAdjust.y, cameraAdjust.z };
+				const auto translation = source.referenceOrigin - depositRotation * depositOrigin;
+				for (uint32_t row = 0; row < 3; ++row) {
+					const auto* r = depositRotation.entry[row];
+					const float t = row == 0 ? translation.x : row == 1 ? translation.y : translation.z;
+					target.WorldToDeposit[row] = { r[0], r[1], r[2], t };
+				}
+			}
 			// As a deposit ages away its upper boundary recedes toward the original
 			// contact plane. This gives snow/mud a gravity-readable downward fade
 			// instead of uniformly dissolving the complete vertical lobe in place.

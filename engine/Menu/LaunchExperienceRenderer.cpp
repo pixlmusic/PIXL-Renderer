@@ -23,6 +23,8 @@ namespace
 	bool g_reminderStarted = false;
 	ReminderClock::time_point g_reminderStart{};
 	constexpr float kReminderDurationSeconds = 8.0f;
+	bool g_setupRestartNotice = false;
+	bool g_setupExitConfirmed = false;
 }
 
 bool LaunchExperienceRenderer::ShouldSkipKeyRelease(uint32_t key)
@@ -44,6 +46,8 @@ bool LaunchExperienceRenderer::ShouldShowFirstTimeSetup()
 
 void LaunchExperienceRenderer::OpenQuickSetup()
 {
+	g_setupRestartNotice = false;
+	g_setupExitConfirmed = false;
 	quickSetupRequested = true;
 	isFirstTimeSetupShown = false;
 }
@@ -94,6 +98,40 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	                   ImGuiWindowFlags_NoTitleBar;
 
 	if (!ImGui::BeginPopupModal("##PIXLLaunchExperience", nullptr, flags)) {
+		ImGui::PopStyleVar(3);
+		return;
+	}
+
+	// Keep the follow-up inside this modal so setup still owns input capture.
+	if (g_setupRestartNotice) {
+		PIXLUI::SectionBanner("RESTART NEEDED");
+		ImGui::TextWrapped("Your graphics choices have been applied. Restart Skyrim to apply the frame-generation sidecar change. You can keep playing and restart later.");
+		ImGui::TextWrapped("Exit does not save your game. Save any progress first, then relaunch through your usual SKSE or mod-manager shortcut.");
+		ImGui::Checkbox("I understand: exit without saving game progress", &g_setupExitConfirmed);
+		ImGui::BeginDisabled(!g_setupExitConfirmed);
+		const bool exitPressed = PIXLUI::ActionButton("SAVE SETTINGS & EXIT SKYRIM", ImVec2(-1.0f, 38.0f * scale), false);
+		ImGui::EndDisabled();
+		const bool continueLater = PIXLUI::ActionButton("CONTINUE FOR NOW", ImVec2(-1.0f, 38.0f * scale), true);
+		if (continueLater || exitPressed) {
+			MarkFirstTimeSetupComplete();
+			if (exitPressed) {
+				DXGI_SWAP_CHAIN_DESC desc{};
+				DWORD processID = 0;
+				if (globals::d3d::swapChain && SUCCEEDED(globals::d3d::swapChain->GetDesc(&desc)) && desc.OutputWindow)
+					GetWindowThreadProcessId(desc.OutputWindow, &processID);
+				if (processID == GetCurrentProcessId()) {
+					// Use the existing window shutdown path, never terminate or spawn a process.
+					if (!PostMessageW(desc.OutputWindow, WM_CLOSE, 0, 0))
+						logger::warn("[PIXL] Could not request game exit; please exit normally.");
+				} else {
+					logger::warn("[PIXL] Game window unavailable; please exit normally.");
+				}
+			}
+			g_setupRestartNotice = false;
+			g_setupExitConfirmed = false;
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::EndPopup();
 		ImGui::PopStyleVar(3);
 		return;
 	}
@@ -155,20 +193,24 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 
 	static int setupQuality = 2;
 	static int setupUpscaler = 0;
+	static bool setupFrameGeneration = false;
 	const bool dlssAvailable = globals::pipeline::imageReconstruction.streamline.featureDLSS;
 	if (ImGui::IsWindowAppearing()) {
 		setupQuality = std::clamp(menu->GetSettings().RendererQuality, 0, 3);
 		const auto& reconstruction = globals::pipeline::imageReconstruction.settings;
 		const auto current = dlssAvailable ? reconstruction.upscaleMethod : reconstruction.upscaleMethodNoDLSS;
 		setupUpscaler = std::clamp(static_cast<int>(current), 0, dlssAvailable ? 3 : 2);
+		if (setupUpscaler == 3 && reconstruction.qualityMode == 0)
+			setupUpscaler = 4;
+		setupFrameGeneration = reconstruction.frameGenerationMode != 0;
 	}
 
 	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "IMAGE PATH");
-	const char* upscalerNames[] = { "Off (native, no temporal AA)", "TAA (native)", "FSR 3.1 Quality", "DLSS Quality" };
+	const char* upscalerNames[] = { "Off (native, no temporal AA)", "TAA (native)", "FSR 3.1 Quality", "DLSS Quality", "DLAA (DLSS native anti-aliasing)" };
 	ImGui::SetNextItemWidth(-1.0f);
 	if (ImGui::BeginCombo("##PIXLSetupUpscaler", upscalerNames[setupUpscaler])) {
 		for (int index = 0; index < IM_ARRAYSIZE(upscalerNames); ++index) {
-			const bool unavailable = index == static_cast<int>(ImageReconstruction::UpscaleMethod::kDLSS) && !dlssAvailable;
+			const bool unavailable = index >= 3 && !dlssAvailable;
 			ImGui::BeginDisabled(unavailable);
 			if (ImGui::Selectable(upscalerNames[index], setupUpscaler == index)) setupUpscaler = index;
 			ImGui::EndDisabled();
@@ -177,7 +219,15 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 		}
 		ImGui::EndCombo();
 	}
-	Util::AddTooltip("Off disables temporal reconstruction. TAA uses native resolution. FSR and DLSS use Quality mode. DLSS is enabled when supported by the current device/runtime.");
+	Util::AddTooltip("DLAA uses DLSS anti-aliasing at native resolution, without an upscaling performance boost. DLSS Quality renders at a lower resolution. Both require a supported NVIDIA device/runtime.");
+
+	ImGui::Checkbox("Enable frame generation", &setupFrameGeneration);
+	Util::AddTooltip("Applies frame generation when you save setup, including the low-refresh-rate override. If its sidecar was not created at launch, one restart is required.");
+	if (setupFrameGeneration) {
+		ImGui::TextWrapped("Uses your selected frame-generation backend. First activation may require a restart; borderless/windowed mode and a compatible runtime are required.");
+		if (!globals::pipeline::imageReconstruction.isWindowed)
+			ImGui::TextWrapped("Exclusive fullscreen detected: switch to borderless/windowed before relaunching. Restarting alone will not enable frame generation.");
+	}
 
 	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "QUALITY PROFILE");
 	const char* qualityNames[] = { "Fast", "Balanced", "Enhanced", "Cinematic" };
@@ -231,16 +281,23 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 			if (setupQuality != menu->GetSettings().RendererQuality)
 				PIXLRenderer::QualityProfiles::ApplyGlobal(std::clamp(setupQuality, 0, 3));
 			auto& reconstruction = globals::pipeline::imageReconstruction.settings;
-			const uint selectedMethod = static_cast<uint>(std::clamp(setupUpscaler, 0, dlssAvailable ? 3 : 2));
+			const bool selectedDLAA = dlssAvailable && setupUpscaler == 4;
+			const uint selectedMethod = selectedDLAA ? 3u : static_cast<uint>(std::clamp(setupUpscaler, 0, dlssAvailable ? 3 : 2));
 			reconstruction.upscaleMethod = selectedMethod;
 			if (selectedMethod != static_cast<uint>(ImageReconstruction::UpscaleMethod::kDLSS))
 				reconstruction.upscaleMethodNoDLSS = selectedMethod;
-			reconstruction.qualityMode = selectedMethod >= static_cast<uint>(ImageReconstruction::UpscaleMethod::kFSR) ? 1u : 0u;
+			reconstruction.qualityMode = !selectedDLAA && selectedMethod >= static_cast<uint>(ImageReconstruction::UpscaleMethod::kFSR) ? 1u : 0u;
+			reconstruction.frameGenerationMode = setupFrameGeneration ? 1u : 0u;
+			if (setupFrameGeneration)
+				reconstruction.frameGenerationForceEnable = 1;
 			if (globals::state)
 				globals::state->Save();
+			g_setupRestartNotice = globals::pipeline::imageReconstruction.GetFrameGenerationState() == ImageReconstruction::FrameGenerationState::RestartRequired;
 		}
-		MarkFirstTimeSetupComplete(escapePressed ? VK_ESCAPE : (enterPressed ? VK_RETURN : 0));
-		ImGui::CloseCurrentPopup();
+		if (!g_setupRestartNotice) {
+			MarkFirstTimeSetupComplete(escapePressed ? VK_ESCAPE : (enterPressed ? VK_RETURN : 0));
+			ImGui::CloseCurrentPopup();
+		}
 	}
 
 	ImGui::EndPopup();

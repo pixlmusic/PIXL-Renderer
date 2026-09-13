@@ -258,7 +258,8 @@ $identityAllowPaths = [Collections.Generic.HashSet[string]]::new([StringComparer
 foreach ($relativePath in @(
     "engine\PipelineHealth.cpp",
     "engine\PipelineHealth.h",
-    "README.md"
+    "README.md",
+    "distribution\PIXL-RENDERER-README.md" # Installation compatibility warnings name other renderers.
 )) {
     $null = $identityAllowPaths.Add((Join-Path $repo $relativePath))
 }
@@ -291,11 +292,11 @@ if ($PackageDirectory) {
             Add-Error "Package manifest validation failed: $($_.Exception.Message)"
         }
         foreach ($file in @(
-            "COPYING",
-            "EXCEPTIONS.md",
-            "ATTRIBUTION.md",
-            "THIRD_PARTY_NOTICES.md",
-            "SOURCE-AND-CREDITS.md",
+            "SKSE\Plugins\PIXL\Documentation\COPYING",
+            "SKSE\Plugins\PIXL\Documentation\EXCEPTIONS.md",
+            "SKSE\Plugins\PIXL\Documentation\ATTRIBUTION.md",
+            "SKSE\Plugins\PIXL\Documentation\THIRD_PARTY_NOTICES.md",
+            "SKSE\Plugins\PIXL\Documentation\SOURCE-AND-CREDITS.md",
 			"PIXL-TerrainField.esp",
             "SKSE\Plugins\PIXLRenderer.dll",
             "SKSE\Plugins\PIXL\Config\RendererDefaults.json",
@@ -325,10 +326,10 @@ if ($PackageDirectory) {
             'SKSE\Plugins\PIXL\Profiles\PIXL-Golden-Baseline.json' = 'distribution\SKSE\Plugins\PIXLRenderer\Presets\PIXL-Renderer-Live-Tested.json'
             'SKSE\Plugins\PIXL\Interface\Themes\PIXL.json' = 'distribution\SKSE\Plugins\PIXLRenderer\Themes\PIXL.json'
             'SKSE\Plugins\PIXL\Interface\Locale\en.json' = 'distribution\SKSE\Plugins\PIXLRenderer\Translations\en.json'
-            'COPYING' = 'COPYING'
-            'EXCEPTIONS.md' = 'EXCEPTIONS.md'
-            'ATTRIBUTION.md' = 'ATTRIBUTION.md'
-            'THIRD_PARTY_NOTICES.md' = 'THIRD_PARTY_NOTICES.md'
+            'SKSE\Plugins\PIXL\Documentation\COPYING' = 'COPYING'
+            'SKSE\Plugins\PIXL\Documentation\EXCEPTIONS.md' = 'EXCEPTIONS.md'
+            'SKSE\Plugins\PIXL\Documentation\ATTRIBUTION.md' = 'ATTRIBUTION.md'
+            'SKSE\Plugins\PIXL\Documentation\THIRD_PARTY_NOTICES.md' = 'THIRD_PARTY_NOTICES.md'
         }
         foreach ($entry in $fixedSourceFiles.GetEnumerator()) {
             $stagedPath = Join-Path $package $entry.Key

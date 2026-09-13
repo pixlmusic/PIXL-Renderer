@@ -1,4 +1,5 @@
 #include "WindowLife.h"
+#include "AtmosphereWeather.h"
 
 #include "Globals.h"
 #include "State.h"
@@ -217,10 +218,10 @@ void WindowLife::DrawSettings()
 		ImGui::TextWrapped("Interior Scale crops or expands the room artwork in both manual and automatic sizing modes without changing the detected glass boundary or room identity. Contrast separates furniture and walls; emission controls readability through the original glass.");
 	}
     ImGui::Checkbox(T("feature.window_life.auto_room_sizing", "Automatic Room Sizing"), &settings.AutomaticRoomSizing);
-    ImGui::Checkbox(T("feature.window_life.interior_passers", "Interior View Passers-by"), &settings.EnableInteriorPassers);
     if (auto _tt = Util::HoverTooltipWrapper()) {
-        ImGui::TextWrapped("Automatic mode groups mullioned panes from the currently installed native window texture, reconstructs one stable world-space aperture, and falls back to PIXL's calibrated geometry layout only when that evidence is uncertain. Rooms, curtains and occupants share the same fit.");
+        ImGui::TextWrapped("Optional texture-based aperture fitting. Manual sizing is the default. Automatic mode accepts only confident, plausibly sized fits; texture atlases can still need manual Room Width/Height. Rooms, curtains and occupants share the fit.");
     }
+    ImGui::Checkbox(T("feature.window_life.interior_passers", "Interior View Passers-by"), &settings.EnableInteriorPassers);
 
     ImGui::Spacing();
     ImGui::Text("%s", T("feature.window_life.masking", "Pane Mask & Distance"));
@@ -604,6 +605,17 @@ void WindowLife::SetupResources()
 
 float WindowLife::GetDayNightBlend(float hour)
 {
+    if (!std::isfinite(hour))
+        hour = 12.0f;
+    // Calendar continues indoors; the active climate supplies twilight timing
+    // for both the outdoor-view atlas and exterior room lighting.
+    if (const auto* sky = globals::game::sky; sky && sky->currentClimate) {
+        const auto& timing = sky->currentClimate->timing;
+        const float daylight = PIXL::AtmosphereWeather::DirectionalFogScale(
+            hour, timing.sunrise.begin / 6.0f, timing.sunrise.end / 6.0f,
+            timing.sunset.begin / 6.0f, timing.sunset.end / 6.0f);
+        return std::clamp((1.0f - daylight) / 0.95f, 0.0f, 1.0f);
+    }
     hour = std::fmod(std::max(hour, 0.0f), 24.0f);
     if (hour < 5.0f)
         return 1.0f;

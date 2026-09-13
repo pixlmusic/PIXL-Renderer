@@ -11,7 +11,7 @@ Texture2D<float3> SpecularTexture : register(t0);
 Texture2D<unorm float3> AlbedoTexture : register(t1);
 Texture2D<unorm float3> NormalRoughnessTexture : register(t2);
 Texture2D<float3> MasksTexture : register(t3);
-Texture2D<unorm float> Masks2Texture : register(t9);
+Texture2D<float2> Masks2Texture : register(t9);
 Texture2D<float3> PixlInputRadianceTexture : register(t16);
 Texture2D<float4> PixlBentVisibilityTexture : register(t17);
 
@@ -376,6 +376,12 @@ void SampleHybridGISpecular(uint2 pixCoord, sh2 lobe, out float3 legacyIl, out f
 	}
 #endif
 
+	// 100 is reserved for the session-only Material Layers diagnostic. It is
+	// not sent to HybridGI's own debug settings or persisted in graphics config.
+	if (PixlGIDebugMode == 100u) {
+		float relief = Masks2Texture[dispatchID.xy].y;
+		color = (relief >= 0.0f ? float3(0.1f, 0.5f, 1.0f) : float3(1.0f, 0.35f, 0.05f)) * sqrt(saturate(abs(relief)));
+	}
 	MainRW[dispatchID.xy] = float4(color, 1.0);
 	NormalTAAMaskSpecularMaskRW[dispatchID.xy] = float4(GBuffer::EncodeNormalVanilla(normalVS), 0.0, 0.0);
 }

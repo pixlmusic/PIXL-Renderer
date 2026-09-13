@@ -2,11 +2,11 @@
 
 ### A single, curated DirectX 11 rendering pipeline for Skyrim Special Edition
 
-PIXL Renderer is my attempt to make Skyrim feel properly modern without losing the atmosphere that makes Skyrim *Skyrim*. It brings lighting, materials, characters, weather, terrain, water, image reconstruction and camera finishing into one renderer that is designed, tuned and tested as a complete system.
+PIXL Renderer modernizes Skyrim's lighting, materials, characters, weather, terrain, water and image reconstruction while preserving the atmosphere of the original game. Its systems are designed and tuned as one integrated renderer.
 
-The basic idea is simple: install one renderer, choose a quality profile and play. There is still a full tuning workspace for anyone who enjoys moving sliders for three hours and then returning them almost exactly to where they started—I have absolutely never done this, obviously lol.
+Install one renderer, complete Quick Setup and play. An optional advanced tuning workspace provides deeper control over the image.
 
-> **Project status:** PIXL Renderer v1.0 is in active beta development. The current working build is the visual and functional baseline while compatibility, performance and final release packaging are validated.
+> **Release:** PIXL Renderer 1.0. See installation requirements and validation limits below before installing. Optional DLSSG proxy and Neural Rendering paths remain experimental.
 
 ## What makes PIXL different?
 
@@ -21,7 +21,7 @@ At runtime the renderer:
 5. evaluates the integrated HLSL pipeline; and
 6. hands the finished frame to reconstruction, HDR/camera processing, profiling and capture.
 
-Compiled pipelines are cached locally after first use. A clean install therefore compiles for the player's own hardware; the first start can take a while because Skyrim has a truly heroic number of shader permutations hiding under the floorboards lol.
+The release includes a preloaded pipeline library. Additional or invalidated shader permutations compile locally and are retained for subsequent sessions.
 
 ## Renderer features
 
@@ -80,21 +80,44 @@ PIXL currently ships **37 integrated rendering modules**, plus renderer-level sy
 
 The complete module ancestry—including every renamed Community Shaders system—is documented in [ATTRIBUTION.md](ATTRIBUTION.md). That file is the authoritative provenance map; this page is the human-readable tour.
 
-## Installing the beta
+## Installation
 
-1. Install the PIXL Renderer archive with a mod manager.
-2. Enable the included `PIXL-TerrainField.esp`.
-3. Launch Skyrim through SKSE.
-4. Complete the one-time control card, then use **Page Down** for PIXL Renderer and **Insert** for PIXL Director with the shipped bindings.
-5. Choose a quality profile, make any preferred Camera adjustments, then use **SAVE LOOK**.
+### Requirements
 
-PIXL is intended to own the engine-level shader pipeline. Do not combine it with ENB, ReShade, Kreate, another shader-hook renderer or a second PIXL installation unless a future compatibility note explicitly says otherwise.
+- Skyrim Special Edition on Windows, with SKSE matching your game runtime.
+- Engine Fixes and its prerequisites, matching that same runtime. PIXL checks for `Data/SKSE/Plugins/EngineFixes.dll`; it is not bundled.
+- A DirectX 11-capable GPU. DLSS/DLAA require supported NVIDIA hardware and an available runtime.
+- Borderless/windowed mode for frame generation and the optional Neural Rendering sidecar.
 
-A clean-cache package compiles shaders on the first launch. Let that process finish before judging performance or visuals. Ordinary HLSL changes should invalidate only affected permutations; deleting the whole pipeline library is reserved for deliberate cold-cache validation.
+The owner-tested baseline is Skyrim SE 1.5.97. Other runtimes and mod combinations require validation; build support alone is not a compatibility guarantee.
 
-The release baseline is the current live-tested **Balanced** profile with **FSR 3.1 Native AA** selected. Frame generation and Neural Rendering are off by default. NVIDIA RTX 30-series and newer users can select DLSS, restart once to provision PIXL's optional DX12 sidecar, and then toggle Neural Rendering live from the Camera page or with **Alt+N**. AMD, Intel and RTX 20-series users retain the normal TAA/FSR/DLSS paths without the NR control. NR/FG presentation requires borderless mode; exclusive fullscreen remains disabled for the sidecar because its Alt-Tab ownership transition is not release-safe.
+### Install and first launch
 
-The public **Camera** page puts reconstruction, DLSS/FSR, Neural Rendering, frame-generation, limiter and latency directly below the image-adjustment/viewfinder workspace. The Quality page uses real PIXL reference images on profile hover, with an Ultra+ comparison on Neural Rendering hover. Advanced engineering diagnostics remain behind an explicit support disclosure and in the Tuning Workspace; ordinary setup and Photo Mode do not require entering it.
+1. Close Skyrim. Install the release ZIP with Vortex or Mod Organizer 2 as a normal **Data** mod. For manual installation, extract its contents into Skyrim's `Data` directory, not beside `SkyrimSE.exe`.
+2. Enable the included `PIXL-TerrainField.esp`. Install required dependencies separately.
+3. Disable other engine-level shader renderers and duplicate PIXL installations. Do not combine this release with Community Shaders, ENB, ReShade or Kreate.
+4. Launch using your normal SKSE/mod-manager shortcut.
+5. Complete Quick Setup: choose Off, TAA, FSR Quality, DLSS Quality or **DLAA**. DLAA uses native-resolution DLSS anti-aliasing rather than upscaling. NVIDIA options are disabled when unavailable.
+6. Optionally check **Enable frame generation**. If setup requests a restart, save your game and relaunch normally. The confirmed exit option saves PIXL settings, **not game progress**, and does not automatically relaunch.
+7. Use **Page Down** for PIXL Renderer, **Home** for Photo Mode, and **SAVE LOOK** to keep adjustments. Reopen **QUICK SETUP** whenever needed.
+
+The release ships owner-tuned fog and POM defaults, with reconstruction set to **Off/None**, frame generation off and real-time Neural Rendering off. Accepting the existing quality selection preserves the tuned look. The advanced tuner remains optional.
+
+### Optional DLSS frame-generation proxy
+
+The third-party [DLSSG proxy project](https://github.com/sdli1995/dlssg_for_sm86) is **not bundled** and is not required for ordinary DLSS/DLAA or FSR frame generation. Consult its [English installation guide](https://github.com/sdli1995/dlssg_for_sm86/blob/main/README.en.md) for current requirements and supported configurations.
+
+For a compatible proxy setup, close Skyrim and install the upstream proxy DLL and `dlssg_sm86.ini` **beside `SkyrimSE.exe`, not inside Data**. Do not overwrite another mod's proxy DLL; use only an upstream-supported alternative entry point if appropriate. Install only one proxy from that project. Relaunch, select the DLSSG backend in PIXL's Camera controls and enable frame generation; another restart may be required to provision the sidecar.
+
+PIXL greys out DLSSG when neither native support nor the expected proxy files are detected. File detection is not proof of compatibility. This optional path remains experimental and needs hardware-specific testing. Use FSR frame generation if the DLSSG path is unavailable.
+
+### Cache and updating
+
+The release includes a snapshot of the live-tested `PIXL/PipelineLibrary`. Missing or invalidated permutations compile as needed; the bundled cache cannot cover every mod combination. Let compilation finish before evaluating performance. Do not routinely delete the cache: module-scoped updates preserve unaffected stages, while shared ABI/layout changes may require wider recompilation.
+
+Update through your mod manager with Skyrim closed. Existing `SKSE/Plugins/PIXL/Config/UserGraphics.json` settings take precedence over new defaults. For a fresh default test, back up that file outside Data and remove the live copy while Skyrim is closed. The ZIP never ships a user config.
+
+Required runtime folders retain their existing paths; moving them breaks shader/resource loading. Package documentation and licence notices are grouped under `SKSE/Plugins/PIXL/Documentation`. The package manifest records exact source revision and payload hashes. Logs, developer reports, build tools and debug symbols are not part of the plugin payload.
 
 ## Building from source
 

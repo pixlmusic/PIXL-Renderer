@@ -2531,16 +2531,15 @@ namespace SIE
 		ini.LoadFile(L"Data\\PIXL\\PipelineLibrary\\Library.ini");
 		bool baseCacheValid = true;
 
-		// Check plugin version
+		// Product version is provenance, not a shader compatibility key. CPU-only
+		// updates retain stages; Layout/ShaderABI and module versions own invalidation.
 		if (auto pluginVersion = ini.GetValue("Cache", "PluginVersion")) {
 			if (strcmp(Plugin::VERSION.string().c_str(), pluginVersion) != 0) {
-				logger::info("Disk cache outdated: plugin version changed (current: {}, cached: {})",
+				logger::info("Plugin version changed; retaining ABI-compatible shader cache (current: {}, cached: {})",
 					Plugin::VERSION.string(), pluginVersion);
-				baseCacheValid = false;
 			}
 		} else {
-			logger::info("Disk cache outdated: no plugin version found");
-			baseCacheValid = false;
+			logger::info("Cache has no product version; validating shader ABI and layout");
 		}
 		if (auto layout = ini.GetValue("Cache", "Layout"); !layout || strcmp(layout, kPipelineCacheLayout) != 0) {
 			logger::info("Disk cache outdated: pipeline layout changed");
@@ -2556,8 +2555,8 @@ namespace SIE
 
 		// Validate every module independently. A module version/load-state change no
 		// longer destroys unrelated pipeline families: remove only the shader types
-		// which actually receive that module's global define. A plugin/layout change
-		// remains a full invalidation because its ABI and path effects are unbounded.
+		// which actually receive that module's global define. Only a shared ABI/layout
+		// change requires full invalidation; release version bumps alone do not.
 		std::vector<RenderModule*> invalidModules;
 		for (auto* module : RenderModule::GetModuleList()) {
 			if (module && !module->ValidateCache(ini))
@@ -2565,7 +2564,7 @@ namespace SIE
 		}
 
 		if (!baseCacheValid) {
-			DeleteDiskCache("plugin version or pipeline-layout metadata changed");
+			DeleteDiskCache("shared shader ABI or pipeline-layout metadata changed");
 			return;
 		}
 
@@ -2666,6 +2665,9 @@ namespace SIE
 									continue;
 
 								const auto filename = file.path().filename().string();
+								// Ignore mod-manager ownership markers and unrelated files.
+								if (file.path().extension() != ".pixlbin")
+									continue;
 								std::uint32_t descriptor = 0;
 								bool parsedDescriptor = false;
 								if (filename.size() >= 8) {

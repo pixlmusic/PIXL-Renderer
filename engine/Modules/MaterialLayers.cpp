@@ -1,5 +1,8 @@
 #include "MaterialLayers.h"
 #include "../I18n/I18n.h"
+#include "Utils/D3D.h"
+#include "State.h"
+#include "HybridGI.h"
 
 #define I18N_KEY_PREFIX "feature.material_layers."
 
@@ -99,8 +102,8 @@ void to_json(nlohmann::json& j, const MaterialLayers::TuningSettings& value)
 	PIXL_JSON_WRITE(TerrainHeightDebugMode);
 	PIXL_JSON_WRITE(TerrainReliefGamma);
 	PIXL_JSON_WRITE(TerrainSyntheticGain);
-	PIXL_JSON_WRITE(pad3);
-	PIXL_JSON_WRITE(pad4);
+	PIXL_JSON_WRITE(ObjectVirtualDepthStrength);
+	PIXL_JSON_WRITE(ObjectVirtualDepthMaxWorld);
 #undef PIXL_JSON_WRITE
 }
 
@@ -189,8 +192,8 @@ void from_json(const nlohmann::json& j, MaterialLayers::TuningSettings& value)
 	PIXL_JSON_READ(TerrainHeightDebugMode);
 	PIXL_JSON_READ(TerrainReliefGamma);
 	PIXL_JSON_READ(TerrainSyntheticGain);
-	PIXL_JSON_READ(pad3);
-	PIXL_JSON_READ(pad4);
+	PIXL_JSON_READ(ObjectVirtualDepthStrength);
+	PIXL_JSON_READ(ObjectVirtualDepthMaxWorld);
 #undef PIXL_JSON_READ
 }
 
@@ -240,8 +243,78 @@ void MaterialLayers::SetupResources()
 	logger::debug("[MaterialLayers] SetupResources end");
 }
 
+void MaterialLayers::ResolveEffectsDepth(ID3D11ShaderResourceView* depth, ID3D11ShaderResourceView* masks)
+{
+	effectsDepthReady = false;
+	if (!loaded || !settings.EnableParallax || !depth || !masks || effectsDepthFailed ||
+		(tuningSettings.ObjectVirtualDepthStrength <= 0.0f &&
+		 (!tuningSettings.EnableTerrainVirtualDepth || tuningSettings.TerrainVirtualDepthStrength <= 0.0f)))
+		return;
+	try {
+		auto* device = globals::d3d::device;
+		auto* context = globals::d3d::context;
+		if (!effectsDepthCS)
+			effectsDepthCS.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
+				L"Data\\Shaders\\MaterialLayers\\EffectsDepth.hlsl", {}, "cs_5_0")));
+		if (!effectsDepthCS)
+			throw std::runtime_error("effects-depth shader unavailable");
+		winrt::com_ptr<ID3D11Resource> resource;
+		depth->GetResource(resource.put());
+		auto texture = resource.as<ID3D11Texture2D>();
+		D3D11_TEXTURE2D_DESC desc{};
+		texture->GetDesc(&desc);
+		D3D11_TEXTURE2D_DESC current{};
+		if (effectsDepth)
+			effectsDepth->GetDesc(&current);
+		if (!effectsDepth || !effectsDepthSRV || !effectsDepthUAV || current.Width != desc.Width || current.Height != desc.Height) {
+			effectsDepthUAV = nullptr;
+			effectsDepthSRV = nullptr;
+			effectsDepth = nullptr;
+			desc.Format = DXGI_FORMAT_R32_FLOAT;
+			desc.MipLevels = desc.ArraySize = 1;
+			desc.SampleDesc = { 1, 0 };
+			desc.Usage = D3D11_USAGE_DEFAULT;
+			desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+			desc.CPUAccessFlags = desc.MiscFlags = 0;
+			winrt::check_hresult(device->CreateTexture2D(&desc, nullptr, effectsDepth.put()));
+			winrt::check_hresult(device->CreateShaderResourceView(effectsDepth.get(), nullptr, effectsDepthSRV.put()));
+			winrt::check_hresult(device->CreateUnorderedAccessView(effectsDepth.get(), nullptr, effectsDepthUAV.put()));
+		}
+		ID3D11Buffer* shared = globals::state->sharedDataCB->CB();
+		context->CSSetConstantBuffers(5, 1, &shared);
+		ID3D11ShaderResourceView* inputs[] = { depth, masks };
+		ID3D11UnorderedAccessView* output = effectsDepthUAV.get();
+		context->CSSetShaderResources(0, 2, inputs);
+		context->CSSetUnorderedAccessViews(0, 1, &output, nullptr);
+		context->CSSetShader(effectsDepthCS.get(), nullptr, 0);
+		context->Dispatch((desc.Width + 7) / 8, (desc.Height + 7) / 8, 1);
+		ID3D11ShaderResourceView* nullInputs[2]{};
+		ID3D11UnorderedAccessView* nullOutput = nullptr;
+		context->CSSetShaderResources(0, 2, nullInputs);
+		context->CSSetUnorderedAccessViews(0, 1, &nullOutput, nullptr);
+		context->CSSetShader(nullptr, nullptr, 0);
+		effectsDepthReady = true;
+	} catch (const std::exception& error) {
+		effectsDepthFailed = true;
+		logger::warn("[MaterialLayers] Effects depth unavailable; preserving raster depth: {}", error.what());
+	} catch (...) {
+		effectsDepthFailed = true;
+		logger::warn("[MaterialLayers] Effects depth unavailable; preserving raster depth");
+	}
+}
+
 void MaterialLayers::Prepass()
 {
+	effectsDepthReady = false;
+	const std::array<float, 8> depthSettings{
+		static_cast<float>(settings.EnableParallax), tuningSettings.ObjectVirtualDepthStrength,
+		tuningSettings.ObjectVirtualDepthMaxWorld, static_cast<float>(tuningSettings.EnableTerrainVirtualDepth),
+		tuningSettings.TerrainVirtualDepthStrength, tuningSettings.TerrainVirtualDepthMaxWorld,
+		tuningSettings.TerrainVirtualDepthMaxUV, tuningSettings.TerrainVirtualDepthProtrusion };
+	if (depthSettings != lastEffectsDepthSettings) {
+		globals::pipeline::hybridGI.queuedResetTemporalHistory = true;
+		lastEffectsDepthSettings = depthSettings;
+	}
 	if (!tuningCB)
 		return;
 
@@ -380,6 +453,14 @@ void MaterialLayers::DrawSettings()
 		Util::UIntCheckbox(T(TKEY("enable_parallax_warping_fix"), "Enable Parallax Warping Fix"), &settings.EnableParallaxWarpingFix);
 
 		ImGui::SeparatorText("Virtual Relief Depth");
+		ImGui::TextWrapped("Virtual depth affects deferred lighting and GI only; it does not change silhouettes, collision, or hardware visibility.");
+		ImGui::Checkbox("Preview Virtual Depth Offsets", &showEffectsDepthDebug);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Diagnostic view: blue is recessed relief, orange is protrusion, black is unchanged. Shows the generated offset before the near-camera safety limit. Turn off for normal lighting.");
+		ImGui::TextDisabled("%s", effectsDepthFailed ? "Effects depth unavailable - see PIXLRenderer.log" :
+			effectsDepthReady ? "Effects depth active" : "Effects depth inactive");
+		ImGui::SliderFloat("Object Virtual Depth Strength", &tuningSettings.ObjectVirtualDepthStrength, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat("Object Virtual Depth Limit", &tuningSettings.ObjectVirtualDepthMaxWorld, 1.0f, 16.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
 		Util::UIntCheckbox("Enable Terrain Virtual Depth", &tuningSettings.EnableTerrainVirtualDepth);
 		ImGui::SliderFloat("Virtual Depth Strength", &tuningSettings.TerrainVirtualDepthStrength, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat("Virtual Depth Max World", &tuningSettings.TerrainVirtualDepthMaxWorld, 2.0f, 64.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);

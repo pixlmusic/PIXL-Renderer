@@ -17,6 +17,21 @@ $ErrorActionPreference = "Stop"
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $sourceCommit = (& git -C $sourceRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $sourceCommit) { throw "Unable to resolve package source commit." }
+$sourceChanges = @(& git -C $sourceRoot status --porcelain --untracked-files=normal)
+if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect source worktree.' }
+$reproducibleDependencyPatch = $false
+if ($sourceChanges -contains ' m extern/FidelityFX-SDK') {
+    $dependency = Join-Path $sourceRoot 'extern\FidelityFX-SDK'
+    $changedFiles = @(& git -C $dependency diff --name-only)
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect FidelityFX patch.' }
+    if ($changedFiles.Count -eq 1 -and $changedFiles[0] -eq 'sdk/src/backends/dx11/CMakeLists.txt') {
+        & git -C $dependency apply --reverse --check (Join-Path $sourceRoot 'cmake\patches\FidelityFX-DX11-Short-Output.patch')
+        $reproducibleDependencyPatch = $LASTEXITCODE -eq 0
+    }
+}
+$sourceWorkingTreeDirty = [bool]@($sourceChanges | Where-Object {
+    -not ($reproducibleDependencyPatch -and $_ -eq ' m extern/FidelityFX-SDK')
+})
 $allowedRoot = [IO.Path]::GetFullPath($(if ($AllowedOutputRoot) { $AllowedOutputRoot } else { Join-Path $sourceRoot "dist" }))
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $allowedRoot "PIXL-Renderer-v1.0-Clean-Cache" }
 if (-not $ArchivePath) { $ArchivePath = Join-Path $allowedRoot "PIXL-Renderer-v1.0-Clean-Cache.zip" }
@@ -188,12 +203,13 @@ if ($includePipelineLibrary) {
 if ($Channel -eq 'RELEASE' -and (Get-ChildItem -LiteralPath $output -Recurse -File -Filter 'UserGraphics.json')) {
     throw 'Public release unexpectedly contains UserGraphics.json.'
 }
-foreach ($document in @("PIXL-RENDERER-README.md", "SOURCE-AND-CREDITS.md")) {
-    Copy-Item -LiteralPath (Join-Path $sourceRoot "distribution\$document") -Destination $output -Force
-}
-Copy-Item -LiteralPath (Join-Path $sourceRoot "docs\ImageReconstruction\DLSSG_SM86_INTEGRATION.md") -Destination $output -Force
+$documentationRoot = Join-Path $pluginRoot 'Documentation'
+New-Item -ItemType Directory -Path $documentationRoot -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $sourceRoot 'distribution\PIXL-RENDERER-README.md') -Destination $output -Force
+Copy-Item -LiteralPath (Join-Path $sourceRoot 'distribution\SOURCE-AND-CREDITS.md') -Destination $documentationRoot -Force
+Copy-Item -LiteralPath (Join-Path $sourceRoot "docs\ImageReconstruction\DLSSG_SM86_INTEGRATION.md") -Destination $documentationRoot -Force
 foreach ($document in @("COPYING", "EXCEPTIONS.md", "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md")) {
-    Copy-Item -LiteralPath (Join-Path $sourceRoot $document) -Destination $output -Force
+    Copy-Item -LiteralPath (Join-Path $sourceRoot $document) -Destination $documentationRoot -Force
 }
 
 $manifestFiles = Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object FullName | ForEach-Object {
@@ -214,6 +230,8 @@ $manifestFiles = Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object
         note = "Install the Engine Fixes release matching the user's Skyrim SE runtime; PIXL does not bundle this third-party dependency."
     })
     sourceCommit = $sourceCommit
+    sourceWorkingTreeDirty = $sourceWorkingTreeDirty
+    reproducibleFidelityFXPatchApplied = $reproducibleDependencyPatch
     sourceUrl = "https://github.com/pixlmusic/PIXL-Renderer/tree/$sourceCommit"
     channel = $Channel
     executable = "SKSE/Plugins/PIXLRenderer.dll"

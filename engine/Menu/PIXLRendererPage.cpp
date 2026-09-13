@@ -748,7 +748,7 @@ namespace
 			ImGui::TableSetupColumn(
 				"Preview",
 				ImGuiTableColumnFlags_WidthStretch,
-				1.28f);
+				1.08f);
 
 			ImGui::TableNextColumn();
 			ImGui::PushID(
@@ -1204,18 +1204,13 @@ namespace
 				&frameGeneration,
 				"Generates intermediate frames through PIXL's compatibility swapchain. Requires a restart after changing.")) {
 			settings.frameGenerationMode = frameGeneration ? 1u : 0u;
-				changed = restartNeeded = true;
-		}
-		const char* frameGenerationBackends[] = { "FSR 3 Frame Generation", "DLSSG (SM86 / version.dll)" };
-		int frameGenerationBackend = static_cast<int>(std::min<uint>(settings.frameGenerationBackend, 1u));
-		ImGui::BeginDisabled(!frameGeneration);
-		if (ImGui::Combo("Frame generation backend", &frameGenerationBackend, frameGenerationBackends, _countof(frameGenerationBackends))) {
-			settings.frameGenerationBackend = static_cast<uint>(frameGenerationBackend);
+			if (frameGeneration)
+				settings.frameGenerationForceEnable = 1;
 			changed = restartNeeded = true;
 		}
-		ImGui::EndDisabled();
-		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("DLSSG requires version.dll and dlssg_sm86.ini beside SkyrimSE.exe. Restart Skyrim after changing the backend.");
+		if (imageReconstruction.DrawFrameGenerationBackendSelector()) {
+			changed = restartNeeded = true;
+		}
 		if (imageReconstruction.UsesDLSSGFrameGeneration()) {
 			const char* multipliers[] = { "2x (1 generated frame)", "3x (2 generated frames)", "4x (3 generated frames)" };
 			int multiplier = static_cast<int>(std::clamp(settings.dlssgGeneratedFrames, 1u, 3u)) - 1;
@@ -1647,15 +1642,15 @@ namespace
 			ImGui::TableSetupColumn(
 				"Camera",
 				ImGuiTableColumnFlags_WidthStretch,
-				0.94f);
+				1.05f);
 			ImGui::TableSetupColumn(
 				"Preview",
 				ImGuiTableColumnFlags_WidthStretch,
-				1.22f);
+				0.90f);
 			ImGui::TableSetupColumn(
 				"Effects",
 				ImGuiTableColumnFlags_WidthStretch,
-				0.94f);
+				1.05f);
 
 			// -------------------------------------------------------------
 			// LEFT — exposure + tonemap / LUT
@@ -2287,7 +2282,7 @@ namespace
 		SectionHeading("PHOTO MODE");
 		ImGui::TextColored(
 			PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
-			"Cinematic free camera, live shot controls and clean high-quality capture.");
+			"Home: free camera and photo capture.");
 		ImGui::SameLine();
 		ImGui::BeginDisabled(!directorAvailable);
 		if (PIXLUI::ActionButton(
@@ -2579,6 +2574,10 @@ void PIXLRendererPage::Render()
 		ImVec4(0, 0, 0, 0));
 
 	const ImGuiWindowFlags publicPageFlags = ImGuiWindowFlags_None;
+	// Shared compact rhythm across Quality, Camera and Renderer. Keep colours,
+	// fonts and control hit targets; spend less space on repeated vertical padding.
+	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(PIXLUI::Ref(8.0f), PIXLUI::Ref(4.0f)));
+	ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(PIXLUI::Ref(7.0f), PIXLUI::Ref(3.0f)));
 	ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.62f + 0.38f * pageReveal);
 	ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (1.0f - pageReveal) * PIXLUI::Ref(6.0f));
 
@@ -2627,7 +2626,7 @@ void PIXLRendererPage::Render()
 	}
 
 	ImGui::EndChild();
-	ImGui::PopStyleVar();
+	ImGui::PopStyleVar(3);
 	ImGui::PopStyleColor();
 
 	FlushDeferredStateSave();

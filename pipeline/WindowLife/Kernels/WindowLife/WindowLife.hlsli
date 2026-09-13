@@ -1087,13 +1087,21 @@ namespace WindowLife
         // resolved room transitions continuously instead of flipping at 0.5, and
         // foreground layers are admitted only after clearing the upper boundary.
         float nativeBackgroundWeight = attemptedNativeLayout
-            ? smoothstep(0.35f, 0.65f, paneLayout.backgroundConfidence)
+            ? smoothstep(0.60f, 0.90f, paneLayout.backgroundConfidence)
             : 0.0f;
         nativeLayerWeight = attemptedNativeLayout
-            ? smoothstep(0.35f, 0.65f, paneLayout.confidence)
+            ? smoothstep(0.60f, 0.90f, paneLayout.confidence)
             : 1.0f;
+        // Reject implausible atlas-derived fits instead of stretching one room
+        // across a facade. Preserve calibrated manual geometry as the fallback.
+        float2 nativeSizeRatio = paneLayout.roomSize / max(roomSize, 1.0f.xx);
+        bool plausibleNativeFit = all(nativeSizeRatio >= 0.5f.xx) && all(nativeSizeRatio <= 2.0f.xx);
+        if (attemptedNativeLayout && !plausibleNativeFit) {
+            nativeBackgroundWeight = 0.0f;
+            nativeLayerWeight = 0.0f;
+        }
         bool useNativeBackground = nativeBackgroundWeight > 1.0e-4f;
-        bool useNativeLayers = nativeLayerWeight > 1.0e-4f;
+        bool useNativeLayers = nativeLayerWeight >= 0.65f;
         if (attemptedNativeLayout) {
             result.authoredLayoutState = nativeLayerWeight >= 0.65f
                 ? 3.0f
@@ -1219,6 +1227,10 @@ namespace WindowLife
             analyticCurtainMask,
             filteredCurtainAlpha * curtainPresent,
             curtainAtlasReady);
+        // Curtain tiles can contain closed drapes. Keep a stable central opening
+        // in aperture space even when refraction pushes atlas UVs to a tile edge.
+        float curtainSideCoverage = smoothstep(0.18f, 0.32f, abs(baseRoomLocal.x - 0.5f));
+        curtainMask *= curtainSideCoverage * curtainVertical;
         // An installed curtain atlas is composited as real colour/alpha below.
         // Applying its alpha again as transmission made the cutout look like a
         // second black shadow. Keep occlusion only for the no-asset fallback.
@@ -1270,7 +1282,11 @@ namespace WindowLife
             WindowLifeRoomAtlas.GetDimensions(0, width, height, mipCount);
             float footprint = max(length(ddx_coarse(artUV) * float2(width, height) * 0.25f),
                                   length(ddy_coarse(artUV) * float2(width, height) * 0.25f));
-            float mip = clamp(log2(max(footprint, 1.0f)) + 0.25f, 0.0f, min(max((float)mipCount - 1.0f, 0.0f), 7.0f));
+            // Match the recessed-room blur: refraction/softness hide finite atlas
+            // detail while identical mip/UV selection keeps day-night transitions stable.
+            float mip = clamp(log2(max(footprint, 1.0f)) + 0.45f + GetOptics0().y * 4.0f +
+                saturate(GetOptics0().z / 12.0f) * 1.5f,
+                0.0f, min(max((float)mipCount - 1.0f, 0.0f), 7.0f));
             float inset = min(max(3.0f, exp2(mip) * 1.25f) / 512.0f, 0.18f);
             // Regional families are hints, not claims of the actual view outside.
             float family = GetAsset0().x;
@@ -1285,7 +1301,10 @@ namespace WindowLife
             float3 nightColor = outdoorSample.rgb * float3(0.075f, 0.10f, 0.16f);
             if (nightWidth == width && nightHeight == height && nightMips > 0)
                 nightColor = WindowLifeCurtainAtlas.SampleLevel(SampGlowSampler, atlasUV, min(mip, (float)nightMips - 1.0f)).rgb;
-            result.roomColor = max(lerp(outdoorSample.rgb, nightColor, night), 0.0f) * clamp(GetPresentation0().y, 0.0f, 8.0f);
+            float viewEmission = clamp(GetPresentation0().y, 0.0f, 8.0f);
+            // Bright daytime visibility must not turn the night atlas into daylight.
+            float nightEmission = min(viewEmission, 1.0f) * 0.35f;
+            result.roomColor = max(lerp(outdoorSample.rgb * viewEmission, nightColor * nightEmission, night), 0.0f);
             result.roomColorWeight = outdoorSample.a * interiorPane * verticalSurface * grazingFade * distanceFade *
                 GetAsset0().z * (roomLayoutSafe ? 1.0f : 0.0f);
         }

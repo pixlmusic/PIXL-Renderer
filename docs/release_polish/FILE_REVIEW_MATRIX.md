@@ -1,5 +1,23 @@
 # PIXL Renderer Active File Review Matrix
 
+Public release packaging and installation guides: [scoped review](RELEASE_PACKAGE_20260913.md).
+
+Quick Setup DLAA/FG and confirmed exit: [scoped review](STARTUP_DLAA_FG_20260913.md).
+
+Player accumulation attachment and owner fog/POM defaults: [scoped review](ACTOR_ATTACHMENT_DEFAULTS_20260913.md).
+
+Effects-only virtual depth implementation: [scoped review](EFFECTS_DEPTH_20260913.md).
+
+Markarth authored depth / inactive terrain controls: [scoped review](MARKARTH_DEPTH_20260913.md).
+
+Optional DLSSG selector follow-up: [scoped review](DLSSG_SELECTOR_20260913.md).
+
+September 13 material/window/UI/FG/cache follow-up: [per-file accounting](RELEASE_POLISH_20260913.md).
+
+September 13 owner defaults promotion: [config review and validation](OWNER_DEFAULTS_20260913.md).
+
+Climate-aware directional fog live-test follow-up: [scoped file review](CLIMATE_DIRECTIONAL_FOG_20260912.md).
+
 Final September 12 packaging/weather/tips pass: [FINAL_RELEASE_20260912.md](FINAL_RELEASE_20260912.md)
 records the additional active-file review, native weather tests, cache provenance,
 public release guards and remaining validation limitations.

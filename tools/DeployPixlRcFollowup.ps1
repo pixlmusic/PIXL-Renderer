@@ -23,6 +23,7 @@ $relativePaths = @(
     'Shaders/Lighting.hlsl',
     'Shaders/Sky.hlsl',
     'Shaders/PIXL/Modules/WindowLife.ini',
+    'Shaders/PIXL/Modules/MaterialLayers.ini',
     'Shaders/WindowLife/WindowLife.hlsli',
     'Shaders/WindowLife/OutdoorAtlas.png',
     'Shaders/WindowLife/OutdoorAtlas_2k.dds',

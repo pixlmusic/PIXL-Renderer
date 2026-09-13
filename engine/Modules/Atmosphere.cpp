@@ -186,6 +186,16 @@ Atmosphere::Settings Atmosphere::ResolveRuntimeSettings() const
 	const float fogFar = std::isfinite(sky->fogFar) ? std::clamp(sky->fogFar, 8000.0f, 200000.0f) : 60000.0f;
 	const float strength = std::clamp(settings.automaticWeatherStrength, 0.0f, 1.0f);
 
+	if (sky->currentClimate) {
+		const auto& timing = sky->currentClimate->timing;
+		const float sourceScale = PIXL::AtmosphereWeather::DirectionalFogScale(
+			sky->currentGameHour, timing.sunrise.begin / 6.0f, timing.sunrise.end / 6.0f,
+			timing.sunset.begin / 6.0f, timing.sunset.end / 6.0f);
+		const float scale = std::lerp(1.0f, sourceScale, strength);
+		resolved.directionalInscatteringMultiplier *= scale;
+		resolved.volumetricDirectionalScatteringIntensity *= scale;
+	}
+
 	// Skyrim has already blended fogNear/fogFar across weather and time of day.
 	// Treat that live visibility range as authoritative and adapt PIXL's optical
 	// depth conservatively around the user's chosen density.
@@ -256,7 +266,7 @@ void Atmosphere::DrawSettings()
 	Util::UIntCheckbox(T(TKEY("enable_exp_height_fog"), "Enable Atmosphere"), &settings.enabled);
 	Util::UIntCheckbox("Automatic Weather Atmosphere", &settings.automaticWeatherFog);
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::TextWrapped("Recommended. Adapts visibility range, density and Mie phase from Skyrim's live blended weather while preserving the controls below as the artistic baseline.");
+		ImGui::TextWrapped("Adapts visibility, density and scattering to live weather. Directional fog fades to 5% overnight through the current climate's dawn/dusk times; ambient fog and normal moonlight remain unchanged. Controls below are the daytime baseline.");
 	if (settings.automaticWeatherFog) {
 		ImGui::SliderFloat("Weather Response", &settings.automaticWeatherStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat("Mie Weather Coupling", &settings.weatherMieStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);

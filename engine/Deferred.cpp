@@ -15,6 +15,7 @@
 #include "Modules/ImageReconstruction.h"
 #include "Modules/GroundResponse.h"
 #include "Modules/RainResponse.h"
+#include "Modules/MaterialLayers.h"
 
 #include "Hooks.h"
 
@@ -136,8 +137,8 @@ void Deferred::SetupResources()
 		SetupRenderTarget(NORMALROUGHNESS, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R10G10B10A2_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
 		// Masks
 		SetupRenderTarget(MASKS, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R11G11B10_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
-		// Masks2 (vertexAO; fp16 to allow blending)
-		SetupRenderTarget(MASKS2, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R16_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
+		// Masks2: R = 1-vertexAO, G = signed effects-only view-depth relief.
+		SetupRenderTarget(MASKS2, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R16G16_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
 
 		// TAA water history buffers need RGBA16: alpha stores premultiplied coverage for ISWaterBlend
 		SetupRenderTarget(RE::RENDER_TARGETS::kWATER_1, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R16G16B16A16_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
@@ -323,6 +324,9 @@ void Deferred::DeferredPasses()
 	auto motionVectors = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 
 	bool interior = Util::IsInterior();
+	// Geometry/decal visibility is already complete. Effects-only relief must
+	// never replace the DSV used by Skyrim's prepass or transparent geometry.
+	globals::pipeline::materialLayers.ResolveEffectsDepth(depth.depthSRV, masks2.SRV);
 
 	auto& skyBounce = globals::pipeline::skyBounce;
 
@@ -332,7 +336,7 @@ void Deferred::DeferredPasses()
 	auto [ssgi_ao, ssgi_y, ssgi_cocg, ssgi_gi_spec, ssgi_bent_visibility] = ssgi.GetOutputTextures();
 	bool ssgi_hq_spec = ssgi.settings.EnableExperimentalSpecularGI;
 	pixlGIDebugCB->Update(PixlGIDebugData{
-		ssgi.settings.DebugView,
+		globals::pipeline::materialLayers.showEffectsDepthDebug ? 100u : ssgi.settings.DebugView,
 		ssgi.settings.DebugGain,
 		ssgi.settings.EnableSpecularOcclusion ? 1u : 0u,
 		std::clamp(ssgi.settings.SpecularOcclusionStrength, 0.0f, 1.0f) });
@@ -361,7 +365,7 @@ void Deferred::DeferredPasses()
 			albedo.SRV,                                                                                     // t1  AlbedoTexture
 			normalRoughness.SRV,                                                                            // t2  NormalRoughnessTexture
 			masks.SRV,                                                                                      // t3  MasksTexture
-			worldProbes.loaded ? Util::GetCurrentSceneDepthSRV(false) : nullptr,                        // t4  DepthTexture (24/32-bit; HLSL type baked at compile via TERRAIN_SEAM)
+			globals::pipeline::materialLayers.GetEffectsDepth(Util::GetCurrentSceneDepthSRV(false)), // t4 effects depth, raster fallback
 			worldProbes.loaded ? reflectance.SRV : nullptr,                                             // t5  ReflectanceTexture
 			worldProbes.loaded ? worldProbes.envTexture->srv.get() : nullptr,                       // t6  EnvTexture
 			worldProbes.loaded ? worldProbes.envReflectionsTexture->srv.get() : nullptr,            // t7  EnvReflectionsTexture
