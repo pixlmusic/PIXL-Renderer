@@ -104,12 +104,13 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 		pSwapChainDesc->BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 	}
 
-	// The isolated presenter uses CreateSwapChainForHwnd, which requires a
-	// windowed swap-chain descriptor even when Skyrim was configured as exclusive
-	// fullscreen. CreateProxySwapChain normalizes that descriptor for the sidecar;
-	// leaving this gate tied to Skyrim's original Windowed bit silently disabled
-	// both NR and FSR3 on otherwise valid installations.
-	const bool sidecarAllowed = true;
+	const bool sidecarAllowed = pSwapChainDesc->Windowed != FALSE;
+	if (!sidecarAllowed) {
+		// The isolated DX12 presenter is a windowed/borderless path. Do not force it
+		// onto Skyrim's exclusive swap chain: that can leave the image stalled until
+		// focus changes. Keep native fullscreen stable and explain the requirement.
+		logger::warn("[ImageReconstruction] DX12 sidecar unavailable in exclusive fullscreen; switch Skyrim to borderless/windowed for Neural Rendering or Frame Generation");
+	}
 
 	auto refreshRate = ImageReconstruction::GetRefreshRate(pSwapChainDesc->OutputWindow);
 	imageReconstruction.refreshRate = refreshRate;
@@ -2102,10 +2103,6 @@ void ImageReconstruction::CreateProxySwapChain(
 	DXGI_SWAP_CHAIN_DESC swapChainDesc,
 	DX12SwapChain::Presenter presenter)
 {
-	if (!swapChainDesc.Windowed) {
-		logger::info("[ImageReconstruction] Normalizing exclusive Skyrim swap-chain descriptor for the DX12 sidecar");
-		swapChainDesc.Windowed = TRUE;
-	}
 	dx12SwapChain.CreateSwapChain(adapter, swapChainDesc, presenter);
 }
 
