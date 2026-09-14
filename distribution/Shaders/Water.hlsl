@@ -873,7 +873,15 @@ float3 GetWaterSpecularColor(PS_INPUT input, float3 normal, float3 viewDirection
 	reflectionColor = lerp(reflectionColor, finalSsrReflectionColor, ssrFraction);
 #			endif
 
-	return reflectionColor * clamp(SharedData::waterOpticsSettings.ReflectionBrightness, 0.5f, 1.15f);
+	// The cubemap remains useful at distance, but an unattenuated HDR sample can
+	// read as a bright strip through atmospheric fog. Fade only the far-water
+	// reflection contribution; refraction and the fog composite remain unchanged.
+	float farWaterReflectionFade = lerp(
+		1.0f,
+		0.72f,
+		smoothstep(1800.0f, 7000.0f, length(input.WPosition.xyz)));
+	return reflectionColor * farWaterReflectionFade *
+		clamp(SharedData::waterOpticsSettings.ReflectionBrightness, 0.5f, 1.15f);
 }
 
 float GetScreenDepthWater(float2 screenPosition)
