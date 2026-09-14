@@ -284,7 +284,15 @@ namespace
 		quickStylesInitialized = true;
 		const auto base = CaptureCurrentStyle("Custom Style");
 		quickStyles = { base, base, base, base, base };
-		const std::array<std::string_view, 5> names{ "Kale Preset", "Topaz Preset", "C.A.T Preset", "Ruby Inspired", "Cabbage Inspired" };
+	// Original PIXL-themed names keep the quick styles welcoming and clearly
+	// separate from the external presets that inspired their tuning.
+	const std::array<std::string_view, 5> names{
+		"Prism Drift",
+		"Neon Veil",
+		"Aurora Pulse",
+		"Glass Horizon",
+		"Midnight Circuit"
+	};
 		for (std::size_t i = 0; i < quickStyles.size(); ++i)
 			std::snprintf(quickStyles[i].name.data(), quickStyles[i].name.size(), "%s", names[i].data());
 		// Fictional starter looks provide useful PIXL-native baselines without
