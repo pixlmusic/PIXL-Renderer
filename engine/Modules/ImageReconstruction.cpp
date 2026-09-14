@@ -1960,10 +1960,14 @@ void ImageReconstruction::LoadUpscalingSDKs()
 	// This ensures all SDKs are available before any D3D device creation
 	streamline.LoadInterposer();
 	fidelityFX.LoadFFX();  // Only for frame generation now
-	if (!settings.frameGenerationMode || !UsesDLSSGFrameGeneration()) {
-		// Do not load the experimental second Streamline interposer for ordinary
-		// DLSS/DLAA startup or for the FSR3 backend. Skyrim remains on its stable
-		// D3D11 presentation path until DLSS-G is explicitly requested.
+	const bool needsDX12Sidecar =
+		(settings.frameGenerationMode && UsesDLSSGFrameGeneration()) ||
+		(settings.neuralRenderingEnabled &&
+			settings.upscaleMethod == static_cast<uint>(UpscaleMethod::kDLSS));
+	if (!needsDX12Sidecar) {
+		// DLSS Neural Rendering also provisions through the D3D12 sidecar. Without
+		// loading this interposer at startup, the UI can remain stuck on “restart
+		// required” forever even after Skyrim has been restarted.
 		return;
 	}
 	streamlineDX12.renderAPI = sl::RenderAPI::eD3D12;

@@ -14,6 +14,9 @@
 - Startup ENB conflicts explain why PIXL's effects/menu cannot initialize.
 - Grass/window requirements, BEES 1.2 on 1.5.97, and owner GOG testing on verified
   1.6.1179.0 are documented in MOD_COMPATIBILITY.md and the package guide.
+- Fixed a startup gating bug where enabling Neural Rendering alone did not load the
+  DX12 sidecar. After restart, that omission left the UI reporting “restart required”
+  indefinitely. The sidecar now loads for DLSS Neural Rendering as well as DLSS-G.
 
 ## Explicit limitations
 
