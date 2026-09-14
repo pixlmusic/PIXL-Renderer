@@ -1737,7 +1737,13 @@ namespace
 				"Saga",
 				"Dramatic",
 				"Hearthfire",
-				"Bleak"
+				"Bleak",
+				"Bleach",
+				"Winter",
+				"Sunset",
+				"Fantasy Green",
+				"Nightfall",
+				"Cinematic"
 			};
 
 			int look =
@@ -1869,6 +1875,8 @@ namespace
 				"PreviewDepthColumn");
 
 			DrawLiveCameraPreview();
+			SectionHeading("QUICK VISUAL STYLES");
+			ExternalPostProcessing::DrawENBQuickStyles();
 
 			ImGui::Dummy(
 				ImVec2(
@@ -2273,6 +2281,10 @@ namespace
 
 	void DrawCameraControls()
 	{
+		DrawPageIntro(
+			"POST-PROCESSING | UPSCALING",
+			"Shape the final image, choose a colour grade, connect compatible post-processing tools, and tune reconstruction and frame delivery in one place.");
+		SectionHeading("CREATIVE LOOKS & COMPATIBILITY");
 		ExternalPostProcessing::DrawSettings();
 		std::string directorUnavailableReason;
 		const bool directorActive =
@@ -2299,10 +2311,12 @@ namespace
 				ImGui::TextWrapped("%s", directorUnavailableReason.c_str());
 		}
 		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(5.0f)));
+		SectionHeading("CAMERA & VISUAL FINISHING");
 		DrawFinishingControls();
 		// Keep reconstruction directly below the compact camera workspace so the
 		// active upscaling path is easier to find than in the engineering tuner.
 		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(10.0f)));
+		SectionHeading("UPSCALING & FRAME DELIVERY");
 		DrawPerformanceControls();
 	}
 
@@ -2535,8 +2549,8 @@ void PIXLRendererPage::Render()
 		gap);
 
 	if (PIXLUI::PageButton(
-			"Camera",
-			"CAMERA + POST FX",
+			"Post-processing",
+			"POST-PROCESSING | UPSCALING",
 			currentPage == PublicPage::Camera,
 			ImVec2(
 				pageWidth,

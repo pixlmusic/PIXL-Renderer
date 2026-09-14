@@ -1773,6 +1773,18 @@ GroundResistanceSample ResistanceEvaluateActor(
 
 		if (auto* existing =
 			ResistanceFindTrack(actorID)) {
+			// A death/respawn can replace the RE::Actor instance while keeping
+			// the same form ID. The temporary SpeedMult contribution belongs to
+			// the old instance; carrying the bookkeeping into the new instance
+			// makes its normal speed look like a stale positive modifier.
+			auto previousActor = existing->handle.get();
+			if (!previousActor || previousActor.get() != a_actor) {
+				existing->filteredSpeedScale = 1.0f;
+				existing->appliedSpeedDelta = 0.0f;
+				existing->carryWeightRefreshTimer = 0.0f;
+				existing->carryWeightRefreshAmount = 0.0f;
+				existing->lastRefreshedSpeedDelta = 0.0f;
+			}
 			existing->handle =
 				a_actor->GetHandle();
 			return *existing;
@@ -2071,8 +2083,24 @@ GroundResistanceSample ResistanceEvaluateActor(
 
 		auto processActor =
 			[&](RE::Actor* a_actor, bool a_isPlayer) {
-				if (!a_actor ||
-					!a_actor->Is3DLoaded()) {
+				if (!a_actor) {
+					return;
+				}
+
+				// Do not evaluate terrain beneath a dead actor. Restore our exact
+				// temporary contribution before Skyrim transitions to the respawned
+				// actor so movement state cannot leak across death.
+				if (a_actor->IsDead()) {
+					if (auto* track =
+						ResistanceFindTrack(a_actor->GetFormID())) {
+						track->lastSeenGeneration =
+							g_groundResistanceGeneration;
+						ResistanceRestoreTrack(*track);
+					}
+					return;
+				}
+
+				if (!a_actor->Is3DLoaded()) {
 					return;
 				}
 
@@ -3900,14 +3928,27 @@ void GroundResponse::QueueCollisions()
 				g_bodyStateGeneration - it->second.generation == 1u) {
 				previous = it->second.center;
 			}
+
+			// Animated skeletons can move a collision body's centre by a few
+			// centimetres every frame while the actor is planted. Treat that small
+			// motion as animation noise so a stationary foot does not make the
+			// accumulated snow visibly wobble. Larger motion remains fully tracked
+			// for walking, running and creatures.
+			RE::NiPoint3 contactCenter = bound.center;
+			const float rawMotion = GroundLength2D({
+				bound.center.x - previous.x,
+				bound.center.y - previous.y
+			});
+			if (rawMotion < 1.5f)
+				contactCenter = previous;
 			g_previousBodyStates[key] = {
-				bound.center,
+				contactCenter,
 				g_bodyStateGeneration
 			};
 
 			float2 bodyMotion{
-				bound.center.x - previous.x,
-				bound.center.y - previous.y
+				contactCenter.x - previous.x,
+				contactCenter.y - previous.y
 			};
 			if (!std::isfinite(bodyMotion.x) ||
 				!std::isfinite(bodyMotion.y) ||
@@ -3941,7 +3982,7 @@ void GroundResponse::QueueCollisions()
 
 			GroundPendingInteraction interaction{};
 			interaction.start = float2{ previous.x, previous.y };
-			interaction.end = float2{ bound.center.x, bound.center.y };
+			interaction.end = float2{ contactCenter.x, contactCenter.y };
 			interaction.startRadius = stampRadius;
 			interaction.endRadius = stampRadius;
 			interaction.contactDepth = contactDepth;
@@ -3977,13 +4018,13 @@ void GroundResponse::QueueCollisions()
 			ActorBodySurfaceContact actorContact{};
 			actorContact.interaction = interaction;
 			actorContact.worldCenter = {
-				bound.center.x,
-				bound.center.y,
+				contactCenter.x,
+				contactCenter.y,
 				(contactBandBottom + contactBandTop) * 0.5f
 			};
 			actorContact.worldVelocity = {
-				(bound.center.x - previous.x) / frameDt,
-				(bound.center.y - previous.y) / frameDt,
+				(contactCenter.x - previous.x) / frameDt,
+				(contactCenter.y - previous.y) / frameDt,
 				(bound.center.z - previous.z) / frameDt
 			};
 			actorContact.verticalRadius = std::max((contactBandTop - contactBandBottom) * 0.5f, 1.25f);

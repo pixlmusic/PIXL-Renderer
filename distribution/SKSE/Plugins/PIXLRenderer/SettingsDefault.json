@@ -1094,11 +1094,11 @@
         "FoamScale": 1.0,
         "FoamStrength": 0.550000011920929,
         "PlayerWakeStrength": 0.0,
-        "ReflectionBrightness": 1.059999942779541,
+        "ReflectionBrightness": 0.72,
         "SSRDistanceScale": 1.5,
         "SSREdgeFade": 0.25,
         "SSRThicknessScale": 0.49000000953674316,
-        "SurfaceSSRStrength": 1.2599999904632568,
+        "SurfaceSSRStrength": 0.70,
         "WaterTintStrength": 0.7300000190734863
     },
     "Waterbody": {

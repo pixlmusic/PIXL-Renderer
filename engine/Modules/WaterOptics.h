@@ -18,12 +18,14 @@ public:
 		float SSRDistanceScale = 1.0f;
 		float SSREdgeFade = 1.0f;
 
-		float SurfaceSSRStrength = 0.82f;
+		// Keep distant water subdued in fog; users can raise this for a brighter,
+		// more reflective look without changing the physically based default.
+		float SurfaceSSRStrength = 0.70f;
 		float CausticsVisibility = 1.25f;
 		// Reuses the historical padding lane; FeatureData size and following
 		// settings offsets remain unchanged.
 		float WaterTintStrength = 0.35f;
-		float ReflectionBrightness = 0.88f;
+		float ReflectionBrightness = 0.72f;
 
 		uint32_t EnableDynamicFoam = true;
 		float FoamStrength = 0.78f;

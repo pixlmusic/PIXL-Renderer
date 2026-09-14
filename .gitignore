@@ -34,6 +34,10 @@
 /checkpoints/
 /out/
 
+# Local release packaging and deployment records
+/build/deployment-backups/
+/build/release-staging/
+
 # Accidental in-source CMake / Visual Studio output
 /CMakeFiles/
 /CMakeCache.txt

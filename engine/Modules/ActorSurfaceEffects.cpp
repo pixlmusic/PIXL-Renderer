@@ -621,6 +621,14 @@ void ActorSurfaceEffects::Reset()
 	for (auto actorIt = runtime->actors.begin(); actorIt != runtime->actors.end();) {
 		ActorEffectState& state = *actorIt->second;
 		auto actor = state.handle.get();
+		// Death/respawn is a hard spatial boundary. The actor-local snow mask
+		// must not survive a death in one snowfield and reappear on the respawned
+		// body elsewhere (for example Riverwood). Remove it before any melt or
+		// water processing can publish another frame of the old appearance.
+		if (actor && actor->IsDead()) {
+			actorIt = runtime->actors.erase(actorIt);
+			continue;
+		}
 		const bool actorAvailable = actor && actor->Is3DLoaded();
 		const bool interior = actorAvailable && actor->GetParentCell() && actor->GetParentCell()->IsInteriorCell();
 		const bool submerged = actorAvailable && actor->IsInWater();

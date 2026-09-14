@@ -2084,7 +2084,7 @@ namespace PIXLUI
 		ImGui::PushID(label);
 
 		const ImVec2 start = ImGui::GetCursorScreenPos();
-		const float width = ImGui::GetContentRegionAvail().x;
+		const float width = std::min(ImGui::GetContentRegionAvail().x, Ref(720.0f));
 		const float height = Ref(30.0f);
 		const float labelWidth =
 			std::clamp(width * 0.34f, Ref(120.0f), Ref(205.0f));
@@ -2213,7 +2213,7 @@ namespace PIXLUI
 		*value = std::clamp(*value, minValue, maxValue);
 
 		const ImVec2 start = ImGui::GetCursorScreenPos();
-		const float width = ImGui::GetContentRegionAvail().x;
+		const float width = std::min(ImGui::GetContentRegionAvail().x, Ref(720.0f));
 		const float height = Ref(30.0f);
 		const float labelWidth =
 			std::clamp(width * 0.34f, Ref(120.0f), Ref(205.0f));
@@ -2383,7 +2383,7 @@ namespace PIXLUI
 		ImGui::PushID(label);
 
 		const ImVec2 start = ImGui::GetCursorScreenPos();
-		const float width = ImGui::GetContentRegionAvail().x;
+		const float width = std::min(ImGui::GetContentRegionAvail().x, Ref(720.0f));
 		const float height = Ref(30.0f);
 		const float labelWidth =
 			std::clamp(width * 0.34f, Ref(120.0f), Ref(205.0f));

@@ -870,6 +870,26 @@ void CameraSuite::DrawSettings()
 	}
 }
 
+void CameraSuite::ApplyExternalLook(float exposureEV, float contrast, float saturation, float adaptationSeconds, float highlightProtection, float shadowDetail, float toe, float shoulder, bool bloomEnabled, float bloomStrength, uint lookPreset, float lookOpacity, float influence)
+{
+	std::lock_guard<std::mutex> lock(settingsMutex);
+	settings.enablePhysicalCamera = true;
+	settings.cameraAutoExposure = true;
+	settings.cameraExposureCompensationEV = std::clamp(exposureEV, -4.0f, 4.0f);
+	settings.cameraContrast = std::clamp(contrast, 0.75f, 1.30f);
+	settings.cameraSaturation = std::clamp(saturation, 0.70f, 1.25f);
+	settings.cameraAdaptBrightToDark = std::clamp(adaptationSeconds, 0.05f, 4.0f);
+	settings.cameraHighlightProtection = std::clamp(highlightProtection, 0.0f, 1.0f);
+	settings.cameraShadowDetail = std::clamp(shadowDetail, 0.0f, 0.5f);
+	settings.cameraToe = std::clamp(toe, 0.0f, 0.5f);
+	settings.cameraShoulder = std::clamp(shoulder, 0.2f, 1.5f);
+	settings.enableBloom = bloomEnabled;
+	settings.bloomStrength = std::clamp(bloomStrength, 0.0f, 3.0f);
+	settings.lookPreset = std::min(lookPreset, 11u);
+	settings.lookOpacity = std::clamp(lookOpacity, 0.0f, 1.0f);
+	settings.cameraInfluence = std::clamp(influence, 0.0f, 1.0f);
+}
+
 #undef I18N_KEY_PREFIX
 
 void CameraSuite::SaveSettings(json& o_json)

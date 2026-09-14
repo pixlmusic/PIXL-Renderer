@@ -188,6 +188,8 @@ public:
 	/** @brief Returns the HDR shared data (enable flag, paper white, peak nits, menu scene encoding). */
 	float4 GetSharedDataHDR() const;
 	PostProcessSettings GetPostProcessData() const;
+	/** Applies translated external preset values through the camera settings lock. */
+	void ApplyExternalLook(float exposureEV, float contrast, float saturation, float adaptationSeconds, float highlightProtection, float shadowDetail, float toe, float shoulder, bool bloomEnabled, float bloomStrength, uint lookPreset = 0, float lookOpacity = 0.0f, float influence = 0.85f);
 	/** @brief Updates the HDR constant buffer with current settings and menu state. */
 	void UpdateHDRData() const;
 	/** Applies PIXL's user-facing bloom policy to the current image-space state. */
