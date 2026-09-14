@@ -284,14 +284,13 @@ namespace
 		quickStylesInitialized = true;
 		const auto base = CaptureCurrentStyle("Custom Style");
 		quickStyles = { base, base, base, base, base };
-	// Original PIXL-themed names keep the quick styles welcoming and clearly
-	// separate from the external presets that inspired their tuning.
+	// Gem names keep the quick styles original, neutral, and easy to scan.
 	const std::array<std::string_view, 5> names{
-		"Prism Drift",
-		"Neon Veil",
-		"Aurora Pulse",
-		"Glass Horizon",
-		"Midnight Circuit"
+		"Obsidian",
+		"Amethyst",
+		"Citrine",
+		"Moonstone",
+		"Labradorite"
 	};
 		for (std::size_t i = 0; i < quickStyles.size(); ++i)
 			std::snprintf(quickStyles[i].name.data(), quickStyles[i].name.size(), "%s", names[i].data());
