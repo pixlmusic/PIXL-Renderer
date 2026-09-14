@@ -3,6 +3,7 @@
 #include "Buffer.h"
 
 #include <atomic>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,14 @@ public:
 
 	/** @brief Dispatches the persistent absolute-world XY snow/mud surface deformation update. */
 	void UpdateSurfaceDeformationTexture();
+	/** Queues a ground-facing blood decal for the experimental snow stain overlay. */
+	void QueueBloodStain(const RE::NiPoint3& a_position, float a_radius, float a_strength);
+	/** Queues an impact stain plus a short counter-direction spray trail. */
+	void QueueBloodStainDirectional(
+		const RE::NiPoint3& a_position,
+		const RE::NiPoint3& a_direction,
+		float a_radius,
+		float a_strength);
 	/** Keeps the normal third-person camera above PIXL's shader-raised snow shell. */
 	void ApplyCameraSurfaceClearance(RE::NiPoint3& a_translation) const;
 
@@ -288,6 +297,16 @@ public:
 	Texture2D* surfaceDeformationTexture = nullptr;
 	Texture2D* surfaceDisplacementTexture = nullptr;  // t102 displaced snow
 	Texture2D* surfaceElementalTexture = nullptr;     // t103 signed frost/fire height + heat smoothing
+	struct BloodStainPacked
+	{
+		float4 PositionRadiusStrengthSeed{};
+		float4 AgeFade{};
+		float4 DirectionSpread{};
+	};
+	static constexpr std::uint32_t MAX_BLOOD_STAINS = 48u;
+	eastl::unique_ptr<Buffer> bloodStainBuffer = nullptr; // DS t104
+	std::mutex bloodStainMutex;
+	std::vector<BloodStainPacked> bloodStains;
 	std::uint32_t observedSeasonGeneration = 0;
 	std::atomic<std::uint32_t> pendingSeasonHistoryGeneration{ 0 };
 	std::uint32_t appliedSeasonHistoryGeneration = 0;
@@ -366,6 +385,7 @@ public:
 	ID3D11ShaderResourceView* savedTerrainDSSRV101 = nullptr;
 	ID3D11ShaderResourceView* savedTerrainDSSRV102 = nullptr;
 	ID3D11ShaderResourceView* savedTerrainDSSRV103 = nullptr;
+	ID3D11ShaderResourceView* savedTerrainDSSRV104 = nullptr;
 	ID3D11ShaderResourceView* savedTerrainPSSRV104 = nullptr;
 	ID3D11ShaderResourceView* savedTerrainPSSRV105 = nullptr;
 	ID3D11ShaderResourceView* savedTerrainPSSRV106 = nullptr;

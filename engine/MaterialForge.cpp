@@ -8,6 +8,7 @@
 #include "Modules/ActorSurfaceEffects.h"
 #include "Modules/HairReconstruction.h"
 #include "Modules/MaterialLayers.h"
+#include "Modules/GroundResponse.h"
 #include "Hooks.h"
 #include "I18n/I18n.h"
 #include "ShaderCache.h"
@@ -15,7 +16,50 @@
 #include "Util.h"
 
 #include <cmath>
+#include <cctype>
 #define I18N_KEY_PREFIX "feature.material_forge."
+
+namespace
+{
+	void QueueGroundBloodDecal(
+		const RE::NiPoint3& a_position,
+		const RE::NiPoint3& a_direction,
+		RE::BGSTextureSet* a_textureSet,
+		float a_radius)
+	{
+		if (!a_textureSet || !std::isfinite(a_position.x) ||
+			!std::isfinite(a_position.y) || !std::isfinite(a_position.z) ||
+			!std::isfinite(a_direction.x) || !std::isfinite(a_direction.y) ||
+			!std::isfinite(a_direction.z)) {
+			return;
+		}
+
+		bool isBloodTexture = false;
+		for (const auto& texture : a_textureSet->textures) {
+			std::string textureName = texture.textureName.c_str();
+			std::ranges::transform(
+				textureName,
+				textureName.begin(),
+				[](unsigned char a_character) {
+					return static_cast<char>(std::tolower(a_character));
+				});
+			if (textureName.find("blood") != std::string::npos ||
+				textureName.find("gore") != std::string::npos) {
+				isBloodTexture = true;
+				break;
+			}
+		}
+		if (!isBloodTexture) {
+			return;
+		}
+
+		globals::pipeline::groundResponse.QueueBloodStainDirectional(
+			a_position,
+			a_direction,
+			std::clamp(a_radius, 5.0f, 48.0f),
+			0.85f);
+	}
+}
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GlintParameters,
@@ -1734,6 +1778,13 @@ struct BSTempEffectSimpleDecal_SetupGeometry
 	static void thunk(RE::BSTempEffectSimpleDecal* decal, RE::BSGeometry* geometry, RE::BGSTextureSet* textureSet, bool blended)
 	{
 		func(decal, geometry, textureSet, blended);
+		if (decal) {
+			QueueGroundBloodDecal(
+				decal->origin1,
+				decal->direction1,
+				textureSet,
+				std::max(decal->width, decal->height) * 0.5f);
+		}
 		auto* singleton = &globals::pipeline::materialForge;
 		auto unknownProperty = geometry->GetGeometryRuntimeData().shaderProperty.get();
 		if (auto shaderProperty = unknownProperty->GetRTTI() == globals::rtti::BSLightingShaderPropertyRTTI.get() ? static_cast<RE::BSLightingShaderProperty*>(unknownProperty) : nullptr;
@@ -1771,6 +1822,13 @@ struct BSTempEffectGeometryDecal_Initialize
 	static void thunk(RE::BSTempEffectGeometryDecal* decal)
 	{
 		func(decal);
+		if (decal) {
+			QueueGroundBloodDecal(
+				decal->origin,
+				decal->direction,
+				decal->texSet,
+				decal->width * 0.5f);
+		}
 		auto* singleton = &globals::pipeline::materialForge;
 
 		if (decal->decal != nullptr && singleton->IsPBRTextureSet(decal->texSet)) {

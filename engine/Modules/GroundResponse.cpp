@@ -62,6 +62,8 @@ static constexpr uint INTERACTION_TEXTURE_SIZE = 512u;
 // Dedicated snow/mud surface field. It stores normalized compaction only; no
 // camera-relative height ever enters this texture.
 static constexpr float SURFACE_WORLD_SIZE = 4096.0f;
+// Keep the established 4-unit field size. The terrain shader and runtime cache
+// share this ABI; higher resolution requires a coordinated cache/version change.
 static constexpr uint SURFACE_TEXTURE_SIZE = 1024u;
 static constexpr uint MAX_SURFACE_STAMP_BOXES = 64u;
 static constexpr uint MAX_SURFACE_STAMPS_PER_BOX = 24u;
@@ -359,6 +361,7 @@ namespace
 
 	static GroundMovementResistanceSettings g_groundResistanceSettings{};
 	static std::vector<GroundMovementResistanceTrack> g_groundResistanceTracks{};
+	static std::unordered_set<RE::FormID> g_bloodDeathActors{};
 	static float g_groundResistanceAccumulator = 0.0f;
 	static std::uint32_t g_groundResistanceGeneration = 0u;
 	static std::uint32_t g_groundResistanceDiagCount = 0u;
@@ -2011,9 +2014,7 @@ GroundResistanceSample ResistanceEvaluateActor(
 
 		if (!g_groundResistanceSettings.EnableMovementResistance ||
 			!ground.settings.EnableDeformableGround ||
-			!ground.settings.EnableGeometricSnow ||
-			(!g_groundResistanceSettings.EnablePlayerResistance &&
-			 !g_groundResistanceSettings.EnableNPCResistance)) {
+			!ground.settings.EnableGeometricSnow) {
 			g_groundResistanceAccumulator = 0.0f;
 			ResistanceRestoreAll();
 			g_lastPlayerResistanceSurface =
@@ -2091,6 +2092,15 @@ GroundResistanceSample ResistanceEvaluateActor(
 				// temporary contribution before Skyrim transitions to the respawned
 				// actor so movement state cannot leak across death.
 				if (a_actor->IsDead()) {
+					// Skyrim's actor blood effect is attached to the dying body rather
+					// than emitted as a ground-facing decal. Seed one bounded stain at
+					// the death position; the hull shader masks it to snow coverage.
+					if (g_bloodDeathActors.insert(a_actor->GetFormID()).second) {
+						globals::pipeline::groundResponse.QueueBloodStain(
+							a_actor->GetPosition(),
+							18.0f,
+							0.92f);
+					}
 					if (auto* track =
 						ResistanceFindTrack(a_actor->GetFormID())) {
 						track->lastSeenGeneration =
@@ -2103,6 +2113,7 @@ GroundResistanceSample ResistanceEvaluateActor(
 				if (!a_actor->Is3DLoaded()) {
 					return;
 				}
+				g_bloodDeathActors.erase(a_actor->GetFormID());
 
 				if ((a_isPlayer &&
 					 !g_groundResistanceSettings.EnablePlayerResistance) ||
@@ -2194,7 +2205,10 @@ GroundResistanceSample ResistanceEvaluateActor(
 		// for local-player presence in every camera/game state.
 		processActor(player, true);
 
-		if (g_groundResistanceSettings.EnableNPCResistance) {
+		// Keep the actor pass active while geometric snow is enabled so death stains
+		// can be captured even when movement resistance itself is disabled.
+		if (g_groundResistanceSettings.EnableNPCResistance ||
+			ground.settings.EnableGeometricSnow) {
 			if (const auto* processLists =
 				RE::ProcessLists::GetSingleton();
 				processLists) {
@@ -3950,6 +3964,26 @@ void GroundResponse::QueueCollisions()
 				contactCenter.x - previous.x,
 				contactCenter.y - previous.y
 			};
+			// Havok body centres can remain nearly fixed while the actor root is
+			// moving. Use the actor's planar velocity as a conservative swept hint
+			// in that case so powder builds ahead of a running foot instead of only
+			// appearing after the body has crossed a whole field cell.
+			if (GroundLength2D(bodyMotion) < 1.5f) {
+				RE::NiPoint3 actorVelocity{};
+				actor->GetLinearVelocity(actorVelocity);
+				const float velocityLength = GroundLength2D({ actorVelocity.x, actorVelocity.y });
+				if (std::isfinite(velocityLength) && velocityLength > 24.0f) {
+					previous = {
+						bound.center.x - actorVelocity.x * frameDt,
+						bound.center.y - actorVelocity.y * frameDt,
+						bound.center.z - actorVelocity.z * frameDt
+					};
+					bodyMotion = {
+						bound.center.x - previous.x,
+						bound.center.y - previous.y
+					};
+				}
+			}
 			if (!std::isfinite(bodyMotion.x) ||
 				!std::isfinite(bodyMotion.y) ||
 				GroundLength2D(bodyMotion) > SURFACE_TELEPORT_DISTANCE) {
@@ -5015,6 +5049,71 @@ void GroundResponse::RestoreDefaultSettings()
 	ResistanceRestoreAll();
 }
 
+void GroundResponse::QueueBloodStain(
+	const RE::NiPoint3& a_position,
+	float a_radius,
+	float a_strength)
+{
+	QueueBloodStainDirectional(a_position, RE::NiPoint3{}, a_radius, a_strength);
+}
+
+void GroundResponse::QueueBloodStainDirectional(
+	const RE::NiPoint3& a_position,
+	const RE::NiPoint3& a_direction,
+	float a_radius,
+	float a_strength)
+{
+	if (!GroundFinitePoint(a_position) ||
+		!std::isfinite(a_radius) ||
+		!std::isfinite(a_strength)) {
+		return;
+	}
+
+	const float radius = std::clamp(a_radius, 5.0f, 48.0f);
+	const float strength = std::clamp(a_strength, 0.05f, 1.0f);
+	const std::uint32_t seed =
+		static_cast<std::uint32_t>(std::abs(a_position.x) * 17.0f) * 1664525u ^
+		static_cast<std::uint32_t>(std::abs(a_position.y) * 31.0f) * 1013904223u;
+	float2 direction{};
+	const float directionLength =
+		std::sqrt(a_direction.x * a_direction.x + a_direction.y * a_direction.y);
+	if (std::isfinite(directionLength) && directionLength > 1.0e-3f)
+		direction = { a_direction.x / directionLength, a_direction.y / directionLength };
+
+	std::array<BloodStainPacked, 4> queued{};
+	std::size_t count = 1u;
+	auto makeStain = [&](std::size_t index, float2 offset, float stainRadius, float stainStrength) {
+		BloodStainPacked& stain = queued[index];
+		stain.PositionRadiusStrengthSeed = {
+			a_position.x + offset.x,
+			a_position.y + offset.y,
+			stainRadius,
+			stainStrength};
+		stain.AgeFade = {
+			0.0f,
+			1.0f,
+			static_cast<float>((seed + static_cast<std::uint32_t>(index) * 747796405u) & 0xFFFFu) / 65535.0f,
+			0.0f};
+		stain.DirectionSpread = { direction.x, direction.y, 0.0f, 0.0f };
+	};
+	makeStain(0u, {}, radius, strength);
+	if (directionLength > 1.0e-3f) {
+		// Decal direction points away from the receiving surface. The blood trail
+		// therefore extends counter to it, matching the incoming impact direction.
+		const float2 counterDirection{ -direction.x, -direction.y };
+		makeStain(1u, counterDirection * (radius * 0.58f), radius * 0.62f, strength * 0.68f);
+		makeStain(2u, counterDirection * (radius * 1.08f), radius * 0.36f, strength * 0.42f);
+		count = 3u;
+	}
+
+	std::scoped_lock lock(bloodStainMutex);
+	for (std::size_t i = 0u; i < count; ++i) {
+		if (bloodStains.size() >= MAX_BLOOD_STAINS)
+			bloodStains.erase(bloodStains.begin());
+		bloodStains.push_back(queued[i]);
+	}
+}
+
 void GroundResponse::QueueProjectileImpact(
 	RE::Projectile* a_projectile,
 	const RE::NiPoint3& a_position,
@@ -6010,6 +6109,30 @@ void GroundResponse::SetupResources()
 			SURFACE_TEXTURE_SIZE,
 			"surface elemental snow");
 
+	// Ground-facing blood decals use a small dynamic structured buffer instead
+	// of moving Skyrim's decal geometry. The tessellated hull samples these
+	// world-space stains directly, so snow height changes cannot make them float.
+	{
+		D3D11_BUFFER_DESC bloodDesc{};
+		bloodDesc.Usage = D3D11_USAGE_DYNAMIC;
+		bloodDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		bloodDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		bloodDesc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+		bloodDesc.StructureByteStride = sizeof(BloodStainPacked);
+		bloodDesc.ByteWidth = sizeof(BloodStainPacked) * MAX_BLOOD_STAINS;
+		bloodStainBuffer = eastl::make_unique<Buffer>(
+			bloodDesc,
+			nullptr,
+			"GroundResponse::BloodStains");
+
+		D3D11_SHADER_RESOURCE_VIEW_DESC bloodView{};
+		bloodView.Format = DXGI_FORMAT_UNKNOWN;
+		bloodView.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+		bloodView.Buffer.FirstElement = 0;
+		bloodView.Buffer.NumElements = MAX_BLOOD_STAINS;
+		bloodStainBuffer->CreateSRV(bloodView);
+	}
+
 	// PIXL_GR_SNOW_MICROSURFACE_V1
 	// The source artwork is supplied by the project owner as redistribution-cleared
 	// material and converted losslessly to PNG for WIC/runtime portability. Ignore
@@ -6709,6 +6832,7 @@ void GroundResponse::Reset()
 		savedTerrainDSSRV101 = nullptr;
 		savedTerrainDSSRV102 = nullptr;
 		savedTerrainDSSRV103 = nullptr;
+		savedTerrainDSSRV104 = nullptr;
 		savedTerrainPSSRV104 = nullptr;
 		savedTerrainPSSRV105 = nullptr;
 		savedTerrainPSSRV106 = nullptr;
@@ -6743,6 +6867,19 @@ void GroundResponse::Reset()
 		telemetryDelta = std::min(telemetryDelta, MAX_GROUND_FRAME_DELTA);
 	}
 	geometryTelemetrySeconds += telemetryDelta;
+	{
+		std::scoped_lock lock(bloodStainMutex);
+		for (auto& stain : bloodStains) {
+			stain.AgeFade.x += telemetryDelta;
+			stain.AgeFade.y = std::max(0.0f, 1.0f - stain.AgeFade.x / 45.0f);
+		}
+		bloodStains.erase(
+			std::remove_if(
+				bloodStains.begin(),
+				bloodStains.end(),
+				[](const BloodStainPacked& stain) { return stain.AgeFade.y <= 0.0f; }),
+			bloodStains.end());
+	}
 	if (geometryTelemetrySeconds >= 1.0f) {
 		FlushGeometryTelemetry();
 		geometryTelemetrySeconds = 0.0f;
@@ -6959,6 +7096,29 @@ void GroundResponse::TerrainPassShaderHacks()
 		settings.EnableDeformableGround && settings.EnableElementalSnow && surfaceElementalTexture
 			? surfaceElementalTexture->srv.get()
 			: nullptr;
+	if (bloodStainBuffer) {
+		D3D11_MAPPED_SUBRESOURCE mapped{};
+		if (SUCCEEDED(context->Map(
+			bloodStainBuffer->resource.get(),
+			0,
+			D3D11_MAP_WRITE_DISCARD,
+			0,
+			&mapped))) {
+			std::array<BloodStainPacked, MAX_BLOOD_STAINS> upload{};
+			{
+				std::scoped_lock lock(bloodStainMutex);
+				std::copy_n(
+					bloodStains.begin(),
+					std::min(bloodStains.size(), upload.size()),
+					upload.begin());
+			}
+			std::memcpy(
+				mapped.pData,
+				upload.data(),
+				sizeof(upload));
+			context->Unmap(bloodStainBuffer->resource.get(), 0);
+		}
+	}
 	context->PSSetShaderResources(100, 1, &nullLegacyTerrainPS);
 	context->PSSetShaderResources(101, 1, &surfaceSRV);
 	ID3D11ShaderResourceView* snowMicroSRV = snowMicroTextureSRV.get();
@@ -7045,6 +7205,7 @@ void GroundResponse::TerrainPassShaderHacks()
 	context->DSGetShaderResources(101, 1, &savedTerrainDSSRV101);
 	context->DSGetShaderResources(102, 1, &savedTerrainDSSRV102);
 	context->DSGetShaderResources(103, 1, &savedTerrainDSSRV103);
+	context->DSGetShaderResources(104, 1, &savedTerrainDSSRV104);
 	context->PSGetShaderResources(104, 1, &savedTerrainPSSRV104);
 	context->PSGetShaderResources(105, 1, &savedTerrainPSSRV105);
 	context->PSGetShaderResources(106, 1, &savedTerrainPSSRV106);
@@ -7069,6 +7230,9 @@ void GroundResponse::TerrainPassShaderHacks()
 	context->DSSetShaderResources(101, 1, &surfaceSRV);
 	context->DSSetShaderResources(102, 1, &displacedSnowSRV);
 	context->DSSetShaderResources(103, 1, &elementalSnowSRV);
+	ID3D11ShaderResourceView* bloodStainSRV =
+		bloodStainBuffer ? bloodStainBuffer->srv.get() : nullptr;
+	context->DSSetShaderResources(104, 1, &bloodStainSRV);
 
 	ID3D11ShaderResourceView* rawShadowAtlasSRV =
 		directionalShadowAtlasCaptured
@@ -7292,6 +7456,7 @@ void GroundResponse::FinishTerrainPass()
 		context->DSSetShaderResources(101, 1, &savedTerrainDSSRV101);
 		context->DSSetShaderResources(102, 1, &savedTerrainDSSRV102);
 		context->DSSetShaderResources(103, 1, &savedTerrainDSSRV103);
+		context->DSSetShaderResources(104, 1, &savedTerrainDSSRV104);
 		context->PSSetShaderResources(104, 1, &savedTerrainPSSRV104);
 		context->PSSetShaderResources(105, 1, &savedTerrainPSSRV105);
 		context->PSSetShaderResources(106, 1, &savedTerrainPSSRV106);
@@ -7342,6 +7507,10 @@ void GroundResponse::FinishTerrainPass()
 	if (savedTerrainDSSRV103) {
 		savedTerrainDSSRV103->Release();
 		savedTerrainDSSRV103 = nullptr;
+	}
+	if (savedTerrainDSSRV104) {
+		savedTerrainDSSRV104->Release();
+		savedTerrainDSSRV104 = nullptr;
 	}
 	if (savedTerrainPSSRV104) {
 		savedTerrainPSSRV104->Release();
