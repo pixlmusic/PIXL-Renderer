@@ -35,7 +35,46 @@ Install it, complete Quick Setup, and play Skyrim. There are also plenty of cont
 
 Skyrim should still look like Skyrim: better lighting, materials, atmosphere and temporal stability without requiring a pile of unrelated renderer replacements.
 
+[size=4][b]BEFORE / AFTER[/b][/size]
+
+[compare before=https://staticdelivery.nexusmods.com/mods/1704/images/189836/189836-1789145443-1864607056.png]https://staticdelivery.nexusmods.com/mods/1704/images/189836/189836-1789145450-1260707266.png[/compare]
+
+[compare before=https://staticdelivery.nexusmods.com/mods/1704/images/189836/189836-1789144331-1696050649.png width=888]https://staticdelivery.nexusmods.com/mods/1704/images/189836/189836-1789144337-1279459294.png[/compare]
+
 [line]
+[size=4][b]A FEW HIGHLIGHTS[/b][/size]
+
+[size=4][b]LIGHTING[/b][/size]
+
+PIXL combines screen-space lighting with persistent world-space lighting, expanded local lights, ambient sky response, contact shadows and atmospheric lighting. Dark areas receive more believable bounce light while fires, windows, magic and other local lights contribute more naturally.
+
+[img width=735]https://staticdelivery.nexusmods.com/mods/1704/images/189836/189836-1789146469-368979845.jpg[/img]
+
+[size=4][b]MATERIALS & TERRAIN[/b][/size]
+
+Stone should look like stone. Metal should look like metal. Wet wood should not look like dry wood. PIXL expands roughness, metallic response, parallax, clearcoat, micro-detail and terrain blending while retaining normal Skyrim content. Supported terrain can deform under actors; parallax enhances relief without changing collision.
+
+[img width=721]https://staticdelivery.nexusmods.com/mods/1704/images/189836/189836-1789150098-1630591381.jpg[/img]
+
+[size=4][b]CHARACTERS[/b][/size]
+
+Characters have dedicated skin, hair and translucent-material rendering rather than using the same response as the environment.
+
+[img width=716]https://staticdelivery.nexusmods.com/mods/1704/images/189836/189836-1789148543-1629008285.png[/img]
+[i]Vanilla textures, Neural Rendering disabled, skin shading with micro-detail.[/i]
+
+[size=4][b]VEGETATION[/b][/size]
+
+Grass and foliage receive improved lighting, transmission and material response so vegetation fits the scene instead of glowing or looking plasticky.
+
+[img width=832]https://staticdelivery.nexusmods.com/mods/1704/images/189836/189836-1789146556-1115423108.jpg[/img]
+
+[size=4][b]WATER[/b][/size]
+
+Improved surface lighting, water optics, caustics, underwater rendering and distant-water transitions.
+
+[img width=824]https://staticdelivery.nexusmods.com/mods/1704/images/189836/189836-1789149350-1086728168.jpg[/img]
+
 [size=4][b]WEATHER AND WORLD RESPONSE[/b][/size]
 
 Rain responds through wet materials, puddles, splashes, mist, wind and persistent world-space roof runoff. Heavy rain reduces long-range visibility and shifts the atmosphere toward a darker storm mood. Snow and mud can react to actors and retain deformation in the world.
@@ -84,6 +123,18 @@ The release includes a preloaded pipeline library. Additional permutations can s
 PIXL expects to control Skyrim's engine-level shader pipeline. Do not stack it with ENB, Community Shaders, Kreate, another engine-level renderer or a second PIXL installation. ReShade compatibility is untested and unsupported for this release.
 
 [line]
+[size=4][b]PERFORMANCE[/b][/size]
+
+PIXL can be demanding. Use the Fast, Balanced, Enhanced and Cinematic quality profiles first, then adjust individual settings. Cinematic is intended for stronger systems and photo work. PIXL includes profiler and benchmarking tools for identifying expensive systems.
+
+[img width=645]https://staticdelivery.nexusmods.com/mods/1704/images/189836/189836-1789150744-292083917.png[/img]
+
+[line]
+[size=4][b]PROJECT STATUS AND REPORTING[/b][/size]
+
+This is a personal project that I will improve when time allows rather than a promise of a fixed update schedule. When reporting an issue, include the Skyrim runtime, PIXL version, GPU and driver, reconstruction/frame-generation settings, location/weather/time, reproduction steps, relevant logs and involved mods. Please remove personal information from logs before sharing them.
+
+[line]
 [size=4][b]SOURCE AND CREDITS[/b][/size]
 
 [url=https://github.com/pixlmusic/PIXL-Renderer]PIXL Renderer on GitHub[/url]
@@ -91,6 +142,13 @@ PIXL expects to control Skyrim's engine-level shader pipeline. Do not stack it w
 PIXL began as a Community Shaders fork and retains credit for substantially modified upstream work. Additional credit goes to PureDark for Skyrim Upscaler work; doodlum, PureDark and Flayan for frame-generation groundwork; NVIDIA Streamline; AMD FidelityFX; and sdli1995 and the DLSSG proxy contributors.
 
 Full licensing and third-party notices are included with the source and plugin documentation.
+
+[line]
+[size=4][b]MUSIC & OTHER STUFF[/b][/size]
+
+When I am not working on HLSL or waiting for Skyrim to compile another permutation, I make music as PIXL too:
+
+[url=https://open.spotify.com/artist/210hjvKOh716ZO4ErE3x22]Spotify[/url] | [url=https://soundcloud.com/pixl-music]SoundCloud[/url] | [url=https://www.instagram.com/pixlmusic]Instagram[/url] | [url=https://x.com/PIXLMUSIC]X / Twitter[/url]
 
 [line]
 [color=#b45f06][size=3][b]PIXL RENDERER 2026[/b][/size][/color]
