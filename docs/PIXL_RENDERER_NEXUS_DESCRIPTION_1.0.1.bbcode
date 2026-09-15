@@ -9,19 +9,34 @@ This is my first Skyrim mod project, built with substantial AI assistance, exper
 If you prefer an established renderer with broader community testing, please check out [url=https://www.nexusmods.com/skyrimspecialedition/mods/86492]Community Shaders[/url].
 
 [line]
-[b]PIXL Renderer[/b] began as a custom Community Shaders fork and grew into a unified DX11 renderer for lighting, materials, weather, terrain, characters, water, vegetation, snow, mud, atmosphere, reconstruction and camera processing.
+[b]PIXL Renderer[/b] started as a custom Community Shaders fork I made during my last Skyrim playthrough and then got slightly out of hand lol.
 
-Install it, complete Quick Setup, and play Skyrim. There are also plenty of controls if you enjoy tuning.
+The idea was pretty simple: take the Skyrim I already like and push the rendering much further without completely changing its identity or requiring a million mods.
+
+It brings lighting, materials, weather, terrain, characters, water, vegetation, snow, mud, atmosphere, reconstruction and camera processing together into one renderer rather than treating everything as a pile of unrelated effects.
+
+I'm from a music production background, with some game development thrown into the mix. This is my first proper Skyrim mod project. A lot of it has been me learning, experimenting and having fun trying things out.
+
+Install it, complete Quick Setup, and play Skyrim.
+
+And yes, there are lots of sliders if you're that kind of person.
+
+[line]
+[img width=379]https://staticdelivery.nexusmods.com/mods/1704/images/189836/189836-1787916499-2083474567.png[/img]
 
 [line]
 [size=4][b]WHAT DOES IT ACTUALLY DO?[/b][/size]
 
+The short version:
+
 [list]
 [*]Hybrid global illumination and improved ambient lighting[/*]
-[*]Expanded dynamic lights, sky response, atmosphere, fog, volumetrics and cloud shadows[/*]
-[*]Modern materials, PBR, parallax and terrain rendering[/*]
-[*]Improved skin, hair, thin-material, grass and vegetation shading[/*]
-[*]World-space rain, wetness, puddles, splashes, mist and roof runoff[/*]
+[*]Expanded dynamic lights[/*]
+[*]Improved sky, atmosphere, fog, volumetrics and cloud shadows[/*]
+[*]Modernised materials, PBR, parallax and terrain rendering[/*]
+[*]Improved skin, hair and thin-material shading[/*]
+[*]Better grass and vegetation lighting[/*]
+[*]World-space rain, wetness, puddles, splashes and runoff[/*]
 [*]Snow and mud deformation, with character surface accumulation[/*]
 [*]Improved water and underwater rendering[/*]
 [*]Fake depth and movement behind supported windows[/*]
@@ -29,11 +44,16 @@ Install it, complete Quick Setup, and play Skyrim. There are also plenty of cont
 [*]Optional experimental Neural Rendering and frame generation[/*]
 [*]HDR, exposure, camera processing, Photo Mode and capture tools[/*]
 [*]Fast / Balanced / Enhanced / Cinematic quality presets[/*]
+[*]A completely unnecessary number of advanced controls[/*]
 [/list]
+
+There are more individual systems under the hood, but you really don't need to know about all of them to use PIXL.
 
 [size=4][b]THE GOAL[/b][/size]
 
-Skyrim should still look like Skyrim: better lighting, materials, atmosphere and temporal stability without requiring a pile of unrelated renderer replacements.
+Skyrim should still look like Skyrim.
+
+Just with better lighting, better materials, better atmosphere and considerably fewer moments where something looks like it was rendered in 2011.
 
 [size=4][b]BEFORE / AFTER[/b][/size]
 
@@ -79,16 +99,85 @@ Improved surface lighting, water optics, caustics, underwater rendering and dist
 
 Rain responds through wet materials, puddles, splashes, mist, wind and persistent world-space roof runoff. Heavy rain reduces long-range visibility and shifts the atmosphere toward a darker storm mood. Snow and mud can react to actors and retain deformation in the world.
 
+Atmospheric fog responds to weather and time of day, with controls for balancing depth, height and sky visibility.
+
+Snow and mud can also react to actors instead of always behaving like completely flat textures.
+
+[img width=594]https://staticdelivery.nexusmods.com/mods/1704/images/189836/189836-1789148614-1973565112.jpg[/img]
+[img width=593]https://staticdelivery.nexusmods.com/mods/1704/images/189836/189836-1789148834-967665520.png[/img]
+[img width=593]https://staticdelivery.nexusmods.com/mods/1704/images/189836/189836-1789148814-1287672311.png[/img]
+[img width=456]https://staticdelivery.nexusmods.com/mods/1704/images/189836/189836-1789444570-707901596.gif[/img]
+
 [size=4][b]WINDOW LIFE[/b][/size]
 
 Supported windows can gain simulated depth, day/night scenery, glass refraction and optional room details such as curtains, furniture and moving silhouettes. Results depend on the source material, so the controls allow conservative tuning.
 
+It's an illusion rather than a fully rendered room, and results depend on the window material. The controls let you dial it back where an asset doesn't cooperate.
+
+It's a small effect, but it's one of my favourites.
+
+[img width=491]https://staticdelivery.nexusmods.com/mods/1704/images/189836/189836-1789149811-184882514.gif[/img]
+[img width=487]https://staticdelivery.nexusmods.com/mods/1704/images/189836/189836-1789149410-1454604861.png[/img]
+
 [line]
 [size=4][b]DLSS / DLAA / FSR / FRAME GENERATION[/b][/size]
 
-Quick Setup offers Off, TAA, FSR Quality, DLSS Quality and DLAA where supported. Frame generation and the optional Neural Rendering path require borderless or windowed mode. Set [b]bFull Screen=0[/b] in SkyrimPrefs.ini if the sidecar remains frozen or asks for a restart repeatedly.
+PIXL includes integration work around modern reconstruction and frame-generation technologies.
+
+[b]Quick Setup offers:[/b]
+
+[list]
+[*][b]Off[/b]  native rendering without temporal reconstruction.[/*]
+[*][b]TAA[/b]  native-resolution temporal anti-aliasing.[/*]
+[*][b]FSR Quality[/b]  lower-resolution rendering reconstructed to your output resolution.[/*]
+[*][b]DLSS Quality[/b]  NVIDIA reconstruction on supported hardware.[/*]
+[*][b]DLAA[/b]  native-resolution DLSS anti-aliasing, without an upscaling performance boost.[/*]
+[/list]
+
+DLSS and DLAA are unavailable when the required hardware/runtime support is not detected.
+
+You can also enable frame generation during setup. [b]Frame generation and the optional Neural Rendering path require borderless/windowed mode.[/b] If PIXL asks for a restart, save your game and relaunch through your usual SKSE or mod-manager shortcut.
+
+Frame generation improves displayed smoothness; it does not increase the game's simulation or input-update rate.
+
+[color=#ff0000]DLSS5/Frame Gen requires borderless/windowed mode, it will currently NOT work in Fullscreen. Please edit your SkyrimPrefs.ini and ensure bFull Screen=0 is set.[/color]
 
 The optional DLSSG proxy is not bundled. Follow its upstream instructions and install only one proxy beside SkyrimSE.exe. These paths remain experimental and hardware-specific issues are possible.
+
+[b]Optional DLSSG proxy[/b]
+
+The third-party [url=https://github.com/sdli1995/dlssg_for_sm86]DLSSG proxy[/url] is [b]not bundled[/b] with PIXL. It is not required for ordinary DLSS/DLAA or FSR frame generation.
+
+For a compatible proxy setup, follow the [url=https://github.com/sdli1995/dlssg_for_sm86/blob/main/README.en.md]upstream installation instructions[/url]. Its proxy DLL and [b]dlssg_sm86.ini[/b] belong beside [b]SkyrimSE.exe[/b], not inside Data.
+
+[b]Do not overwrite another mod's proxy DLL.[/b] Use only an upstream-supported alternative entry point if appropriate, and install only one proxy from that project.
+
+After installation, relaunch Skyrim, select the DLSSG backend in PIXL's Camera controls and enable frame generation. A further restart may be required to create the presentation sidecar.
+
+PIXL greys out DLSSG when neither native support nor the expected proxy files are detected. Detecting files is not a guarantee of compatibility.
+
+[color=#f1c232]The optional DLSSG proxy and Neural Rendering paths remain experimental. Hardware-specific issues are possible; use the standard reconstruction and FSR frame-generation options if those paths are unavailable or unstable.[/color]
+
+[b]Credit where it's due[/b]
+
+A lot of the groundwork for getting these technologies into Skyrim exists because other modders did the difficult work first.
+
+Special credit goes to PureDark's Skyrim Upscaler, which brought DLSS, DLAA, FSR2 and XeSS into Skyrim through SKSE.
+
+[url=https://www.nexusmods.com/skyrimspecialedition/mods/80343]Skyrim Upscaler  DLSS / FSR2 / XeSS by PureDark[/url]
+
+The Community Shaders frame-generation work by [b]doodlum, PureDark and Flayan[/b] also provided important prior work around FSR 3.1 Frame Generation, NVIDIA Streamline and Skyrim's rendering pipeline.
+
+[url=https://www.nexusmods.com/skyrimspecialedition/mods/140199]Frame Generation  Community Shaders legacy module[/url]
+
+These links acknowledge prior work; they are not instructions to install another upscaler or renderer alongside PIXL.
+
+PIXL also uses technology from [b]NVIDIA Streamline[/b] and [b]AMD FidelityFX[/b] where applicable.
+
+[url=https://github.com/NVIDIA-RTX/Streamline]NVIDIA Streamline[/url]
+[url=https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK]AMD FidelityFX SDK[/url]
+
+Full licensing, third-party notices and code provenance are included with the project and source.
 
 [line]
 [size=4][b]REQUIREMENTS[/b][/size]
@@ -101,7 +190,9 @@ The optional DLSSG proxy is not bundled. Follow its upstream instructions and in
 [*]Borderless/windowed mode for frame generation or Neural Rendering[/*]
 [/list]
 
-PIXL has been tested on Skyrim SE 1.5.97 and Skyrim Anniversary Edition 1.6.1170 (GOG). Build support is not a guarantee for every mod list.
+[b]My tested baseline is Skyrim SE 1.5.97.[/b] I have also tested the current GOG Skyrim Anniversary Edition 1.6.1170. Other runtime and mod combinations need their own validation; build support alone is not a compatibility guarantee.
+
+[color=#f1c232]Check the Requirements and Files sections for the exact runtime/dependency information for the version you're downloading. SKSE and Engine Fixes are separate dependencies, not bundled replacements.[/color]
 
 [line]
 [size=4][b]INSTALLATION[/b][/size]
@@ -109,18 +200,50 @@ PIXL has been tested on Skyrim SE 1.5.97 and Skyrim Anniversary Edition 1.6.1170
 [list=1]
 [*]Back up saves and close Skyrim.[/*]
 [*]Install matching SKSE and Engine Fixes prerequisites.[/*]
-[*]Install PIXL with MO2/Vortex as a normal Data mod, or extract the archive into Skyrim's Data directory.[/*]
+[*]Install PIXL Renderer with [b]MO2 or Vortex[/b] as a normal Data mod. For manual installation, extract the archive contents into Skyrim's [b]Data[/b] directory.[/*]
 [*]Enable PIXL-TerrainField.esp and disable duplicate or conflicting engine-level renderers.[/*]
-[*]Launch through SKSE, complete Quick Setup and restart when requested.[/*]
+[*]Launch Skyrim through your usual [b]SKSE/mod-manager shortcut[/b].[/*]
+[*]Complete [b]Quick Setup[/b]: choose your reconstruction path and quality profile, and optionally enable frame generation.[/*]
+[*]If a restart is requested, save your game, exit and relaunch normally.[/*]
 [*]Press [b]Page Down[/b] for PIXL Renderer and [b]Home[/b] for Photo Mode.[/*]
 [/list]
 
 The release includes a preloaded pipeline library. Additional permutations can still compile for a specific setup; allow compilation to finish before judging performance.
 
+[b]The setup exit option saves PIXL settings, not your game progress.[/b] It requires confirmation and does not automatically relaunch Skyrim.
+
+The release starts with my tuned fog and material settings. Reconstruction is set to Off/None, with frame generation and real-time Neural Rendering off until you choose to enable them. Accepting the existing quality selection preserves the tuned look.
+
+[b]Shader cache[/b]
+
+The release includes a preloaded pipeline library. Additional or invalidated permutations may still compile for your setup.
+
+Let compilation finish before judging performance or visuals. Don't benchmark while shaders are compiling, and don't routinely delete a healthy cache. Normal module updates are designed to preserve unaffected cached stages.
+
+[b]Updating or testing fresh defaults[/b]
+
+Update with Skyrim closed. Existing user settings take precedence over new defaults.
+
+To test the shipped defaults, back up [b]Data/SKSE/Plugins/PIXL/Config/UserGraphics.json[/b] outside the game directory, then remove the live copy while Skyrim is closed. The release archive does not include this file.
+
+With MO2, check the active profile's mod/Overwrite location rather than assuming the file is physically in the game's Data folder.
+
 [line]
 [size=4][b]COMPATIBILITY[/b][/size]
 
-PIXL expects to control Skyrim's engine-level shader pipeline. Do not stack it with ENB, Community Shaders, Kreate, another engine-level renderer or a second PIXL installation. ReShade compatibility is untested and unsupported for this release.
+PIXL expects to control Skyrim's engine-level shader pipeline.
+
+[color=#f1c232][b]Do not stack this release with:[/b][/color]
+
+[list]
+[*]ENB.[/*]
+[*]Community Shaders or another engine-level shader-hook renderer.[/*]
+[*]Kreate.[/*]
+[*]A second PIXL Renderer installation.[/*]
+[/list]
+[b]ReShade compatibility is untested and unsupported for this release.[/b] Please leave it disabled when testing or reporting PIXL issues.
+
+With a modding ecosystem the size of Skyrim's, there will be plenty of combinations I haven't tested. Custom meshes, materials, weather mods and other rendering changes can affect the result.
 
 [line]
 [size=4][b]PERFORMANCE[/b][/size]
