@@ -87,19 +87,21 @@ namespace
 	{
 		float MaxDistance = 5200.0f;
 		float NearSizeDistance = 1700.0f;
-		float EmitterSpacing = 92.0f;
+		float EmitterSpacing = 56.0f;
 		float pad0 = 0.0f;
 
 		float2 RenderSize = { 1.0f, 1.0f };
 		float2 InvRenderSize = { 1.0f, 1.0f };
+		float2 OutputSize = { 1.0f, 1.0f };
+		float2 InvOutputSize = { 1.0f, 1.0f };
 	};
 	STATIC_ASSERT_ALIGNAS_16(RoofRunoffTuning);
-	static_assert(sizeof(RoofRunoffTuning) == 32, "RoofRunoffTuning must match CS b13");
+	static_assert(sizeof(RoofRunoffTuning) == 48, "RoofRunoffTuning must match CS b13");
 
 	// Kept outside RainResponse::Settings on purpose: growing Settings would shift
 	// every later feature inside SharedData::FeatureData. This dedicated b13 tuning
 	// buffer adds the requested control without changing the existing b6 ABI.
-	float g_roofRunoffDistance = 5200.0f;
+	float g_roofRunoffDistance = 8188.0f;
 	std::unique_ptr<ConstantBuffer> g_roofRunoffTuningCB;
 
 	std::unique_ptr<Texture2D> g_roofRunoffStateA;
@@ -1381,7 +1383,7 @@ void RainResponse::Prepass()
 }
 
 
-void RainResponse::EnsureRoofRunoffResources(uint32_t a_width, uint32_t a_height)
+void RainResponse::EnsureRoofRunoffResources(uint32_t a_width, uint32_t a_height, uint32_t a_outputWidth, uint32_t a_outputHeight)
 {
 	const uint32_t edgeWidth = std::max(1u, (a_width + 1u) / 2u);
 	const uint32_t edgeHeight = std::max(1u, (a_height + 1u) / 2u);
@@ -1397,8 +1399,8 @@ void RainResponse::EnsureRoofRunoffResources(uint32_t a_width, uint32_t a_height
 		g_roofRunoffStateA->desc.Height == edgeHeight &&
 		g_roofRunoffStateB->desc.Width == edgeWidth &&
 		g_roofRunoffStateB->desc.Height == edgeHeight &&
-		g_roofRunoffDropMask->desc.Width == a_width &&
-		g_roofRunoffDropMask->desc.Height == a_height;
+		g_roofRunoffDropMask->desc.Width == a_outputWidth &&
+		g_roofRunoffDropMask->desc.Height == a_outputHeight;
 
 	if (valid)
 		return;
@@ -1459,8 +1461,8 @@ void RainResponse::EnsureRoofRunoffResources(uint32_t a_width, uint32_t a_height
 	// sparse world-space droplets.  This keeps drops one pixel wide by default and
 	// avoids unordered float blending races when several roof emitters overlap.
 	g_roofRunoffDropMask = createFloatTexture(
-		a_width,
-		a_height,
+		a_outputWidth,
+		a_outputHeight,
 		DXGI_FORMAT_R32_UINT,
 		"RainResponse::RoofRunoffDropMask");
 
@@ -1478,8 +1480,8 @@ void RainResponse::EnsureRoofRunoffResources(uint32_t a_width, uint32_t a_height
 		"[RainResponse] Phase 5 world-space runoff buffers: edge={}x{}, dropMask={}x{}",
 		edgeWidth,
 		edgeHeight,
-		a_width,
-		a_height);
+		a_outputWidth,
+		a_outputHeight);
 }
 
 ID3D11ComputeShader* RainResponse::GetRoofRunoffDetectCS()
@@ -1567,9 +1569,8 @@ void RainResponse::DrawRoofRunoff()
 	if (mainDesc.Width == 0 || mainDesc.Height == 0)
 		return;
 
-	// Skyrim allocates scene targets at display size, but DLSS/FSR render only into
-	// the active dynamic-resolution rectangle. Roof runoff must be detected,
-	// projected and composited in that same coordinate system before upscaling.
+	// Detection and temporal state stay at active resolution for cost, while the
+	// final droplet mask is display-sized so droplets remain crisp under DLSS/FSR.
 	const float2 activeSizeF = Util::ConvertToDynamic(
 		float2{ static_cast<float>(mainDesc.Width), static_cast<float>(mainDesc.Height) },
 		true);
@@ -1578,7 +1579,7 @@ void RainResponse::DrawRoofRunoff()
 	const uint32_t activeHeight = std::clamp(
 		static_cast<uint32_t>(activeSizeF.y), 1u, mainDesc.Height);
 
-	EnsureRoofRunoffResources(activeWidth, activeHeight);
+	EnsureRoofRunoffResources(activeWidth, activeHeight, mainDesc.Width, mainDesc.Height);
 	if (!roofRunoffEdgeMask || !g_roofRunoffStateA || !g_roofRunoffStateB ||
 		!g_roofRunoffDropMask ||
 		!roofRunoffEdgeMask->srv || !roofRunoffEdgeMask->uav ||
@@ -1612,7 +1613,7 @@ void RainResponse::DrawRoofRunoff()
 	RoofRunoffTuning runoffTuning{};
 	runoffTuning.MaxDistance = std::clamp(g_roofRunoffDistance, 600.0f, 16000.0f);
 	runoffTuning.NearSizeDistance = std::clamp(runoffTuning.MaxDistance * 0.34f, 850.0f, 2200.0f);
-	runoffTuning.EmitterSpacing = 92.0f;
+	runoffTuning.EmitterSpacing = 56.0f;
 	runoffTuning.RenderSize = {
 		static_cast<float>(activeWidth),
 		static_cast<float>(activeHeight)
@@ -1620,6 +1621,14 @@ void RainResponse::DrawRoofRunoff()
 	runoffTuning.InvRenderSize = {
 		1.0f / static_cast<float>(activeWidth),
 		1.0f / static_cast<float>(activeHeight)
+	};
+	runoffTuning.OutputSize = {
+		static_cast<float>(mainDesc.Width),
+		static_cast<float>(mainDesc.Height)
+	};
+	runoffTuning.InvOutputSize = {
+		1.0f / static_cast<float>(mainDesc.Width),
+		1.0f / static_cast<float>(mainDesc.Height)
 	};
 	g_roofRunoffTuningCB->Update(runoffTuning);
 
@@ -1717,8 +1726,8 @@ void RainResponse::DrawRoofRunoff()
 		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
 		context->CSSetShader(compositeCS, nullptr, 0);
 
-		const uint32_t gx = (activeWidth + 7u) / 8u;
-		const uint32_t gy = (activeHeight + 7u) / 8u;
+		const uint32_t gx = (mainDesc.Width + 7u) / 8u;
+		const uint32_t gy = (mainDesc.Height + 7u) / 8u;
 		context->Dispatch(gx, gy, 1);
 
 		ID3D11ShaderResourceView* nullSrv = nullptr;
@@ -1746,8 +1755,8 @@ void RainResponse::LoadSettings(json& o_json)
 		return std::clamp(finiteOr(value, fallback), minimum, maximum);
 	};
 	settings.EnableRainResponse = settings.EnableRainResponse ? 1u : 0u;
-	settings.MaxRainWetness = clampFinite(settings.MaxRainWetness, 1.0f, 0.0f, 2.5f);
-	settings.MaxPuddleWetness = clampFinite(settings.MaxPuddleWetness, 1.5f, 0.0f, 6.0f);
+	settings.MaxRainWetness = clampFinite(settings.MaxRainWetness, 1.388f, 0.0f, 2.5f);
+	settings.MaxPuddleWetness = clampFinite(settings.MaxPuddleWetness, 1.57f, 0.0f, 6.0f);
 	settings.MaxShoreWetness = clampFinite(settings.MaxShoreWetness, 1.0f, 0.0f, 1.0f);
 	settings.ShoreRange = std::clamp(settings.ShoreRange, 1u, 64u);
 	settings.PuddleRadius = clampFinite(settings.PuddleRadius, 1.0f, 0.3f, 3.0f);
@@ -1773,24 +1782,24 @@ void RainResponse::LoadSettings(json& o_json)
 	settings.RippleBreadth = clampFinite(settings.RippleBreadth, 0.5f, 0.0f, 1.0f);
 	settings.RippleLifetime = clampFinite(settings.RippleLifetime, 0.5f, 0.0f, settings.RaindropInterval);
 	settings.EnableRainParticleEnhancement = settings.EnableRainParticleEnhancement ? 1u : 0u;
-	settings.RainClumpStrength = clampFinite(settings.RainClumpStrength, 0.55f, 0.0f, 1.0f);
+	settings.RainClumpStrength = clampFinite(settings.RainClumpStrength, 0.71f, 0.0f, 1.0f);
 	settings.RainClumpSize = clampFinite(settings.RainClumpSize, 1800.0f, 400.0f, 6000.0f);
-	settings.RainStreakVariation = clampFinite(settings.RainStreakVariation, 0.35f, 0.0f, 1.0f);
-	settings.RainGustStrength = clampFinite(settings.RainGustStrength, 0.8f, 0.0f, 2.0f);
+	settings.RainStreakVariation = clampFinite(settings.RainStreakVariation, 0.75f, 0.0f, 1.0f);
+	settings.RainGustStrength = clampFinite(settings.RainGustStrength, 1.34f, 0.0f, 2.0f);
 	settings.RainGustFrequency = clampFinite(settings.RainGustFrequency, 0.18f, 0.03f, 0.8f);
-	settings.RainGustChance = clampFinite(settings.RainGustChance, 0.22f, 0.0f, 0.75f);
-	settings.RainSecondaryLayerStrength = clampFinite(settings.RainSecondaryLayerStrength, 0.32f, 0.0f, 1.0f);
-	settings.RainDepthStart = clampFinite(settings.RainDepthStart, 650.0f, 100.0f, 6000.0f);
-	settings.RainDepthEnd = clampFinite(settings.RainDepthEnd, 12000.0f, std::max(1000.0f, settings.RainDepthStart + 1.0f), 20000.0f);
-	settings.RainDistanceBoost = clampFinite(settings.RainDistanceBoost, 0.75f, 0.0f, 1.5f);
-	settings.RainImpactSplashStrength = clampFinite(settings.RainImpactSplashStrength, 0.65f, 0.0f, 1.5f);
-	settings.RainMistStrength = clampFinite(settings.RainMistStrength, 0.55f, 0.0f, 2.0f);
-	settings.RainMistScale = clampFinite(settings.RainMistScale, 0.0008f, 0.00015f, 0.003f);
-	settings.RainMistHeight = clampFinite(settings.RainMistHeight, 520.0f, 100.0f, 1800.0f);
-	settings.RainLightingBoost = clampFinite(settings.RainLightingBoost, 0.5f, 0.0f, 1.5f);
-	settings.RainRunoffStrength = clampFinite(settings.RainRunoffStrength, 0.7f, 0.0f, 1.5f);
+	settings.RainGustChance = clampFinite(settings.RainGustChance, 0.52f, 0.0f, 0.75f);
+	settings.RainSecondaryLayerStrength = clampFinite(settings.RainSecondaryLayerStrength, 0.75f, 0.0f, 1.0f);
+	settings.RainDepthStart = clampFinite(settings.RainDepthStart, 1730.0f, 100.0f, 6000.0f);
+	settings.RainDepthEnd = clampFinite(settings.RainDepthEnd, 15660.0f, std::max(1000.0f, settings.RainDepthStart + 1.0f), 20000.0f);
+	settings.RainDistanceBoost = clampFinite(settings.RainDistanceBoost, 1.19f, 0.0f, 1.5f);
+	settings.RainImpactSplashStrength = clampFinite(settings.RainImpactSplashStrength, 0.13f, 0.0f, 1.5f);
+	settings.RainMistStrength = clampFinite(settings.RainMistStrength, 2.0f, 0.0f, 2.0f);
+	settings.RainMistScale = clampFinite(settings.RainMistScale, 0.00103f, 0.00015f, 0.003f);
+	settings.RainMistHeight = clampFinite(settings.RainMistHeight, 934.0f, 100.0f, 1800.0f);
+	settings.RainLightingBoost = clampFinite(settings.RainLightingBoost, 0.22f, 0.0f, 1.5f);
+	settings.RainRunoffStrength = clampFinite(settings.RainRunoffStrength, 0.94f, 0.0f, 1.5f);
 	g_roofRunoffDistance = std::clamp(
-		finiteOr(o_json.value("RainRunoffDistance", 5200.0f), 5200.0f),
+		finiteOr(o_json.value("RainRunoffDistance", 8188.0f), 8188.0f),
 		600.0f,
 		16000.0f);
 
@@ -1870,7 +1879,7 @@ void RainResponse::SaveSettings(json& o_json)
 void RainResponse::RestoreDefaultSettings()
 {
 	settings = {};
-	g_roofRunoffDistance = 5200.0f;
+	g_roofRunoffDistance = 8188.0f;
 	g_snowPrecipitation = {};
 	climatePreset = defaultPreset;
 

@@ -501,10 +501,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		(0.10f +
 		 clamp(SharedData::rainResponseSettings.RainDistanceBoost, 0.0f, 1.5f) * 0.34f +
 		 max(SharedData::rainResponseSettings.RainLightingBoost, 0.0f) * 0.16f));
+	// Keep the optical lift confined to authored rain coverage. Applying a bright
+	// floor to the whole particle card exposes transparent texture blocks with
+	// weather textures that store white RGB outside the streak.
 	sourceColor.xyz = lerp(
 		sourceColor.xyz,
 		max(sourceColor.xyz, 0.66f.xxx),
-		rainOpticalWeight);
+		rainOpticalWeight * smoothstep(0.012f, 0.16f, sourceColor.w));
 #	endif
 	float4 baseColor = input.Color * sourceColor;
 	baseColor.xyz = Color::Diffuse(baseColor.xyz);

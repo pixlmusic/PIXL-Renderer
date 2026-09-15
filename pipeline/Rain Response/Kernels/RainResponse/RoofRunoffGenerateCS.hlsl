@@ -14,6 +14,8 @@ cbuffer RoofRunoffTuning : register(b13)
 	float RunoffTuningPad0;
 	float2 RunoffRenderSize;
 	float2 RunoffInvRenderSize;
+	float2 RunoffOutputSize;
+	float2 RunoffInvOutputSize;
 };
 
 float Hash11(float p)
@@ -75,7 +77,7 @@ bool ProjectWorldPoint(float3 cameraRelativePosition, out int2 pixel, out float 
 		return false;
 	}
 
-	int2 fullSize = max(int2(RunoffRenderSize), int2(1, 1));
+	int2 fullSize = max(int2(RunoffOutputSize), int2(1, 1));
 	pixel = clamp(
 		int2(uv * float2(fullSize)),
 		int2(0, 0),
@@ -388,8 +390,12 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 		// This is not a screen-space falling effect: once released, the drop below is
 		// still a true projected 3D world trajectory. Keeping the source bead direct
 		// also guarantees a visible proof that the roof detector is alive.
+		int2 sourceOutputPixel = 0;
+		float sourceOutputDepth = 1.0f;
+		if (!ProjectWorldPoint(sourceCameraRelative, sourceOutputPixel, sourceOutputDepth))
+			return;
 		WriteProductionBead(
-			sourcePixel,
+			sourceOutputPixel,
 			lerp(0.30f, 0.82f, beadGrowth),
 			sourceViewDistance);
 		return;

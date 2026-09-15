@@ -75,7 +75,7 @@ struct WindowLife : RenderModule
         float ParallaxDepth = 50.0f; // Exterior observer looking into rooms.
         float InteriorParallaxDepth = 80.0f; // Interior observer looking outdoors.
         bool EnableOutdoorViews = true;
-        float OutdoorViewStrength = 0.78f;
+        float OutdoorViewStrength = 1.20f;
         float OutdoorViewEmission = 2.5f;
         float Refraction = 2.5f;
         float SilhouetteSoftness = 0.055f;
@@ -87,7 +87,7 @@ struct WindowLife : RenderModule
         float RoomDepthStrength = 0.14f;
         bool EnableAuthoredRooms = true;
         float AuthoredRoomStrength = 0.78f;
-		float InteriorContrast = 1.0f;
+		float InteriorContrast = 1.02f;
 		float InteriorEmission = 1.0f;
         // Magnifies authored room art inside an automatically reconstructed
         // aperture without changing the physical window bounds or room identity.
@@ -102,8 +102,8 @@ struct WindowLife : RenderModule
         // Distance LOD and pane discrimination.
         float DistanceFadeStart = 2400.0f;
         float DistanceFadeEnd = 7600.0f;
-        float PaneThreshold = 0.16f;
-        float PaneSoftness = 0.20f;
+        float PaneThreshold = 0.15f;
+        float PaneSoftness = 0.15f;
 
         // Stable procedural room grid and event cadence.
         // Owner-validated fallback calibration. Preserve this path while the

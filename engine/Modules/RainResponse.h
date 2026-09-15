@@ -33,8 +33,8 @@ public:
 	struct Settings
 	{
 		uint EnableRainResponse = true;
-		float MaxRainWetness = 1.0f;
-		float MaxPuddleWetness = 1.5f;
+		float MaxRainWetness = 1.388f;
+		float MaxPuddleWetness = 1.57f;
 		float MaxShoreWetness = 1.0f;
 		uint ShoreRange = 32;
 		float PuddleRadius = 1.0f;
@@ -65,28 +65,28 @@ public:
 		// Falling-rain enhancement. These parameters intentionally shape the game's
 		// supplied precipitation rather than replacing its material/texture.
 		uint EnableRainParticleEnhancement = true;
-		float RainClumpStrength = 0.55f;
+		float RainClumpStrength = 0.71f;
 		float RainClumpSize = 1800.0f;
-		float RainStreakVariation = 0.35f;
+		float RainStreakVariation = 0.75f;
 
-		float RainGustStrength = 0.80f;
+		float RainGustStrength = 1.34f;
 		float RainGustFrequency = 0.18f;
-		float RainGustChance = 0.22f;
-		float RainSecondaryLayerStrength = 0.32f;
+		float RainGustChance = 0.52f;
+		float RainSecondaryLayerStrength = 0.75f;
 
-		float RainDepthStart = 650.0f;
-		float RainDepthEnd = 12000.0f;
-		float RainDistanceBoost = 0.75f;
-		float RainImpactSplashStrength = 0.65f;
+		float RainDepthStart = 1730.0f;
+		float RainDepthEnd = 15660.0f;
+		float RainDistanceBoost = 1.19f;
+		float RainImpactSplashStrength = 0.13f;
 
-		float RainMistStrength = 0.55f;
-		float RainMistScale = 0.0008f;
-		float RainMistHeight = 520.0f;
-		float RainLightingBoost = 0.50f;
+		float RainMistStrength = 2.0f;
+		float RainMistScale = 0.00103f;
+		float RainMistHeight = 934.0f;
+		float RainLightingBoost = 0.22f;
 
 		// Reuses the old PerFrame padding slot, so FeatureData stays 256 bytes.
 		// This is a master control; edge width/density remain physically-derived in HLSL.
-		float RainRunoffStrength = 0.70f;
+		float RainRunoffStrength = 0.94f;
 	};
 
 	struct alignas(16) PerFrame
@@ -213,7 +213,7 @@ private:
 	void DrawWeatherAnalysis() const;
 
 	/** @brief Ensures the half-resolution runoff edge buffer matches the active scene target. */
-	void EnsureRoofRunoffResources(uint32_t a_width, uint32_t a_height);
+	void EnsureRoofRunoffResources(uint32_t a_width, uint32_t a_height, uint32_t a_outputWidth, uint32_t a_outputHeight);
 	ID3D11ComputeShader* GetRoofRunoffDetectCS();
 	ID3D11ComputeShader* GetRoofRunoffResolveCS();
 

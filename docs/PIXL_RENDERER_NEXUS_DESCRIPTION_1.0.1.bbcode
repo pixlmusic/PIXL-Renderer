@@ -1,0 +1,98 @@
+[color=#b45f06][size=4][b]PIXL RENDERER[/b][/size][/color]
+[color=#999999][i]A modern DX11 shader suite for Skyrim SE[/i][/color]
+
+[img width=552]https://staticdelivery.nexusmods.com/mods/1704/images/189836/189836-1789150516-2066057463.jpg[/img]
+[line]
+[color=#a61c00][b]PLEASE READ[/b]
+This is my first Skyrim mod project, built with substantial AI assistance, experimentation and hands-on testing. It has been tested in my own setup, including Skyrim SE 1.5.97 and the current GOG Skyrim Anniversary Edition 1.6.1170, but not across every hardware and mod combination. Unexpected issues are possible, so please back up anything important before trying PIXL Renderer.[/color]
+
+If you prefer an established renderer with broader community testing, please check out [url=https://www.nexusmods.com/skyrimspecialedition/mods/86492]Community Shaders[/url].
+
+[line]
+[b]PIXL Renderer[/b] began as a custom Community Shaders fork and grew into a unified DX11 renderer for lighting, materials, weather, terrain, characters, water, vegetation, snow, mud, atmosphere, reconstruction and camera processing.
+
+Install it, complete Quick Setup, and play Skyrim. There are also plenty of controls if you enjoy tuning.
+
+[line]
+[size=4][b]WHAT DOES IT ACTUALLY DO?[/b][/size]
+
+[list]
+[*]Hybrid global illumination and improved ambient lighting[/*]
+[*]Expanded dynamic lights, sky response, atmosphere, fog, volumetrics and cloud shadows[/*]
+[*]Modern materials, PBR, parallax and terrain rendering[/*]
+[*]Improved skin, hair, thin-material, grass and vegetation shading[/*]
+[*]World-space rain, wetness, puddles, splashes, mist and roof runoff[/*]
+[*]Snow and mud deformation, with character surface accumulation[/*]
+[*]Improved water and underwater rendering[/*]
+[*]Fake depth and movement behind supported windows[/*]
+[*]DLSS / DLAA / FSR reconstruction paths[/*]
+[*]Optional experimental Neural Rendering and frame generation[/*]
+[*]HDR, exposure, camera processing, Photo Mode and capture tools[/*]
+[*]Fast / Balanced / Enhanced / Cinematic quality presets[/*]
+[/list]
+
+[size=4][b]THE GOAL[/b][/size]
+
+Skyrim should still look like Skyrim: better lighting, materials, atmosphere and temporal stability without requiring a pile of unrelated renderer replacements.
+
+[line]
+[size=4][b]WEATHER AND WORLD RESPONSE[/b][/size]
+
+Rain responds through wet materials, puddles, splashes, mist, wind and persistent world-space roof runoff. Heavy rain reduces long-range visibility and shifts the atmosphere toward a darker storm mood. Snow and mud can react to actors and retain deformation in the world.
+
+[size=4][b]WINDOW LIFE[/b][/size]
+
+Supported windows can gain simulated depth, day/night scenery, glass refraction and optional room details such as curtains, furniture and moving silhouettes. Results depend on the source material, so the controls allow conservative tuning.
+
+[line]
+[size=4][b]DLSS / DLAA / FSR / FRAME GENERATION[/b][/size]
+
+Quick Setup offers Off, TAA, FSR Quality, DLSS Quality and DLAA where supported. Frame generation and the optional Neural Rendering path require borderless or windowed mode. Set [b]bFull Screen=0[/b] in SkyrimPrefs.ini if the sidecar remains frozen or asks for a restart repeatedly.
+
+The optional DLSSG proxy is not bundled. Follow its upstream instructions and install only one proxy beside SkyrimSE.exe. These paths remain experimental and hardware-specific issues are possible.
+
+[line]
+[size=4][b]REQUIREMENTS[/b][/size]
+
+[list]
+[*]Skyrim Special Edition on a supported Windows runtime[/*]
+[*]SKSE and Engine Fixes matching that runtime[/*]
+[*]PIXL-TerrainField.esp enabled[/*]
+[*]A DirectX 11-capable GPU[/*]
+[*]Borderless/windowed mode for frame generation or Neural Rendering[/*]
+[/list]
+
+PIXL has been tested on Skyrim SE 1.5.97 and Skyrim Anniversary Edition 1.6.1170 (GOG). Build support is not a guarantee for every mod list.
+
+[line]
+[size=4][b]INSTALLATION[/b][/size]
+
+[list=1]
+[*]Back up saves and close Skyrim.[/*]
+[*]Install matching SKSE and Engine Fixes prerequisites.[/*]
+[*]Install PIXL with MO2/Vortex as a normal Data mod, or extract the archive into Skyrim's Data directory.[/*]
+[*]Enable PIXL-TerrainField.esp and disable duplicate or conflicting engine-level renderers.[/*]
+[*]Launch through SKSE, complete Quick Setup and restart when requested.[/*]
+[*]Press [b]Page Down[/b] for PIXL Renderer and [b]Home[/b] for Photo Mode.[/*]
+[/list]
+
+The release includes a preloaded pipeline library. Additional permutations can still compile for a specific setup; allow compilation to finish before judging performance.
+
+[line]
+[size=4][b]COMPATIBILITY[/b][/size]
+
+PIXL expects to control Skyrim's engine-level shader pipeline. Do not stack it with ENB, Community Shaders, Kreate, another engine-level renderer or a second PIXL installation. ReShade compatibility is untested and unsupported for this release.
+
+[line]
+[size=4][b]SOURCE AND CREDITS[/b][/size]
+
+[url=https://github.com/pixlmusic/PIXL-Renderer]PIXL Renderer on GitHub[/url]
+
+PIXL began as a Community Shaders fork and retains credit for substantially modified upstream work. Additional credit goes to PureDark for Skyrim Upscaler work; doodlum, PureDark and Flayan for frame-generation groundwork; NVIDIA Streamline; AMD FidelityFX; and sdli1995 and the DLSSG proxy contributors.
+
+Full licensing and third-party notices are included with the source and plugin documentation.
+
+[line]
+[color=#b45f06][size=3][b]PIXL RENDERER 2026[/b][/size][/color]
+
+[i]PIXL Renderer is an independent project and is not affiliated with Bethesda Game Studios or the Community Shaders team.[/i]

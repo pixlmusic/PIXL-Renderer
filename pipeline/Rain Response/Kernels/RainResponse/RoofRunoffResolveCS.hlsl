@@ -13,6 +13,8 @@ cbuffer RoofRunoffTuning : register(b13)
 	float RunoffTuningPad0;
 	float2 RunoffRenderSize;
 	float2 RunoffInvRenderSize;
+	float2 RunoffOutputSize;
+	float2 RunoffInvOutputSize;
 };
 
 float Hash31(float3 p)

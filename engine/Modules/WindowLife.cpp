@@ -200,7 +200,7 @@ void WindowLife::DrawSettings()
     ImGui::Checkbox("Interior View: Outdoor Backgrounds", &settings.EnableOutdoorViews);
     ImGui::SliderFloat("Interior View: Parallax Depth", &settings.InteriorParallaxDepth, 0.0f, 240.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
     Util::AddTooltip("Depth of the outdoor scene and passers seen from inside. Higher values reveal more movement behind the glass as you move; shader cost is unchanged.");
-    ImGui::SliderFloat("Outdoor Background Visibility", &settings.OutdoorViewStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SliderFloat("Outdoor Background Visibility", &settings.OutdoorViewStrength, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     Util::AddTooltip("Blends authored northern landscapes behind interior windows. Requires OutdoorAtlas; missing artwork retains the original glass and passers.");
     ImGui::SliderFloat("Interior View: Background Emission", &settings.OutdoorViewEmission, 0.0f, 8.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
     Util::AddTooltip("Brightens the day/night landscape seen from inside through refracted glass. Does not change exterior room images, opacity or parallax. No extra texture samples.");
@@ -728,7 +728,7 @@ void WindowLife::RefreshFrameBaseData()
     frameBaseData.Asset0 = {
         0.0f,
         (interiorView ? settings.EnableOutdoorViews && outdoorAtlasSRV : settings.EnableAuthoredRooms && roomAtlasSRV) ? 1.0f : 0.0f,
-        std::clamp(interiorView ? settings.OutdoorViewStrength : settings.AuthoredRoomStrength, 0.0f, 1.0f),
+        std::clamp(interiorView ? settings.OutdoorViewStrength : settings.AuthoredRoomStrength, 0.0f, 2.0f),
         0.0f
     };
 	frameBaseData.Presentation0 = {

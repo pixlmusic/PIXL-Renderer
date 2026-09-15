@@ -178,17 +178,20 @@ namespace RainResponse
 		float boost =
 			clamp(SharedData::rainResponseSettings.RainDistanceBoost, 0.0f, 1.5f);
 
-		// Fine authored rain often uses very low alpha. sqrt preserves zero while
-		// recovering the thin texels that TAA/DLSS otherwise erases.
-		float authoredVisibility = sqrt(saturate(sourceAlpha));
+		// Fine authored rain often uses very low alpha. Enhance those texels only
+		// after a real source footprint exists; flooring transparent card pixels
+		// creates pale rectangular rain blocks with some weather textures.
+		float authored = saturate(sourceAlpha);
+		float authoredCoverage = smoothstep(0.012f, 0.16f, authored);
 		float distanceResponse = lerp(0.22f, 1.0f, weight);
 		float floorStrength = saturate(0.12f + boost * 0.40f);
 
 		return saturate(
-			authoredVisibility *
+			authored *
+			authoredCoverage *
 			max(clump, 0.48f) *
 			distanceResponse *
-			floorStrength *
+			(1.0f + floorStrength * 0.55f) *
 			rain);
 	}
 
@@ -217,9 +220,13 @@ namespace RainResponse
 			clamp(SharedData::rainResponseSettings.RainDistanceBoost, 0.0f, 1.5f) *
 			rain;
 
-		return 1.0f +
+		float multiplier = 1.0f +
 			lightBoost * lerp(0.20f, 1.95f, weight) +
 			distanceBoost * weight * 0.62f;
+		// Rain is a lit, translucent material, not an emissive layer. Heavy
+		// weather can otherwise push thin streaks beyond the HDR shoulder and make
+		// them read as solid white bars.
+		return min(multiplier, 1.55f);
 	}
 
 	float GetRainDirectionalScatter(float3 viewDirection)
@@ -369,12 +376,16 @@ namespace RainResponse
 
 		float distanceMask = smoothstep(450.0f, 2600.0f, max(viewDepth, 0.0f));
 		float rainStrength = pow(rain, 1.20f) * max(SharedData::rainResponseSettings.RainMistStrength, 0.0f);
-		float rainExtinction = rainStrength * heightMask * distanceMask * lerp(0.32f, 1.0f, clouds) * 2.2e-5f;
+		// Heavy rain should close down long-range visibility and push the scene into
+		// a storm mood without turning nearby geometry into opaque white fog.
+		float heavyRain = smoothstep(0.55f, 0.95f, rain);
+		float rainExtinction = rainStrength * heightMask * distanceMask *
+			lerp(0.32f, 1.0f, clouds) * lerp(1.0f, 1.55f, heavyRain) * 2.2e-5f;
 
 		// Water aerosol is highly scattering but not emissive.  Feeding it into the
 		// existing VBuffer means sun, sky, local lights, shadows and temporal
 		// integration all treat the mist consistently with the rest of PIXL fog.
-		float3 rainAlbedo = lerp(0.88f.xxx, 0.97f.xxx, clouds);
+		float3 rainAlbedo = lerp(0.78f.xxx, 0.92f.xxx, clouds);
 		scattering += rainExtinction * rainAlbedo;
 		extinction += rainExtinction;
 	}
