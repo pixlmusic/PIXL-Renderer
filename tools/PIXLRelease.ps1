@@ -174,24 +174,25 @@ function Commit-Push {
     if ($LASTEXITCODE -ne 0) { throw 'Whitespace errors found.' }
     Write-Host 'Review the status above. Only tracked modifications will be staged.' -ForegroundColor Yellow
     $confirm = Read-Host 'Type COMMIT to stage and continue'
-    if ($confirm -cne 'COMMIT') { Write-Host 'Cancelled.'; return }
+    if ($confirm -cne 'COMMIT') { Write-Host 'Cancelled.'; return $false }
     git add -u
     if ($LASTEXITCODE -ne 0) { throw 'git add failed.' }
     git diff --cached --check
     git diff --cached --name-status
     $final = Read-Host 'Type PUSH to commit and push origin/main'
-    if ($final -cne 'PUSH') { Write-Host 'Cancelled; staged changes remain.'; return }
+    if ($final -cne 'PUSH') { Write-Host 'Cancelled; staged changes remain.'; return $false }
     git commit -m $Message
     if ($LASTEXITCODE -ne 0) { throw 'git commit failed.' }
     git push origin HEAD:main
     if ($LASTEXITCODE -ne 0) { throw 'git push failed.' }
     Write-Host 'Commit pushed successfully.' -ForegroundColor Green
+    return $true
 }
 
 try {
     if ($Action -eq 'BuildDeploy') { Build-Release; Deploy-All }
     elseif ($Action -eq 'Deploy') { Deploy-All }
-    else { Package-Release; Commit-Push }
+    else { if (Commit-Push) { Package-Release } }
     exit 0
 } catch {
     Write-Error $_
