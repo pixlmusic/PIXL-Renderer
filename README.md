@@ -6,7 +6,9 @@ PIXL Renderer modernizes Skyrim's lighting, materials, characters, weather, terr
 
 Install one renderer, complete Quick Setup and play. An optional advanced tuning workspace provides deeper control over the image.
 
-> **Release:** PIXL Renderer 1.0. See installation requirements and validation limits below before installing. Optional DLSSG proxy and Neural Rendering paths remain experimental.
+> **Release:** PIXL Renderer 1.0.1 See installation requirements and validation limits below before installing. Optional DLSSG proxy and Neural Rendering paths remain experimental.
+
+> **DISCLAIMER: PIXL Renderer was HEAVILY created with AI assistance alongside testing, expect all kinds of issues and bugs. This is an experimental branch and would HIGHLY reccomend using Community Shaders main branch for a consistent and well-tested/maintained playthrough.**
 
 ## What makes PIXL different?
 
