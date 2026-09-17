@@ -17,11 +17,16 @@ void HorizonBlend::PostPostLoad()
 	// because every SKSE plugin has loaded by now and the shader disk cache has not been
 	// validated yet, so installing or removing the plugin invalidates the cache through
 	// regular feature validation.
-	if (GetModuleHandleW(L"HorizonBlend.dll") == nullptr) {
+	// Older releases used HorizonBlend.dll; the current rebrand ships as
+	// HorizonFix.dll. Both provide the far-horizon water compatibility contract.
+	const bool horizonPluginLoaded =
+		GetModuleHandleW(L"HorizonBlend.dll") != nullptr ||
+		GetModuleHandleW(L"HorizonFix.dll") != nullptr;
+	if (!horizonPluginLoaded) {
 		loaded = false;
-		failedLoadedMessage = "HorizonBlend is not installed, compatibility is disabled.";
-		logger::info("[Horizon Blend] HorizonBlend plugin not detected, compatibility disabled");
+		failedLoadedMessage = "HorizonBlend/HorizonFix is not installed, compatibility is disabled.";
+		logger::info("[Horizon Blend] HorizonBlend/HorizonFix plugin not detected, compatibility disabled");
 	} else {
-		logger::info("[Horizon Blend] HorizonBlend plugin detected, compatibility enabled");
+		logger::info("[Horizon Blend] HorizonBlend/HorizonFix plugin detected, compatibility enabled");
 	}
 }

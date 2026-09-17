@@ -40,6 +40,7 @@
 #include "Util.h"
 #include "Utils/UI.h"
 #include "WeatherVariableRegistry.h"
+#include "WeatherManager.h"
 
 namespace
 {
@@ -358,6 +359,18 @@ namespace
 			if (!weather)
 				continue;
 
+			const auto weatherClass = WeatherManager::GetSingleton()->ClassifyWeather(weather);
+			const bool semanticMatch =
+				(preset == DirectorWeatherPreset::Clear && weatherClass == WeatherManager::WeatherClass::Clear) ||
+				(preset == DirectorWeatherPreset::Cloudy && weatherClass == WeatherManager::WeatherClass::Cloudy) ||
+				(preset == DirectorWeatherPreset::Rain &&
+					(weatherClass == WeatherManager::WeatherClass::Rain || weatherClass == WeatherManager::WeatherClass::Storm)) ||
+				(preset == DirectorWeatherPreset::Snow && weatherClass == WeatherManager::WeatherClass::Snow);
+			if (semanticMatch)
+				return weather;
+
+			// Legacy text matching remains as a final fallback for unusual inactive
+			// forms whose precipitation type cannot be inferred until Skyrim activates them.
 			const char* displayName =
 				DirectorWeatherName(
 					weather);
@@ -402,6 +415,8 @@ namespace
 					false,
 					true);
 			}
+			WeatherManager::GetSingleton()->SetTemporaryWeatherSource(
+				WeatherManager::WeatherSource::Director, false);
 
 			return;
 		}
@@ -409,6 +424,8 @@ namespace
 		if (auto* weather =
 				FindDirectorWeather(
 					preset)) {
+			WeatherManager::GetSingleton()->SetTemporaryWeatherSource(
+				WeatherManager::WeatherSource::Director, true);
 			sky->ForceWeather(
 				weather,
 				true);
@@ -691,6 +708,8 @@ namespace
 			g_directorPhotoMode.fovSnapshotValid = false;
 			g_directorPhotoMode.originalWorldFov = 75.0f;
 			g_directorPhotoMode.photoWorldFov = 75.0f;
+			WeatherManager::GetSingleton()->SetTemporaryWeatherSource(
+				WeatherManager::WeatherSource::Director, false);
 
 			g_directorExitTaskScheduled.store(
 				false,
@@ -2107,7 +2126,11 @@ namespace
 			return;
 		}
 
-		SmoothDirectorCameraMotion(freeCameraState);
+		// Let Skyrim's native free-camera state remain authoritative.  External
+		// camera systems can update the same transform during their camera pass;
+		// PIXL-side spring smoothing otherwise applies a second integration step
+		// and produces the characteristic SmoothCam/photo-mode tug or drift.
+		// The native TFC controls still provide responsive movement here.
 
 		if (!g_directorPhotoMode
 				 .cameraAnchorValid) {

@@ -5,7 +5,7 @@ set(VCPKG_BUILD_TYPE release CACHE STRING "")
 project(
     # gersemi: ignore
     PIXLRenderer
-    VERSION 1.0.1
+    VERSION 1.0.2
     LANGUAGES CXX
 )
 

@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
+  <moduleName>PIXL Renderer 1.0.2</moduleName>
+  <moduleImage path="fomod\images\pixl-hero.jpg" showImage="true" showFade="true" height="240" />
+  <requiredInstallFiles>
+    <folder source="PIXL-Core" destination="" priority="0" />
+  </requiredInstallFiles>
+  <installSteps order="Explicit">
+    <installStep name="Hey! Welcome to PIXL Renderer :D">
+      <optionalFileGroups order="Explicit">
+        <group name="Your Skyrim, rendered as one cohesive world" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="Let's make Skyrim look incredible">
+              <description>Hey! :D You made it through the requirements and setup notes - welcome to PIXL Renderer 1.0.2.
+
+FIRST LAUNCH
+1. Start Skyrim through SKSE and let shader compilation finish.
+2. Complete Quick Setup and choose your reconstruction mode and quality profile.
+3. Press PAGE DOWN to open PIXL Renderer. Press HOME for Photo Mode.
+4. Use SAVE LOOK after tuning anything you want to keep.
+
+PIXL brings physically responsive lighting and materials, authored PBR/POM support, Hybrid GI and SkyBounce, atmospheric weather, WindowLife interiors, terrain and actor surface response, vegetation motion, water optics, camera tools and reconstruction into one DX11 renderer.
+
+PIXL Studio directs, tests and releases this project with substantial AI assistance in development, diagnostics and documentation.</description>
+              <image path="fomod\images\pixl-materials.jpg" />
+              <conditionFlags>
+                <flag name="PIXLCore">On</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Required" />
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+    <installStep name="Water Compatibility">
+      <optionalFileGroups order="Explicit">
+        <group name="Water Compatibility" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="Default (PIXL Water)">
+              <description>Choose this for the complete native PIXL water experience. PIXL owns the water surface, optics, reflections, refraction, shoreline response, rain interaction and dynamic foam. This is the safest option for first-time users and anyone who does not have the exact SurfaceTides 1.0.2 release installed.</description>
+              <image path="fomod\images\pixl-water-default.jpg" />
+              <conditionFlags>
+                <flag name="PIXLSurfaceTides">Off</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Recommended" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="SurfaceTides 1.0.2 Integration (Recommended - Really cool!)">
+              <description>Choose this only when the original SurfaceTides 1.0.2 mod is already installed. SurfaceTides supplies its animated tessellated geometry while PIXL keeps its water shading and optics. A dedicated PIXL preset makes waves stronger and longer-lived in wilderness water, while keeping cities and interiors calmer.
+
+EXACT VERSION ONLY: this replaces SurfaceTides.dll, Shaders/SurfaceTides/Water.hlsl and SurfaceTides.ini. The supplied INI enables AllowPIXL=1 and contains the tested PIXL water preset, so back up custom SurfaceTides tuning first. Vortex may not expose another mod's deployed DLL while this installer is running, so this choice deliberately remains selectable. Do not use it with a later SurfaceTides version unless its author confirms compatibility.</description>
+              <image path="fomod\images\pixl-water-surfacetides.jpg" />
+              <files>
+                <folder source="PIXL-Optional\SurfaceTides-1.0.2" destination="" priority="100" />
+              </files>
+              <conditionFlags>
+                <flag name="PIXLSurfaceTides">On</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+    <installStep name="What's new in 1.0.2">
+      <optionalFileGroups order="Explicit">
+        <group name="A release shaped by your screenshots, logs and feedback" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="Ready for a new adventure">
+              <description>HIGHLIGHTS SINCE 1.0.1 HOTFIX
+
+- Authored Complex Material, PBR and POM height information is restored and preferred, with synthetic parallax retained as a fallback for ordinary textures.
+- GGX highlight stability and authored-material filtering are improved.
+- WindowLife handles replacement window textures more carefully, rejects false roof openings and adds clearer rain droplets and streaks.
+- Rain runoff is more visible, while bright square micro-splash artefacts are reduced.
+- Ground Response gains stronger mud response and wetter behavior near water.
+- Weather, fog, night exposure, wetness and horizon blending received compatibility and visual polish.
+- Photo Mode/external-camera interaction and contact/screen-space shadow transitions received compatibility fixes.
+- UI branding, version labels, defaults and hotkey behavior were polished for 1.0.2.
+- Optional SurfaceTides 1.0.2 integration combines its tessellated geometry with PIXL water optics, projected rapid-water detail and calmer city/interior displacement.
+
+Thank you for testing PIXL Renderer and helping turn every rough edge into a better Skyrim. Let shader compilation finish, jump into the world, and have fun! :D</description>
+              <image path="fomod\images\pixl-hero.jpg" />
+              <conditionFlags>
+                <flag name="PIXLReleaseNotes">Seen</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Required" />
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+  </installSteps>
+</config>

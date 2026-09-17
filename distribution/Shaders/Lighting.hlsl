@@ -442,17 +442,16 @@ typedef VS_OUTPUT PS_INPUT;
 #	define PIXL_PARALLAX_DEPTH_AUTO 0
 #endif
 #ifndef PIXL_PARALLAX_DEPTH_MATERIAL_FORGE
-// Keep Material Forge POM shading, but disable its experimental hardware-depth
-// rewrite. On some static/rock UV frames that reconstruction can form triangular
-// depth shards. Authored PARALLAX permutations keep their dedicated depth path.
-#	define PIXL_PARALLAX_DEPTH_MATERIAL_FORGE 0
+// Material Forge/PBR displacement is authored data and must remain visible to
+// the hardware depth buffer. Synthetic Auto-POM remains a separate fallback
+// path controlled by PIXL_PARALLAX_DEPTH_AUTO below.
+#	define PIXL_PARALLAX_DEPTH_MATERIAL_FORGE 1
 #endif
 #ifndef PIXL_PARALLAX_DEPTH_AUTHORED
-// Authored UV parallax is safe to retain, but reconstructing hardware depth
-// from its UV shift can expose holes at overlapping architectural surfaces
-// (Markarth oldrock2 / Silver-Blood Inn). Keep this experimental resolve opt-in
-// until it is consistent with the engine's depth/prepass and layered geometry.
-#	define PIXL_PARALLAX_DEPTH_AUTHORED 0
+// Authored PARALLAX height is the highest-fidelity source for legacy assets.
+// Keep it independent from synthetic Auto-POM so assets without authored
+// displacement continue to receive the PIXL fallback.
+#	define PIXL_PARALLAX_DEPTH_AUTHORED 1
 #endif
 #ifndef PIXL_PARALLAX_DEPTH_LANDSCAPE
 // Generic terrain-POM hardware depth is deliberately opt-in. Ground deformation
@@ -1232,12 +1231,23 @@ float3 PixlResolveParallaxDepthPosition(
 #else
 	float maximumTravel =
 		min(
-			MaterialLayersTuning::ObjectVirtualDepthMaxWorld(),
+			// Material-layer permutations use the authored-depth tuning buffer.
+			// Legacy PARALLAX permutations intentionally do not include that buffer.
+			#if defined(MATERIAL_LAYERS)
+			clamp(PIXLML_ObjectVirtualDepthMaxWorld, 1.0f, 16.0f),
+			#else
+			16.0f,
+			#endif
 			max(
 				uvWorldScale * PIXL_PARALLAX_DEPTH_MAX_UV,
 				1e-3f));
 	rayTravel = clamp(
-		rayTravel * MaterialLayersTuning::ObjectVirtualDepthStrength(),
+		rayTravel *
+			#if defined(MATERIAL_LAYERS)
+			clamp(PIXLML_ObjectVirtualDepthStrength, 0.0f, 2.0f),
+			#else
+			1.0f,
+			#endif
 		-maximumTravel,
 		maximumTravel);
 #	if !PIXL_PARALLAX_DEPTH_ALLOW_PROTRUSION && !defined(PIXL_PARALLAX_EFFECTS_DEPTH)
@@ -1717,10 +1727,16 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float3 refractedViewDirection = viewDirection;
 	float4 sampledCoatColor = PBRParams2;
 	float3 complexSpecular = 1.0;  // Declare complexSpecular at a higher scope so it's available throughout the shader (NEEDED FOR STOCH. FIX)
+	// Track authored displacement before choosing the synthetic compatibility path.
+	bool authoredParallaxAvailable = false;
 
 #	if defined(EMAT)
 #		if defined(PARALLAX) && (defined(SKINNED) || !defined(MODELSPACENORMALS))
 	if (SharedData::materialLayerSettings.EnableParallax) {
+		// Legacy PGPatcher/Parallax materials already carry an authored height map.
+		// Mark them before the generic fallback pass so synthetic luminance POM never
+		// competes with the real height field.
+		authoredParallaxAvailable = true;
 		mipLevel = MaterialLayers::GetMipLevel(uv, TexParallaxSampler);
 		uv = MaterialLayers::GetParallaxCoords(viewPosition.z, uv, mipLevel, viewDirection, tbnTr, screenNoise, TexParallaxSampler, SampParallaxSampler, 0, displacementParams, pixelOffset);
 		if (SharedData::materialLayerSettings.EnableShadows && parallaxShadowQuality > 0.0)
@@ -1730,6 +1746,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	bool complexMaterial = false;
 	bool complexMaterialParallax = false;
+	// PGPatcher stores the authored height field in environment-mask alpha.
+	// This must be classified from a coarse footprint, not from the current
+	// filtered texel: valid height extrema are commonly exactly 0 or 1.
+	bool envMaskHasAuthoredHeight = false;
+	// Synthetic Auto-POM fills incomplete texture sets but never stacks on a
+	// valid authored PBR/CM displacement path.
 	float4 complexMaterialColor = 1.0;
 
 #		if defined(ENVMAP) || defined(MULTI_LAYER_PARALLAX) || defined(EYE)
@@ -1748,12 +1770,17 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		const bool solidBlackHeightMask = all(mipSample.xyz < kMaskEpsilon) &&
 		                                  mipSample.w > kMaskEpsilon &&
 		                                  mipSample.w < (1.0 - kMaskEpsilon);
+		envMaskHasAuthoredHeight =
+			mipSample.w > kMaskEpsilon &&
+			mipSample.w < (1.0 - kMaskEpsilon) &&
+			(solidBlackHeightMask || !grayscaleMask);
 		if (grayscaleMask && !solidBlackHeightMask)
 			complexMaterial = false;
 
 		if (complexMaterial) {
-			if (envMaskSample.w > kMaskEpsilon && envMaskSample.w < (1.0 - kMaskEpsilon)) {
+			if (envMaskHasAuthoredHeight) {
 				complexMaterialParallax = true;
+				authoredParallaxAvailable = true;
 				mipLevel = MaterialLayers::GetMipLevel(uv, TexEnvMaskSampler);
 				uv = MaterialLayers::GetParallaxCoords(viewPosition.z, uv, mipLevel, viewDirection, tbnTr, screenNoise, TexEnvMaskSampler, SampTerrainParallaxSampler, 3, displacementParams, pixelOffset);
 				if (SharedData::materialLayerSettings.EnableShadows && parallaxShadowQuality > 0.0)
@@ -1779,6 +1806,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	[branch] if (SharedData::materialLayerSettings.EnableParallax && (PBRFlags & PBR::Flags::HasDisplacement) != 0)
 	{
 		PBRParallax = true;
+		authoredParallaxAvailable = true;
 		[branch] if ((PBRFlags & PBR::Flags::InterlayerParallax) != 0)
 		{
 			displacementParams.HeightScale *= PBRParams1.y;
@@ -1828,10 +1856,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// Dedicated authored parallax remains in its own path above.
 	autoParallaxAllowed = false;
 #		endif
-#		if defined(EMAT_ENVMAP)
-	// Complex Material masks may already describe an authored layered surface.
-	// Never stack synthesized POM on top of that path.
-	autoParallaxAllowed = autoParallaxAllowed && !complexMaterial;
+#		if defined(EMAT_ENVMAP) || defined(MATERIAL_FORGE)
+	// Incomplete PBR/CM sets still receive synthetic relief. A valid authored
+	// displacement path wins so the two techniques are never double-stacked.
+	autoParallaxAllowed = autoParallaxAllowed && !authoredParallaxAvailable;
 #		endif
 
 #	if defined(PIXL_WINDOW_LIFE_ACTIVE)
@@ -1926,11 +1954,20 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 #	if (defined(PIXL_PARALLAX_DEPTH) || defined(PIXL_PARALLAX_EFFECTS_DEPTH)) && !defined(LANDSCAPE)
-	bool pixlAllowDepthResolve = inWorld && !inReflection && !SharedData::InMapMenu && MaterialLayersTuning::ObjectVirtualDepthStrength() > 0.0f;
+	bool pixlAllowDepthResolve = inWorld && !inReflection && !SharedData::InMapMenu &&
+		#if defined(MATERIAL_LAYERS)
+		clamp(PIXLML_ObjectVirtualDepthStrength, 0.0f, 2.0f) > 0.0f;
+		#else
+		true;
+		#endif
 #		if defined(MATERIAL_FORGE) && !defined(LODLANDSCAPE)
 	// Interlayer parallax describes refraction beneath a coat, not the outer geometric surface.
-	// It must never move the hardware depth buffer.
+	// It must never move the hardware depth buffer. Effects-only depth is a
+	// separate G-buffer signal for GI/contact effects, so it still receives the
+	// final displaced surface when this is the only POM path active.
+#	if !defined(PIXL_PARALLAX_EFFECTS_DEPTH)
 	pixlAllowDepthResolve = pixlAllowDepthResolve && ((PBRFlags & PBR::Flags::InterlayerParallax) == 0);
+#	endif
 #		endif
 	float2 pixlDepthUvDelta = uv - uvOriginal;
 	[branch] if (pixlAllowDepthResolve && dot(pixlDepthUvDelta, pixlDepthUvDelta) > 1e-12f)
@@ -2745,7 +2782,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		// Old architectural glass is much flatter than Auto-POM stone/wood. Retain a
 		// controlled fraction of authored normal detail, then add low-frequency waviness
 		// in the actual pane plane instead of embossing the diffuse texture.
-		worldNormal = normalize(lerp(vertexNormal, worldNormal, pixlWindowSurface.normalRetention));
+		// Keep the original normal on frames, but let detected pane coverage control
+		// how much of a strong custom window normal survives on the glass itself.
+		float pixlPaneNormalRetention = saturate(
+			pixlWindowSurface.normalRetention * pixlWindowSurface.glassWeight);
+		worldNormal = normalize(lerp(vertexNormal, worldNormal, pixlPaneNormalRetention));
 		float3 pixlGlassN = normalize(vertexNormal);
 		float3 pixlGlassH = cross(float3(0.0f, 0.0f, 1.0f), pixlGlassN);
 		float pixlGlassHLen2 = dot(pixlGlassH, pixlGlassH);
@@ -2804,7 +2845,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 					float mudWeatherSignal =
 						saturate(max(
 							SharedData::rainResponseSettings.Raining,
-							SharedData::rainResponseSettings.Wetness));
+							max(
+								SharedData::rainResponseSettings.Wetness,
+								GroundResponseRuntime::GetWaterShoreMudActivation(input.WorldPosition.xyz))));
 					mudWetness =
 						smoothstep(
 							max(threshold - 0.22f, 0.0f),
@@ -2853,7 +2896,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 					float mudWeatherSignal =
 						saturate(max(
 							SharedData::rainResponseSettings.Raining,
-							SharedData::rainResponseSettings.Wetness));
+							max(
+								SharedData::rainResponseSettings.Wetness,
+								GroundResponseRuntime::GetWaterShoreMudActivation(input.WorldPosition.xyz))));
 					mudWetness =
 						smoothstep(
 							max(threshold - 0.22f, 0.0f),
@@ -3923,6 +3968,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	wetnessGlossinessAlbedo *= wetnessGlossinessAlbedo;
 
 	float wetnessGlossinessSpecular = puddle;
+	// Rain should make a surface wetter, not turn every authored material into
+	// polished glass. Preserve the authored roughness as a material-aware floor
+	// for the wet reflection lobe; this is especially important for Skyland/PBR
+	// packages whose stone and wood normals are intentionally high contrast.
+	const float wetMaterialRoughnessFloor = max(0.08f, saturate(material.Roughness) * 0.35f);
 	if (input.WorldPosition.z < waterHeight) {
 		wetnessGlossinessSpecular *= shoreFactor;
 	}
@@ -3945,8 +3995,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// roughness puddles. Real water has ripples and surface tension that keep it from being
 	// optically perfect; the ripple normal map adds micro-variation but GGX still peaks
 	// sharply without this floor.
-	static const float wetnessMinPuddleRoughness = 0.05;
-	waterRoughnessSpecular = max(saturate(1.0 - wetnessGlossinessSpecular), wetnessMinPuddleRoughness);
+	static const float wetnessMinPuddleRoughness = 0.08;
+	waterRoughnessSpecular = max(
+		saturate(1.0 - wetnessGlossinessSpecular),
+		max(wetnessMinPuddleRoughness, wetMaterialRoughnessFloor));
 #		if USE_PIXL_WETNESS_RESPONSE
 	waterRoughnessSpecular = BRDF::FilterRoughnessByNormalVariance(waterRoughnessSpecular, wetnessNormal, 0.75f, 0.18f);
 #		endif
@@ -4645,7 +4697,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		normalColor,
 		pixlWindowGlowLuma,
 		uv,
-		viewPosition.z);
+		viewPosition.z,
+		pixlWindowSurface.weatherWarp);
 
 	// PIXL WL5 authored recessed room back plane. Replace the source window's flat
 	// emissive fill with readable atlas detail while retaining a faint glass tint. The atlas

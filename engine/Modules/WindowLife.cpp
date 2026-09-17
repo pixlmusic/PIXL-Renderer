@@ -3,6 +3,7 @@
 
 #include "Globals.h"
 #include "State.h"
+#include "WeatherManager.h"
 #include "Util.h"
 
 #include <DirectXTex.h>
@@ -737,9 +738,8 @@ void WindowLife::RefreshFrameBaseData()
 		std::clamp(settings.OccupantOpacity, 0.0f, 1.0f),
 		std::clamp(settings.InteriorScale, 1.0f, 2.5f)
 	};
-    const bool snowing = globals::game::sky &&
-        globals::game::sky->mode.get() == RE::Sky::Mode::kFull &&
-        globals::game::sky->IsSnowing();
+    const auto& weather = WeatherManager::GetSingleton()->GetContext();
+    const bool snowing = weather.snowIntensity > 0.01f;
     frameBaseData.Layout0 = {
         0.0f,
         0.0f,
@@ -882,6 +882,11 @@ WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShad
         !authoredMaskKey.empty() &&
         authoredMaskSRVs.contains(authoredMaskKey);
 
+    // Texture replacers commonly rename the diffuse while retaining a paired
+    // PIXL mask. Treat that exact diffuse/mask pairing as strong material
+    // evidence; a generic glow slot alone remains deliberately insufficient.
+    const bool authoredWindowMaterial = hasAuthoredMask && !closedWindowSurface;
+
     if (strongWindow)
         result.score += 8;
     if (glass)
@@ -890,6 +895,8 @@ WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShad
         result.score += 3;
     if (hasGlowTexture)
         result.score += 2;
+    if (authoredWindowMaterial)
+        result.score += 8;
     if (architecture && hasGlowTexture)
         result.score += 3;
     if (obviousNonBuildingGlass && !strongWindow)
@@ -903,7 +910,7 @@ WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShad
     // as windows. Require an explicit window/glass token or a dedicated authored
     // pane mask whose basename matches the diffuse material being drawn.
     result.isWindow = !windowProxyMask && !closedWindowSurface &&
-        (strongWindow || architecturalGlass);
+        (strongWindow || architecturalGlass || authoredWindowMaterial);
     result.hasGlowTexture = hasGlowTexture;
     // A mask is supplemental evidence on an already accepted material. It must
     // never promote facade/helper geometry or restore the old proxy-mesh bug.

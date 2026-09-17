@@ -128,8 +128,8 @@ namespace GroundResponseRuntime
         float fromRutDepth =
             max(
                 SharedData::deformableGroundSettings.MudMaximumDepth,
-                0.0f) * 0.20f;
-        return clamp(max(fromSnow, fromRutDepth), 1.5f, 5.0f);
+                0.0f) * 0.26f;
+        return clamp(max(fromSnow, fromRutDepth), 1.5f, 8.0f);
     }
 
     float GetMudWetnessActivation()
@@ -151,6 +151,28 @@ namespace GroundResponseRuntime
             max(threshold - 0.22f, 0.0f),
             min(threshold + 0.18f, 1.0f),
             mudWeatherSignal);
+    }
+
+    // WaterData is the renderer's existing 5x5 cell water-height lookup. Use
+    // only the narrow band of walkable terrain just above a valid water plane;
+    // this gives river/lake margins the same wet-weather activation as rain
+    // without making an entire dry cell muddy or affecting submerged terrain.
+    float GetWaterShoreMudActivation(float3 cameraRelativePosition)
+    {
+        if (SharedData::InInterior ||
+            SharedData::deformableGroundSettings.EnableMudDeformation == 0u)
+            return 0.0f;
+
+        const float waterHeight =
+            SharedData::GetWaterData(cameraRelativePosition).w;
+        if (waterHeight < -1.0e20f)
+            return 0.0f;
+
+        const float terrainAboveWater = cameraRelativePosition.z - waterHeight;
+        const float aboveWater = smoothstep(-2.0f, 5.0f, terrainAboveWater);
+        const float shorelineBand =
+            1.0f - smoothstep(5.0f, 64.0f, terrainAboveWater);
+        return aboveWater * shorelineBand;
     }
 
     void GetSurfaceActivations(

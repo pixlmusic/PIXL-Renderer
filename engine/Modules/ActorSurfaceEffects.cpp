@@ -4,6 +4,7 @@
 #include "Modules/DialogueFocus.h"
 #include "Modules/RainResponse.h"
 #include "State.h"
+#include "WeatherManager.h"
 #include "Utils/UI.h"
 
 #include <algorithm>
@@ -608,12 +609,12 @@ void ActorSurfaceEffects::Reset()
 		dt = 0.0f;
 	dt = std::clamp(dt, 0.0f, 0.25f);
 
-	const float rain = globals::pipeline::rainResponse.loaded
-		? Saturate(globals::pipeline::rainResponse.GetLiveRainIntensity())
-		: 0.0f;
-	const bool snowing = globals::game::sky &&
-		globals::game::sky->mode.get() == RE::Sky::Mode::kFull &&
-		globals::game::sky->IsSnowing();
+	const auto& weather = WeatherManager::GetSingleton()->GetContext();
+	float rain = Saturate(weather.rainIntensity);
+	// Keep RainResponse's explicit debug override useful for diagnosing actor wetness.
+	if (globals::pipeline::rainResponse.loaded)
+		rain = std::max(rain, Saturate(globals::pipeline::rainResponse.GetLiveRainIntensity()));
+	const bool snowing = weather.snowIntensity > 0.01f;
 	const float persistenceScale = std::lerp(2.25f, 0.24f, Saturate(settings.Persistence));
 
 	std::scoped_lock lock(runtime->mutex);

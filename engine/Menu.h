@@ -454,8 +454,11 @@ public:
 		std::vector<InputCombo> SkipCompilationKey = { InputCombo::Keyboard(VK_ESCAPE) };
 		std::vector<InputCombo> EffectToggleKey = { InputCombo::Keyboard(VK_MULTIPLY) };    // toggle all effects
 		std::vector<InputCombo> OverlayToggleKey = { InputCombo::Keyboard(VK_F10) };        // Global overlay toggle key for all overlays
-		std::vector<InputCombo> ShaderBlockPrevKey = { InputCombo::Keyboard(VK_PRIOR) };    // Debug: cycle backward through shaders (PageUp)
-		std::vector<InputCombo> ShaderBlockNextKey = { InputCombo::Keyboard(VK_NEXT) };     // Debug: cycle forward through shaders (PageDown)
+		// Keep Page Up/Down available to PIXL Tuner and use an explicit modifier for
+		// the developer-only shader blocker controls.  The old defaults silently
+		// double-bound Page Down, making one of the actions unreachable.
+		std::vector<InputCombo> ShaderBlockPrevKey = { InputCombo::Keyboard(VK_SHIFT), InputCombo::Keyboard(VK_PRIOR) };
+		std::vector<InputCombo> ShaderBlockNextKey = { InputCombo::Keyboard(VK_SHIFT), InputCombo::Keyboard(VK_NEXT) };
 		std::vector<InputCombo> ScreenshotKey = { InputCombo::Keyboard(VK_SNAPSHOT) };                                    // Screenshot capture key
 		bool EnableShaderBlocking = false;                                                  // Enable shader blocking hotkeys for debugging
 		bool FirstTimeSetupCompleted = false;                                               // Track if first-time setup has been completed

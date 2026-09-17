@@ -1,13 +1,14 @@
 [CmdletBinding()]
 param(
     [string]$ArchivePath = "",
-    [string]$AllowedOutputRoot = ""
+    [string]$AllowedOutputRoot = "",
+    [switch]$IncludeWorkingTree
 )
 
 $ErrorActionPreference = "Stop"
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $allowedRoot = [IO.Path]::GetFullPath($(if ($AllowedOutputRoot) { $AllowedOutputRoot } else { Join-Path $sourceRoot "dist" }))
-if (-not $ArchivePath) { $ArchivePath = Join-Path $allowedRoot "PIXL-Renderer-v1.0-Source.zip" }
+if (-not $ArchivePath) { $ArchivePath = Join-Path $allowedRoot "PIXL-Renderer-1.0.2-Source.zip" }
 $archive = [IO.Path]::GetFullPath($ArchivePath)
 
 if (-not $archive.StartsWith($allowedRoot.TrimEnd('\') + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
@@ -23,7 +24,7 @@ $trackedChanges = @(& git -C $sourceRoot status --porcelain=v1 --untracked-files
 if ($LASTEXITCODE -ne 0) { throw "Unable to inspect Git status" }
 $allowedPatchedSubmodule = @($trackedChanges | Where-Object { $_ -eq " m extern/FidelityFX-SDK" })
 $unexpectedTrackedChanges = @($trackedChanges | Where-Object { $_ -ne " m extern/FidelityFX-SDK" })
-if ($unexpectedTrackedChanges.Count -ne 0) {
+if (!$IncludeWorkingTree -and $unexpectedTrackedChanges.Count -ne 0) {
     throw "Public source exports must come from a committed revision; tracked changes remain: $($unexpectedTrackedChanges -join ', ')"
 }
 if ($allowedPatchedSubmodule.Count -ne 0) {
@@ -43,9 +44,35 @@ if ($allowedPatchedSubmodule.Count -ne 0) {
 
 New-Item -ItemType Directory -Path (Split-Path -Parent $archive) -Force | Out-Null
 if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
-& git -C $sourceRoot archive --format=zip --prefix="PIXL-Renderer-v1.0-Source/" --output=$archive $commit
+& git -C $sourceRoot archive --format=zip --prefix="PIXL-Renderer-1.0.2-Source/" --output=$archive $commit
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $archive)) {
     throw "git archive failed"
+}
+
+# Explicit snapshot mode preserves uncommitted release work without altering Git.
+# Retain git-archive's export-ignore policy, then overlay current file contents.
+if ($IncludeWorkingTree) {
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $snapshot = [IO.Compression.ZipFile]::Open($archive, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $snapshotPrefix = 'PIXL-Renderer-1.0.2-Source/'
+        foreach ($entry in @($snapshot.Entries)) {
+            if ($entry.FullName.EndsWith('/')) { continue }
+            $relative = $entry.FullName.Substring($snapshotPrefix.Length)
+            $local = Join-Path $sourceRoot $relative
+            $name = $entry.FullName
+            $entry.Delete()
+            if (Test-Path -LiteralPath $local -PathType Leaf) {
+                [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($snapshot, $local, $name) | Out-Null
+            }
+        }
+        foreach ($relative in @(& git -C $sourceRoot ls-files --others --exclude-standard)) {
+            $attributes = & git -C $sourceRoot check-attr export-ignore -- $relative
+            if ($attributes -match ': set$') { continue }
+            [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($snapshot, (Join-Path $sourceRoot $relative), ($snapshotPrefix + $relative)) | Out-Null
+        }
+    } finally { $snapshot.Dispose() }
 }
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -56,7 +83,7 @@ try {
     $zip.Dispose()
 }
 
-$prefix = "PIXL-Renderer-v1.0-Source/"
+$prefix = "PIXL-Renderer-1.0.2-Source/"
 $required = @(
     "CMakeLists.txt",
     "README.md",
@@ -86,7 +113,8 @@ $forbiddenPatterns = @(
 )
 foreach ($entry in $entries) {
     foreach ($pattern in $forbiddenPatterns) {
-        if ($entry -match $pattern) { throw "Private/generated file escaped into public source archive: $entry" }
+        $normalizedEntry = $entry.Replace($prefix, 'PIXL-Renderer-v1.0-Source/')
+        if ($normalizedEntry -match $pattern) { throw "Private/generated file escaped into public source archive: $entry" }
     }
 }
 
@@ -95,6 +123,8 @@ $submodules = @(& git -C $sourceRoot submodule status | ForEach-Object { $_.Trim
 [ordered]@{
     product = "PIXL Renderer"
     sourceCommit = $commit
+    sourceWorkingTreeSnapshot = [bool]$IncludeWorkingTree
+    sourceWorkingTreeDirty = [bool]$unexpectedTrackedChanges.Count
     archive = [IO.Path]::GetFileName($archive)
     sha256 = $hash
     entries = $entries.Count

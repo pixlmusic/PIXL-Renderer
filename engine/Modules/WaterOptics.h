@@ -40,6 +40,7 @@ public:
 	Settings settings;
 	winrt::com_ptr<ID3D11ShaderResourceView> causticsView;
 	winrt::com_ptr<ID3D11ShaderResourceView> foamStencilView;
+	winrt::com_ptr<ID3D11ShaderResourceView> rapidWaterView;
 	virtual inline std::string GetName() override { return "Water Optics"; }
 	virtual std::string GetDisplayName() override { return T("feature.water_optics.name", "Water Optics"); }
 	/** @brief Returns the short identifier used for file paths and logging. */
@@ -69,10 +70,10 @@ public:
 		return stage == CachedShaderStage::Pixel && HasShaderDefine(shaderType);
 	}
 
-	/** @brief Loads the water caustics and linear foam-mask textures from disk. */
+	/** @brief Loads water optics, rapid-water coverage, and linear foam-mask textures from disk. */
 	virtual void SetupResources() override;
 
-	/** @brief Binds the caustics and foam-mask SRVs to the pixel shader. */
+	/** @brief Binds water optics, rapid-water coverage, and foam-mask SRVs to the pixel shader. */
 	virtual void Prepass() override;
 	virtual void DrawSettings() override;
 	virtual void LoadSettings(json& o_json) override;

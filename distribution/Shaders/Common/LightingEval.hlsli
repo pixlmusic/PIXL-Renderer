@@ -152,13 +152,18 @@ void EvaluateLegacyPhysicalDirect(DirectContext context, MaterialProperties mate
 	const float VdotH = saturate(dot(V, H));
 	const float safeNdotL = max(NdotL, EPSILON_DOT_CLAMP);
 	const float3 lightColor = context.lightColor * context.detailedShadow * Color::PBRLightingCompensation;
+	// Roughness is filtered once in Lighting.hlsl before the directional and
+	// point-light loops. Re-evaluating screen-space derivatives here would both
+	// double-filter legacy materials and make derivatives undefined in the
+	// variable-length point-light loop.
+	const float roughness = material.Roughness;
 
 	lightingOutput.diffuse = NdotL * lightColor * BRDF::Diffuse_Lambert();
 
 	[branch] if (any(material.F0 > 0.0f))
 	{
-		const float D = BRDF::D_GGX(material.Roughness, NdotH);
-		const float visibility = BRDF::Vis_SmithJointApprox(material.Roughness, NdotV, safeNdotL);
+		const float D = BRDF::D_GGX(roughness, NdotH);
+		const float visibility = BRDF::Vis_SmithJointApprox(roughness, NdotV, safeNdotL);
 		const float3 F = BRDF::F_Schlick(material.F0, VdotH);
 		const float legacySpecularScale = max(SharedData::materialForgeSettings.LegacyPhysicalSpecularScale, 0.0f);
 
@@ -166,7 +171,7 @@ void EvaluateLegacyPhysicalDirect(DirectContext context, MaterialProperties mate
 		float3 energyCompensation = float3(1.0f, 1.0f, 1.0f);
 		[branch] if (SharedData::materialForgeSettings.EnableGGXMultiScatter != 0)
 			energyCompensation = BRDF::GGXMultiScatterCompensation(
-				material.F0, material.Roughness, NdotV,
+				material.F0, roughness, NdotV,
 				SharedData::materialForgeSettings.GGXMultiScatterStrength * material.Metallic);
 		lightingOutput.specular = D * visibility * F * energyCompensation * NdotL * lightColor * legacySpecularScale;
 	}

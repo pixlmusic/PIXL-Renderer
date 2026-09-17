@@ -345,9 +345,12 @@ Texture2D<float4> FlowMapTex : register(t8);
 Texture2D<float4> FlowMapNormalsTex : register(t9);
 Texture2D<float4> SSRReflectionTex : register(t10);
 Texture2D<float4> RawSSRReflectionTex : register(t11);
-// WaterOptics reserves t65 for receiver caustics and t66 for this linear,
-// high-resolution foam-coverage mask. The mask contains no baked flow direction.
+// WaterOptics reserves t65 for receiver caustics, t66 for the linear,
+// high-resolution foam-coverage mask, and t67 for the game's authored rapid-water
+// artwork. The rapid layer is projected in world space and advected by flow so
+// it follows tessellated/displaced water rather than a legacy flat overlay.
 Texture2D<float> WaterFoamStencil : register(t66);
+Texture2D<float4> AuthoredRapidWater : register(t67);
 
 cbuffer PerTechnique : register(b0)
 {
@@ -1136,9 +1139,26 @@ float GetDynamicWaterFoam(PS_INPUT input, float3 surfaceNormal)
 	float contactFoam = shallowContact * contactActivity;
 	float convergenceFoam = flowChange * smoothstep(0.22f, 0.75f, foamStencil);
 
+	// Re-project the vanilla whitewater artwork onto the current water surface.
+	// Two phase-shifted samples preserve the authored breakup while avoiding a
+	// rigid, camera-relative decal. The flow mask suppresses it on still lakes;
+	// strong flow and convergence make rapids visible without requiring users to
+	// disable the game's water effects.
+	float2 rapidAdvection = flowDirection * SharedData::Timer * lerp(0.018f, 0.082f, flowStrength);
+	float2 rapidUv0 = absolutePosition.xy * (0.0105f * foamScale) - rapidAdvection;
+	float2 rapidUv1 = absolutePosition.xy * (0.0165f * foamScale) + rapidAdvection.yx * float2(-0.62f, 0.62f) + 0.37f;
+	float rapid0 = dot(AuthoredRapidWater.SampleGrad(
+		SampColorSampler, rapidUv0, ddx_coarse(rapidUv0), ddy_coarse(rapidUv0)).rgb, 0.333333f.xxx);
+	float rapid1 = dot(AuthoredRapidWater.SampleGrad(
+		SampColorSampler, rapidUv1, ddx_coarse(rapidUv1), ddy_coarse(rapidUv1)).rgb, 0.333333f.xxx);
+	float rapidPattern = smoothstep(0.26f, 0.72f, rapid0 * 0.62f + rapid1 * 0.38f);
+	float rapidActivity = smoothstep(0.16f, 0.62f, flowStrength) *
+		saturate(0.38f + flowChange * 1.45f);
+	float authoredRapidFoam = rapidPattern * rapidActivity;
+
 	// Foam is now entirely water-owned: no player-centred projected wake and no
 	// camera-relative component. Flow/contact coverage is applied as a pixel layer.
-	float foam = contactFoam * 0.82f + convergenceFoam * 0.58f;
+	float foam = max(contactFoam * 0.82f + convergenceFoam * 0.58f, authoredRapidFoam * 0.92f);
 	return saturate(
 		foam * lerp(0.22f, 1.0f, foamStencil) *
 		SharedData::waterOpticsSettings.FoamStrength);
@@ -1287,6 +1307,15 @@ PS_OUTPUT main(PS_INPUT input)
 #			endif
 
 	float3 normal = waterData.normal;
+    // Recover the large-scale surface orientation from actual rasterized
+    // geometry. Flat water is unchanged; displaced water tilts the existing
+    // PIXL ripple normal so Fresnel and reflections follow the wave surface.
+    float3 surfaceCross = cross(ddx(input.WPosition.xyz), ddy(input.WPosition.xyz));
+    float surfaceLengthSq = dot(surfaceCross, surfaceCross);
+    float3 surfaceNormal = surfaceLengthSq > 1e-12 ? surfaceCross * rsqrt(surfaceLengthSq) : float3(0, 0, 1);
+    surfaceNormal *= surfaceNormal.z < 0 ? -1 : 1;
+    float3 tilt = float3(-surfaceNormal.y, surfaceNormal.x, 0);
+    normal = normalize(normal + cross(tilt, normal) + cross(tilt, cross(tilt, normal)) / max(1 + surfaceNormal.z, 1e-4));
 #			if USE_PIXL_WATER_OPTICS
 	float mainNormalVariance = max(dot(ddx_coarse(normal), ddx_coarse(normal)), dot(ddy_coarse(normal), ddy_coarse(normal)));
 	// Preserve readable night reflections while still widening highlights where

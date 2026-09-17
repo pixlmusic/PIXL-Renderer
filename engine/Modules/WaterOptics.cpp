@@ -170,6 +170,22 @@ void WaterOptics::SetupResources()
 	} else {
 		logger::info("[PIXL Water Optics] Loaded 2048x2048 flow/contact foam stencil with generated mips");
 	}
+
+	rapidWaterView = nullptr;
+	// Reuse the game's authored rapid-water artwork as a projected layer. The
+	// shader advects it through the flow map, so it follows tessellated/displaced
+	// water instead of remaining a flat legacy overlay. It is optional and the
+	// procedural path remains available if a texture replacer removes it.
+	constexpr auto rapidWaterPath = L"Data\\Textures\\effects\\fxwhitewater01noalpha.dds";
+	const auto rapidResult = DirectX::CreateDDSTextureFromFile(
+		device, context, rapidWaterPath, nullptr, rapidWaterView.put());
+	if (FAILED(rapidResult) || !rapidWaterView) {
+		logger::warn(
+			"[PIXL Water Optics] Optional authored rapid-water texture unavailable (HRESULT 0x{:08X}); using procedural flow foam",
+			static_cast<std::uint32_t>(rapidResult));
+	} else {
+		logger::info("[PIXL Water Optics] Loaded authored rapid-water artwork for tessellated projection");
+	}
 }
 
 void WaterOptics::Prepass()
@@ -177,7 +193,7 @@ void WaterOptics::Prepass()
 	auto context = globals::d3d::context;
 	if (!context)
 		return;
-	ID3D11ShaderResourceView* srvs[] = { causticsView.get(), foamStencilView.get() };
+	ID3D11ShaderResourceView* srvs[] = { causticsView.get(), foamStencilView.get(), rapidWaterView.get() };
 	context->PSSetShaderResources(65, static_cast<UINT>(std::size(srvs)), srvs);
 }
 

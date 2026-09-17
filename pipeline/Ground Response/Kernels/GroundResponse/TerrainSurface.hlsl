@@ -1271,11 +1271,36 @@ TERRAIN_POINT DSMain(
                 snowActivation,
                 mudActivation);
 
+            // A valid nearby water plane acts like persistent rain at the
+            // shoreline. This is restricted to terrain just above the water
+            // surface, so dry ground in the same cell remains unchanged.
+            const float snowMask =
+                GroundResponseRuntime::GetSnowSurfaceMask(snowCoverage);
+            mudActivation = max(
+                mudActivation,
+                (1.0f - snowMask) *
+                    GroundResponseRuntime::GetWaterShoreMudActivation(
+                        output.GroundBaseWorldPosition));
+
+            // Keep the physical shell and packed floor tied to the locally
+            // augmented activation. The ordinary helpers intentionally use
+            // weather-only activation for other callers; using them here
+            // would make shoreline mud influence compression without giving
+            // the terrain the matching raised layer.
+            const float snowThickness =
+                max(GroundRuntimeSnowSurfaceThickness, 0.0f);
+            const float mudThickness =
+                GroundResponseRuntime::GetMudSurfaceThickness();
             float baseSurfaceThickness =
-                GroundResponseRuntime::GetUnifiedSurfaceThickness(snowCoverage) *
+                (snowThickness * snowActivation +
+                 mudThickness * mudActivation) *
                 slopeMask;
+            const float snowFloor =
+                min(snowThickness, max(0.75f, snowThickness * 0.12f));
+            const float mudFloor =
+                min(mudThickness, max(0.08f, mudThickness * 0.02f));
             float baseCompressedFloor =
-                GroundResponseRuntime::GetUnifiedCompressedFloor(snowCoverage) *
+                (snowFloor * snowActivation + mudFloor * mudActivation) *
                 slopeMask;
 
             // GroundBaseWorldPosition is camera-relative in this terrain path.

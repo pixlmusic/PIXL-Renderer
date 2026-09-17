@@ -102,7 +102,7 @@ struct WindowLife : RenderModule
         // Distance LOD and pane discrimination.
         float DistanceFadeStart = 2400.0f;
         float DistanceFadeEnd = 7600.0f;
-        float PaneThreshold = 0.15f;
+        float PaneThreshold = 0.20f;
         float PaneSoftness = 0.15f;
 
         // Stable procedural room grid and event cadence.
@@ -125,7 +125,7 @@ struct WindowLife : RenderModule
         // architectural variation without exposing implementation internals.
         float EnvironmentReflectionStrength = 0.42f;
         float InteriorLightingResponse = 0.34f;
-        float WeatherGlassResponse = 0.36f;
+        float WeatherGlassResponse = 0.62f;
         float SunGlintStrength = 0.24f;
         float DirectionalRevealStrength = 0.22f;
         float RoomVariationStrength = 0.12f;

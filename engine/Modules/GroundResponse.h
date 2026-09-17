@@ -70,7 +70,7 @@ public:
 		float GeometryTessellationFarDistance = 2048.0f;
 		float SnowCoverageThreshold = 0.06f;
 		float SnowCoverageFeather = 0.20f;
-		float MudMaximumDepth = 10.0f;
+		float MudMaximumDepth = 36.0f;
 		float GroundNormalStrength = 1.0f;
 		float SnowCompactionDarkening = 0.28f;
 		float MudDarkening = 0.48f;

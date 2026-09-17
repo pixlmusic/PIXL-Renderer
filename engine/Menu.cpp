@@ -463,6 +463,14 @@ void Menu::Load(json& o_json)
 	loadComboList(o_json, "ShaderBlockNextKey", settings.ShaderBlockNextKey);
 	loadComboList(o_json, "ScreenshotKey", settings.ScreenshotKey);
 
+	// Older configurations used Page Down for both the Tuner and shader-block
+	// stepping. Preserve the user's Tuner binding and migrate only the colliding
+	// developer bindings to the new Shift+Page Up/Down defaults.
+	if (settings.ShaderBlockPrevKey == settings.ToggleKey)
+		settings.ShaderBlockPrevKey = { InputCombo::Keyboard(VK_SHIFT), InputCombo::Keyboard(VK_PRIOR) };
+	if (settings.ShaderBlockNextKey == settings.ToggleKey)
+		settings.ShaderBlockNextKey = { InputCombo::Keyboard(VK_SHIFT), InputCombo::Keyboard(VK_NEXT) };
+
 	// Legacy support: If old config has Theme data and no SelectedThemePreset, load it
 	if (o_json.contains("Theme") && o_json["Theme"].is_object() && settings.SelectedThemePreset.empty()) {
 		bool hasFontRoles = o_json["Theme"].contains("FontRoles");
@@ -937,7 +945,7 @@ void Menu::DrawSettings()
 				ImGui::TextColored(
 					PIXLUI::ToVec4(
 						PIXLUI::Colors::CyanSoft),
-					"VERSION 1.0");
+					"VERSION 1.0.2");
 				ImGui::SetWindowFontScale(1.0f);
 			}
 
@@ -1078,7 +1086,7 @@ void Menu::DrawSettings()
 					ImGui::TextColored(
 						PIXLUI::ToVec4(
 							PIXLUI::Colors::CyanSoft),
-						"VERSION 1.0");
+					"VERSION 1.0.2");
 					ImGui::SetWindowFontScale(1.0f);
 				}
 

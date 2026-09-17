@@ -380,9 +380,15 @@ void MaterialLayers::DrawSettings()
 			DataLoaded();
 
 		ImGui::SeparatorText("Authored / Object POM");
-		ImGui::SliderFloat("Object Authored Depth", &tuningSettings.ObjectAuthoredDepthScale, 0.10f, 3.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Object Auto-POM Depth", &tuningSettings.ObjectAutoHeightScale, 0.001f, 0.050f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Object Max Texel Shift", &tuningSettings.ObjectMaxTexelShift, 1.0f, 32.0f, "%.1f texels", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat("Object Authored Depth", &tuningSettings.ObjectAuthoredDepthScale, 0.10f, 4.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Scales displacement from authored PBR/CM height data. Higher values make relief more pronounced; the texel-shift limit below still protects against stretched UVs.");
+		ImGui::SliderFloat("Object Auto-POM Depth", &tuningSettings.ObjectAutoHeightScale, 0.001f, 0.080f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Scales synthetic relief when a material has no usable authored height. Higher values improve depth on ordinary texture replacers but cost more and can exaggerate noisy albedo.");
+		ImGui::SliderFloat("Object Max Texel Shift", &tuningSettings.ObjectMaxTexelShift, 1.0f, 64.0f, "%.1f texels", ImGuiSliderFlags_AlwaysClamp);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Maximum visible UV displacement. Raise this together with depth when the effect appears capped; lower it if silhouettes stretch at grazing angles.");
 		ImGui::SliderFloat("Object Grazing Protection", &tuningSettings.ObjectGrazingProtection, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat("Object Fade Start", &tuningSettings.ObjectFadeStart, 128.0f, 2048.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat("Object Fade End", &tuningSettings.ObjectFadeEnd, 512.0f, 4096.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);

@@ -1,21 +1,43 @@
-﻿#pragma once
+#pragma once
 
 #include "WeatherVariableRegistry.h"
+
+#include <cstdint>
 #include <map>
 #include <string>
 
 using json = nlohmann::json;
 
 /**
- * @brief Manages per-weather feature settings and drives weather-dependent variable interpolation.
+ * @brief Central PIXL weather authority.
  *
- * Loads weather-specific JSON overrides from disk, caches them in memory, and
- * each frame interpolates registered weather variables between the outgoing and
- * incoming weather states using the engine's transition lerp factor.
+ * Keeps the existing exact TESWeather override system intact while also exposing
+ * one semantic live-weather context for renderer modules that need rain, snow,
+ * cloud/fog, wind and persistence signals. Exact per-weather JSON remains an
+ * artist/user override layer; semantic context never pretends to be a saved
+ * override and therefore does not lock WeatherUI controls.
  */
 class WeatherManager
 {
 public:
+	enum class WeatherClass : std::uint8_t
+	{
+		Unknown = 0,
+		Clear,
+		Cloudy,
+		Rain,
+		Storm,
+		Snow,
+		Special
+	};
+
+	enum class WeatherSource : std::uint8_t
+	{
+		Game = 0,
+		EngineOverride,
+		Director
+	};
+
 	/** @brief Returns the global singleton instance. */
 	static WeatherManager* GetSingleton()
 	{
@@ -23,85 +45,86 @@ public:
 		return &singleton;
 	}
 
-	/** @brief Snapshot of the current and previous weather with the engine transition factor. */
+	/** @brief Snapshot of the active Skyrim weather transition. */
 	struct CurrentWeathers
 	{
 		RE::TESWeather* currentWeather = nullptr;
 		RE::TESWeather* lastWeather = nullptr;
-		float lerpFactor = 0.0f;
+		float lerpFactor = 1.0f;
 	};
 
-	/**
-	 * @brief Queries the engine for the active weather transition state.
-	 *
-	 * Caches the last weather pointer to handle cases where the engine clears
-	 * it before the transition lerp factor reaches 1.0.
-	 *
-	 * @return Current weather pair and interpolation factor.
-	 */
+	/** @brief Renderer-facing semantic weather state. */
+	struct WeatherContext
+	{
+		CurrentWeathers transition{};
+		WeatherClass weatherClass = WeatherClass::Unknown;
+		WeatherSource source = WeatherSource::Game;
+
+		bool exterior = false;
+		bool overrideActive = false;
+
+		float precipitation = 0.0f;
+		float rainIntensity = 0.0f;
+		float snowIntensity = 0.0f;
+		float cloudiness = 0.0f;
+		float fogIntensity = 0.0f;
+		float storminess = 0.0f;
+		float windIntensity = 0.0f;
+		float sunVisibility = 1.0f;
+
+		// Slowly varying environment memory. These are renderer signals only;
+		// GroundResponse/ActorSurfaceEffects still own their physical material state.
+		float wetnessTarget = 0.0f;
+		float persistentWetness = 0.0f;
+		float residualHumidity = 0.0f;
+		float snowfallMemory = 0.0f;
+	};
+
+	/** @brief Queries Skyrim for the current transition with interrupted-transition protection. */
 	CurrentWeathers GetCurrentWeathers();
 
+	/** @brief Returns an up-to-date semantic context, advancing persistence at most once per rendered frame. */
+	const WeatherContext& GetContext();
+
+	/** @brief Classifies any TESWeather without requiring a hard-coded weather-mod list. */
+	WeatherClass ClassifyWeather(RE::TESWeather* weather) const;
+
 	/**
-	 * @brief Loads all per-weather JSON settings files from the Weathers directory into the in-memory cache.
+	 * @brief Tags a temporary engine weather override with its PIXL owner.
 	 *
-	 * Scans the PIXLRenderer/Weathers/ directory for .json files and populates
-	 * the internal cache keyed by weather form identifier.
+	 * This does not call ForceWeather/SetWeather and never owns restoration. Director
+	 * continues to own its existing snapshot/restore transaction; WeatherManager only
+	 * reports the source correctly to renderer consumers and diagnostics.
 	 */
+	void SetTemporaryWeatherSource(WeatherSource source, bool active);
+
+	/** @brief Loads all exact per-weather JSON settings from Data/.../World/Weather. */
 	void LoadPerWeatherSettingsFromDisk();
 
-	/**
-	 * @brief Per-frame update that detects weather changes and interpolates registered feature variables.
-	 *
-	 * Manages transition lifecycle (begin/end) and lerps all weather-registered
-	 * variables between outgoing and incoming weather override values.
-	 */
+	/** @brief Updates exact per-weather registered feature overrides and semantic context. */
 	void UpdateFeatures();
 
-	/**
-	 * @brief Persists feature settings for a specific weather to both cache and disk.
-	 *
-	 * If settings is an empty object, the feature entry is removed from the weather file.
-	 * If all feature entries are removed, the weather file itself is deleted.
-	 *
-	 * @param weather The weather form to associate settings with.
-	 * @param featureName Short name of the feature owning these settings.
-	 * @param settings JSON object containing the feature's weather-specific overrides.
-	 */
+	/** @brief Persists exact feature settings for a TESWeather to cache and disk. */
 	void SaveSettingsToWeather(RE::TESWeather* weather, const std::string& featureName, const json& settings);
 
 	/**
-	 * @brief Loads cached feature settings for a specific weather.
+	 * @brief Loads an exact saved override only.
 	 *
-	 * Returns false if no override exists or the override's __enabled flag is false.
-	 *
-	 * @param weather The weather form to look up.
-	 * @param featureName Short name of the feature to retrieve settings for.
-	 * @param o_json Output parameter receiving the feature's weather-specific settings.
-	 * @return True if enabled settings were found and written to o_json.
+	 * Automatic semantic weather response is intentionally not returned here so the
+	 * existing WeatherUI only locks controls for explicit user/artist overrides.
 	 */
 	bool LoadSettingsFromWeather(RE::TESWeather* weather, const std::string& featureName, json& o_json);
 
-	/**
-	 * @brief Generates a stable string key for a weather form, used as the cache and filename identifier.
-	 * @param weather The weather form to generate a key for.
-	 * @return A string uniquely identifying the weather form and its source plugin.
-	 */
+	/** @brief Generates a stable local-form/plugin key used by existing weather JSON files. */
 	static std::string GetWeatherKey(RE::TESWeather* weather);
 
-	/**
-	 * @brief Removes all cached feature settings for a specific weather.
-	 * @param weather The weather form whose cached settings should be erased.
-	 */
+	/** @brief Removes all cached exact feature settings for one weather. */
 	void ClearAllFeatureSettingsForWeather(RE::TESWeather* weather);
 
-	/**
-	 * @brief Checks whether any cached settings exist for the given weather.
-	 * @param weather The weather form to check.
-	 * @return True if the cache contains at least one feature entry for this weather.
-	 */
+	/** @brief Returns true when the exact-weather cache contains any entries for this weather. */
 	bool HasWeatherSettings(RE::TESWeather* weather) const;
 
-	/** @brief Clears all cached per-weather settings and resets the weather state tracker. */
+	/** @brief Clears exact settings plus transition/context tracking state. */
 	void ClearCache();
 
 private:
@@ -110,12 +133,23 @@ private:
 	WeatherManager(const WeatherManager&) = delete;
 	WeatherManager& operator=(const WeatherManager&) = delete;
 
-	// Cache of all loaded per-weather settings: weatherKey -> featureName -> settings
+	void UpdateWeatherContext();
+	static float GetWeatherPrecipitationDensity(RE::TESWeather* weather);
+	static float ClassCloudiness(WeatherClass weatherClass);
+	static float ClassFog(WeatherClass weatherClass);
+	static float ClassWind(WeatherClass weatherClass);
+	static float ClassStorminess(WeatherClass weatherClass);
+
+	// Exact saved overrides: weatherKey -> featureName -> settings.
 	std::map<std::string, std::map<std::string, json>> perWeatherSettingsCache;
 
-	// Track last known weather state to detect changes
-	CurrentWeathers lastKnownWeather;
-
-	// Cached last weather - sky->lastWeather can be cleared before currentWeatherPct reaches 1.0
+	CurrentWeathers lastKnownWeather{};
 	RE::TESWeather* cachedLastWeather = nullptr;
+	RE::TESWeather* lastObservedCurrentWeather = nullptr;
+
+	WeatherContext context{};
+	std::uint32_t contextFrame = ~0u;
+
+	bool temporarySourceActive = false;
+	WeatherSource temporarySource = WeatherSource::Game;
 };

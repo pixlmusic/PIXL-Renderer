@@ -1,0 +1,91 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory=$true)][string]$BasePackageDirectory,
+    [Parameter(Mandatory=$true)][string]$SurfaceTidesSource,
+    [string]$SurfaceTidesSourceArchive = "",
+    [string]$OutputDirectory = "",
+    [string]$ArchivePath = ""
+)
+
+$ErrorActionPreference = 'Stop'
+$repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$base = (Resolve-Path -LiteralPath $BasePackageDirectory).Path
+$surface = (Resolve-Path -LiteralPath $SurfaceTidesSource).Path
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$allowedRoot = [IO.Path]::GetFullPath((Join-Path $repo 'dist'))
+if (!$OutputDirectory) { $OutputDirectory = Join-Path $allowedRoot "PIXL-Renderer-1.0.2-FOMOD-$stamp" }
+if (!$ArchivePath) { $ArchivePath = "$OutputDirectory.zip" }
+$output = [IO.Path]::GetFullPath($OutputDirectory)
+$archive = [IO.Path]::GetFullPath($ArchivePath)
+
+function Assert-Output([string]$path) {
+    if (!$path.StartsWith($allowedRoot.TrimEnd('\') + '\',[StringComparison]::OrdinalIgnoreCase)) {
+        throw "Output must remain under $allowedRoot"
+    }
+    if ([string]::Equals($path.TrimEnd('\'),$allowedRoot.TrimEnd('\'),[StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Refusing to use the dist root itself.'
+    }
+}
+function Copy-Tree([string]$source,[string]$destination) {
+    if (!(Test-Path -LiteralPath $source)) { throw "Missing source: $source" }
+    New-Item -ItemType Directory -Path $destination -Force | Out-Null
+    Copy-Item -Path (Join-Path $source '*') -Destination $destination -Recurse -Force
+}
+
+Assert-Output $output
+Assert-Output $archive
+if (Test-Path -LiteralPath $output) { throw "Output already exists: $output" }
+if (Test-Path -LiteralPath $archive) { throw "Archive already exists: $archive" }
+
+foreach ($required in @(
+    'PIXL-RENDERER.manifest.json',
+    'SKSE\Plugins\PIXLRenderer.dll',
+    'Shaders\Water.hlsl'
+)) {
+    if (!(Test-Path -LiteralPath (Join-Path $base $required))) { throw "Incomplete PIXL package: $required" }
+}
+$surfaceDll = Join-Path $surface 'build\windows\Release\SurfaceTides.dll'
+$surfaceShader = Join-Path $surface 'Data\Shaders\SurfaceTides\Water.hlsl'
+$surfacePixlIni = Join-Path $repo 'installer\PIXLRenderer\SurfaceTides-PIXL-1.0.2.ini'
+if (!(Test-Path -LiteralPath $surfaceDll)) { throw "Missing SurfaceTides bridge DLL: $surfaceDll" }
+if (!(Test-Path -LiteralPath $surfaceShader)) { throw "Missing SurfaceTides bridge shader: $surfaceShader" }
+if (!(Test-Path -LiteralPath $surfacePixlIni)) { throw "Missing PIXL SurfaceTides preset: $surfacePixlIni" }
+
+$core = Join-Path $output 'PIXL-Core'
+$bridge = Join-Path $output 'PIXL-Optional\SurfaceTides-1.0.2'
+$bridgeDocs = Join-Path $bridge 'SKSE\Plugins\PIXL\Documentation\SurfaceTidesBridge'
+Copy-Tree $base $core
+Copy-Tree (Join-Path $repo 'installer\PIXLRenderer\fomod') (Join-Path $output 'fomod')
+Copy-Tree (Join-Path $repo 'installer\PIXLRenderer\images') (Join-Path $output 'fomod\images')
+Copy-Item -LiteralPath (Join-Path $repo 'installer\PIXLRenderer\PIXL-INSTALLER-NOTICE.md') -Destination (Join-Path $core 'PIXL-INSTALLER-NOTICE.md')
+
+New-Item -ItemType Directory -Path (Join-Path $bridge 'SKSE\Plugins'),(Join-Path $bridge 'Shaders\SurfaceTides'),$bridgeDocs -Force | Out-Null
+Copy-Item -LiteralPath $surfaceDll -Destination (Join-Path $bridge 'SKSE\Plugins\SurfaceTides.dll')
+Copy-Item -LiteralPath $surfaceShader -Destination (Join-Path $bridge 'Shaders\SurfaceTides\Water.hlsl')
+Copy-Item -LiteralPath $surfacePixlIni -Destination (Join-Path $bridge 'SKSE\Plugins\SurfaceTides.ini')
+Copy-Item -LiteralPath (Join-Path $repo 'docs\SURFACETIDES-UPSTREAM.md') -Destination (Join-Path $bridgeDocs 'INSTALL-AND-SOURCE.md')
+foreach ($notice in @('LICENSE','THIRD_PARTY.md')) {
+    $sourceNotice = Join-Path $surface $notice
+    if (Test-Path -LiteralPath $sourceNotice) { Copy-Item -LiteralPath $sourceNotice -Destination $bridgeDocs }
+}
+if (Test-Path -LiteralPath (Join-Path $surface 'licenses')) {
+    Copy-Item -LiteralPath (Join-Path $surface 'licenses') -Destination $bridgeDocs -Recurse
+}
+if ($SurfaceTidesSourceArchive) {
+    $sourceArchive = (Resolve-Path -LiteralPath $SurfaceTidesSourceArchive).Path
+    Copy-Item -LiteralPath $sourceArchive -Destination (Join-Path $bridgeDocs 'SurfaceTides-1.0.2-PIXL-Source.zip')
+}
+
+& (Join-Path $repo 'tools\TestPixlFomod.ps1') -PackageDirectory $output -SchemaPath (Join-Path $surface 'tools\fomod\ModConfig5.0.xsd')
+
+$sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
+if (!(Test-Path -LiteralPath $sevenZip)) { throw '7-Zip is required to create the release archive.' }
+Push-Location $output
+try { & $sevenZip a -tzip -mx=7 $archive '.' | Out-Host }
+finally { Pop-Location }
+if ($LASTEXITCODE -ne 0) { throw '7-Zip archive creation failed.' }
+& $sevenZip t $archive | Out-Host
+if ($LASTEXITCODE -ne 0) { throw 'FOMOD archive verification failed.' }
+$hash = (Get-FileHash -LiteralPath $archive).Hash
+Write-Host "PIXL FOMOD: $archive"
+Write-Host "SHA256: $hash"

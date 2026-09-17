@@ -11,6 +11,7 @@
 #include "RainResponse.h"
 #include "SeasonIntegration.h"
 #include "TerrainField.h"
+#include "WeatherManager.h"
 
 
 #include "State.h"
@@ -104,26 +105,8 @@ static constexpr uint TERRAIN_DEBUG_FOCUS_DIRECTIONAL_SHADOW = 1u << 3;
 
 static float ResolveGroundSnowIntensity()
 {
-	auto* sky = globals::game::sky;
-	if (!sky || sky->mode.get() != RE::Sky::Mode::kFull || !sky->IsSnowing())
-		return 0.0f;
-
-	auto weatherDensity = [](RE::TESWeather* weather) -> float {
-		if (!weather || !weather->precipitationData)
-			return 0.0f;
-
-		const float density = weather->precipitationData->GetSettingValue(
-			RE::BGSShaderParticleGeometryData::DataID::kParticleDensity).f;
-		return std::clamp(density / 3.0f, 0.0f, 1.0f);
-	};
-
-	const float weatherPct = std::clamp(sky->currentWeatherPct, 0.0f, 1.0f);
-	float intensity = std::lerp(
-		weatherDensity(sky->lastWeather),
-		weatherDensity(sky->currentWeather),
-		weatherPct);
-	intensity = std::max(intensity, 0.38f);
-	return std::pow(std::clamp(intensity, 0.0f, 1.0f), 0.78f);
+	const auto& weather = WeatherManager::GetSingleton()->GetContext();
+	return std::clamp(weather.snowIntensity, 0.0f, 1.0f);
 }
 
 // TerrainSeam intentionally enables alpha blending for its deferred terrain replay.
@@ -1284,10 +1267,10 @@ namespace
 				std::max(
 					a_ground.settings.SnowSurfaceThickness *
 						0.30f,
-					a_ground.settings.MudMaximumDepth *
-						0.20f),
+						a_ground.settings.MudMaximumDepth *
+							0.26f),
 				1.5f,
-				5.0f);
+				8.0f);
 
 		const float baseThickness =
 			mudThickness *
@@ -3411,10 +3394,10 @@ void GroundResponse::DrawSettings()
 				std::clamp(
 					std::max(
 						settings.SnowSurfaceThickness * 0.30f,
-						settings.MudMaximumDepth * 0.20f),
+						settings.MudMaximumDepth * 0.26f),
 					1.5f,
-					5.0f);
-			ImGui::TextDisabled("Wet mud surface thickness: %.2f units (derived)", derivedMudSurfaceThickness);
+					8.0f);
+		ImGui::TextDisabled("Wet mud surface thickness: %.2f units (derived)", derivedMudSurfaceThickness);
 			changed |= ImGui::SliderFloat("Geometry Distance", &settings.GeometryRenderDistance, 384.0f, 4096.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
 			changed |= ImGui::SliderFloat("Geometry Fade Start", &settings.GeometryFadeStart, 256.0f, 4000.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
 			changed |= ImGui::SliderFloat("Minimum Upward Slope", &settings.GeometryMinimumSlopeZ, 0.20f, 0.90f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -3434,14 +3417,14 @@ void GroundResponse::DrawSettings()
 		ImGui::Separator();
 		changed |= ImGui::Checkbox("Mud Ruts", &settings.EnableMudDeformation);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Uses the same persistent world-space capsule trail and raised-shell geometry as snow on wet non-snow landscape. Mud is thinner (roughly 30% of snow thickness, 1.5-5 units) and compresses almost to the original terrain so the original rock/soil detail can show through the rut.");
+			ImGui::TextWrapped("Uses the same persistent world-space capsule trail and raised-shell geometry as snow on wet non-snow landscape. Mud is thinner (roughly 30% of snow thickness, 1.5-8 units) and compresses almost to the original terrain so the original rock/soil detail can show through the rut. Terrain beside valid water planes also receives a restrained wet shoreline layer.");
 		changed |= ImGui::Checkbox("Require Wet Ground", &settings.MudRequiresWetness);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Prevents dry soil and stone landscape layers from looking muddy. Disable to preview mud deformation in any weather.");
 		changed |= ImGui::SliderFloat("Mud Activation", &settings.MudWetnessThreshold, 0.0f, 0.75f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Wetness level required before mud tracks become visible. Lower values react sooner after rain begins.");
-		changed |= ImGui::SliderFloat("Mud Rut Depth", &settings.MudMaximumDepth, 2.0f, 30.0f, "%.1f units", ImGuiSliderFlags_AlwaysClamp);
+		changed |= ImGui::SliderFloat("Mud Rut Depth", &settings.MudMaximumDepth, 2.0f, 48.0f, "%.1f units", ImGuiSliderFlags_AlwaysClamp);
 		changed |= ImGui::SliderFloat("Mud Darkening", &settings.MudDarkening, 0.0f, 1.50f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		// Keep the existing MudRoughness ABI/JSON field, but expose it as the
 		// artist-facing quantity being tuned: wet gloss/specular response.
@@ -4843,7 +4826,7 @@ GroundResponse::GroundData GroundResponse::GetGroundData() const
 		.EnableMudDeformation = settings.EnableMudDeformation ? 1u : 0u,
 		.MudRequiresWetness = settings.MudRequiresWetness ? 1u : 0u,
 		.SnowMaximumDepth = std::clamp(settings.SnowMaximumDepth, 2.0f, 40.0f),
-		.MudMaximumDepth = std::clamp(settings.MudMaximumDepth, 2.0f, 30.0f),
+		.MudMaximumDepth = std::clamp(settings.MudMaximumDepth, 2.0f, 48.0f),
 		.GroundNormalStrength = std::clamp(settings.GroundNormalStrength, 0.0f, 2.5f),
 		.SnowCompactionDarkening = std::clamp(settings.SnowCompactionDarkening, 0.0f, 0.65f),
 		.MudDarkening = std::clamp(settings.MudDarkening, 0.0f, 1.50f),
@@ -4968,7 +4951,7 @@ void GroundResponse::LoadSettings(json& o_json)
 		3200.0f);
 	settings.SnowCoverageThreshold = std::clamp(settings.SnowCoverageThreshold, 0.0f, 0.40f);
 	settings.SnowCoverageFeather = std::clamp(settings.SnowCoverageFeather, 0.02f, 0.50f);
-	settings.MudMaximumDepth = std::clamp(settings.MudMaximumDepth, 2.0f, 30.0f);
+	settings.MudMaximumDepth = std::clamp(settings.MudMaximumDepth, 2.0f, 48.0f);
 	settings.GroundNormalStrength = std::clamp(settings.GroundNormalStrength, 0.0f, 2.5f);
 	settings.SnowCompactionDarkening = std::clamp(settings.SnowCompactionDarkening, 0.0f, 0.65f);
 	settings.MudDarkening = std::clamp(settings.MudDarkening, 0.0f, 1.50f);
@@ -6659,7 +6642,7 @@ ID3D11RasterizerState* GroundResponse::GetTerrainNoCullRasterizer(const D3D11_RA
 
 	// The raised snow/mud shell is rendered against Skyrim/TerrainSeam's
 	// already-populated vanilla terrain depth. At long range or grazing camera
-	// angles, a physically small vertical raise (especially the 1.5-5u mud
+	// angles, a physically small vertical raise (especially the 1.5-8u mud
 	// shell and the final snow fade) can quantize to the same depth value as
 	// the base landscape. The result is the angle-dependent dark striping seen
 	// in the distance.
@@ -6798,9 +6781,9 @@ void GroundResponse::FlushGeometryTelemetry()
 		std::clamp(
 			std::max(
 				settings.SnowSurfaceThickness * 0.30f,
-				settings.MudMaximumDepth * 0.20f),
+				settings.MudMaximumDepth * 0.26f),
 			1.5f,
-			5.0f));
+			8.0f));
 
 	geometryTelemetry = {};
 }
@@ -7791,4 +7774,3 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 }
 
 #undef I18N_KEY_PREFIX
-

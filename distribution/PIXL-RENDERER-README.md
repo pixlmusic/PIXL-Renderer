@@ -1,4 +1,4 @@
-# PIXL Renderer 1.0
+# PIXL Renderer 1.0.2
 
 An integrated DirectX 11 renderer for Skyrim Special Edition.
 
@@ -11,7 +11,23 @@ An integrated DirectX 11 renderer for Skyrim Special Edition.
 - A DirectX 11-capable GPU. DLSS/DLAA require supported NVIDIA hardware and an available runtime.
 - Borderless/windowed mode for frame generation and the optional Neural Rendering sidecar.
 
-Owner testing covers Skyrim SE 1.5.97 and a reported successful GOG test whose executable was verified as 1.6.1179.0. Steam 1.6.1170 remains a separate validation target. Build support alone is not a compatibility guarantee.
+Owner testing covers Skyrim SE 1.5.97, GOG 1.6.1179.0, and Steam 1.6.1170. The SurfaceTides bridge was visually confirmed on Steam 1.6.1170; other runtime combinations still require separate bridge testing.
+
+### Optional SurfaceTides compatibility
+
+PIXL 1.0.2 includes the renderer side of the SurfaceTides bridge. The FOMOD offers
+an optional bridge for the exact SurfaceTides 1.0.2 release. Select it only when
+that original release is already installed. The choice replaces SurfaceTides' DLL,
+water shader and INI with the PIXL-tuned integration preset. It enables
+`AllowPIXL=1` automatically. Back up custom SurfaceTides tuning before selecting
+the integration, then restart through SKSE.
+
+SurfaceTides supplies tessellation/displacement; PIXL retains water shading and
+optics. The preset strengthens and lengthens wilderness waves while the bridge
+scales displacement to 55% in city locations and 25% in interiors. Without SurfaceTides,
+PIXL uses its regular water. The compatibility patch
+is unnecessary once a supported upstream SurfaceTides build implements the bridge.
+Do not carry the bundled replacement DLL into a later SurfaceTides release.
 
 ### Install and first launch
 
@@ -67,7 +83,7 @@ For detailed limits and troubleshooting, see the [compatibility guide](https://g
 
 ### Updating and cache preservation
 
-The release includes a snapshot of the live-tested `PIXL/PipelineLibrary`. Missing or invalidated permutations compile as needed; the bundled cache cannot cover every mod combination. Let compilation finish before evaluating performance. Do not routinely delete the cache: module-scoped updates preserve unaffected stages, while shared ABI/layout changes may require wider recompilation.
+When supplied, `PIXL/PipelineLibrary` is a snapshot of a live-tested cache. Missing or invalidated permutations compile as needed, and no bundled cache can cover every mod combination. Let compilation finish before evaluating performance. Do not routinely delete the cache: module-scoped updates preserve unaffected stages, while shared ABI/layout changes may require wider recompilation.
 
 Update through your mod manager with Skyrim closed. Existing `SKSE/Plugins/PIXL/Config/UserGraphics.json` settings take precedence over new defaults. For a fresh default test, back up that file outside Data and remove the live copy while Skyrim is closed. The ZIP never ships a user config.
 
@@ -78,3 +94,8 @@ Source: [PIXL Renderer on GitHub](https://github.com/pixlmusic/PIXL-Renderer).
 Licences, attribution and source notices are included in
 `SKSE/Plugins/PIXL/Documentation`. This release has owner live-test coverage,
 not an exhaustive hardware, security or mod-compatibility certification.
+
+PIXL Renderer is owner-directed and has been developed through hands-on testing,
+experimentation and substantial AI assistance. AI tools assisted with code,
+documentation, diagnostics and iteration; visual direction, release decisions
+and live game testing remain under PIXL Studio's direction.

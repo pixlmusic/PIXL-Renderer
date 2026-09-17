@@ -1124,7 +1124,7 @@
                         "SunGlintStrength":  0.23999999463558197,
                         "SuppressWindowAutoPOM":  true,
                         "UseExactGlassMasks":  true,
-                        "WeatherGlassResponse":  0.3199999928474426
+                        "WeatherGlassResponse":  0.52
                     },
     "World Probes":  {
                          "EnabledCreator":  0,

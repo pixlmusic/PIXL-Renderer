@@ -11,6 +11,7 @@
 #include "ShaderCache.h"
 #include "SkyBounce.h"
 #include "State.h"
+#include "WeatherManager.h"
 #include "ImageReconstruction.h"
 #include "Renderer/ExternalPostProcessing.h"
 #include "Util.h"
@@ -2765,72 +2766,12 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 	const float frameDelta = std::clamp(static_cast<float>(RE::GetSecondsSinceLastFrame()), 1.0f / 240.0f, 0.1f);
 	const std::uint32_t currentFrame = globals::state ? globals::state->frameCount : 0u;
 
-	// Resolve Stormglass precipitation directly from Skyrim's live Sky singleton.
-	// This is intentionally independent of RainResponse and is evaluated on every
-	// BuildHDRData call so a stale/cached material-weather path cannot suppress the
-	// camera lens effect. RainResponse is fused in below as a secondary signal.
-	const auto resolveDirectSkyRain = []() -> float {
-		auto* sky = RE::Sky::GetSingleton();
-		if (!sky)
-			sky = globals::game::sky;
-		if (!sky || sky->mode.get() != RE::Sky::Mode::kFull)
-			return 0.0f;
-
-		const float weatherPct = std::clamp(sky->currentWeatherPct, 0.0f, 1.0f);
-		const bool currentRainy = sky->currentWeather &&
-			sky->currentWeather->data.flags.any(RE::TESWeather::WeatherDataFlag::kRainy);
-		const bool lastRainy = sky->lastWeather &&
-			sky->lastWeather->data.flags.any(RE::TESWeather::WeatherDataFlag::kRainy);
-		const bool engineRain = sky->IsRaining();
-		const bool engineSnow = sky->IsSnowing();
-		const bool precipitationPresent = sky->precip &&
-			(static_cast<bool>(sky->precip->currentPrecip) || static_cast<bool>(sky->precip->lastPrecip));
-
-		// Transition presence from authored weather flags.
-		float presence = 0.0f;
-		if (currentRainy)
-			presence = std::max(presence, weatherPct);
-		if (lastRainy)
-			presence = std::max(presence, 1.0f - weatherPct);
-
-		// Engine state and an actually-live non-snow precipitation system are
-		// authoritative fallbacks for modded weather with unusual metadata.
-		if (engineRain)
-			presence = std::max(presence, 0.85f);
-		if (precipitationPresent && !engineSnow)
-			presence = std::max(presence, 0.70f);
-
-		if (presence <= 0.001f)
-			return 0.0f;
-
-		// If Skyrim is visibly precipitating, do not allow the optical signal to
-		// collapse into an unusably tiny value. Heavy/settled rain still reaches 1.
-		return std::clamp(0.50f + 0.50f * presence, 0.0f, 1.0f);
-	};
-	const float directSkyRain = resolveDirectSkyRain();
-	const auto resolveDirectSkySnow = []() -> float {
-		auto* sky = RE::Sky::GetSingleton();
-		if (!sky)
-			sky = globals::game::sky;
-		if (!sky || sky->mode.get() != RE::Sky::Mode::kFull || !sky->IsSnowing())
-			return 0.0f;
-
-		auto weatherDensity = [](RE::TESWeather* weather) -> float {
-			if (!weather || !weather->precipitationData)
-				return 0.0f;
-			const float density = weather->precipitationData->GetSettingValue(
-				RE::BGSShaderParticleGeometryData::DataID::kParticleDensity).f;
-			return std::clamp(density / 3.0f, 0.0f, 1.0f);
-		};
-
-		const float weatherPct = std::clamp(sky->currentWeatherPct, 0.0f, 1.0f);
-		float intensity = std::lerp(
-			weatherDensity(sky->lastWeather),
-			weatherDensity(sky->currentWeather),
-			weatherPct);
-		return std::pow(std::clamp(std::max(intensity, 0.38f), 0.0f, 1.0f), 0.78f);
-	};
-	const float directSkySnow = resolveDirectSkySnow();
+	// PIXL weather semantics are resolved once by WeatherManager. RainResponse is
+	// still fused below as a secondary signal so its explicit debug override keeps
+	// working without making CameraSuite depend on the material feature being active.
+	const auto& weatherContext = WeatherManager::GetSingleton()->GetContext();
+	const float directSkyRain = std::clamp(weatherContext.rainIntensity, 0.0f, 1.0f);
+	const float directSkySnow = std::clamp(weatherContext.snowIntensity, 0.0f, 1.0f);
 
 	// Update weather/water optical state once per rendered frame. The same frame
 	// can request a gameplay composite, an FG UI composite and a clean capture;

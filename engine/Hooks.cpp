@@ -19,8 +19,45 @@
 #include "Modules/SkyContinuity.h"
 #include "Modules/ImageReconstruction.h"
 #include "Modules/LightVolumes.h"
+#include "Modules/Waterbody.h"
 
 std::unordered_map<void*, std::pair<std::unique_ptr<uint8_t[]>, size_t>> ShaderBytecodeMap;
+
+// Versioned, synchronous bridge: records are borrowed for this draw only.
+// Compare actual bound objects, never identify a draw from the last setup alone.
+extern "C" __declspec(dllexport) bool PIXL_QueryWaterDrawV1(
+    ID3D11VertexShader* boundVS, ID3D11PixelShader* boundPS,
+    RE::BSGraphics::VertexShader** outVS, RE::BSGraphics::PixelShader** outPS, bool* waterbody)
+{
+    if (!outVS || !outPS || !waterbody) return false;
+    *outVS = nullptr;
+    *outPS = nullptr;
+    *waterbody = false;
+    // Never allow an exception to cross the C ABI boundary. Consumers can keep
+    // this optional bridge installed across PIXL updates: an unavailable or
+    // incompatible host simply reports no match and retains normal PIXL water.
+    try {
+        auto* state = globals::state;
+        auto* cache = globals::shaderCache;
+        if (!boundVS || !boundPS || !state || !cache || !cache->IsEnabled() || !state->currentShader ||
+            state->currentShader->shaderType.get() != RE::BSShader::Type::Water ||
+            !state->enabledClasses[static_cast<unsigned>(RE::BSShader::Type::Water) - 1]) return false;
+        auto* vs = cache->GetVertexShader(*state->currentShader, state->modifiedVertexDescriptor);
+        auto* ps = cache->GetPixelShader(*state->currentShader, state->modifiedPixelDescriptor);
+        if (!vs || !ps || !vs->shader || !ps->shader ||
+            reinterpret_cast<ID3D11VertexShader*>(vs->shader) != boundVS ||
+            reinterpret_cast<ID3D11PixelShader*>(ps->shader) != boundPS) return false;
+        *outVS = vs;
+        *outPS = ps;
+        *waterbody = globals::pipeline::waterbody.loaded;
+        return true;
+    } catch (...) {
+        *outVS = nullptr;
+        *outPS = nullptr;
+        *waterbody = false;
+        return false;
+    }
+}
 
 void RegisterShaderBytecode(void* Shader, const void* Bytecode, size_t BytecodeLength)
 {

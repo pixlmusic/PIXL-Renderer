@@ -180,14 +180,20 @@ int ClassifyDrop(float3 cameraRelativePosition, out int2 pixel)
 
 void WriteSmallImpactSplash(int2 pixel, float intensity, float seed)
 {
-	// Deliberately tiny: one bright contact point and four 1-2px micro-glints.
+	// Micro-splashes were previously unconditional and ignored their user control,
+	// producing bright white 5-pixel star artifacts on thin geometry. Keep the
+	// optional effect available, but make the default path a single subdued contact.
+	float splashStrength = saturate(SharedData::rainResponseSettings.RainImpactSplashStrength);
+	if (SharedData::rainResponseSettings.EnableSplashes == 0 || splashStrength <= 1e-4f)
+		return;
+	intensity *= splashStrength;
 	WriteMask(pixel, intensity);
-	WriteMask(pixel + int2(-1, 0), intensity * 0.48f);
-	WriteMask(pixel + int2( 1, 0), intensity * 0.48f);
+	/*
 
 	int side = seed < 0.5f ? -1 : 1;
 	WriteMask(pixel + int2(side, -1), intensity * 0.34f);
 	WriteMask(pixel + int2(-side * 2, -1), intensity * 0.22f);
+	*/
 }
 
 void WriteWorldDrop(float3 cameraRelativePosition, float intensity)
@@ -439,12 +445,9 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 		lerp(0.50f, 0.98f, mergedCharge),
 		length(headPosition));
 
-	// Heavy storms can briefly connect the bead into a short filament. This is
-	// still world-space: every tail point is a separate 3D position projected by
-	// the current camera. Only three segments are used to keep cost bounded.
-	float streaminess =
-		smoothstep(0.58f, 0.92f, rain) *
-		smoothstep(0.48f, 0.86f, mergedCharge);
+	// Keep roof runoff as individual droplets. The previous connected filament
+	// made distant eaves read as bright lines and amplified temporal artifacts.
+	float streaminess = 0.0f;
 
 	[unroll]
 	for (int i = 1; i <= 3; ++i) {

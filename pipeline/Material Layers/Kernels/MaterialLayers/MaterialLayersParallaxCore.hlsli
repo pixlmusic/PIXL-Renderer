@@ -15,6 +15,12 @@
 #ifndef PIXL_AUTO_PARALLAX_MIN_TEXEL_SHIFT
 #	define PIXL_AUTO_PARALLAX_MIN_TEXEL_SHIFT 0.25f
 #endif
+#ifndef PIXL_AUTHORED_POM_DEPTH_GAIN
+#	define PIXL_AUTHORED_POM_DEPTH_GAIN 1.55f
+#endif
+#ifndef PIXL_AUTO_POM_DEPTH_GAIN
+#	define PIXL_AUTO_POM_DEPTH_GAIN 1.45f
+#endif
 
 #if defined(LANDSCAPE)
 	float2 GetParallaxCoords(PS_INPUT input, float distance, float2 coords, float mipLevels[6], float maxTexDim, float3 viewDir, float3x3 tbn, float noise, DisplacementParams params[6],
@@ -67,9 +73,14 @@
 			MaterialLayersTuning::ObjectFadeStart(),
 			MaterialLayersTuning::ObjectFadeEnd(),
 			abs(distance));
-		float scale = params.HeightScale;
+		// Some PBR texture packages flag a valid displacement map but export an
+		// extremely small height scale. That makes the user depth slider appear
+		// broken because its multiplier is applied to an almost-flat source. Keep
+		// a conservative authored floor; this branch is only reached after the
+		// caller has confirmed a real authored displacement path.
+		float scale = max(params.HeightScale, 0.30f);
 		float maxHeight =
-			0.1f * scale *
+			0.1f * scale * PIXL_AUTHORED_POM_DEPTH_GAIN *
 			MaterialLayersTuning::ObjectAuthoredDepthScale();
 #endif
 
@@ -457,7 +468,7 @@
 			saturate(normalActivity),
 			saturate(MaterialLayersTuning::AutoHeightNormalInfluence()));
 		float untrustedStrength =
-			MaterialLayersTuning::ObjectAutoHeightScale() *
+			MaterialLayersTuning::ObjectAutoHeightScale() * PIXL_AUTO_POM_DEPTH_GAIN *
 			distanceFade * mipFade * normalContribution;
 		if (untrustedStrength <= 1e-5f)
 			return coords;

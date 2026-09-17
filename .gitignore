@@ -96,6 +96,8 @@ shadertoolsconfig.json
 *.vortex_backup
 *.tmp
 *.bak
+__folder_managed_by_vortex
+/dist-*.sha256
 .claude/settings.local.json
 
 # Local captures and transient package archives

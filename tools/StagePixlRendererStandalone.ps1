@@ -33,8 +33,8 @@ $sourceWorkingTreeDirty = [bool]@($sourceChanges | Where-Object {
     -not ($reproducibleDependencyPatch -and $_ -eq ' m extern/FidelityFX-SDK')
 })
 $allowedRoot = [IO.Path]::GetFullPath($(if ($AllowedOutputRoot) { $AllowedOutputRoot } else { Join-Path $sourceRoot "dist" }))
-if (-not $OutputDirectory) { $OutputDirectory = Join-Path $allowedRoot "PIXL-Renderer-v1.0-Clean-Cache" }
-if (-not $ArchivePath) { $ArchivePath = Join-Path $allowedRoot "PIXL-Renderer-v1.0-Clean-Cache.zip" }
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $allowedRoot "PIXL-Renderer-1.0.2-Clean-Cache" }
+if (-not $ArchivePath) { $ArchivePath = Join-Path $allowedRoot "PIXL-Renderer-1.0.2-Clean-Cache.zip" }
 if (-not $BuildDirectory) { $BuildDirectory = Join-Path $sourceRoot "build\PIXL-12C\Release" }
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 $archive = if ($ArchivePath) { [IO.Path]::GetFullPath($ArchivePath) } else { "" }
@@ -177,7 +177,12 @@ if ($includePipelineLibrary) {
         if ($line -match '^\s*\[([^\]]+)\]') { $section = $matches[1]; $cacheSections[$section] = @{} }
         elseif ($section -and $line -match '^\s*([^=]+?)\s*=\s*(.*?)\s*$') { $cacheSections[$section][$matches[1]] = $matches[2] }
     }
-    if ($cacheSections['Cache']['PluginVersion'] -ne '1-0-0-0') { throw 'Cache plugin identity does not match release 1.0.0.' }
+    # Product version is provenance only. ShaderCache validates the shared
+    # layout/ABI and each active module independently, so an older
+    # ABI-compatible GOG cache remains valid for this beta build.
+    if ([string]::IsNullOrWhiteSpace($cacheSections['Cache']['PluginVersion'])) {
+        throw 'Pipeline cache metadata has no product-version provenance.'
+    }
     foreach ($descriptor in Get-ChildItem -LiteralPath $moduleCatalog -Filter '*.ini' -File) {
         $moduleText = Get-Content -LiteralPath $descriptor.FullName -Raw
         $id = [regex]::Match($moduleText, '(?m)^\s*Id\s*=\s*([^\r\n]+)').Groups[1].Value.Trim()
@@ -223,8 +228,8 @@ $manifestFiles = Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object
 }
 [ordered]@{
     product = "PIXL Renderer"
-    title = "PBR Rendering Engine v1.0"
-    version = "1.0.0"
+    title = "PIXL Renderer v1.0.2"
+    version = "1.0.2"
     requirements = @([ordered]@{
         id = "EngineFixes"
         path = "SKSE/Plugins/EngineFixes.dll"

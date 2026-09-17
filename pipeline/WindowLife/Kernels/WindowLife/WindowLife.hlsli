@@ -67,6 +67,10 @@ namespace WindowLife
         float transmission;
         float normalRetention;
         float2 normalWarp;
+        // Dynamic pane-space water field. These are local shader outputs only and
+        // do not change WindowLife's 240-byte CPU/SRV ABI.
+        float2 weatherWarp;
+        float weatherCoverage;
         float tier;
         float occupancyEligible;
         float debugMask;
@@ -414,6 +418,16 @@ namespace WindowLife
     float Verticality(float3 N)
     {
         return 1.0f - smoothstep(0.48f, 0.90f, abs(N.z));
+    }
+
+    bool IsRoofLikeSurface(float3 N)
+    {
+        // WindowLife is intended for vertical architectural apertures. A
+        // shallow tier on an upward-facing roof/awning lets the procedural pane
+        // render in front of broken geometry, so reject it before any glass or
+        // interior contribution is produced. This still permits ordinary wall
+        // windows and steep, near-vertical dormers.
+        return abs(N.z) > 0.70f;
     }
 
     float ResolveTier(float3 N)
@@ -920,6 +934,298 @@ namespace WindowLife
         plane = float2(dot(worldPosition, horizontalAxis), worldPosition.z);
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // PIXL WindowLife wet architectural glass
+    // ---------------------------------------------------------------------------------------------
+    // Stormglass is a camera-lens surface. Real windows need the same visual language
+    // but in a stable physical frame: X is the reconstructed pane-horizontal axis and
+    // Y is absolute world Z. The field below is therefore deterministic per building,
+    // never follows camera rotation, and costs no render target/SRV.
+    struct WetGlassField
+    {
+        float height;
+        float moving;
+        float beads;
+    };
+
+    float WetGlassHash(float2 p, float salt)
+    {
+        return Hash21(p + float2(salt * 0.173f, salt * 0.619f));
+    }
+
+    float WetGlassDropLayer(
+        float2 plane,
+        float time,
+        float rain,
+        float stableSalt,
+        float laneWidth,
+        float verticalPeriod,
+        float speed,
+        float trailScale)
+    {
+        laneWidth = max(laneWidth, 1.0f);
+        verticalPeriod = max(verticalPeriod, 16.0f);
+
+        // Horizontal lanes are fixed in absolute pane space. A per-instance salt
+        // shifts phases and widths without moving the pattern as the camera moves.
+        float laneCoordinate = (plane.x + stableSalt * 19.73f) / laneWidth;
+        float lane = floor(laneCoordinate);
+        float laneLocal = frac(laneCoordinate);
+
+        float2 random = float2(
+            WetGlassHash(float2(lane, 11.0f), stableSalt + 17.0f),
+            WetGlassHash(float2(lane, 37.0f), stableSalt + 53.0f));
+        float densityRandom = WetGlassHash(float2(lane, 79.0f), stableSalt + 101.0f);
+
+        float centreLocal = lerp(0.20f, 0.80f, random.x);
+        float radius = lerp(0.38f, 0.92f, random.y);
+        float dx = (laneLocal - centreLocal) * laneWidth;
+
+        // z + t*v = constant => the contour travels toward lower world Z as time
+        // increases. This is the physical distinction from the screen-space lens.
+        float phase = frac(
+            (plane.y + time * speed) / verticalPeriod +
+            random.y * 0.83f +
+            stableSalt * 0.013f);
+        float wrapped = frac(phase + 0.5f) - 0.5f;
+        float dy = wrapped * verticalPeriod;
+
+        float2 bodyMetric = float2(
+            dx / max(radius, 1.0e-4f),
+            // Rain on a pane runs down the glass; keep the bead body distinctly
+            // vertical so it cannot be mistaken for a circular camera droplet.
+            dy / max(radius * 3.80f, 1.0e-4f));
+        // Keep pane runoff finer than the camera/lens drops. The glass field
+        // should read as narrow surface tracks with a crisp bead, not as large
+        // circular blobs pasted over the view.
+        float body = 1.0f - smoothstep(0.055f, 0.44f, length(bodyMetric));
+        body = body * body * (3.0f - 2.0f * body);
+
+        // The trail lies above the falling bead. Give every lane a very small,
+        // world-stable meander so streaks read as water rather than ruler lines.
+        // Pane trails persist and stretch well below the bead. Their slower
+        // travel separates them from the short-lived screen/lens droplets.
+        float trailLength = radius * lerp(40.0f, 92.0f, random.x) * trailScale;
+        float meander =
+            sin(plane.y * 0.055f + lane * 1.71f + stableSalt * 2.3f) *
+            radius * 0.38f;
+        float trailWidth = radius * lerp(0.085f, 0.16f, random.y);
+        float trailGate =
+            step(0.0f, dy) *
+            (1.0f - smoothstep(radius * 0.45f, max(trailLength, radius), dy));
+        float trail =
+            (1.0f - smoothstep(
+                trailWidth * 0.045f,
+                max(trailWidth * 0.82f, 1.0e-4f),
+                abs(dx - meander))) *
+            trailGate;
+
+        float presence =
+            saturate((rain * 1.20f - densityRandom + 0.17f) * 4.5f) *
+            rain;
+        // Keep the bead restrained, but let the continuous wet track remain
+        // readable on high-resolution/custom window textures. The track is
+        // world-stable and footprint-faded below, so this does not turn into a
+        // screen-space white streak field at distance.
+        return saturate(body + trail * 0.62f) * presence;
+    }
+
+    float WetGlassBeads(
+        float2 plane,
+        float rain,
+        float wetness,
+        float stableSalt,
+        float detailFade)
+    {
+        // World-space cells are intentionally a little exaggerated so beads survive
+        // TAA/DLSS without turning into a noisy sub-pixel glitter field.
+        float2 gridScale = float2(0.085f, 0.071f);
+        float2 cellCoordinate =
+            plane * gridScale +
+            float2(stableSalt * 7.13f, stableSalt * 3.91f);
+        float2 cell = floor(cellCoordinate);
+        float2 random = float2(
+            WetGlassHash(cell, stableSalt + 211.0f),
+            WetGlassHash(cell.yx, stableSalt + 307.0f));
+        float densityRandom =
+            WetGlassHash(cell + 19.0f, stableSalt + 401.0f);
+
+        float2 local =
+            frac(cellCoordinate) -
+            lerp(0.18f.xx, 0.82f.xx, random);
+        float radius = lerp(0.045f, 0.115f, random.y);
+        float2 beadMetric =
+            float2(local.x, local.y * lerp(1.0f, 0.78f, wetness));
+        // A spherical-cap profile produces the steep optical slope expected at
+        // a water bead's rim. The former broad smoothstep softened almost the
+        // entire radius and read as a blurred decal rather than refractive depth.
+        float normalizedDistance =
+            length(beadMetric) / max(radius, 1.0e-4f);
+        float convexCap = sqrt(saturate(1.0f - normalizedDistance * normalizedDistance));
+        float crispRim = 1.0f - smoothstep(0.74f, 1.0f, normalizedDistance);
+        float bead = convexCap * crispRim;
+        float mediumRain = smoothstep(0.22f, 0.58f, rain);
+        float heavyRain = smoothstep(0.58f, 0.92f, rain);
+        float population = saturate(
+            wetness * 0.98f + rain * 0.18f +
+            mediumRain * 0.10f + heavyRain * 0.12f);
+        float presence =
+            saturate((population - densityRandom + 0.13f) * 8.5f);
+        return bead * presence * saturate(wetness + rain * 0.35f) * detailFade;
+    }
+
+    WetGlassField EvaluateWetGlassHeight(
+        float2 plane,
+        float rain,
+        float wetness,
+        float stableSalt,
+        float detailFade)
+    {
+        WetGlassField field = (WetGlassField)0;
+        float time = SharedData::Timer;
+
+        // Two asynchronous runoff populations copy the successful Stormglass
+        // hierarchy without inheriting its screen-space camera inertia.
+        float primary = WetGlassDropLayer(
+            plane, time, rain, stableSalt,
+            10.5f, 232.0f, 10.0f, 1.0f);
+        float secondary = WetGlassDropLayer(
+            plane + float2(3.7f, 11.0f),
+            time + 7.9f,
+            rain * 0.78f,
+            stableSalt + 23.0f,
+            6.8f, 176.0f, 7.0f, 0.72f) * 0.58f;
+
+        field.moving = saturate(primary + secondary);
+        field.beads =
+            WetGlassBeads(plane, rain, wetness, stableSalt, detailFade);
+
+        // Heavy rain gains a very thin changing film. It modifies optical
+        // slope/roughness rather than painting an opaque overlay.
+        float filmNoise =
+            ValueNoise2(
+                plane * 0.0105f +
+                float2(time * 0.012f, -time * 0.021f) +
+                stableSalt * float2(1.7f, 3.1f));
+        float film =
+            smoothstep(0.42f, 0.82f, rain) *
+            smoothstep(0.32f, 0.78f, filmNoise) *
+            rain * 0.24f;
+
+        float mediumRain = smoothstep(0.22f, 0.58f, rain);
+        float heavyRain = smoothstep(0.58f, 0.92f, rain);
+        field.height = saturate(
+            field.moving * lerp(0.98f, 1.18f, mediumRain) +
+            field.beads * lerp(0.56f, 0.82f, heavyRain) +
+            film);
+        return field;
+    }
+
+    void EvaluateWetGlassOptics(
+        float2 plane,
+        float glassWeight,
+        float fresnelVisibility,
+        float weatherResponse,
+        out float2 weatherWarp,
+        out float coverage)
+    {
+        weatherWarp = 0.0f.xx;
+        coverage = 0.0f;
+
+        // Population follows the real rain signal. WeatherGlassResponse controls
+        // optical visibility, not whether lanes exist, so low artistic strengths
+        // still show naturally distributed drops instead of only a few survivors.
+        float rain =
+            saturate(SharedData::rainResponseSettings.Raining);
+        // Three continuous weather bands avoid binary pop while making medium
+        // and heavy storms visibly denser than drizzle.
+        float mediumRain = smoothstep(0.22f, 0.58f, rain);
+        float heavyRain = smoothstep(0.58f, 0.92f, rain);
+        float populationRain = saturate(
+            rain * (1.10f + mediumRain * 0.16f + heavyRain * 0.18f));
+
+        // RainResponse publishes authored wetness when enabled. If disabled,
+        // live rain still supplies an immediate film, so WindowLife never depends
+        // on the material-wetness toggle being active.
+        float residualWetness = saturate(max(
+            populationRain * 0.78f,
+            SharedData::rainResponseSettings.Wetness));
+
+        // Evaluate derivatives before pane-edge early-outs. ddx/ddy inside
+        // divergent glass-mask branches is undefined on some drivers.
+        float footprint = max(
+            length(ddx_coarse(plane)),
+            length(ddy_coarse(plane)));
+
+        if (glassWeight <= 1.0e-4f ||
+            weatherResponse <= 1.0e-4f ||
+            max(rain, residualWetness) <= 1.0e-4f)
+            return;
+
+        float stableSalt =
+            GetLayout0().x * 4093.0f +
+            GetRuntime0().y * 811.0f +
+            17.0f;
+
+        // Small beads disappear before their world footprint becomes sub-pixel.
+        // Larger runoff survives farther away without turning into shimmer.
+        float detailFade =
+            1.0f - smoothstep(1.25f, 4.75f, footprint);
+        float runoffFade =
+            1.0f - smoothstep(3.5f, 10.0f, footprint);
+
+        WetGlassField centre = EvaluateWetGlassHeight(
+            plane,
+            populationRain,
+            residualWetness,
+            stableSalt,
+            detailFade);
+        coverage = saturate(
+            centre.moving * runoffFade *
+                (1.62f + mediumRain * 0.20f + heavyRain * 0.24f) +
+            // Convex pane droplets remain secondary to runoff but become clearly
+            // readable as weather strengthens instead of disappearing into blur.
+            centre.beads *
+                (0.36f + mediumRain * 0.22f + heavyRain * 0.24f) +
+            residualWetness * 0.09f);
+
+        // Adaptive finite differences keep optical slope roughly resolution
+        // invariant and stop DLSS/TAA from magnifying a one-pixel derivative.
+        float sampleStep =
+            clamp(max(footprint * 1.25f, 0.45f), 0.45f, 2.75f);
+        WetGlassField right = EvaluateWetGlassHeight(
+            plane + float2(sampleStep, 0.0f),
+            populationRain,
+            residualWetness,
+            stableSalt,
+            detailFade);
+        WetGlassField up = EvaluateWetGlassHeight(
+            plane + float2(0.0f, sampleStep),
+            populationRain,
+            residualWetness,
+            stableSalt,
+            detailFade);
+
+        float2 slope = float2(
+            centre.height - right.height,
+            centre.height - up.height) /
+            sampleStep;
+        float slopeLength = length(slope);
+        slope *= min(
+            1.0f,
+            1.25f / max(slopeLength, 1.0e-4f));
+
+        float opticalStrength =
+            saturate(weatherResponse) *
+            saturate(glassWeight) *
+            saturate(fresnelVisibility);
+        weatherWarp =
+            slope *
+            (0.42f *
+             (1.0f + mediumRain * 0.16f + heavyRain * 0.22f) *
+             opticalStrength * runoffFade);
+    }
+
     SurfaceResult EvaluateSurface(
         float3 cameraRelativePosition,
         float3 viewDirection,
@@ -935,6 +1241,8 @@ namespace WindowLife
             return r;
 
         float3 N = normalize(geometricNormal);
+        if (IsRoofLikeSurface(N))
+            return r;
         float pane = PaneMask(baseColor, normalSample, glowLuma, materialUV);
         r.paneMask = pane;
         r.tier = ResolveTier(N);
@@ -973,27 +1281,70 @@ namespace WindowLife
         float dirt = lerp(analyticDirt, grimeTexture, grimeReady);
 
         float weatherResponse = saturate(GetFidelity0().z);
-        float rain = saturate(SharedData::rainResponseSettings.Raining) * weatherResponse;
-        float rainFlow = frac(grimeUV.y * 1.73f - SharedData::Timer * 0.085f + filteredGrime.r * 0.31f);
-        float rainStreak = pow(saturate(1.0f - rainFlow), 12.0f) * rain;
         float cold = saturate(GetLayout0().w) * weatherResponse;
-        float frostEdge = smoothstep(0.48f, 0.82f, filteredGrime.g) * cold;
-        dirt = saturate(dirt + rainStreak * 0.30f + frostEdge * 0.24f);
+        float frostEdge =
+            smoothstep(0.48f, 0.82f, filteredGrime.g) *
+            cold;
+        dirt = saturate(dirt + frostEdge * 0.24f);
 
-        r.roughness = saturate(GetGlass0().z + (dirt - 0.35f) * GetGlass1().x * 0.34f);
-        r.f0 = saturate(0.040f + GetGlass0().y * 0.034f);
-        r.transmission = saturate(GetGlass0().w *
+        EvaluateWetGlassOptics(
+            plane,
+            r.glassWeight,
+            fresnelVisibility,
+            weatherResponse,
+            r.weatherWarp,
+            r.weatherCoverage);
+
+        r.roughness = saturate(
+            GetGlass0().z +
+            (dirt - 0.35f) * GetGlass1().x * 0.34f);
+
+        // Water makes the glass surface more coherent/smooth while moving
+        // bead/trail slopes supply the readable local highlight breakup.
+        r.roughness = lerp(
+            r.roughness,
+            min(r.roughness, 0.055f),
+            r.weatherCoverage * weatherResponse * 0.82f);
+
+        r.f0 = saturate(
+            0.040f + GetGlass0().y * 0.034f);
+        r.f0 = lerp(
+            r.f0,
+            max(r.f0, 0.052f),
+            r.weatherCoverage * 0.22f);
+
+        r.transmission = saturate(
+            GetGlass0().w *
             (1.0f - dirt * GetGlass1().x * 0.075f) *
-            (1.0f - frostEdge * 0.16f));
-        r.normalRetention = lerp(1.0f, GetGlass1().z, r.glassWeight);
+            (1.0f - frostEdge * 0.16f) *
+            (1.0f - r.weatherCoverage * 0.075f));
+        r.normalRetention =
+            lerp(1.0f, GetGlass1().z, r.glassWeight);
 
-        float warpX = filteredGrime.r - filteredGrime.g;
-        float warpY = filteredGrime.g - filteredGrime.b;
+        float warpX =
+            filteredGrime.r - filteredGrime.g;
+        float warpY =
+            filteredGrime.g - filteredGrime.b;
         if (grimeReady < 0.5f) {
-            warpX = ValueNoise2(plane * 0.022f + float2(41.3f, 9.1f)) - 0.5f;
-            warpY = ValueNoise2(plane * 0.027f + float2(6.7f, 31.9f)) - 0.5f;
+            warpX =
+                ValueNoise2(
+                    plane * 0.022f +
+                    float2(41.3f, 9.1f)) -
+                0.5f;
+            warpY =
+                ValueNoise2(
+                    plane * 0.027f +
+                    float2(6.7f, 31.9f)) -
+                0.5f;
         }
-        r.normalWarp = float2(warpX, warpY) * GetGlass1().y * r.glassWeight * fresnelVisibility;
+
+        float2 oldGlassWarp =
+            float2(warpX, warpY) *
+            GetGlass1().y *
+            r.glassWeight *
+            fresnelVisibility;
+        r.normalWarp =
+            oldGlassWarp + r.weatherWarp;
 
         r.debugMask = distanceFade * pane;
         return r;
@@ -1007,7 +1358,8 @@ namespace WindowLife
         float4 normalSample,
         float glowLuma,
         float2 materialUV,
-        float viewDepth)
+        float viewDepth,
+        float2 weatherWarp)
     {
         Result result = (Result)0;
         if (!IsCandidate() || SharedData::InMapMenu ||
@@ -1015,6 +1367,8 @@ namespace WindowLife
             return result;
 
         float3 N = normalize(geometricNormal);
+        if (IsRoofLikeSurface(N))
+            return result;
         float verticalSurface = Verticality(N);
         float facing = saturate(abs(dot(normalize(viewDirection), N)));
         // The room must remain legible from an oblique street view. Only collapse
@@ -1140,6 +1494,14 @@ namespace WindowLife
         float2 refractVector =
             (normalSample.xy * 2.0f - 1.0f) *
             GetOptics0().z * refractScale;
+
+        // Refract the recessed room/outdoor artwork through the same moving water
+        // that perturbs the physical glass normal. Existing constrained projectors
+        // keep the motion safely inside the detected aperture.
+        refractVector +=
+            weatherWarp *
+            (GetOptics0().z * 4.25f) *
+            refractScale;
 
         // Curtains occupy a shallow layer close to the glass. They therefore
         // parallax less than the occupant and establish a visible depth hierarchy.
