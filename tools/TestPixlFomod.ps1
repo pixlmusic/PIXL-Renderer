@@ -48,7 +48,9 @@ foreach ($required in @(
 $presetPath = Join-Path $root 'PIXL-Optional\SurfaceTides-1.0.2\SKSE\Plugins\SurfaceTides.ini'
 $preset = Get-Content -LiteralPath $presetPath -Raw
 foreach ($setting in @('AllowPIXL=1','Damping=0.24','Wind=7','GustStrength=1.3','NormalStrength=2.35','DisplacementStrength=2','PIXLCityDisplacementScale=0.55','PIXLInteriorDisplacementScale=0.25')) {
-    if ($preset -notmatch "(?m)^$([regex]::Escape($setting))$") { throw "PIXL SurfaceTides preset is missing: $setting" }
+    # Get-Content -Raw preserves CRLF. Permit the carriage return before the
+    # multiline end anchor so normal Windows INI files validate correctly.
+    if ($preset -notmatch "(?m)^$([regex]::Escape($setting))\r?$") { throw "PIXL SurfaceTides preset is missing: $setting" }
 }
 $halfLife = [Math]::Log(2.0) / 0.24
 $continuousForcingRatio = 7.0 / 5.0
