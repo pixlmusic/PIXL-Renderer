@@ -442,16 +442,18 @@ typedef VS_OUTPUT PS_INPUT;
 #	define PIXL_PARALLAX_DEPTH_AUTO 0
 #endif
 #ifndef PIXL_PARALLAX_DEPTH_MATERIAL_FORGE
-// Material Forge/PBR displacement is authored data and must remain visible to
-// the hardware depth buffer. Synthetic Auto-POM remains a separate fallback
-// path controlled by PIXL_PARALLAX_DEPTH_AUTO below.
-#	define PIXL_PARALLAX_DEPTH_MATERIAL_FORGE 1
+// Keep authored Material Forge/PBR displacement in the colour/normal path,
+// but do not rewrite Skyrim's raster depth by default. The depth-resolve path
+// is sensitive to object UVs, alpha-tested silhouettes, and driver/compiler
+// differences; enabling it globally can produce displaced ghost silhouettes on
+// otherwise valid object shaders. It remains available as an explicit
+// experimental compile override through PIXL_PARALLAX_DEPTH_MATERIAL_FORGE.
+#	define PIXL_PARALLAX_DEPTH_MATERIAL_FORGE 0
 #endif
 #ifndef PIXL_PARALLAX_DEPTH_AUTHORED
-// Authored PARALLAX height is the highest-fidelity source for legacy assets.
-// Keep it independent from synthetic Auto-POM so assets without authored
-// displacement continue to receive the PIXL fallback.
-#	define PIXL_PARALLAX_DEPTH_AUTHORED 1
+// Authored PARALLAX height is still used for visible parallax, but its
+// hardware-depth resolve remains opt-in for the same compatibility reason.
+#	define PIXL_PARALLAX_DEPTH_AUTHORED 0
 #endif
 #ifndef PIXL_PARALLAX_DEPTH_LANDSCAPE
 // Generic terrain-POM hardware depth is deliberately opt-in. Ground deformation
