@@ -102,6 +102,8 @@ $dll = Join-Path $BuildDirectory "PIXLRenderer.dll"
 $required = @(
     $dll,
     (Join-Path $sourceRoot "distribution\Shaders"),
+    (Join-Path $sourceRoot "distribution\Shaders\Common\Color.hlsli"),
+    (Join-Path $sourceRoot "pipeline\Camera Suite\Kernels\CameraSuite\HDROutputCS.hlsl"),
     (Join-Path $sourceRoot "distribution\SKSE\Plugins\PIXLRenderer\SettingsDefault.json"),
     (Join-Path $sourceRoot "COPYING")
 )

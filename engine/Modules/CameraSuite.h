@@ -452,6 +452,9 @@ public:
 	uint cleanSceneCaptureFrame = UINT32_MAX;  // frameCount when cleanSceneCapture was last refreshed
 
 	ID3D11ComputeShader* hdrOutputCS = nullptr;
+	// Avoid retrying a missing/invalid optional HDR shader every frame. The
+	// failure is retried when the module shader cache is explicitly cleared.
+	bool hdrOutputCompileFailed = false;
 	winrt::com_ptr<ID3D11ShaderResourceView> lookTextureView;
 	winrt::com_ptr<ID3D11ShaderResourceView> frostLensTextureView;
 	winrt::com_ptr<ID3D11ShaderResourceView> fireLensTextureView;

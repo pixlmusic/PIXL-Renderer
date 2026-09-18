@@ -53,6 +53,8 @@ foreach ($required in @(
     'PIXL-RENDERER.manifest.json',
     'SKSE\Plugins\PIXLRenderer.dll',
     'Shaders\Water.hlsl',
+    'Shaders\Common\Color.hlsli',
+    'Shaders\CameraSuite\HDROutputCS.hlsl',
     'SKSE\Plugins\PIXL\Documentation\COPYING',
     'SKSE\Plugins\PIXL\Documentation\EXCEPTIONS.md',
     'SKSE\Plugins\PIXL\Documentation\ATTRIBUTION.md',

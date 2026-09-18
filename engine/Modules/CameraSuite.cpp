@@ -2306,6 +2306,7 @@ void CameraSuite::RestoreLDRRenderTargets()
 
 void CameraSuite::ClearShaderCache()
 {
+	hdrOutputCompileFailed = false;
 	if (hdrOutputCS) {
 		hdrOutputCS->Release();
 		hdrOutputCS = nullptr;
@@ -2346,10 +2347,11 @@ void CameraSuite::ClearShaderCache()
 
 ID3D11ComputeShader* CameraSuite::GetHDROutputCS()
 {
-	if (!hdrOutputCS) {
+	if (!hdrOutputCS && !hdrOutputCompileFailed) {
 		std::vector<std::pair<const char*, const char*>> defines;
 		hdrOutputCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\CameraSuite\\HDROutputCS.hlsl", defines, "cs_5_0"));
 		if (!hdrOutputCS) {
+			hdrOutputCompileFailed = true;
 			logger::error("HDR: Failed to compile HDROutputCS.hlsl");
 		}
 	}
