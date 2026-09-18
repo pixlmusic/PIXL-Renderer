@@ -48,10 +48,13 @@ function Invoke-Native([string]$File, [string[]]$Arguments) {
 
 function Get-GameRoots {
     $roots = @(
-        $(if ($env:PIXL_SKYRIM_ROOT_1) { $env:PIXL_SKYRIM_ROOT_1 } else { 'H:\The Elder Scrolls - Skyrim - Special Edition' }),
-        $(if ($env:PIXL_SKYRIM_ROOT_2) { $env:PIXL_SKYRIM_ROOT_2 } else { 'H:\SKYRIM-SE-GOG\Skyrim Anniversary Edition' }),
-        $(if ($env:PIXL_SKYRIM_ROOT_3) { $env:PIXL_SKYRIM_ROOT_3 } else { 'H:\SteamLibrary\steamapps\common\Skyrim Special Edition' })
-    )
+        $env:PIXL_SKYRIM_ROOT_1,
+        $env:PIXL_SKYRIM_ROOT_2,
+        $env:PIXL_SKYRIM_ROOT_3
+    ) | Where-Object { $_ -and $_.Trim() }
+    if ($roots.Count -eq 0) {
+        throw 'No Skyrim installations were configured. Set PIXL_SKYRIM_ROOT_1/2/3 before running this script.'
+    }
     $valid = @()
     foreach ($rootPath in $roots) {
         if (-not (Test-Path (Join-Path $rootPath 'SkyrimSE.exe'))) {

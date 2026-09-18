@@ -138,10 +138,11 @@ cmake --preset PIXL-12C
 cmake --build build/PIXL-12C --config Release --target PIXLRenderer --parallel
 ```
 
-If the repository lives under an unusually long Windows path, map a short local drive alias and pass it only as a build-time convenience:
+If the repository lives under an unusually long Windows path, expose it through
+a short local build root and pass that root only as a build-time convenience:
 
 ```powershell
-cmake --preset PIXL-12C -DPIXL_FFX_SHORT_BINARY_ROOT=P:/build/PIXL-12C
+cmake --preset PIXL-12C -DPIXL_FFX_SHORT_BINARY_ROOT=<short-local-build-root>/PIXL-12C
 ```
 
 The alias is not embedded into public source or release packages. See [SOURCE_DEPENDENCIES.md](SOURCE_DEPENDENCIES.md) for the exact submodule pins and build-patch details.
@@ -163,7 +164,8 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -SkipPipelineLibrary
 ```
 
-`BuildRelease.bat` provides the normal configure/build flow. Machine-specific deployment paths belong in an untracked `CMakeUserPresets.json` or explicit script arguments.
+`BuildRelease.bat` provides the normal configure/build flow. Local deployment
+paths belong in an untracked `CMakeUserPresets.json` or explicit script arguments.
 
 ## Repository layout
 

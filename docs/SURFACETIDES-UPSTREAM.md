@@ -1,21 +1,19 @@
-# PIXL Renderer 1.0.2 / SurfaceTides upstream handoff
+# PIXL Renderer 1.0.2 / SurfaceTides integration guide
 
 ## Current result
 
-Owner confirmed visible SurfaceTides displacement with PIXL enabled on Steam
-Skyrim 1.6.1170 on 2026-09-17. The runtime reported
+The integration is designed to preserve visible SurfaceTides displacement with
+PIXL enabled. A representative runtime reports
 `PIXL water draw handshake V1 matched live replacement shaders`, tessellated
 draws with `failed=0`, and sampled `changeMask=00`. This is a successful local
 integration test, not exhaustive certification of every water type or runtime.
 
-## Files supplied
+## Integration contents
 
-The developer package contains the modified SurfaceTides source archive, the
-tested SurfaceTides compatibility patch, PIXL's Hooks.cpp and Water.hlsl as
-integration references, and this document. The main PIXL 1.0.2 release supplies
-the matching host DLL. Source is a working-tree snapshot; no new commit exists.
-No clean original SurfaceTides checkout was available for a trustworthy complete
-unified diff. Compare the supplied files against your own 1.0.2 baseline.
+The optional integration package contains the compatible SurfaceTides bridge,
+the matching shader and configuration, PIXL integration references, and this
+guide. Install the official SurfaceTides release first; the PIXL option only
+adds the compatibility layer and does not replace the original mod's assets.
 
 ## Why the earlier bridge failed
 
@@ -139,7 +137,7 @@ the PIXL integration after any SurfaceTides reinstall or update.
 The integration is not a standalone SurfaceTides installation. Without the
 original mod, PIXL keeps its regular water. PIXL does not install SurfaceTides.
 
-## Recommended permanent upstream integration
+## Recommended long-term integration
 
 The SurfaceTides owner should merge the supplied source into their current branch,
 not redistribute the supplied 1.0.2 DLL in future releases. Keep
@@ -162,4 +160,5 @@ LICENSE/THIRD_PARTY notices. The source archive and patch in this handoff corres
 Once upstream implements this contract, users can replace the compatibility patch
 with that supported upstream release. Do not install both competing DLLs.
 
-This package is prepared for sharing; it has not been sent to the developer.
+The compatibility package is intended as a transition until the same contract
+is adopted by an official upstream SurfaceTides release.

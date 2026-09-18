@@ -26,10 +26,10 @@ source needed to reproduce PIXL's clean Release build.
 
 FidelityFX's bundled shader generator also has a fixed-size Windows path buffer.
 Normal source locations need no override. For an unusually long checkout, expose
-the repository through a short local drive alias and configure with, for example,
-`-DPIXL_FFX_SHORT_BINARY_ROOT=P:/build/PIXL-12C`. This cache variable changes only
-the generator's working-directory spelling; outputs still belong to the normal
-CMake build tree.
+the repository through a short local build root and configure with, for example,
+`-DPIXL_FFX_SHORT_BINARY_ROOT=<short-local-build-root>/PIXL-12C`. This cache
+variable changes only the generator's working-directory spelling; outputs still
+belong to the normal CMake build tree.
 
 Generated directories such as `build/`, package staging, shader caches, Python
 environments, downloaded datasets, and trained model weights are not source and

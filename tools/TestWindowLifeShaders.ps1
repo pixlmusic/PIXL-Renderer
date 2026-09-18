@@ -1,7 +1,19 @@
 [CmdletBinding()]
 param([Parameter(Mandatory=$true)][string]$ShaderRoot)
 $ErrorActionPreference = 'Stop'
-$fxc = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\fxc.exe'
+$fxc = (Get-Command fxc.exe -ErrorAction SilentlyContinue).Source
+if (-not $fxc) {
+    $sdkRoots = @(
+        $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin' }),
+        $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles 'Windows Kits\10\bin' })
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+    if ($sdkRoots.Count -gt 0) {
+        $fxc = Get-ChildItem -LiteralPath $sdkRoots -Filter fxc.exe -File -Recurse -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+    }
+}
+if (-not $fxc) { throw 'fxc.exe was not found. Install the Windows SDK or add its bin directory to PATH.' }
 $output = Join-Path $PSScriptRoot '..\build\windowlife-shader-tests'
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 $cases = @(@(), @('DO_ALPHA_TEST'), @('ENVMAP'), @('GLOWMAP'), @('PBR'), @('SKINNED'))

@@ -1,11 +1,16 @@
 [CmdletBinding()]
-param([switch]$Install)
+param(
+    [switch]$Install,
+    [string]$GameRoot = $env:PIXL_SKYRIM_ROOT_1
+)
 $ErrorActionPreference = 'Stop'
 if (Get-Process SkyrimSE,SkyrimVR -ErrorAction SilentlyContinue) { throw 'Close Skyrim before cache restoration.' }
+if (-not $GameRoot) { throw 'Pass -GameRoot or set PIXL_SKYRIM_ROOT_1 before restoring the cache.' }
+$gameRoot = (Resolve-Path -LiteralPath $GameRoot).Path
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $old = Join-Path $repo 'build\deployment-backups\RC-DayNight-20260912-122615-9db15f481ba94e1f8f9ee399e34f60ef\PipelineLibrary'
-$live = 'H:\The Elder Scrolls - Skyrim - Special Edition\Data\PIXL\PipelineLibrary'
-$shaders = 'H:\The Elder Scrolls - Skyrim - Special Edition\Data\Shaders'
+$live = Join-Path $gameRoot 'Data\PIXL\PipelineLibrary'
+$shaders = Join-Path $gameRoot 'Data\Shaders'
 $old = (Resolve-Path -LiteralPath $old).Path
 $live = (Resolve-Path -LiteralPath $live).Path
 foreach ($root in @($old,$live)) {
@@ -57,8 +62,8 @@ Write-Host "Prepared and hash-verified: $retained old files retained; $excluded 
 if ($Install) {
     if (Get-Process SkyrimSE,SkyrimVR -ErrorAction SilentlyContinue) { throw 'Skyrim started; restoration not installed.' }
     # Both directory move targets are fully resolved and narrowly validated.
-    $expectedLive = 'H:\The Elder Scrolls - Skyrim - Special Edition\Data\PIXL\PipelineLibrary'
-    if ($live -cne $expectedLive -or !$prepared.StartsWith($repo + '\build\cache-restores\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected move target.' }
+    $expectedLive = (Join-Path $gameRoot 'Data\PIXL\PipelineLibrary')
+    if ($live -cne (Resolve-Path -LiteralPath $expectedLive).Path -or !$prepared.StartsWith($repo + '\build\cache-restores\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected move target.' }
     Move-Item -LiteralPath $live -Destination (Join-Path $work 'NewlyCompiledCacheBackup')
     Move-Item -LiteralPath $prepared -Destination $live
     Write-Host "RESTORED: $live"
