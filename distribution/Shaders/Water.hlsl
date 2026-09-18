@@ -1619,7 +1619,8 @@ PS_OUTPUT main(PS_INPUT input)
 		HorizonBlend::FadeEndDistance,
 		distanceBlendFactor);
 	float horizonSkirtFade = horizonAngleFade * horizonDistanceFade;
-	finalColor = lerp(fogColor, finalColor, horizonSkirtFade);
+	float3 horizonFogColor = Color::Fog(FogFarColor.xyz);
+	finalColor = lerp(horizonFogColor, finalColor, horizonSkirtFade);
 #		endif
 	psout.Lighting = float4(finalColor, isSpecular);
 #		endif
