@@ -3348,10 +3348,10 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 void GroundResponse::DrawSettings()
 {
 	bool changed = false;
-	if (ImGui::TreeNodeEx(T(TKEY("grass_collision"), "Ground Response"), ImGuiTreeNodeFlags_DefaultOpen)) {
-		changed |= ImGui::Checkbox(T(TKEY("enable"), "Enable Ground Response"), &settings.EnableGroundResponse);
+	if (ImGui::TreeNodeEx(T(TKEY("grass_collision"), "Grass Collision"), ImGuiTreeNodeFlags_DefaultOpen)) {
+		changed |= ImGui::Checkbox(T(TKEY("enable"), "Enable Grass Collision"), &settings.EnableGroundResponse);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Bends nearby terrain grass around actors. Built into PIXL; no separate grass interaction mod or Complex Grass textures are required. Applies to grass rendered through Skyrim's grass shader, not every shrub or distant LOD. Applies immediately.");
+			ImGui::TextWrapped("Controls PIXL's separate actor-driven grass collision field. It bends nearby grass through Skyrim's grass shader; it does not enable or disable the separate snow/mud terrain-deformation path. No separate grass-interaction mod or Complex Grass texture is required. Applies immediately.");
 		ImGui::TreePop();
 	}
 

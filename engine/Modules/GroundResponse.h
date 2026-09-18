@@ -11,15 +11,15 @@ struct GroundResponse : RenderModule
 {
 public:
 	virtual inline std::string GetName() override { return "Ground Response"; }
-	virtual std::string GetDisplayName() override { return T("feature.ground_response.name", "Grass & Ground Interaction"); }
+	virtual std::string GetDisplayName() override { return T("feature.ground_response.name", "Ground Response"); }
 	virtual inline std::string GetShortName() override { return "GroundResponse"; }
 	virtual inline std::string_view GetShaderDefineName() override { return "GROUND_RESPONSE"; }
 	virtual std::string_view GetCategory() const override { return ModuleGroups::kGrass; }
 
 	virtual std::pair<std::string, std::vector<std::string>> GetModuleSummary() override
 	{
-		return { T("feature.ground_response.description", "Drives one persistent actor interaction field for grass bending plus one shared raised/compressible landscape surface for exact layer-classified snow and wet mud."),
-			{ T("feature.ground_response.key_feature_1", "Real-time grass deformation from actor movement"),
+		return { T("feature.ground_response.description", "Combines a dedicated grass-collision field with PIXL's separate raised and compressible snow/mud terrain surface."),
+			{ T("feature.ground_response.key_feature_1", "Grass Collision: real-time grass deformation from actor movement"),
 				T("feature.ground_response.key_feature_2", "Skyrim-authored six-layer snow classification, including Material Forge terrain"),
 				T("feature.ground_response.key_feature_3", "Adaptive geometric snow and mud surface integrated into the real deferred terrain Lighting pass"),
 				T("feature.ground_response.key_feature_4", "Persistent snow tracks and thin raised mud that compresses back toward the original terrain"),

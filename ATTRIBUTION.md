@@ -52,7 +52,7 @@ history does not establish one reliably.
 | Screen-Space Shadows | ContactShadows |
 | LOD Blending | DistanceBlend |
 | Grass Lighting | FoliageDynamics |
-| Grass Collision | GroundResponse |
+| Grass Collision | GroundResponse grass-collision field only |
 | Horizon Fix | HorizonBlend |
 | Screen-Space GI | HybridGI / Radiance Weave |
 | Upscaling | ImageReconstruction |
@@ -85,6 +85,27 @@ Effects11, CS Editor, Remote Control, and RenderDoc feature integrations from
 the upstream baseline are not active PIXL rendering modules. Narrow legacy-name
 references may remain only where required to detect, migrate, or report an
 incompatible old installation.
+
+## Ground Response provenance clarification
+
+`GroundResponse` contains two separate rendering paths that are intentionally
+described separately:
+
+1. **Grass Collision** retains the actor-driven grass interaction field. It is
+   the path corresponding to the upstream Grass Collision entry above. The
+   active implementation uses `CollisionUpdateCS.hlsl`, a dedicated collision
+   texture, and the Skyrim grass-shader draw hook.
+2. **PIXL Ground Response terrain deformation** is the PIXL-authored snow/mud
+   system. It uses its own material classification, persistent absolute-world
+   deformation fields, and DirectX 11 hull/domain stages to build a raised,
+   compressible terrain surface. It is not a copied Community Shaders
+   snow/mud-deformation implementation.
+
+The snow/mud path was developed from observable rendered behaviour, controlled
+runtime testing, and public DirectX 11 tessellation/hull-mesh research. This is
+an engineering-provenance statement, not a legal authorship determination; the
+upstream code history and third-party notices remain authoritative wherever
+they apply.
 
 ## PIXL-specific additions
 

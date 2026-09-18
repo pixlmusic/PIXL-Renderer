@@ -58,7 +58,8 @@ PIXL currently ships **37 integrated rendering modules**, plus renderer-level sy
 
 ### Terrain, snow, mud and water
 
-- **Ground Response** drives actor grass interaction and a persistent, layer-classified terrain surface for raised snow, compressed tracks and wet mud, including coherent depth, G-buffer and motion-vector replay.
+- **Grass Collision** remains a dedicated actor-driven grass interaction field inside the Ground Response module.
+- **PIXL Ground Response terrain deformation** is a separate persistent, layer-classified snow/mud surface with raised geometry, compressed tracks, and coherent depth, G-buffer, and motion-vector replay.
 - **Native Seasons compatibility** optionally reads the active Seasons of Skyrim state without creating a hard dependency. Resolved runtime materials remain authoritative, while season changes invalidate stale Ground Response classifications and incompatible deformation history so Turn of the Seasons and other season packs can transition safely.
 - **Terrain Detail** reduces visible tiling with stochastic variation while remaining compatible with parallax materials.
 - **Terrain Field** extends terrain material texture support and automatic terrain setup.
