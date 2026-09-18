@@ -18,6 +18,14 @@ SurfaceTides 1.0.2 installation and replaces that version's DLL, water shader an
 AllowPIXL=1` automatically. Back up custom SurfaceTides tuning before selecting
 the integration.
 
+The replacement is one universal SurfaceTides DLL for Skyrim SE 1.5.97, Steam
+1.6.1170, GOG 1.6.1179 and 1.7.104. Use the SKSE and Address Library release that
+matches the installed game. Do not install an upstream runtime-specific
+SurfaceTides DLL afterward: in Vortex, set PIXL to load after SurfaceTides; in
+Mod Organizer 2, place PIXL lower in the left pane. PIXL must win all three file
+conflicts. If SurfaceTides is reinstalled or updated, reinstall PIXL and reselect
+this integration.
+
 The bridge option intentionally remains selectable without a FOMOD file-presence
 gate. Vortex can temporarily hide or stage another mod's deployed DLL during
 replacement, which made valid SurfaceTides installations appear unavailable.

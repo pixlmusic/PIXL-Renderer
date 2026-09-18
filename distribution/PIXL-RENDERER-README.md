@@ -11,7 +11,11 @@ An integrated DirectX 11 renderer for Skyrim Special Edition.
 - A DirectX 11-capable GPU. DLSS/DLAA require supported NVIDIA hardware and an available runtime.
 - Borderless/windowed mode for frame generation and the optional Neural Rendering sidecar.
 
-Owner testing covers Skyrim SE 1.5.97, GOG 1.6.1179.0, and Steam 1.6.1170. The SurfaceTides bridge was visually confirmed on Steam 1.6.1170; other runtime combinations still require separate bridge testing.
+Owner testing covers Skyrim SE 1.5.97, GOG 1.6.1179.0, and Steam 1.6.1170. The
+SurfaceTides bridge uses one CommonLibSSE-NG universal DLL for 1.5.97, Steam
+1.6.1170, GOG 1.6.1179 and 1.7.104. Its automated tests cover the shared binary;
+visual confirmation currently covers Steam 1.6.1170, so the other runtime
+combinations still require live bridge testing.
 
 ### Optional SurfaceTides compatibility
 
@@ -21,6 +25,13 @@ that original release is already installed. The choice replaces SurfaceTides' DL
 water shader and INI with the PIXL-tuned integration preset. It enables
 `AllowPIXL=1` automatically. Back up custom SurfaceTides tuning before selecting
 the integration, then restart through SKSE.
+
+Install SurfaceTides first and PIXL second. In Vortex, make PIXL load after
+SurfaceTides; in Mod Organizer 2, place PIXL lower in the left pane. PIXL must
+win the `SurfaceTides.dll`, `Water.hlsl` and `SurfaceTides.ini` conflicts. Do not
+install a separate runtime-specific SurfaceTides DLL afterward—the PIXL DLL
+already supports 1.5.97, Steam 1.6.1170, GOG 1.6.1179 and 1.7.104. Reinstall PIXL
+and reselect the integration after any SurfaceTides reinstall or update.
 
 SurfaceTides supplies tessellation/displacement; PIXL retains water shading and
 optics. The preset strengthens and lengthens wilderness waves while the bridge
@@ -44,7 +55,7 @@ The release ships owner-tuned fog and POM defaults, with reconstruction set to *
 ### Startup Neural Rendering
 
 Quick Setup also offers **Enable Neural Rendering (experimental)** on supported
-NVIDIA hardware. It requires DLSS/DLAA, the installed NR runtime, SDR and
+NVIDIA hardware. It requires DLSS/DLAA, the packaged NR runtime, SDR and
 borderless/windowed mode. Enabling it selects DLAA if needed. Save & Continue
 advises a restart when NR or frame-generation presentation resources were not
 prepared at launch. Continue for now is available; exiting does not save gameplay.

@@ -9,8 +9,24 @@ $work = Join-Path $repo "build\release-staging\surfacetides-$stamp"
 $patch = Join-Path $work 'patch'
 $handoff = Join-Path $work 'handoff'
 $sourceStage = Join-Path $work 'SurfaceTides-1.0.2-PIXL-Source'
+$surfaceDllCandidates = @(
+    (Join-Path $source 'build\windows-universal-v8\Release\SurfaceTides.dll'),
+    (Join-Path $source 'build\windows-vendored-v8d\Release\SurfaceTides.dll'),
+    (Join-Path $source 'build\windows\Release\SurfaceTides.dll')
+)
+$surfaceDll = $surfaceDllCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (!$surfaceDll) { throw "No universal SurfaceTides DLL found in: $($surfaceDllCandidates -join ', ')" }
+$surfaceDll = (Resolve-Path -LiteralPath $surfaceDll).Path
+$binaryText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($surfaceDll))
+foreach ($export in @('SKSEPlugin_Load','SKSEPlugin_Query','SKSEPlugin_Version')) {
+    if ($binaryText.IndexOf($export,[StringComparison]::Ordinal) -lt 0) { throw "SurfaceTides DLL is missing required SKSE export: $export" }
+}
+$main = Get-Content -LiteralPath (Join-Path $source 'src\plugin\Main.cpp') -Raw
+foreach ($runtime in @('1,5,97,0','1,6,1170,0','1,6,1179,0','1,7,104,0')) {
+    if ($main -notmatch [regex]::Escape($runtime)) { throw "SurfaceTides source does not allow required runtime: $runtime" }
+}
 New-Item -ItemType Directory -Path "$patch\SKSE\Plugins","$patch\Shaders\SurfaceTides",$handoff,$sourceStage -Force | Out-Null
-Copy-Item -LiteralPath "$source\build\windows\Release\SurfaceTides.dll" -Destination "$patch\SKSE\Plugins\SurfaceTides.dll"
+Copy-Item -LiteralPath $surfaceDll -Destination "$patch\SKSE\Plugins\SurfaceTides.dll"
 Copy-Item -LiteralPath "$repo\installer\PIXLRenderer\SurfaceTides-PIXL-1.0.2.ini" -Destination "$patch\SKSE\Plugins\SurfaceTides.ini"
 Copy-Item -LiteralPath "$source\Data\Shaders\SurfaceTides\Water.hlsl" -Destination "$patch\Shaders\SurfaceTides\Water.hlsl"
 foreach($notice in @('LICENSE','THIRD_PARTY.md')) { Copy-Item -LiteralPath "$source\$notice" -Destination $patch }
@@ -35,7 +51,7 @@ foreach($directory in @('src','include','Data','tests','cmake','vendor','license
     }
 }
 foreach($file in Get-ChildItem -LiteralPath $source -File -Force) {
-    if($file.Name -match '^(CMakeLists\.txt|CMakePresets\.json|LICENSE|README\.md|THIRD_PARTY\.md|\.gitignore)$') {
+    if($file.Name -match '^(CMakeLists\.txt|CMakePresets\.json|vcpkg\.json|LICENSE|README\.md|THIRD_PARTY\.md|\.gitignore)$') {
         Copy-Item -LiteralPath $file.FullName -Destination $sourceStage
     }
 }

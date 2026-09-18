@@ -106,6 +106,14 @@ Both DLLs built; PIXL integrated audit passed; all four SurfaceTides tests passe
 including expanded SM5 shader permutations. PIXL baseline and Waterbody river
 pixel shaders compiled with FXC. Existing signed/unsigned warnings remain.
 
+SurfaceTides now builds against CommonLibSSE-NG 8.1.0 with both SE and AE layouts
+enabled. One DLL exports `SKSEPlugin_Query`, `SKSEPlugin_Version` and
+`SKSEPlugin_Load`, and explicitly accepts Skyrim 1.5.97, Steam 1.6.1170, GOG
+1.6.1179 and 1.7.104. Each game still needs its matching SKSE and Address Library;
+1.7.104 requires the format-5-capable Address Library data. Automated build and
+shader tests validate the shared artifact but do not replace a live test on each
+runtime.
+
 Before an upstream release, check missing/disabled PIXL and missing export,
 Waterbody off/on, native SurfaceTides fallback, rivers/lakes/interiors, shoreline
 depth/refraction, underwater, additive lights, cell changes, and TAA/DLSS/FG motion.
@@ -114,14 +122,19 @@ Keep diagnostics optional. Consider disabling repetitive LogStats for public use
 
 ## Immediate user distribution
 
-1. Install PIXL Renderer 1.0.2 and the full supported SurfaceTides 1.0.2 mod.
-2. Reinstall PIXL and select **SurfaceTides 1.0.2 Integration**. The bundled
+1. Install the full supported SurfaceTides 1.0.2 mod first.
+2. Install or reinstall PIXL and select **SurfaceTides 1.0.2 Integration**. The bundled
    option replaces `SKSE/Plugins/SurfaceTides.dll`,
    `Shaders/SurfaceTides/Water.hlsl` and `SKSE/Plugins/SurfaceTides.ini`.
 3. Back up custom SurfaceTides tuning first. The PIXL preset enables
    `[Compatibility] AllowPIXL=1`, strengthens wilderness wave excitation and
    retention, and supplies the contextual city/interior scales.
 4. Let PIXL win all three conflicts, close Skyrim, and restart via SKSE.
+
+Do not install a runtime-specific upstream SurfaceTides DLL afterward. The PIXL
+replacement is already universal across the four supported runtimes. In Vortex,
+set PIXL after SurfaceTides; in MO2, put PIXL lower in the left pane. Reinstall
+the PIXL integration after any SurfaceTides reinstall or update.
 
 The integration is not a standalone SurfaceTides installation. Without the
 original mod, PIXL keeps its regular water. PIXL does not install SurfaceTides.

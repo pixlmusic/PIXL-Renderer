@@ -45,6 +45,32 @@ foreach ($required in @(
 )) {
     if (!(Test-Path -LiteralPath (Join-Path $root $required))) { throw "Missing installer payload: $required" }
 }
+$surfaceDll = Join-Path $root 'PIXL-Optional\SurfaceTides-1.0.2\SKSE\Plugins\SurfaceTides.dll'
+$surfaceBinaryText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($surfaceDll))
+foreach ($export in @('SKSEPlugin_Load','SKSEPlugin_Query','SKSEPlugin_Version')) {
+    if ($surfaceBinaryText.IndexOf($export,[StringComparison]::Ordinal) -lt 0) {
+        throw "SurfaceTides universal DLL is missing required SKSE export: $export"
+    }
+}
+$nestedArchives = @(Get-ChildItem -LiteralPath $root -File -Recurse | Where-Object {
+    $_.Extension -match '^\.(zip|7z|rar|tar|gz|bz2|xz)$'
+})
+if ($nestedArchives.Count) {
+    throw "Nexus upload must not contain nested archive(s): $($nestedArchives.FullName -join ', ')"
+}
+$vendorRuntimeRoot = Join-Path $root 'PIXL-Core\Shaders\ImageReconstruction'
+if (Test-Path -LiteralPath $vendorRuntimeRoot) {
+    foreach ($vendorDll in Get-ChildItem -LiteralPath $vendorRuntimeRoot -File -Recurse -Filter '*.dll') {
+        $signature = Get-AuthenticodeSignature -LiteralPath $vendorDll.FullName
+        if ($vendorDll.Name -ieq 'nvngx_dlssnr.dll') {
+            if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+                Write-Warning "Neural Rendering runtime signature status is $($signature.Status): $($vendorDll.FullName)"
+            }
+        } elseif ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+            throw "Vendor runtime signature is not valid ($($signature.Status)): $($vendorDll.FullName)"
+        }
+    }
+}
 $presetPath = Join-Path $root 'PIXL-Optional\SurfaceTides-1.0.2\SKSE\Plugins\SurfaceTides.ini'
 $preset = Get-Content -LiteralPath $presetPath -Raw
 foreach ($setting in @('AllowPIXL=1','Damping=0.24','Wind=7','GustStrength=1.3','NormalStrength=2.35','DisplacementStrength=2','PIXLCityDisplacementScale=0.55','PIXLInteriorDisplacementScale=0.25')) {
@@ -63,4 +89,4 @@ if ($groups.Count -ne 3 -or @($groups | Where-Object { $_.type -ne 'SelectExactl
 if ($config.SelectSingleNode("//plugin[contains(@name,'SurfaceTides 1.0.2 Integration')]/typeDescriptor/dependencyType")) {
     throw 'SurfaceTides integration must remain selectable; Vortex deployment state is not a reliable FOMOD dependency gate.'
 }
-Write-Host "PASS: PIXL 1.0.2 FOMOD XML, branding assets, disclosures, core payload and version-locked SurfaceTides bridge validated."
+Write-Host "PASS: PIXL 1.0.2 FOMOD XML, branding assets, disclosures, core payload and universal SurfaceTides 1.0.2 bridge validated."

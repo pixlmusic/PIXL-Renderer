@@ -6,6 +6,7 @@ param(
     [string]$BuildDirectory = "",
     [string]$PipelineLibrary = "",
     [string]$UserConfigPath = "",
+    [string]$NeuralRuntimePath = "",
     [string]$AllowedOutputRoot = "",
     [ValidateSet("LIVE-TEST", "RELEASE-CANDIDATE", "RELEASE")]
     [string]$Channel = "LIVE-TEST",
@@ -66,6 +67,26 @@ function Copy-Tree([string]$Source, [string]$Destination) {
     Copy-Item -Path (Join-Path $Source "*") -Destination $Destination -Recurse -Force
 }
 
+function Copy-TrackedTree([string]$Source, [string]$Destination) {
+    if (-not (Test-Path -LiteralPath $Source -PathType Container)) { throw "Missing package source: $Source" }
+    $resolvedSource = (Resolve-Path -LiteralPath $Source).Path.TrimEnd('\')
+    if (-not $resolvedSource.StartsWith($sourceRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Tracked package source is outside the repository: $resolvedSource"
+    }
+    $relativeRoot = $resolvedSource.Substring($sourceRoot.TrimEnd('\').Length + 1).Replace('\', '/')
+    $trackedFiles = @(& git -C $sourceRoot ls-files -- "$relativeRoot/")
+    if ($LASTEXITCODE -ne 0) { throw "Unable to enumerate tracked package files below $relativeRoot" }
+    if ($trackedFiles.Count -eq 0) { throw "No tracked package files found below $relativeRoot" }
+    foreach ($tracked in $trackedFiles) {
+        $relative = $tracked.Substring($relativeRoot.Length + 1).Replace('/', '\')
+        $sourcePath = Join-Path $sourceRoot $tracked.Replace('/', '\')
+        if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw "Tracked package file is missing: $tracked" }
+        $destinationPath = Join-Path $Destination $relative
+        New-Item -ItemType Directory -Path (Split-Path -Parent $destinationPath) -Force | Out-Null
+        Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
+    }
+}
+
 Assert-PackageTarget $output
 if ($mirror) { Assert-PackageTarget $mirror }
 if (-not $SkipArchive -and $archive) { Assert-PackageTarget $archive }
@@ -115,7 +136,31 @@ Get-ChildItem -LiteralPath (Join-Path $sourceRoot "pipeline") -Directory | Sort-
     if (-not $idMatch.Success) { throw "Module descriptor has no Id: $descriptor" }
     $moduleId = $idMatch.Groups[1].Value.Trim()
     Copy-Item -LiteralPath $descriptor -Destination (Join-Path $moduleCatalog ($moduleId + ".ini")) -Force
-    if (Test-Path -LiteralPath $kernels) { Copy-Tree $kernels $shaderRoot }
+    # Kernel directories can also contain ignored, machine-local SDK runtimes.
+    # Public packages must contain only reviewable files recorded in Git.
+    if (Test-Path -LiteralPath $kernels) { Copy-TrackedTree $kernels $shaderRoot }
+}
+
+# The experimental NR runtime is intentionally not stored in Git. Include it
+# only through an explicit release input so ignored local files cannot leak into
+# a package merely because they happen to be beside tracked shader assets.
+if (-not [string]::IsNullOrWhiteSpace($NeuralRuntimePath)) {
+    $resolvedNeuralRuntime = (Resolve-Path -LiteralPath $NeuralRuntimePath).Path
+    if ([IO.Path]::GetFileName($resolvedNeuralRuntime) -cne 'nvngx_dlssnr.dll') {
+        throw "Unexpected Neural Rendering runtime filename: $resolvedNeuralRuntime"
+    }
+    $neuralVersionInfo = (Get-Item -LiteralPath $resolvedNeuralRuntime).VersionInfo
+    $neuralVersion = $neuralVersionInfo.FileVersion
+    if ($neuralVersionInfo.FileMajorPart -ne 310 -or $neuralVersionInfo.FileMinorPart -ne 8) {
+        throw "PIXL requires the validated DLSSNR 310.8.x contract; found '$neuralVersion'"
+    }
+    $neuralDestination = Join-Path $shaderRoot 'ImageReconstruction\Streamline\nvngx_dlssnr.dll'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $neuralDestination) -Force | Out-Null
+    Copy-Item -LiteralPath $resolvedNeuralRuntime -Destination $neuralDestination -Force
+    $neuralSignature = Get-AuthenticodeSignature -LiteralPath $neuralDestination
+    if ($neuralSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+        Write-Warning "Neural Rendering runtime signature status is $($neuralSignature.Status). Nexus may flag this DLL."
+    }
 }
 
 # Validate the optional DLSS-G runtime as a coherent package before release.
@@ -217,6 +262,28 @@ Copy-Item -LiteralPath (Join-Path $sourceRoot 'extern\ReShade\LICENSE.md') -Dest
 Copy-Item -LiteralPath (Join-Path $sourceRoot "docs\ImageReconstruction\DLSSG_SM86_INTEGRATION.md") -Destination $documentationRoot -Force
 foreach ($document in @("COPYING", "EXCEPTIONS.md", "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md")) {
     Copy-Item -LiteralPath (Join-Path $sourceRoot $document) -Destination $documentationRoot -Force
+}
+
+# Nexus cannot scan archives nested inside the upload. Vendor runtime DLLs must
+# also retain a valid publisher signature; a HashMismatch is never releasable.
+$nestedArchives = @(Get-ChildItem -LiteralPath $output -File -Recurse | Where-Object {
+    $_.Extension -match '^\.(zip|7z|rar|tar|gz|bz2|xz)$'
+})
+if ($nestedArchives.Count) {
+    throw "Public package contains nested archive(s): $($nestedArchives.FullName -join ', ')"
+}
+$vendorRuntimeRoot = Join-Path $shaderRoot 'ImageReconstruction'
+if (Test-Path -LiteralPath $vendorRuntimeRoot) {
+    foreach ($vendorDll in Get-ChildItem -LiteralPath $vendorRuntimeRoot -File -Recurse -Filter '*.dll') {
+        $signature = Get-AuthenticodeSignature -LiteralPath $vendorDll.FullName
+        if ($vendorDll.Name -ieq 'nvngx_dlssnr.dll') {
+            if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+                Write-Warning "Neural Rendering runtime signature status is $($signature.Status): $($vendorDll.FullName)"
+            }
+        } elseif ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+            throw "Vendor runtime signature is not valid ($($signature.Status)): $($vendorDll.FullName)"
+        }
+    }
 }
 
 $manifestFiles = Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object FullName | ForEach-Object {

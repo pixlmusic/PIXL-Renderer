@@ -31,6 +31,18 @@ function Copy-Tree([string]$source,[string]$destination) {
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
     Copy-Item -Path (Join-Path $source '*') -Destination $destination -Recurse -Force
 }
+function Assert-SurfaceTidesUniversalDll([string]$dll,[string]$sourceRoot) {
+    $binaryText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($dll))
+    foreach ($export in @('SKSEPlugin_Load','SKSEPlugin_Query','SKSEPlugin_Version')) {
+        if ($binaryText.IndexOf($export,[StringComparison]::Ordinal) -lt 0) {
+            throw "SurfaceTides DLL is missing required SKSE export: $export"
+        }
+    }
+    $main = Get-Content -LiteralPath (Join-Path $sourceRoot 'src\plugin\Main.cpp') -Raw
+    foreach ($runtime in @('1,5,97,0','1,6,1170,0','1,6,1179,0','1,7,104,0')) {
+        if ($main -notmatch [regex]::Escape($runtime)) { throw "SurfaceTides source does not allow required runtime: $runtime" }
+    }
+}
 
 Assert-Output $output
 Assert-Output $archive
@@ -44,12 +56,19 @@ foreach ($required in @(
 )) {
     if (!(Test-Path -LiteralPath (Join-Path $base $required))) { throw "Incomplete PIXL package: $required" }
 }
-$surfaceDll = Join-Path $surface 'build\windows\Release\SurfaceTides.dll'
+$surfaceDllCandidates = @(
+    (Join-Path $surface 'build\windows-universal-v8\Release\SurfaceTides.dll'),
+    (Join-Path $surface 'build\windows-vendored-v8d\Release\SurfaceTides.dll'),
+    (Join-Path $surface 'build\windows\Release\SurfaceTides.dll')
+)
+$surfaceDll = $surfaceDllCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+$surfaceDll = if ($surfaceDll) { (Resolve-Path -LiteralPath $surfaceDll).Path } else { $surfaceDllCandidates[0] }
 $surfaceShader = Join-Path $surface 'Data\Shaders\SurfaceTides\Water.hlsl'
 $surfacePixlIni = Join-Path $repo 'installer\PIXLRenderer\SurfaceTides-PIXL-1.0.2.ini'
 if (!(Test-Path -LiteralPath $surfaceDll)) { throw "Missing SurfaceTides bridge DLL: $surfaceDll" }
 if (!(Test-Path -LiteralPath $surfaceShader)) { throw "Missing SurfaceTides bridge shader: $surfaceShader" }
 if (!(Test-Path -LiteralPath $surfacePixlIni)) { throw "Missing PIXL SurfaceTides preset: $surfacePixlIni" }
+Assert-SurfaceTidesUniversalDll $surfaceDll $surface
 
 $core = Join-Path $output 'PIXL-Core'
 $bridge = Join-Path $output 'PIXL-Optional\SurfaceTides-1.0.2'
@@ -73,7 +92,7 @@ if (Test-Path -LiteralPath (Join-Path $surface 'licenses')) {
 }
 if ($SurfaceTidesSourceArchive) {
     $sourceArchive = (Resolve-Path -LiteralPath $SurfaceTidesSourceArchive).Path
-    Copy-Item -LiteralPath $sourceArchive -Destination (Join-Path $bridgeDocs 'SurfaceTides-1.0.2-PIXL-Source.zip')
+    Write-Host "SurfaceTides source companion (upload separately; never nest it): $sourceArchive"
 }
 
 & (Join-Path $repo 'tools\TestPixlFomod.ps1') -PackageDirectory $output -SchemaPath (Join-Path $surface 'tools\fomod\ModConfig5.0.xsd')
