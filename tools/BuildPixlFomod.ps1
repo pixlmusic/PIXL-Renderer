@@ -52,7 +52,12 @@ if (Test-Path -LiteralPath $archive) { throw "Archive already exists: $archive" 
 foreach ($required in @(
     'PIXL-RENDERER.manifest.json',
     'SKSE\Plugins\PIXLRenderer.dll',
-    'Shaders\Water.hlsl'
+    'Shaders\Water.hlsl',
+    'SKSE\Plugins\PIXL\Documentation\COPYING',
+    'SKSE\Plugins\PIXL\Documentation\EXCEPTIONS.md',
+    'SKSE\Plugins\PIXL\Documentation\ATTRIBUTION.md',
+    'SKSE\Plugins\PIXL\Documentation\THIRD_PARTY_NOTICES.md',
+    'SKSE\Plugins\PIXL\Documentation\SOURCE-AND-CREDITS.md'
 )) {
     if (!(Test-Path -LiteralPath (Join-Path $base $required))) { throw "Incomplete PIXL package: $required" }
 }
@@ -69,6 +74,17 @@ if (!(Test-Path -LiteralPath $surfaceDll)) { throw "Missing SurfaceTides bridge 
 if (!(Test-Path -LiteralPath $surfaceShader)) { throw "Missing SurfaceTides bridge shader: $surfaceShader" }
 if (!(Test-Path -LiteralPath $surfacePixlIni)) { throw "Missing PIXL SurfaceTides preset: $surfacePixlIni" }
 Assert-SurfaceTidesUniversalDll $surfaceDll $surface
+
+$surfaceNoticeFiles = @(
+    (Join-Path $surface 'LICENSE'),
+    (Join-Path $surface 'LICENSE.md'),
+    (Join-Path $surface 'THIRD_PARTY.md'),
+    (Join-Path $surface 'THIRD_PARTY_NOTICES.md')
+) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
+$surfaceLicenseDirectory = Join-Path $surface 'licenses'
+if ($surfaceNoticeFiles.Count -eq 0 -and -not (Test-Path -LiteralPath $surfaceLicenseDirectory -PathType Container)) {
+    throw 'SurfaceTides source has no detectable licence/third-party notice set; refusing to build the bridge package.'
+}
 
 $core = Join-Path $output 'PIXL-Core'
 $bridge = Join-Path $output 'PIXL-Optional\SurfaceTides-1.0.2'

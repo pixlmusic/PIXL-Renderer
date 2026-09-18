@@ -260,6 +260,7 @@ foreach ($relativePath in @(
     "engine\PipelineHealth.h",
     "README.md",
     "docs\MOD_COMPATIBILITY.md", # Compatibility guidance must identify conflicting renderers.
+    "docs\LEGAL_LICENSE_AUDIT_20260918.md", # Provenance audit records historical upstream attribution.
     "distribution\PIXL-RENDERER-README.md" # Installation compatibility warnings name other renderers.
 )) {
     $null = $identityAllowPaths.Add((Join-Path $repo $relativePath))

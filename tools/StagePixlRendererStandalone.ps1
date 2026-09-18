@@ -109,6 +109,26 @@ foreach ($path in $required) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Missing verified artifact: $path" }
 }
 
+# A public binary must carry the legal notices that describe the source and
+# every bundled dependency. Fail closed if the release staging tree cannot
+# provide the core notice set.
+$requiredNotices = @(
+    'COPYING',
+    'EXCEPTIONS.md',
+    'ATTRIBUTION.md',
+    'THIRD_PARTY_NOTICES.md',
+    'SOURCE-AND-CREDITS.md'
+)
+
+function Assert-NoticeSet([string]$Root) {
+    foreach ($notice in $requiredNotices) {
+        $path = Join-Path $Root "SKSE\Plugins\PIXL\Documentation\$notice"
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Release notice is missing from staging input: $path"
+        }
+    }
+}
+
 Remove-PackageItem $output
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 
@@ -260,8 +280,27 @@ Copy-Item -LiteralPath (Join-Path $sourceRoot 'distribution\SOURCE-AND-CREDITS.m
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'docs\MOD_COMPATIBILITY.md') -Destination $documentationRoot -Force
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'extern\ReShade\LICENSE.md') -Destination (Join-Path $documentationRoot 'ReShade-API-LICENSE.md') -Force
 Copy-Item -LiteralPath (Join-Path $sourceRoot "docs\ImageReconstruction\DLSSG_SM86_INTEGRATION.md") -Destination $documentationRoot -Force
-foreach ($document in @("COPYING", "EXCEPTIONS.md", "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md")) {
-    Copy-Item -LiteralPath (Join-Path $sourceRoot $document) -Destination $documentationRoot -Force
+foreach ($document in @("COPYING", "EXCEPTIONS.md", "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md", "SOURCE-AND-CREDITS.md")) {
+    $documentSource = Join-Path $sourceRoot $document
+    if ($document -eq 'SOURCE-AND-CREDITS.md') {
+        $documentSource = Join-Path $sourceRoot 'distribution\SOURCE-AND-CREDITS.md'
+    }
+    Copy-Item -LiteralPath $documentSource -Destination $documentationRoot -Force
+}
+Assert-NoticeSet $output
+
+# Every vendor DLL must remain next to a licence/notice file in the package.
+# This catches accidental staging changes without asserting that a proprietary
+# vendor licence is GPL-compatible; those terms remain component-specific.
+$vendorRoot = Join-Path $shaderRoot 'ImageReconstruction'
+if (Test-Path -LiteralPath $vendorRoot) {
+    foreach ($vendorDll in Get-ChildItem -LiteralPath $vendorRoot -File -Recurse -Filter '*.dll') {
+        $noticeFiles = @(Get-ChildItem -LiteralPath $vendorDll.Directory.FullName -File |
+            Where-Object { $_.Name -match '(?i)(license|notice|third)' })
+        if ($noticeFiles.Count -eq 0) {
+            throw "Vendor runtime has no adjacent licence/notice: $($vendorDll.FullName)"
+        }
+    }
 }
 
 # Nexus cannot scan archives nested inside the upload. Vendor runtime DLLs must
