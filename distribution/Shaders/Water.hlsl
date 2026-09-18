@@ -11,6 +11,14 @@ namespace HorizonBlend
 	// far-water backdrop a few quanta inside that. The margin is a few world units at the
 	// far plane, where no real surface can render.
 	static const float EmptyDepthThreshold = 1.0 - 64.0 / 16777216.0;
+
+	// HorizonFix supplies a far-water skirt folded just inside the far plane.
+	// Fade only that folded, near-horizontal water into the scene atmosphere;
+	// ordinary close and mid-range water retains its authored colour.
+	static const float FadeStartElevation = 0.16;
+	static const float FadeEndElevation = 0.025;
+	static const float FadeStartDistance = 0.70;
+	static const float FadeEndDistance = 0.98;
 }
 #endif
 
@@ -1596,6 +1604,23 @@ PS_OUTPUT main(PS_INPUT input)
 
 #				endif
 #			endif
+#		if defined(HORIZON_BLEND)
+	// The folded far-water skirt is a geometry extension, not a real receiver.
+	// At a grazing view angle it previously remained fully opaque and formed a
+	// bright horizontal line against the sky. Blend it toward the already
+	// computed atmospheric fog colour only for distant, near-horizontal rays.
+	float viewElevation = abs(normalize(input.WPosition.xyz).z);
+	float horizonAngleFade = smoothstep(
+		HorizonBlend::FadeStartElevation,
+		HorizonBlend::FadeEndElevation,
+		viewElevation);
+	float horizonDistanceFade = smoothstep(
+		HorizonBlend::FadeStartDistance,
+		HorizonBlend::FadeEndDistance,
+		distanceBlendFactor);
+	float horizonSkirtFade = horizonAngleFade * horizonDistanceFade;
+	finalColor = lerp(fogColor, finalColor, horizonSkirtFade);
+#		endif
 	psout.Lighting = float4(finalColor, isSpecular);
 #		endif
 

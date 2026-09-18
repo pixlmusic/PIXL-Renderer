@@ -7,8 +7,9 @@
  *
  * HorizonBlend (an SKSE plugin) fills the horizon gap between the farthest visible water and the
  * sky with a skirt of distant water tiles. Those tiles need shader-side support: the HORIZON_BLEND
- * define in Water.hlsl folds beyond-far-plane water back onto the far plane and shades it as
- * bottomless where nothing rendered behind it.
+ * define in Water.hlsl folds beyond-far-plane water back onto the far plane, shades it as
+ * bottomless where nothing rendered behind it, and fades the distant skirt into atmospheric fog
+ * at grazing angles.
  *
  * This feature's only job is to enable that define while the HorizonBlend plugin is installed. It
  * self-disables in PostPostLoad when the plugin is absent, so water keeps exact vanilla
