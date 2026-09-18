@@ -119,20 +119,25 @@ namespace Util
 			*ppData = nullptr;
 			*pBytes = 0;
 
-			std::error_code ec;
-			const auto shaderRoot = std::filesystem::weakly_canonical(L"Data\\Shaders", ec);
-			if (ec)
-				return E_FAIL;
-
-			const auto filePath = std::filesystem::weakly_canonical(shaderRoot / std::filesystem::path(pFileName), ec);
-			if (ec)
-				return E_FAIL;
-
-			const auto relativePath = filePath.lexically_relative(shaderRoot);
-			if (relativePath.empty() || (*relativePath.begin() == L"..")) {
+			// Keep include resolution relative to the game shader root. Do this
+			// lexically instead of requiring weakly_canonical() to resolve the
+			// file first: MO2/USVFS supplies many shader files virtually, so a
+			// canonical lookup can produce a physical path that no longer shares
+			// the same root even though the include is valid and safely relative.
+			const std::filesystem::path shaderRoot = std::filesystem::path(L"Data\\Shaders").lexically_normal();
+			const std::filesystem::path includePath = std::filesystem::path(pFileName);
+			if (includePath.empty() || includePath.is_absolute()) {
 				logger::error("Rejected shader include outside Data\\Shaders: {}", pFileName);
 				return E_ACCESSDENIED;
 			}
+			for (const auto& component : includePath) {
+				if (component == L"..") {
+					logger::error("Rejected shader include outside Data\\Shaders: {}", pFileName);
+					return E_ACCESSDENIED;
+				}
+			}
+
+			const auto filePath = (shaderRoot / includePath).lexically_normal();
 
 			std::ifstream file(filePath, std::ios::binary);
 			if (!file.is_open()) {
