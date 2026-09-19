@@ -410,6 +410,51 @@ void OverlayRenderer::RenderShaderCompilationStatus(const std::function<const ch
 			PIXLUI::ChromeStyle::Raised,
 			true);
 
+		// A restrained, eased border tracer gives long shader-compilation waits a
+		// sense of progress without competing with the percentage or status text.
+		// It is drawn in screen space, so it remains stable at every UI scale.
+		{
+			ImDrawList* chromeList = ImGui::GetWindowDrawList();
+			const float now = static_cast<float>(ImGui::GetTime());
+			const float cycle = 5.2f;
+			const float phase = std::fmod(now, cycle) / cycle;
+			const float eased = phase * phase * (3.0f - 2.0f * phase);
+			const float inset = 2.0f * scale;
+			const ImVec2 a(panelMin.x + inset, panelMin.y + inset);
+			const ImVec2 b(panelMax.x - inset, panelMax.y - inset);
+			const float width = std::max(1.0f, b.x - a.x);
+			const float height = std::max(1.0f, b.y - a.y);
+			const float perimeter = 2.0f * (width + height);
+			auto pointOnBorder = [&](float distance) {
+				distance = std::fmod(distance + perimeter, perimeter);
+				if (distance < width)
+					return ImVec2(a.x + distance, a.y);
+				if (distance < width + height)
+					return ImVec2(b.x, a.y + distance - width);
+				if (distance < 2.0f * width + height)
+					return ImVec2(b.x - (distance - width - height), b.y);
+				return ImVec2(a.x, b.y - (distance - 2.0f * width - height));
+			};
+			const float head = eased * perimeter;
+			const float trail = perimeter * 0.14f;
+			for (int i = 0; i < 16; ++i) {
+				const float t0 = static_cast<float>(i) / 16.0f;
+				const float t1 = static_cast<float>(i + 1) / 16.0f;
+				const float fade = (1.0f - t0) * (1.0f - t0);
+				const ImVec2 p0 = pointOnBorder(head - trail * t0);
+				const ImVec2 p1 = pointOnBorder(head - trail * t1);
+				chromeList->AddLine(p0, p1, IM_COL32(67, 220, 232, static_cast<int>(190.0f * fade)), 2.0f * scale);
+			}
+			// A short, soft sheen crosses the glass once per revolution.
+			const float sheenPhase = std::fmod(phase + 0.08f, 1.0f);
+			const float sheen = std::exp(-std::pow((sheenPhase - 0.12f) / 0.075f, 2.0f));
+			if (sheen > 0.01f) {
+				const float x = panelMin.x + (panelMax.x - panelMin.x) * sheenPhase;
+				chromeList->AddLine(ImVec2(x, panelMin.y + 8.0f * scale), ImVec2(x, panelMax.y - 8.0f * scale),
+					IM_COL32(180, 245, 250, static_cast<int>(28.0f * sheen)), 10.0f * scale);
+			}
+		}
+
 		auto centerText =
 			[](const char* text,
 			   ImU32 color =

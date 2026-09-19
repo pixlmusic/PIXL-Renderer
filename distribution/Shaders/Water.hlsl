@@ -1,4 +1,4 @@
-#if defined(HORIZON_BLEND)
+#if defined(HORIZON_BLEND) && !defined(INTERIOR)
 namespace HorizonBlend
 {
 	// Depth (z/w) that water folded back from beyond the far clip plane lands at: eight
@@ -15,10 +15,13 @@ namespace HorizonBlend
 	// HorizonFix supplies a far-water skirt folded just inside the far plane.
 	// Fade only that folded, near-horizontal water into the scene atmosphere;
 	// ordinary close and mid-range water retains its authored colour.
-	static const float FadeStartElevation = 0.16;
-	static const float FadeEndElevation = 0.025;
-	static const float FadeStartDistance = 0.70;
-	static const float FadeEndDistance = 0.98;
+	// Restrict the skirt fade to the genuinely grazing, far-distance edge.  A
+	// broad range makes ordinary first-person water become a visible horizontal
+	// band instead of merely hiding the far-plane seam.
+	static const float FadeStartElevation = 0.05;
+	static const float FadeEndElevation = 0.008;
+	static const float FadeStartDistance = 0.65;
+	static const float FadeEndDistance = 0.995;
 }
 #endif
 
@@ -192,7 +195,7 @@ VS_OUTPUT main(VS_INPUT input)
 	vsout.HPosition.z = heightMult * 0.5 + worldViewPos.z;
 	vsout.HPosition.w = worldViewPos.w;
 
-#	if defined(HORIZON_BLEND)
+#	if defined(HORIZON_BLEND) && !defined(INTERIOR)
 	vsout.HPosition.z = min(vsout.HPosition.z, vsout.HPosition.w * HorizonBlend::FoldedDepth);
 #	endif
 
@@ -975,7 +978,7 @@ DiffuseOutput GetWaterDiffuseColor(PS_INPUT input, float3 normal, float3 viewDir
 		refractionWorldPosition.xyz /= worldW;
 	}
 
-#					if defined(HORIZON_BLEND)
+#					if defined(HORIZON_BLEND) && !defined(INTERIOR)
 	if (DepthTex.Load(float3(refractionScreenPosition, 0)).x >= HorizonBlend::EmptyDepthThreshold)
 		distanceMul = 1.0.xxxx;
 #					endif
@@ -1275,7 +1278,7 @@ PS_OUTPUT main(PS_INPUT input)
 		planeMul * float4(length(depthAdjustedViewDirection).xx, abs(viewSurfaceAngle).xx) /
 		max(abs(FogParam.z), 1e-5f));
 
-#					if defined(HORIZON_BLEND)
+#					if defined(HORIZON_BLEND) && !defined(INTERIOR)
 	if (DepthTex.Load(float3(screenPosition, 0)).x >= HorizonBlend::EmptyDepthThreshold)
 		distanceMul = 1.0.xxxx;
 #					endif
@@ -1456,7 +1459,6 @@ PS_OUTPUT main(PS_INPUT input)
 #				endif
 
 #				if defined(UNDERWATER)
-	float3 horizonResolvedFogColor = Color::Fog(FogFarColor.xyz);
 	float3 finalSpecularColor = lerp(Color::Water(ShallowColor.xyz), specularColor, 0.5);
 #				if USE_PIXL_WATER_OPTICS
 	float underwaterDistance = length(input.WPosition.xyz) * GAME_UNIT_TO_M;
@@ -1525,7 +1527,6 @@ PS_OUTPUT main(PS_INPUT input)
 #						endif
 
 	float3 finalColor = finalColorPreFog;
-	horizonResolvedFogColor = fogColor;
 
 #						if defined(RAIN_RESPONSE) && defined(DEBUG_RAIN_RESPONSE)
 	// DEBUG MODE: Override water color with debug visualization
@@ -1595,7 +1596,6 @@ PS_OUTPUT main(PS_INPUT input)
 	refractionColor = lerp(refractionColor, fogColor, Color::FogAlpha(fogFactor));
 
 	float3 finalColor = lerp(refractionColor, finalColorPreFog, diffuseOutput.refractionMul);
-	horizonResolvedFogColor = fogColor;
 #						if defined(RAIN_RESPONSE) && defined(DEBUG_RAIN_RESPONSE)
 	// DEBUG MODE: Override water color with debug visualization
 	float3 debugColor = RainResponse::GetDebugWetnessColorStandard(waterData.rippleInfo, 2.0, 3.0);
@@ -1607,7 +1607,7 @@ PS_OUTPUT main(PS_INPUT input)
 
 #				endif
 #			endif
-#		if defined(HORIZON_BLEND)
+#		if defined(HORIZON_BLEND) && !defined(INTERIOR)
 	// The folded far-water skirt is a geometry extension, not a real receiver.
 	// At a grazing view angle it previously remained fully opaque and formed a
 	// bright horizontal line against the sky. Blend it toward the already
@@ -1622,10 +1622,10 @@ PS_OUTPUT main(PS_INPUT input)
 		HorizonBlend::FadeEndDistance,
 		distanceBlendFactor);
 	float horizonSkirtFade = horizonAngleFade * horizonDistanceFade;
-	// Reuse the fog colour resolved by the active water path.  This already
-	// includes PIXL's ambient/atmosphere/water-fade handling; sampling the raw
-	// FogFarColor here creates a bright band that does not match the scene.
-	float3 horizonFogColor = horizonResolvedFogColor;
+	// The folded skirt is composited after the normal water fog path.  The raw
+	// far-fog value is slightly brighter than PIXL's resolved atmospheric result,
+	// so attenuate it to avoid a visible pale seam at the transition.
+	float3 horizonFogColor = Color::Fog(FogFarColor.xyz) * 0.82f;
 	// Keep ordinary water fully shaded; only the folded far-plane skirt fades into
 	// the atmosphere.  Reversing these arguments would turn all non-horizon water
 	// into fog because horizonSkirtFade is zero for normal water surfaces.
