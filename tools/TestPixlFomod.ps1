@@ -23,7 +23,7 @@ if ($SchemaPath) {
     try { while ($reader.Read()) {} } finally { $reader.Dispose() }
     if ($schemaErrors.Count) { throw "FOMOD schema validation failed: $($schemaErrors -join '; ')" }
 }
-if ($info.fomod.Version.'#text' -ne '1.0.2') { throw 'Incorrect installer version.' }
+if ($info.fomod.Version.'#text' -ne '1.0.2a') { throw 'Incorrect installer version.' }
 $allText = (Get-Content -LiteralPath $configPath,$infoPath,(Join-Path $root 'PIXL-Core\PIXL-INSTALLER-NOTICE.md') -Raw) -join "`n"
 foreach ($phrase in @('substantial AI assistance','SurfaceTides 1.0.2 Integration','AllowPIXL=1','replaces SurfaceTides.dll','PAGE DOWN','HOME','HIGHLIGHTS SINCE 1.0.1 HOTFIX')) {
     if ($allText -notmatch [regex]::Escape($phrase)) { throw "Missing required disclosure or warning: $phrase" }

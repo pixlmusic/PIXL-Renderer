@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>PIXL Renderer 1.0.2</moduleName>
+  <moduleName>PIXL Renderer 1.0.2a</moduleName>
   <moduleImage path="fomod\images\pixl-hero.jpg" showImage="true" showFade="true" height="240" />
   <requiredInstallFiles>
     <folder source="PIXL-Core" destination="" priority="0" />
@@ -67,7 +67,7 @@ EXACT SURFACETIDES VERSION ONLY: this replaces SurfaceTides.dll, Shaders/Surface
         </group>
       </optionalFileGroups>
     </installStep>
-    <installStep name="What's new in 1.0.2">
+    <installStep name="What's new in 1.0.2a">
       <optionalFileGroups order="Explicit">
         <group name="A release shaped by your screenshots, logs and feedback" type="SelectExactlyOne">
           <plugins order="Explicit">
