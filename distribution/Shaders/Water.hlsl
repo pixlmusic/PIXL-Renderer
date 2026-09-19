@@ -1619,7 +1619,10 @@ PS_OUTPUT main(PS_INPUT input)
 		HorizonBlend::FadeEndDistance,
 		distanceBlendFactor);
 	float horizonSkirtFade = horizonAngleFade * horizonDistanceFade;
-	float3 horizonFogColor = Color::Fog(FogFarColor.xyz);
+	// Reuse the fog colour resolved by the active water path.  This already
+	// includes PIXL's ambient/atmosphere/water-fade handling; sampling the raw
+	// FogFarColor here creates a bright band that does not match the scene.
+	float3 horizonFogColor = fogColor;
 	// Keep ordinary water fully shaded; only the folded far-plane skirt fades into
 	// the atmosphere.  Reversing these arguments would turn all non-horizon water
 	// into fog because horizonSkirtFade is zero for normal water surfaces.
