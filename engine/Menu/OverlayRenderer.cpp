@@ -408,7 +408,43 @@ void OverlayRenderer::RenderShaderCompilationStatus(const std::function<const ch
 			panelMin,
 			panelMax,
 			PIXLUI::ChromeStyle::Raised,
-			true);
+			false);
+
+		// Eased clockwise tracer around the panel. The progress bar remains the
+		// authoritative completion indicator; this supplies only ambient motion.
+		{
+			ImDrawList* chromeList = ImGui::GetWindowDrawList();
+			const float phase = std::fmod(static_cast<float>(ImGui::GetTime()), 5.2f) / 5.2f;
+			const float eased = phase * phase * (3.0f - 2.0f * phase);
+			const float inset = 2.0f * scale;
+			const ImVec2 a(panelMin.x + inset, panelMin.y + inset);
+			const ImVec2 b(panelMax.x - inset, panelMax.y - inset);
+			const float width = std::max(1.0f, b.x - a.x);
+			const float height = std::max(1.0f, b.y - a.y);
+			const float perimeter = 2.0f * (width + height);
+			auto pointOnBorder = [&](float distance) {
+				distance = std::fmod(distance + perimeter, perimeter);
+				if (distance < width)
+					return ImVec2(a.x + distance, a.y);
+				if (distance < width + height)
+					return ImVec2(b.x, a.y + distance - width);
+				if (distance < 2.0f * width + height)
+					return ImVec2(b.x - (distance - width - height), b.y);
+				return ImVec2(a.x, b.y - (distance - 2.0f * width - height));
+			};
+			const float head = eased * perimeter;
+			const float trail = perimeter * 0.14f;
+			for (int i = 0; i < 16; ++i) {
+				const float t0 = static_cast<float>(i) / 16.0f;
+				const float t1 = static_cast<float>(i + 1) / 16.0f;
+				const float fade = (1.0f - t0) * (1.0f - t0);
+				chromeList->AddLine(
+					pointOnBorder(head - trail * t0),
+					pointOnBorder(head - trail * t1),
+					IM_COL32(67, 220, 232, static_cast<int>(190.0f * fade)),
+					2.0f * scale);
+			}
+		}
 
 		auto centerText =
 			[](const char* text,
