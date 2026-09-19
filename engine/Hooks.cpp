@@ -648,8 +648,6 @@ struct BSInputDeviceManager_PollInputDevices
 		if (globals::pipeline::imageReconstruction.dx12SwapChain.presenter == DX12SwapChain::Presenter::kDLSSG)
 			globals::pipeline::imageReconstruction.streamlineDX12.UpdateReflex();
 
-		bool blockedDevice = true;
-
 		auto menu = globals::menu;
 
 		if (a_events) {
@@ -668,21 +666,22 @@ struct BSInputDeviceManager_PollInputDevices
 			menu->ProcessInputEvents(a_events);
 
 			if (menu->ShouldLockGameInputForDirector()) {
+				// Native free-camera input is forwarded only during the active
+				// Shift-held movement transaction.  In InspectLocked the camera is
+				// intentionally immutable and all input belongs to PIXL/ImGui.
+				if (menu->IsEnabled && !TuningWorkspaceRenderer::IsDirectorInspectionMoving()) {
+					constexpr RE::InputEvent* const dummy[]{ nullptr };
+					func(a_dispatcher, dummy);
+					return;
+				}
 				DispatchDirectorCameraEvents(
 					a_dispatcher,
 					a_events);
 				return;
 			}
-
-			if (*a_events) {
-				if (auto device = (*a_events)->GetDevice()) {
-						// Block all devices except gamepad when menu is open
-						blockedDevice = (device != RE::INPUT_DEVICES::INPUT_DEVICE::kGamepad);
-				}
-			}
 		}
 
-		if (blockedDevice && menu->ShouldSwallowInput()) {  //the menu is open, eat all keypresses
+		if (menu->ShouldSwallowInput()) {  // the tuner owns every gameplay device while open
 			constexpr RE::InputEvent* const dummy[] = { nullptr };
 			func(a_dispatcher, dummy);
 			return;

@@ -11,8 +11,7 @@
 
 // PIXL Renderer presentation-only UI primitives.
 //
-// PASS A deliberately avoids renderer/module state. The helpers below draw the
-// premium metallic/cyan shell used by the authoring workspace without changing
+// These helpers draw the metallic/cyan authoring workspace without changing
 // any rendering, shader, persistence, or module behavior.
 namespace PIXLUI
 {
@@ -63,8 +62,7 @@ namespace PIXLUI
 
 	struct Layout
 	{
-		// PASS A3: literal coordinate system of the supplied original
-		// Advanced/Lighting design (1287 x 832).
+		// Reference coordinate system used by the compact tuner.
 		static constexpr float ReferenceWidth = 1287.0f;
 		static constexpr float ReferenceHeight = 832.0f;
 		static constexpr float ViewportHeightRatio = 0.90f;
@@ -104,37 +102,38 @@ namespace PIXLUI
 		static constexpr float CyanSeamInset = 4.0f;
 		static constexpr float ShadowOffset = 4.0f;
 
-		// PASS A6 exact tuning-page reference geometry.
-		static constexpr float TuneHeaderWidth = 1271.0f;
-		static constexpr float TuneHeaderHeight = 76.0f;
+		// Shared tuner geometry keeps panel and header gaps consistent.
+		static constexpr float TunePanelGap = 12.0f;
+		static constexpr float TuneRailX = 15.0f;
+		static constexpr float TuneRailWidth = 56.0f;
+		static constexpr float TuneHeaderWidth = 213.0f + TunePanelGap + 560.0f;
+		static constexpr float TuneHeaderHeight = 55.0f;
 		static constexpr float TuneCommandWidth = 400.0f;
 		static constexpr float TuneCommandHeight = 33.0f;
-		static constexpr float TuneSidebarFrameWidth = 246.0f;
-		static constexpr float TuneSidebarFrameHeight = 693.0f;
-		static constexpr float TuneContentFrameWidth = 1018.0f;
-		static constexpr float TuneContentFrameHeight = 688.0f;
+		static constexpr float TuneSidebarFrameWidth = 213.0f;
+		static constexpr float TuneSidebarFrameHeight = 810.0f;
+		static constexpr float TuneContentFrameWidth = 560.0f;
+		static constexpr float TuneContentFrameHeight = 620.0f;
 		static constexpr float TuneTitleHeight = 82.0f;
 		static constexpr float TuneNavWidth = 210.0f;
 		static constexpr float TuneNavHeight = 30.0f;
-		static constexpr float TuneSearchWidth = 209.0f;
+		static constexpr float TuneSearchWidth = 175.0f;
 		static constexpr float TuneSearchHeight = 33.0f;
-		static constexpr float TuneSectionWidth = 970.0f;
+		static constexpr float TuneSectionWidth = 445.0f;
 		static constexpr float TuneSectionHeight = 27.0f;
-		static constexpr float TuneFeatureWidth = 968.0f;
+		static constexpr float TuneFeatureWidth = 440.0f;
 		static constexpr float TuneFeatureHeight = 49.0f;
 		static constexpr float TuneFeatureGap = 7.0f;
 
-		// PASS A6.2: literal positions measured from the authored 1287x832
-		// tuning reference. All coordinates are relative to the fixed root
-		// window, then multiplied only by gReferenceScale.
-		static constexpr float TuneHeaderX = 10.0f;
-		static constexpr float TuneHeaderY = 6.0f;
+		// Coordinates are relative to the fixed root and scaled by gReferenceScale.
+		static constexpr float TuneHeaderX = TuneRailX + TuneRailWidth + TunePanelGap;
+		static constexpr float TuneHeaderY = 18.0f;
 		static constexpr float TuneCommandX = 20.0f;
 		static constexpr float TuneCommandY = 95.0f;
-		static constexpr float TuneSidebarX = 9.0f;
-		static constexpr float TuneSidebarY = 135.0f;
-		static constexpr float TuneContentX = 262.0f;
-		static constexpr float TuneContentY = 140.0f;
+		static constexpr float TuneSidebarX = TuneHeaderX;
+		static constexpr float TuneSidebarY = TuneHeaderY + TuneHeaderHeight + TunePanelGap;
+		static constexpr float TuneContentX = TuneSidebarX + TuneSidebarFrameWidth + TunePanelGap;
+		static constexpr float TuneContentY = TuneSidebarY;
 
 		static constexpr float TuneSidebarTitleX = 13.0f;
 		static constexpr float TuneSidebarTitleY = 6.0f;

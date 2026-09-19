@@ -16,6 +16,7 @@ namespace Plugin
 	};
 
 	inline constexpr auto NAME = "@PROJECT_NAME@"sv;
+	inline constexpr auto DISPLAY_VERSION = "@PIXL_DISPLAY_VERSION@"sv;
 
 	/// Full git describe string, e.g. "v1.4.11", "v1.4.11-3-gabcdef1", "v1.4.11-3-gabcdef1-dirty".
 	/// Matches "v{VERSION}" exactly on a clean tagged release build.

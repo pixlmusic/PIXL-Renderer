@@ -5,6 +5,7 @@
 #include "Hooks.h"
 #include "I18n/I18n.h"
 #include "Menu.h"
+#include "Menu/TuningWorkspaceRenderer.h"
 #include "Menu/ThemeManager.h"
 #include "SceneSettingsManager.h"
 #include "SeasonIntegration.h"
@@ -157,8 +158,12 @@ extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Query(const SKSE::QueryInterface*, 
 void MessageHandler(SKSE::MessagingInterface::Message* message)
 {
 	switch (message->type) {
+	case SKSE::MessagingInterface::kPostLoad:
+		TuningWorkspaceRenderer::InitializeCameraCompatibility(false);
+		break;
 	case SKSE::MessagingInterface::kPostPostLoad:
 		{
+			TuningWorkspaceRenderer::InitializeCameraCompatibility(true);
 			if (errors.empty()) {
 				SeasonIntegration::GetSingleton().Initialize();
 				Deferred::Hooks::Install();

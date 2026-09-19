@@ -1,7 +1,7 @@
 {
   "DisplayName": "PIXL Graphite",
   "Description": "A restrained Skyrim-inspired graphite and frost interface for PIXL Renderer.",
-  "Version": "1.0.2a",
+  "Version": "1.0.3",
   "Author": "PIXL Studio",
   "Theme": {
     "FontSize": 0.0,

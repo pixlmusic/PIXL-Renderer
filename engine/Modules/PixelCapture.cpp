@@ -13,6 +13,7 @@
 #include "Globals.h"
 #include "I18n/I18n.h"
 #include "Menu.h"
+#include "Menu/TuningWorkspaceRenderer.h"
 #include "Utils/FileSystem.h"
 
 #define I18N_KEY_PREFIX "feature.pixel_capture."
@@ -365,7 +366,11 @@ namespace
 		if (IsFlatHdrScreenshotCapture()) {
 			// Recompose from the clean scene with no UI buffer.
 			auto& hdr = globals::pipeline::cameraSuite;
-			if (Menu::GetSingleton()->IsEnabled && hdr.outputTexture && hdr.outputTexture->srv) {
+			const bool cleanSceneRequested =
+				Menu::GetSingleton()->IsEnabled ||
+				TuningWorkspaceRenderer::IsDirectorPhotoModeActive() ||
+				TuningWorkspaceRenderer::IsDirectorPhotoCaptureLocked();
+			if (cleanSceneRequested && hdr.outputTexture && hdr.outputTexture->srv) {
 				ID3D11ShaderResourceView* sceneSRV =
 					(forCapture && hdr.IsCleanSceneCaptureFresh()) ? hdr.cleanSceneCapture->srv.get() :
 																	 (hdr.hdrTexture ? hdr.hdrTexture->srv.get() : nullptr);
@@ -2244,7 +2249,7 @@ void PixelCapture::ProcessCaptureRequest()
 			false,
 			std::memory_order_acq_rel) &&
 		!photoFinishBurst.has_value()) {
-		Capture();
+		Capture(/*directorCapture=*/true);
 		return;
 	}
 
@@ -3319,12 +3324,12 @@ void PixelCapture::ShowInGameNotification(std::string message)
 	});
 }
 
-void PixelCapture::Capture()
+void PixelCapture::Capture(bool directorCapture)
 {
-	CaptureImpl(std::nullopt, true);
+	CaptureImpl(std::nullopt, true, directorCapture);
 }
 
-void PixelCapture::CaptureImpl(const std::optional<std::filesystem::path>& outputPath, bool notify)
+void PixelCapture::CaptureImpl(const std::optional<std::filesystem::path>& outputPath, bool notify, bool directorCapture)
 {
 	auto device = globals::d3d::device;
 	auto context = globals::d3d::context;
@@ -3350,7 +3355,7 @@ void PixelCapture::CaptureImpl(const std::optional<std::filesystem::path>& outpu
 	uint32_t copyW = srcDesc.Width;
 	uint32_t copyH = srcDesc.Height;
 
-	if (!outputPath.has_value() && applyCropToScreenshot) {
+	if (!directorCapture && !outputPath.has_value() && applyCropToScreenshot) {
 		auto region = subrect.GetPixelRegion(srcDesc.Width, srcDesc.Height);
 		copyX = region.x;
 		copyY = region.y;

@@ -153,6 +153,7 @@ public:
 	void ProcessInputEvents(RE::InputEvent* const* a_events);
 	/** @brief Returns true if the menu should consume all input (menu open or capturing hotkey) */
 	bool ShouldSwallowInput();
+	bool IsProfilerInteractive() const;
 	/** @brief True while PIXL Director exclusively owns gameplay/menu input. */
 	[[nodiscard]] bool ShouldLockGameInputForDirector() const;
 	/** @brief Returns true if the free camera preview is in flying mode */
@@ -251,6 +252,13 @@ public:
 		UIIcon debug;
 		UIIcon materials;
 		UIIcon postProcessing;
+
+		// Compact tuner context rail icons.
+		UIIcon tunerRenderer;
+		UIIcon tunerLighting;
+		UIIcon tunerWorld;
+		UIIcon tunerCharacter;
+		UIIcon tunerCamera;
 
 	} uiIcons;
 

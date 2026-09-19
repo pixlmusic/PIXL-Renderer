@@ -28,6 +28,8 @@
 #include "Globals.h"
 #include "I18n/I18n.h"
 #include "Menu.h"
+#define SMOOTHCAM_API_COMMONLIB
+#include "SmoothCamAPI.h"
 #include "Menu/LaunchExperienceRenderer.h"
 #include "Menu/PIXLRendererPage.h"
 #include "Menu/PIXLStyle.h"
@@ -88,7 +90,7 @@ namespace
 		bool restoreWorldOnExit = true;
 		bool restoreLookOnExit = true;
 
-		// Live FH-style photo-mode presentation.
+		// Photo-mode presentation state.
 		bool hudVisible = true;
 		bool quickPanelVisible = false;
 		bool focusTargetMode = false;
@@ -96,7 +98,7 @@ namespace
 		float focusTargetDistance = 0.0f;
 		int selectedQuickOption = 0;
 
-		// FH-style free-camera leash. 8192 Skyrim units is intentionally generous
+		// Free-camera boundary. 8192 Skyrim units is intentionally generous
 		// enough for wide composition while keeping the camera local to the subject.
 		bool cameraAnchorValid = false;
 		RE::NiPoint3 cameraAnchor{};
@@ -141,6 +143,17 @@ namespace
 	std::atomic_bool g_directorExitTaskComplete{ false };
 	std::atomic_bool g_directorCaptureLocked{ false };
 	std::atomic_bool g_directorCaptureDispatched{ false };
+	// The tuner keeps its window open while the native free camera is active.
+	// This is deliberately separate from Director's capture state: releasing
+	// Shift locks the inspection view and immediately returns ownership to ImGui.
+	bool g_tunerInspectionMoving = false;
+	bool g_tunerShiftHeld = false;
+	std::string g_tunerSelectedFeature;
+	bool g_tunerOwnsInspection = false;
+	SmoothCamAPI::IVSmoothCam1* g_smoothCam = nullptr;
+	bool g_smoothCamLease = false;  // Accessed only on SKSE's game thread.
+	std::atomic_bool g_directorEntryPending{ false };
+	std::atomic_int g_directorEntryResult{ 0 };
 
 	bool EvaluateDirectorPhotoModeEligibility(
 		std::string* reason)
@@ -501,6 +514,17 @@ namespace
 
 	bool EnterDirectorPhotoMode()
 	{
+		if (g_directorEntryPending.load(std::memory_order_acquire))
+			return false;
+		if (GetModuleHandleW(L"SmoothCam.dll") && !g_smoothCam) {
+			logger::warn("[PIXL Camera] SmoothCam is installed but its cooperative API is unavailable; photo entry declined");
+			return false;
+		}
+		auto* tasks = SKSE::GetTaskInterface();
+		if (!tasks)
+			return false;
+		if (g_directorExitRequested.load(std::memory_order_acquire))
+			return false;
 		auto* player =
 			RE::PlayerCharacter::GetSingleton();
 		auto* camera =
@@ -595,47 +619,34 @@ namespace
 		// true asks the engine to freeze world simulation while free camera is
 		// active, giving Director its photo-mode pause without a custom timescale
 		// hook or gameplay patch.
-		camera->ToggleFreeCameraMode(
-			true);
-
-		g_directorPhotoMode.active =
-			camera->IsInFreeCameraMode();
-
-		if (!g_directorPhotoMode.active) {
-			// Undo the camera/DOF/player snapshots immediately when native TFC
-			// refuses ownership.  This leaves no partially entered Photo Mode.
-			ExitDirectorPhotoMode();
-			return false;
-		}
-
-		if (g_directorPhotoMode.active) {
-			auto* freeCameraState =
-				static_cast<RE::FreeCameraState*>(
-					camera->
-						currentState
-						.get());
-
-			if (freeCameraState) {
-				g_directorPhotoMode.cameraAnchor =
-					freeCameraState->translation;
-				g_directorPhotoMode.cameraAnchorValid =
-					true;
-				g_directorPhotoMode.cameraMotionPosition =
-					freeCameraState->translation;
-				g_directorPhotoMode.cameraMotionVelocity = {};
-				g_directorPhotoMode.cameraMotionValid = true;
+		g_directorEntryResult.store(0, std::memory_order_release);
+		g_directorEntryPending.store(true, std::memory_order_release);
+		tasks->AddTask([] {
+			auto* nativeCamera = RE::PlayerCamera::GetSingleton();
+			if (g_directorExitRequested.load(std::memory_order_acquire) || !nativeCamera ||
+				nativeCamera->IsInFreeCameraMode() || !EvaluateDirectorPhotoModeEligibility(nullptr)) {
+				g_directorEntryResult.store(-1, std::memory_order_release);
+				return;
 			}
-		}
-
-		if (g_directorPhotoMode.active &&
-			globals::menu) {
-			// Return keyboard/mouse to Skyrim's free camera immediately.
-			globals::menu->IsEnabled =
-				false;
-		}
-
-		return
-			g_directorPhotoMode.active;
+			if (g_smoothCam) {
+				const auto result = g_smoothCam->RequestCameraControl(SKSE::GetPluginHandle());
+				if (result != SmoothCamAPI::APIResult::OK) {
+					logger::warn("[PIXL Camera] SmoothCam declined camera control ({}); photo entry cancelled", static_cast<int>(result));
+					RE::SendHUDMessage::ShowHUDMessage("PIXL: camera is currently owned by another camera system.", nullptr, true);
+					g_directorEntryResult.store(-1, std::memory_order_release);
+					return;
+				}
+				g_smoothCamLease = true;
+			}
+			nativeCamera->ToggleFreeCameraMode(true);
+			const bool entered = nativeCamera->IsInFreeCameraMode();
+			if (!entered && g_smoothCamLease) {
+				g_smoothCam->ReleaseCameraControl(SKSE::GetPluginHandle());
+				g_smoothCamLease = false;
+			}
+			g_directorEntryResult.store(entered ? 1 : -1, std::memory_order_release);
+		});
+		return true;
 	}
 
 	void ExitDirectorPhotoMode()
@@ -682,6 +693,9 @@ namespace
 			}
 
 			g_directorPhotoMode.active = false;
+			g_tunerInspectionMoving = false;
+			g_tunerOwnsInspection = false;
+			g_tunerShiftHeld = false;
 			g_directorPhotoMode.snapshotValid = false;
 			g_directorPhotoMode.weatherPreset =
 				DirectorWeatherPreset::Original;
@@ -764,7 +778,10 @@ namespace
 			}
 
 			taskInterface->AddTask(
-				[restoreTime,
+				[ownsNative = g_directorPhotoMode.active,
+				 restoreAlpha = g_directorPhotoMode.playerAlphaSnapshotValid,
+				 originalAlpha = g_directorPhotoMode.originalPlayerAlpha,
+				 restoreTime,
 				 restoreWeather,
 				 originalHour,
 				 originalWeather,
@@ -774,7 +791,7 @@ namespace
 						"[PIXL Director] Exit stage 1/4: releasing native free camera");
 					auto* camera =
 						RE::PlayerCamera::GetSingleton();
-					if (camera &&
+					if (ownsNative && camera &&
 						camera->IsInFreeCameraMode()) {
 						// Clear only TFC-owned transient motion. Touching PlayerControls
 						// during the native state transition can race Skyrim's handler
@@ -815,6 +832,14 @@ namespace
 						camera->GetRuntimeData2().worldFOV = originalFov;
 					logger::info(
 						"[PIXL Director] Exit stage 3/4: changed camera state restored");
+					if (restoreAlpha) {
+						if (auto* player = RE::PlayerCharacter::GetSingleton())
+							player->SetAlpha(originalAlpha);
+					}
+					if (g_smoothCamLease && g_smoothCam) {
+						g_smoothCam->ReleaseCameraControl(SKSE::GetPluginHandle());
+						g_smoothCamLease = false;
+					}
 
 					g_directorExitTaskComplete.store(
 						true,
@@ -2697,7 +2722,7 @@ namespace
 
 	void RenderDirectorPhotoModeOverlayInternal()
 	{
-		if (ProcessDirectorPhotoModeExit())
+		if (g_directorExitRequested.load(std::memory_order_acquire))
 			return;
 
 		if (!g_directorPhotoMode.active)
@@ -2746,6 +2771,11 @@ namespace
 			playerCamera);
 		UpdateDirectorPlayerBodyFade(
 			playerCamera);
+
+		// Inspection shares native camera maintenance, not Director's capture
+		// shortcuts or HUD. Maintenance must continue while panels are hidden.
+		if (g_tunerOwnsInspection)
+			return;
 
 		// Suppress every HUD primitive before triggering capture.
 		if (g_directorPhotoMode.captureDelayFrames > 0) {
@@ -3147,6 +3177,19 @@ namespace
 	 */
 	float DrawFeatureHeader(const std::string& featureName, const std::string& version, const std::string& description = "", const std::string& stageTag = "", ImVec4 stageColor = {})
 	{
+		if (globals::menu->GetSettings().AdvancedMode) {
+			MenuFonts::FontRoleGuard heading(Menu::FontRole::Heading);
+			ImGui::TextWrapped("%s", featureName.c_str());
+			const float titleHeight = ImGui::GetItemRectSize().y;
+			if (!description.empty()) {
+				MenuFonts::FontRoleGuard body(Menu::FontRole::Body);
+				ImGui::PushStyleColor(ImGuiCol_Text, PIXLUI::ToVec4(PIXLUI::Colors::TextMuted));
+				ImGui::TextWrapped("%s", description.c_str());
+				ImGui::PopStyleColor();
+			}
+			ImGui::Spacing();
+			return titleHeight;
+		}
 		auto& themeSettings = globals::menu->GetTheme();
 		auto& palette = themeSettings.Palette;
 		auto& featureHeading = themeSettings.FeatureHeading;
@@ -3488,6 +3531,30 @@ bool TuningWorkspaceRenderer::IsDirectorPhotoModeActive()
 		g_directorPhotoMode.active;
 }
 
+bool TuningWorkspaceRenderer::IsDirectorCameraTransitionPending()
+{
+	return g_directorEntryPending.load(std::memory_order_acquire) ||
+		g_directorExitRequested.load(std::memory_order_acquire);
+}
+
+TuningWorkspaceRenderer::TunerInteractionMode TuningWorkspaceRenderer::GetTunerInteractionMode()
+{
+	const bool tunerOpen = globals::menu && globals::menu->IsEnabled;
+	if (!tunerOpen && !g_directorPhotoMode.active)
+		return TunerInteractionMode::Closed;
+	if (!g_directorPhotoMode.active)
+		return TunerInteractionMode::LiveUI;
+	return g_tunerInspectionMoving
+		? TunerInteractionMode::InspectMoving
+		: TunerInteractionMode::InspectLocked;
+}
+
+bool TuningWorkspaceRenderer::IsDirectorInspectionMoving()
+{
+	return g_tunerOwnsInspection && g_directorPhotoMode.active && g_tunerInspectionMoving &&
+		!g_directorExitRequested.load(std::memory_order_acquire);
+}
+
 bool TuningWorkspaceRenderer::IsDirectorPhotoCaptureLocked()
 {
 	return g_directorCaptureLocked.load(std::memory_order_acquire);
@@ -3517,6 +3584,120 @@ bool TuningWorkspaceRenderer::OpenDirectorPhotoMode()
 	return true;
 }
 
+void TuningWorkspaceRenderer::CloseTunerInspection()
+{
+	if (g_directorPhotoMode.active || g_directorEntryPending.load(std::memory_order_acquire))
+		ExitDirectorPhotoMode();
+	g_tunerInspectionMoving = false;
+	g_tunerShiftHeld = false;
+}
+
+void TuningWorkspaceRenderer::UpdateTunerInspection()
+{
+	if (g_directorEntryPending.load(std::memory_order_acquire)) {
+		const int result = g_directorEntryResult.load(std::memory_order_acquire);
+		if (result == 0)
+			return;
+		g_directorPhotoMode.active = result > 0;
+		g_directorEntryPending.store(false, std::memory_order_release);
+		if (result < 0)
+			ExitDirectorPhotoMode();
+	}
+	if (g_tunerOwnsInspection) {
+		if (!globals::menu || !globals::menu->IsEnabled || !globals::menu->GetSettings().AdvancedMode)
+			CloseTunerInspection();
+		// Recover from a release lost during focus changes without creating a
+		// second input stream. This can only stop navigation, never start it.
+		if (!(GetAsyncKeyState(VK_LSHIFT) & 0x8000)) {
+			g_tunerShiftHeld = false;
+			g_tunerInspectionMoving = false;
+		}
+	}
+	ProcessDirectorPhotoModeExit();
+}
+
+void TuningWorkspaceRenderer::InitializeCameraCompatibility(bool requestInterface)
+{
+	auto* messaging = SKSE::GetMessagingInterface();
+	if (!messaging)
+		return;
+	if (requestInterface) {
+		(void)SmoothCamAPI::RequestInterface(messaging, SmoothCamAPI::InterfaceVersion::V1);
+	} else {
+		(void)SmoothCamAPI::RegisterInterfaceLoaderCallback(messaging, [](void* instance, SmoothCamAPI::InterfaceVersion version) {
+			if (instance && version == SmoothCamAPI::InterfaceVersion::V1) {
+				g_smoothCam = static_cast<SmoothCamAPI::IVSmoothCam1*>(instance);
+				logger::info("[PIXL Camera] SmoothCam cooperative camera interface connected");
+			}
+		});
+	}
+}
+
+bool TuningWorkspaceRenderer::HandleTunerKeyboardInput(
+	std::uint32_t virtualKey,
+	bool pressed)
+{
+	if (!globals::menu || !globals::menu->IsEnabled)
+		return false;
+
+	// Escape is an explicit ownership boundary while the tuner is open.  It
+	// must close both the UI and any active inspection transaction, including
+	// native free-camera mode, without forwarding the key to Skyrim.
+	if (virtualKey == VK_ESCAPE && pressed) {
+		CloseTunerInspection();
+		globals::menu->IsEnabled = false;
+		return true;
+	}
+
+	if (g_directorExitRequested.load(std::memory_order_acquire))
+		return true;
+	if (!globals::menu->GetSettings().AdvancedMode)
+		return false;
+
+	// Allow the configured toggle through on both transitions while flying.
+	if (InputCombo::MatchesKeyboardCombo(globals::menu->GetSettings().ToggleKey, virtualKey))
+		return false;
+
+	const bool isShift = virtualKey == VK_LSHIFT || virtualKey == VK_SHIFT;
+	if (isShift) {
+		g_tunerShiftHeld = pressed;
+		if (g_directorPhotoMode.active && !pressed)
+			g_tunerInspectionMoving = false;
+		return true;
+	}
+
+	const bool navigationKey =
+		virtualKey == 'W' || virtualKey == 'A' || virtualKey == 'S' ||
+		virtualKey == 'D' || virtualKey == 'Q' || virtualKey == 'E';
+	if (!g_tunerInspectionMoving && ImGui::GetIO().WantTextInput)
+		return false;
+
+	if (g_directorPhotoMode.active) {
+		// While flying, native TFC receives the filtered event stream from Hooks.
+		// Keep all keyboard events out of ImGui until Shift is released.
+		if (g_tunerInspectionMoving)
+			return true;
+
+		// Locked inspection is deliberately re-entrant: Shift + navigation starts
+		// a new movement transaction without closing or reopening the tuner.
+		if (pressed && g_tunerShiftHeld && navigationKey) {
+			g_tunerInspectionMoving = true;
+			return true;
+		}
+		return false;
+	}
+
+	if (pressed && g_tunerShiftHeld && navigationKey) {
+		if (EnterDirectorPhotoMode()) {
+			g_tunerOwnsInspection = true;
+			g_tunerInspectionMoving = true;
+			return true;
+		}
+	}
+
+	return false;
+}
+
 bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
 	std::uint32_t virtualKey)
 {
@@ -3524,6 +3705,12 @@ bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
 		g_directorCaptureLocked.load(std::memory_order_acquire)) {
 		// The entire Photo Finish transaction owns the view. Consume every key,
 		// including HOME/END and framing controls, until the file is written.
+		return true;
+	}
+
+	if (virtualKey == VK_ESCAPE && (g_directorPhotoMode.active ||
+		g_directorEntryPending.load(std::memory_order_acquire))) {
+		ExitDirectorPhotoMode();
 		return true;
 	}
 
@@ -3774,15 +3961,12 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 	const std::function<void()>& drawGeneralSettings,
 	const std::function<void()>& drawAdvancedSettings)
 {
-	// PASS A6.2.1: A6.2 moved the Advanced workspace to absolute reference
-	// coordinates, so the old flow-layout footer reservation is intentionally
-	// unused. Keep the public function signature stable and explicitly consume
-	// the parameter because this project builds with warnings-as-errors.
+	// Absolute panel geometry does not reserve a flow-layout footer.
 	static_cast<void>(footerHeight);
 
 	auto menuList =
 		BuildMenuList(
-			featureSearch,
+			"",
 			categoryExpansionStates,
 			drawGeneralSettings,
 			drawAdvancedSettings);
@@ -3797,6 +3981,15 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 		std::holds_alternative<CategoryHeader>(menuList[selectedMenu]) ||
 		std::holds_alternative<SubcategoryHeader>(menuList[selectedMenu])) {
 		selectedMenu = 0;
+	}
+	if (selectedMenu < menuList.size() &&
+		std::holds_alternative<CategoryPage>(menuList[selectedMenu])) {
+		const auto& page = std::get<CategoryPage>(menuList[selectedMenu]);
+		const bool stillVisible = std::ranges::any_of(
+			page.features,
+			[](RenderModule* feature) { return feature && feature->GetShortName() == g_tunerSelectedFeature; });
+		if (!stillVisible && !page.features.empty())
+			g_tunerSelectedFeature = page.features.front()->GetShortName();
 	}
 
 	const ImVec2 rootPos =
@@ -3818,7 +4011,142 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 			PIXLUI::Ref(
 				PIXLUI::Layout::TuneContentY));
 
-	ImGui::SetCursorScreenPos(sidebarPos);
+	// The rail owns categories; the adjacent drawer owns module selection.
+	const ImVec2 railPos(
+		rootPos.x + PIXLUI::Ref(PIXLUI::Layout::TuneRailX),
+		rootPos.y + PIXLUI::Ref(PIXLUI::Layout::TuneSidebarY));
+	ImGui::SetCursorScreenPos(railPos);
+	{
+		PIXLUI::ChromeScope rail(
+			"##PIXLContextRail",
+			ImVec2(PIXLUI::Ref(PIXLUI::Layout::TuneRailWidth), PIXLUI::Ref(PIXLUI::Layout::TuneSidebarFrameHeight)),
+			PIXLUI::ChromeStyle::Sidebar,
+			false,
+			ImGuiWindowFlags_NoScrollbar,
+			0.0f);
+		if (rail) {
+			const ImVec2 railMin = ImGui::GetWindowPos();
+			const float width = ImGui::GetWindowSize().x;
+			ImGui::SetCursorScreenPos(ImVec2(railMin.x + PIXLUI::Ref(12.0f), railMin.y + PIXLUI::Ref(15.0f)));
+			ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::Text), "PIXL");
+			const std::array<std::string_view, 5> railLabels{
+				PIXLRendererPage::CategoryOrder[0], PIXLRendererPage::CategoryOrder[1],
+				PIXLRendererPage::CategoryOrder[2], PIXLRendererPage::CategoryOrder[3], "PIXL Renderer" };
+			const char* railHints[] = { "LIGHT", "WORLD", "CHAR", "CAM", "PIXL" };
+			const Menu::UIIcon* railIcons[] = {
+				&globals::menu->uiIcons.tunerLighting,
+				&globals::menu->uiIcons.tunerWorld,
+				&globals::menu->uiIcons.tunerCharacter,
+				&globals::menu->uiIcons.tunerCamera,
+				&globals::menu->uiIcons.tunerRenderer
+			};
+			for (size_t i = 0; i < std::size(railLabels); ++i) {
+				const float y = PIXLUI::Ref(58.0f + static_cast<float>(i) * 82.0f);
+				const float iconSize = PIXLUI::Ref(i == 4 ? 48.0f : 50.0f);
+				ImGui::PushID(static_cast<int>(i));
+				ImGui::SetCursorScreenPos(ImVec2(railMin.x + PIXLUI::Ref(3.0f), railMin.y + y - PIXLUI::Ref(5.0f)));
+				const bool clicked = ImGui::InvisibleButton("##TunerRailButton", ImVec2(width - PIXLUI::Ref(6.0f), PIXLUI::Ref(57.0f)));
+				const bool hovered = ImGui::IsItemHovered();
+				const bool selected = (i < 4 && selectedMenu < menuList.size() &&
+					std::holds_alternative<CategoryPage>(menuList[selectedMenu]) &&
+					std::get<CategoryPage>(menuList[selectedMenu]).name == railLabels[i]) ||
+					(i == 4 && selectedMenu < menuList.size() &&
+					std::holds_alternative<BuiltInMenu>(menuList[selectedMenu]) &&
+					std::get<BuiltInMenu>(menuList[selectedMenu]).name == railLabels[i]);
+				if (clicked) {
+					const std::string_view target = railLabels[i];
+					for (size_t menuIndex = 0; menuIndex < menuList.size(); ++menuIndex) {
+						if (std::holds_alternative<TuningWorkspaceRenderer::CategoryPage>(menuList[menuIndex]) &&
+							std::get<TuningWorkspaceRenderer::CategoryPage>(menuList[menuIndex]).name == target) {
+							selectedMenu = menuIndex;
+							const auto& page = std::get<CategoryPage>(menuList[menuIndex]);
+							g_tunerSelectedFeature = page.features.empty() ? "" : page.features.front()->GetShortName();
+							break;
+						}
+						if (i == 4 && std::holds_alternative<TuningWorkspaceRenderer::BuiltInMenu>(menuList[menuIndex]) &&
+							std::get<TuningWorkspaceRenderer::BuiltInMenu>(menuList[menuIndex]).name == target) {
+							selectedMenu = menuIndex;
+							break;
+						}
+					}
+				}
+				const ImU32 glow = selected || hovered ? PIXLUI::Colors::CyanBright : PIXLUI::Colors::BorderSoft;
+				ImGui::GetWindowDrawList()->AddRectFilled(
+					ImVec2(railMin.x + PIXLUI::Ref(4.0f), railMin.y + y - PIXLUI::Ref(4.0f)),
+					ImVec2(railMin.x + width - PIXLUI::Ref(4.0f), railMin.y + y + PIXLUI::Ref(53.0f)),
+					selected ? IM_COL32(21, 45, 50, 220) : (hovered ? IM_COL32(18, 32, 37, 220) : IM_COL32(0, 0, 0, 0)),
+					PIXLUI::Ref(4.0f));
+				ImGui::GetWindowDrawList()->AddRect(
+					ImVec2(railMin.x + PIXLUI::Ref(4.0f), railMin.y + y - PIXLUI::Ref(4.0f)),
+					ImVec2(railMin.x + width - PIXLUI::Ref(4.0f), railMin.y + y + PIXLUI::Ref(53.0f)),
+					glow,
+					PIXLUI::Ref(4.0f),
+					0,
+					PIXLUI::Ref(selected || hovered ? 1.5f : 0.7f));
+				if (railIcons[i]->texture && railIcons[i]->size.y > 0.0f) {
+					const float aspect = railIcons[i]->size.x / railIcons[i]->size.y;
+					const float imageWidth = std::min(iconSize * aspect, width - PIXLUI::Ref(10.0f));
+					const float imageHeight = imageWidth / aspect;
+					const ImVec2 imageMin(railMin.x + (width - imageWidth) * 0.5f, railMin.y + y - PIXLUI::Ref(2.0f));
+					ImGui::GetWindowDrawList()->AddImage(railIcons[i]->texture, imageMin,
+						ImVec2(imageMin.x + imageWidth, imageMin.y + imageHeight));
+				} else {
+					ImGui::SetCursorScreenPos(ImVec2(railMin.x + PIXLUI::Ref(13.0f), railMin.y + y));
+					ImGui::TextColored(
+						i == 0 ? PIXLUI::ToVec4(PIXLUI::Colors::CyanBright) : PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
+						"%s",
+						railLabels[i].data());
+				}
+				ImGui::SetWindowFontScale(0.62f);
+				const float labelWidth = ImGui::CalcTextSize(railHints[i]).x;
+				ImGui::SetCursorScreenPos(ImVec2(railMin.x + (width - labelWidth) * 0.5f, railMin.y + y + PIXLUI::Ref(42.0f)));
+				ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "%s", railHints[i]);
+				ImGui::SetWindowFontScale(1.0f);
+				ImGui::PopID();
+			}
+			ImGui::GetWindowDrawList()->AddLine(
+				ImVec2(railMin.x + width - PIXLUI::Ref(2.0f), railMin.y + PIXLUI::Ref(42.0f)),
+				ImVec2(railMin.x + width - PIXLUI::Ref(2.0f), railMin.y + PIXLUI::Ref(93.0f)),
+				PIXLUI::Colors::CyanBright,
+				PIXLUI::Ref(2.0f));
+
+			// The rail footer is the tuner-local back action.  Keeping it here
+			// avoids competing with the header actions and mirrors the reference
+			// application's compact vertical navigation.
+			const ImVec2 backPos(
+				railMin.x + PIXLUI::Ref(7.0f),
+				railMin.y + PIXLUI::Ref(755.0f));
+			ImGui::SetCursorScreenPos(backPos);
+			const bool backClicked = ImGui::InvisibleButton(
+				"##TunerRailBack",
+				ImVec2(PIXLUI::Ref(42.0f), PIXLUI::Ref(34.0f)));
+			const bool backHovered = ImGui::IsItemHovered();
+			const ImU32 backColor = backHovered ? PIXLUI::Colors::CyanBright : PIXLUI::Colors::BorderSoft;
+			ImGui::GetWindowDrawList()->AddRect(
+				backPos,
+				ImVec2(backPos.x + PIXLUI::Ref(42.0f), backPos.y + PIXLUI::Ref(34.0f)),
+				backColor,
+				PIXLUI::Ref(4.0f),
+				0,
+				PIXLUI::Ref(backHovered ? 1.6f : 0.8f));
+			ImGui::SetCursorScreenPos(ImVec2(backPos.x + PIXLUI::Ref(15.0f), backPos.y + PIXLUI::Ref(7.0f)));
+			ImGui::TextColored(PIXLUI::ToVec4(backColor), "<");
+			if (backClicked) {
+				globals::menu->GetSettings().AdvancedMode = false;
+				globals::state->Save();
+			}
+		}
+	}
+
+	static size_t previousCategory = static_cast<size_t>(-1);
+	static float drawerProgress = 1.0f;
+	if (previousCategory != selectedMenu) {
+		previousCategory = selectedMenu;
+		drawerProgress = 0.0f;
+	}
+	drawerProgress = std::min(1.0f, drawerProgress + ImGui::GetIO().DeltaTime / 0.18f);
+	const float slideOffset = PIXLUI::Ref(12.0f) * std::pow(1.0f - drawerProgress, 3.0f);
+	ImGui::SetCursorScreenPos(ImVec2(sidebarPos.x + slideOffset, sidebarPos.y));
 	{
 		PIXLUI::ChromeScope sidebar(
 			"##PIXLAdvancedSidebar",
@@ -3840,8 +4168,8 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 				MenuFonts::FontRoleGuard railFont(
 					Menu::FontRole::Subheading);
 
-				const char* railTitle =
-					"TUNE YOUR RENDERER";
+				const char* railTitle = selectedMenu < menuList.size() && std::holds_alternative<CategoryPage>(menuList[selectedMenu])
+					? std::get<CategoryPage>(menuList[selectedMenu]).name.c_str() : "RENDERER";
 				const ImVec2 railTitleSize =
 					ImGui::CalcTextSize(
 						railTitle);
@@ -3881,29 +4209,73 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 				menuList,
 				selectedMenu,
 				featureSearch,
-				categoryExpansionStates);
+				categoryExpansionStates,
+				g_tunerSelectedFeature);
 		}
 	}
 
-	ImGui::SetCursorScreenPos(contentPos);
+	ImGui::SetCursorScreenPos(ImVec2(contentPos.x + slideOffset, contentPos.y));
 	{
+		const bool productPage = selectedMenu < menuList.size() &&
+			std::holds_alternative<BuiltInMenu>(menuList[selectedMenu]) &&
+			std::get<BuiltInMenu>(menuList[selectedMenu]).name == "PIXL Renderer";
+		const float contentWidth = productPage
+			? std::max(PIXLUI::Ref(PIXLUI::Layout::TuneContentFrameWidth),
+				ImGui::GetMainViewport()->WorkPos.x + ImGui::GetMainViewport()->WorkSize.x - contentPos.x - slideOffset - PIXLUI::Ref(16.0f))
+			: PIXLUI::Ref(PIXLUI::Layout::TuneContentFrameWidth);
 		PIXLUI::ChromeScope content(
 			"##PIXLAdvancedContentFrame",
 			ImVec2(
-				PIXLUI::Ref(
-					PIXLUI::Layout::TuneContentFrameWidth),
+				contentWidth,
 				PIXLUI::Ref(
 					PIXLUI::Layout::TuneContentFrameHeight)),
 			PIXLUI::ChromeStyle::Content,
 			true,
-			ImGuiWindowFlags_NoScrollbar,
+			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse,
 			0.0f);
 
 		if (content) {
+			// Keep the selected module identifiable while its controls scroll.
+			ImGui::SetCursorPos(ImVec2(PIXLUI::Ref(16.0f), PIXLUI::Ref(12.0f)));
+			std::string panelTitle = "RENDERER SETTINGS";
+			if (selectedMenu < menuList.size()) {
+				if (const auto* page = std::get_if<CategoryPage>(&menuList[selectedMenu])) {
+					for (auto* feature : page->features) {
+						if (feature && feature->GetShortName() == g_tunerSelectedFeature) {
+							panelTitle = PIXLRendererPage::GetPublicName(feature->GetShortName(), feature->GetDisplayName());
+							break;
+						}
+					}
+				} else if (const auto* menu = std::get_if<BuiltInMenu>(&menuList[selectedMenu])) {
+					panelTitle = menu->name;
+				}
+			}
+			ImGui::PushTextWrapPos(ImGui::GetWindowSize().x - PIXLUI::Ref(16.0f));
+			ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "%s", panelTitle.c_str());
+			ImGui::PopTextWrapPos();
+			const float bodyTop = std::max(PIXLUI::Ref(44.0f), ImGui::GetCursorPosY() + PIXLUI::Ref(8.0f));
+			// A nested, padded surface keeps native module controls clear of the
+			// frame. Key it by selection so scroll state belongs to each module.
+			ImGui::SetCursorPos(ImVec2(PIXLUI::Ref(16.0f), bodyTop));
+			ImGui::PushID(static_cast<int>(selectedMenu));
+			ImGui::PushID(g_tunerSelectedFeature.c_str());
+			const ImVec2 innerSize(ImGui::GetWindowSize().x - PIXLUI::Ref(32.0f), ImGui::GetWindowSize().y - bodyTop - PIXLUI::Ref(16.0f));
+			// Long release modules need an independently scrollable surface; hiding
+			// this scrollbar made lower controls inaccessible at common resolutions.
+			if (ImGui::BeginChild("##TunerModuleSurface", innerSize, ImGuiChildFlags_None, ImGuiWindowFlags_None)) {
+			ImGui::SetWindowFontScale(0.9f);
+			ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.48f);
 			RenderRightColumn(
 				menuList,
 				selectedMenu,
-				pendingFeatureSelection);
+				pendingFeatureSelection,
+				g_tunerSelectedFeature);
+			ImGui::PopItemWidth();
+			ImGui::SetWindowFontScale(1.0f);
+			}
+			ImGui::EndChild();
+			ImGui::PopID();
+			ImGui::PopID();
 		}
 	}
 
@@ -4057,8 +4429,10 @@ void TuningWorkspaceRenderer::RenderLeftColumn(
 	const std::vector<MenuFuncInfo>& menuList,
 	size_t& selectedMenu,
 	std::string& featureSearch,
-	std::map<std::string, bool>& categoryExpansionStates)
+	std::map<std::string, bool>& categoryExpansionStates,
+	std::string& selectedFeatureName)
 {
+	static_cast<void>(categoryExpansionStates);
 	const ImVec2 railOrigin =
 		ImGui::GetWindowPos();
 
@@ -4130,8 +4504,9 @@ void TuningWorkspaceRenderer::RenderLeftColumn(
 		ImGui::PopStyleColor(2);
 		ImGui::PopStyleVar(3);
 
-		// Four player-facing category buttons begin at the exact reference
-		// baseline: 19px inset, 93px below the sidebar chassis top.
+		// The icon rail owns category selection. The adjacent sidebar shows the
+		// modules belonging to the selected category, matching the reference UI
+		// instead of rendering a second category navigation list.
 		ImGui::SetCursorScreenPos(
 			ImVec2(
 				railOrigin.x +
@@ -4141,16 +4516,18 @@ void TuningWorkspaceRenderer::RenderLeftColumn(
 					PIXLUI::Ref(
 						PIXLUI::Layout::TuneSidebarNavY)));
 
-		for (size_t i = 0; i < menuList.size(); i++) {
-			if (std::holds_alternative<BuiltInMenu>(menuList[i]))
-				continue;
-
-			std::visit(
-				ListMenuVisitor{
-					i,
-					selectedMenu,
-					categoryExpansionStates },
-				menuList[i]);
+		if (selectedMenu < menuList.size() && std::holds_alternative<CategoryPage>(menuList[selectedMenu])) {
+			const auto& page = std::get<CategoryPage>(menuList[selectedMenu]);
+			for (RenderModule* feature : page.features) {
+				if (!feature)
+					continue;
+				if (!featureSearch.empty() && !Util::FeatureMatchesSearch(feature, featureSearch))
+					continue;
+				const std::string publicName = std::string(PIXLRendererPage::GetPublicName(feature->GetShortName(), feature->GetDisplayName()));
+				const bool selected = selectedFeatureName == feature->GetShortName();
+				if (PIXLUI::NavItem(feature->GetShortName().c_str(), publicName.c_str(), selected, PIXLUI::Ref(38.0f)))
+					selectedFeatureName = feature->GetShortName();
+			}
 		}
 
 		// The product controls remain below the visual categories, but they use
@@ -4182,9 +4559,19 @@ void TuningWorkspaceRenderer::RenderLeftColumn(
 void TuningWorkspaceRenderer::RenderRightColumn(
 	const std::vector<MenuFuncInfo>& menuList,
 	size_t selectedMenu,
-	std::string& pendingFeatureSelection)
+	std::string& pendingFeatureSelection,
+	const std::string& selectedFeatureName)
 {
 	if (selectedMenu < menuList.size()) {
+		if (std::holds_alternative<CategoryPage>(menuList[selectedMenu])) {
+			const auto& page = std::get<CategoryPage>(menuList[selectedMenu]);
+			for (RenderModule* feature : page.features) {
+				if (feature && feature->GetShortName() == selectedFeatureName) {
+					std::visit(DrawMenuVisitor{ pendingFeatureSelection }, MenuFuncInfo{ feature });
+					return;
+				}
+			}
+		}
 		std::visit(DrawMenuVisitor{ pendingFeatureSelection }, menuList[selectedMenu]);
 	} else {
 		ImGui::TextDisabled("%s", T("menu.features.select_item_left", "Please select an item on the left."));
@@ -4451,7 +4838,7 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(const CategoryPage& pa
 			ImGuiWindowFlags_None)) {
 		// This child is the sole vertical scroll owner for category/module rows.
 		// Do not create a second scrollbar on the outer content chassis.
-		// PASS A8.1: absolute PIXL geometry must still participate in ImGui
+		// Absolute PIXL geometry must still participate in ImGui
 		// scrolling. GetWindowPos() is stationary, so subtract the child scroll
 		// offset from the authored y-origin.
 		const ImVec2 categoryWindowPos =
@@ -5040,12 +5427,12 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 				}
 			} else {
 				if (PIXLUI::ActionButton(
-						"COMPOSE SHOT",
+						"RETURN TO LIVE",
 						commandButton,
 						true)) {
-					if (globals::menu)
-						globals::menu->IsEnabled =
-							false;
+					// Leave the tuner open and restore the pre-inspection camera/world
+					// state.  Player controls remain owned by PIXL until the tuner closes.
+					CloseTunerInspection();
 				}
 
 				ImGui::SameLine();
@@ -5535,6 +5922,7 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 
 	ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
 	if (ImGui::BeginChild("##FeatureConfigFrame", { 0, 0 }, ImGuiChildFlags_None, ImGuiWindowFlags_None)) {
+		ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.48f);
 		// Compute scene-controlled state once for both header and settings
 		auto* sceneManager = globals::sceneSettingsManager;
 		bool sceneControlled = sceneManager->HasActiveSettingsForFeature(featureName) && !sceneManager->IsFeaturePaused(featureName);
@@ -5547,6 +5935,7 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 
 		// Render restore defaults button (floating in bottom-right)
 		RenderRestoreDefaultsButton(feat, isDisabled, isLoaded);
+		ImGui::PopItemWidth();
 	}
 	ImGui::EndChild();
 	ImGui::PopStyleColor();
@@ -5586,10 +5975,14 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::RenderFeatureHeader(RenderModule*
 	auto [description, keyFeatures] = feat->GetModuleSummary();
 	(void)keyFeatures;  // Not used for subtitle display
 
-	// Draw feature title, version, and description on the left
-	// Returns title-only height for button alignment
+	// In the tuner reserve a compact action rail on the left. Right-aligned
+	// controls were clipped by narrow panels and could overlap long headings.
 	const auto stage = feat->GetReleaseStage();
 	const std::string stageTag = RenderModule::GetReleaseStageTag(stage);  // empty for Release; color unused when tag is empty
+	const bool tunerHeader = globals::menu->GetSettings().AdvancedMode;
+	const float actionRailWidth = tunerHeader ? totalButtonWidth + ImGui::GetStyle().ItemSpacing.x * 1.5f : 0.0f;
+	if (tunerHeader)
+		ImGui::SetCursorScreenPos(ImVec2(titleStartPos.x + actionRailWidth, titleStartPos.y));
 	float titleOnlyHeight = DrawFeatureHeader(std::string(PIXLRendererPage::GetPublicName(featureName, feat->GetDisplayName())), isLoaded ? feat->version : "", description, stageTag, StageTagColor(stage));
 
 	// Save cursor position after header (for restoring after buttons are drawn)
@@ -5600,8 +5993,11 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::RenderFeatureHeader(RenderModule*
 
 	// Calculate Y position to middle-align buttons with title text only (not description)
 	float buttonY = titleStartPos.y + (titleOnlyHeight - buttonHeight) * 0.5f;
+	if (tunerHeader)
+		buttonY = cursorPosAfterHeader.y;
 
-	ImGui::SetCursorScreenPos(ImVec2(titleStartPos.x + availableWidth - totalButtonWidth, buttonY));
+	const float buttonX = tunerHeader ? titleStartPos.x : titleStartPos.x + availableWidth - totalButtonWidth;
+	ImGui::SetCursorScreenPos(ImVec2(buttonX, buttonY));
 
 	// Enable/Disable at boot toggle
 	bool bootEnabled = !isDisabled;
@@ -5664,7 +6060,13 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::RenderFeatureHeader(RenderModule*
 	}
 
 	// Restore cursor position after the title and separator
-	ImGui::SetCursorScreenPos(cursorPosAfterHeader);
+	if (tunerHeader) {
+		ImGui::SetCursorScreenPos(ImVec2(titleStartPos.x, buttonY + buttonHeight + ImGui::GetStyle().ItemSpacing.y));
+		ImGui::Separator();
+		ImGui::Spacing();
+	} else {
+		ImGui::SetCursorScreenPos(cursorPosAfterHeader);
+	}
 }
 
 void TuningWorkspaceRenderer::DrawMenuVisitor::RenderFeatureSettings(RenderModule* feat, bool isDisabled, bool isLoaded, bool hasFailedMessage, bool sceneControlled)
@@ -5868,16 +6270,14 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::RenderRestoreDefaultsButton(Rende
 		return;
 	}
 
-	// PIXL uses a compact text action rather than the inherited floating icon.
+	// Keep the reset action in document flow so it cannot cover the final
+	// settings row or change the scroll extent to the viewport's bottom edge.
 	const auto& style = ImGui::GetStyle();
-	ImVec2 windowPos = ImGui::GetWindowPos();
-	ImVec2 windowSize = ImGui::GetWindowSize();
-	float scrollbarWidth = ImGui::GetScrollMaxY() > 0 ? style.ScrollbarSize : 0.0f;
 	const char* label = "RESET MODULE";
 	ImVec2 frameSize(ImGui::CalcTextSize(label).x + style.FramePadding.x * 2, ImGui::GetFrameHeight());
-	ImGui::SetCursorScreenPos(ImVec2(
-		windowPos.x + windowSize.x - frameSize.x - style.WindowPadding.x - scrollbarWidth,
-		windowPos.y + windowSize.y - frameSize.y - style.WindowPadding.y));
+	ImGui::Spacing();
+	ImGui::Separator();
+	ImGui::Spacing();
 
 	if (PIXLUI::ActionButton(label, frameSize, false))
 		feat->RestoreDefaultSettings();

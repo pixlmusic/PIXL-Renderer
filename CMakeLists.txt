@@ -5,9 +5,10 @@ set(VCPKG_BUILD_TYPE release CACHE STRING "")
 project(
     # gersemi: ignore
     PIXLRenderer
-    VERSION 1.0.2
+    VERSION 1.0.3
     LANGUAGES CXX
 )
+set(PIXL_DISPLAY_VERSION "1.0.3-beta")
 
 # PIXL Renderer is one closed DX11 pipeline: host code under engine/, integrated
 # shader modules under pipeline/, and the authored runtime image under

@@ -321,7 +321,7 @@ void PulseProfiler::DrawOverlay()
 		ImVec2(760.0f * scale, 880.0f * scale));
 
 	ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse;
-	if (!menu->IsEnabled)
+	if (!menu->IsEnabled && !menu->IsProfilerInteractive())
 		windowFlags |= ImGuiWindowFlags_NoInputs;
 	if (!this->settings.ShowBorder)
 		windowFlags |= ImGuiWindowFlags_NoDecoration;
@@ -359,7 +359,7 @@ void PulseProfiler::DrawOverlay()
 		const float hotkeyWidth = ImGui::CalcTextSize(hotkey).x;
 		ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 8.0f * scale, ImGui::GetWindowWidth() - hotkeyWidth - 18.0f * scale));
 		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "%s", hotkey);
-		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "LIVE RENDER TELEMETRY");
+		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "HOLD CTRL TO SCROLL / INTERACT");
 		ImGui::Separator();
 
 		if (this->settings.ShowFPS) {
@@ -2242,4 +2242,3 @@ void PulseProfiler::UpdateGraphValues()
 	}
 }
 #undef I18N_KEY_PREFIX
-

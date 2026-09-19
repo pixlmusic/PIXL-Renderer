@@ -15,6 +15,13 @@ struct RenderModule;
 class TuningWorkspaceRenderer
 {
 public:
+	enum class TunerInteractionMode
+	{
+		Closed,
+		LiveUI,
+		InspectLocked,
+		InspectMoving
+	};
 	/** @brief Describes a built-in (non-feature) menu page with a name and draw callback. */
 	struct BuiltInMenu
 	{
@@ -70,6 +77,11 @@ public:
 
 	// PIXL Director live photo-mode controls / HUD.
 	[[nodiscard]] static bool IsDirectorPhotoModeActive();
+	[[nodiscard]] static bool IsDirectorCameraTransitionPending();
+	/** Current PIXL tuner ownership state. The tuner remains open while inspecting. */
+	[[nodiscard]] static TunerInteractionMode GetTunerInteractionMode();
+	/** True only while native free-camera navigation is actively being driven. */
+	[[nodiscard]] static bool IsDirectorInspectionMoving();
 	/** True while a Photo Finish transaction owns and freezes the Director camera. */
 	[[nodiscard]] static bool IsDirectorPhotoCaptureLocked();
 	/**
@@ -82,7 +94,14 @@ public:
 	[[nodiscard]] static bool IsDirectorPhotoModeAvailable(std::string* reason = nullptr);
 	/** Enters Director through its authoritative eligibility gate, or returns to its live HUD when already active. */
 	static bool OpenDirectorPhotoMode();
+	/** Requests safe teardown when the tuner closes during inspection. */
+	static void CloseTunerInspection();
+	/** Advances camera teardown even when the tuner and Director HUD are hidden. */
+	static void UpdateTunerInspection();
+	static void InitializeCameraCompatibility(bool requestInterface);
 	static bool HandleDirectorKeyboardInput(std::uint32_t virtualKey);
+	/** Routes key transitions used by the tuner ownership state machine. */
+	static bool HandleTunerKeyboardInput(std::uint32_t virtualKey, bool pressed);
 	static bool HandleDirectorGamepadInput(std::uint32_t gamepadKeyCode);
 	static void RenderDirectorPhotoModeOverlay();
 
@@ -141,10 +160,12 @@ private:
 		const std::vector<MenuFuncInfo>& menuList,
 		size_t& selectedMenu,
 		std::string& featureSearch,
-		std::map<std::string, bool>& categoryExpansionStates);
+		std::map<std::string, bool>& categoryExpansionStates,
+		std::string& selectedFeatureName);
 
 	static void RenderRightColumn(
 		const std::vector<MenuFuncInfo>& menuList,
 		size_t selectedMenu,
-		std::string& pendingFeatureSelection);
+		std::string& pendingFeatureSelection,
+		const std::string& selectedFeatureName);
 };

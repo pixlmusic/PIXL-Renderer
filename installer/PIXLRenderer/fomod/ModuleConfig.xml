@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>PIXL Renderer 1.0.2a</moduleName>
+  <moduleName>PIXL Renderer 1.0.3</moduleName>
   <moduleImage path="fomod\images\pixl-hero.jpg" showImage="true" showFade="true" height="240" />
   <requiredInstallFiles>
     <folder source="PIXL-Core" destination="" priority="0" />
@@ -11,7 +11,7 @@
         <group name="Your Skyrim, rendered as one cohesive world" type="SelectExactlyOne">
           <plugins order="Explicit">
             <plugin name="Let's make Skyrim look incredible">
-              <description>Hey! :D You made it through the requirements and setup notes - welcome to PIXL Renderer 1.0.2.
+              <description>Hey! :D You made it through the requirements and setup notes - welcome to PIXL Renderer 1.0.3.
 
 FIRST LAUNCH
 1. Start Skyrim through SKSE and let shader compilation finish.
@@ -67,7 +67,7 @@ EXACT SURFACETIDES VERSION ONLY: this replaces SurfaceTides.dll, Shaders/Surface
         </group>
       </optionalFileGroups>
     </installStep>
-    <installStep name="What's new in 1.0.2a">
+    <installStep name="What's new in 1.0.3">
       <optionalFileGroups order="Explicit">
         <group name="A release shaped by your screenshots, logs and feedback" type="SelectExactlyOne">
           <plugins order="Explicit">
@@ -81,7 +81,7 @@ EXACT SURFACETIDES VERSION ONLY: this replaces SurfaceTides.dll, Shaders/Surface
 - Ground Response gains stronger mud response and wetter behavior near water.
 - Weather, fog, night exposure, wetness and horizon blending received compatibility and visual polish.
 - Photo Mode/external-camera interaction and contact/screen-space shadow transitions received compatibility fixes.
-- UI branding, version labels, defaults and hotkey behavior were polished for 1.0.2.
+- UI branding, version labels, defaults and hotkey behavior were polished for 1.0.3.
 - Optional SurfaceTides 1.0.2 integration combines its tessellated geometry with PIXL water optics, projected rapid-water detail and calmer city/interior displacement.
 
 Thank you for testing PIXL Renderer and helping turn every rough edge into a better Skyrim. Let shader compilation finish, jump into the world, and have fun! :D</description>

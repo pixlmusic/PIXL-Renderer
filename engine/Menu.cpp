@@ -386,6 +386,11 @@ Menu::~Menu()
 	uiIcons.debug.Release();
 	uiIcons.materials.Release();
 	uiIcons.postProcessing.Release();
+	uiIcons.tunerRenderer.Release();
+	uiIcons.tunerLighting.Release();
+	uiIcons.tunerWorld.Release();
+	uiIcons.tunerCharacter.Release();
+	uiIcons.tunerCamera.Release();
 
 	uiIcons.search.Release();
 
@@ -772,6 +777,13 @@ void Menu::Init()
  */
 void Menu::DrawSettings()
 {
+	const bool wasEnabledAtFrameStart = IsEnabled;
+	const bool tunerStyleAtFrameStart = settings.AdvancedMode;
+	static bool previousAdvancedMode = settings.AdvancedMode;
+	if (previousAdvancedMode != settings.AdvancedMode) {
+		resetLayout = true;
+		previousAdvancedMode = settings.AdvancedMode;
+	}
 	if (focusChanged) {
 		OnFocusChanged();
 		focusChanged = false;
@@ -782,46 +794,30 @@ void Menu::DrawSettings()
 
 	ImGui::DockSpaceOverViewport(0, NULL, ImGuiDockNodeFlags_PassthruCentralNode);
 
+	// The authoring shell is an intentional viewport overlay, not a dockable
+	// remembered window. Reapply its geometry on every open so an older full-size
+	// tuner layout cannot overlap or clip the compact reference composition.
 	const auto layoutCond =
-		resetLayout
+		settings.AdvancedMode || resetLayout
 			? ImGuiCond_Always
 			: ImGuiCond_FirstUseEver;
 
 	if (settings.AdvancedMode) {
 		const ImVec2 viewportSize =
 			ImGui::GetMainViewport()->Size;
-
-		float fixedHeight =
-			viewportSize.y *
-			PIXLUI::Layout::ViewportHeightRatio;
-		float fixedWidth =
-			fixedHeight *
-			(PIXLUI::Layout::ReferenceWidth /
-			 PIXLUI::Layout::ReferenceHeight);
-
-		const float maxWidth =
-			viewportSize.x *
-			PIXLUI::Layout::ViewportWidthSafety;
-		if (fixedWidth > maxWidth) {
-			fixedWidth = maxWidth;
-			fixedHeight =
-				fixedWidth /
-				(PIXLUI::Layout::ReferenceWidth /
-				 PIXLUI::Layout::ReferenceHeight);
-		}
-
+		const float referenceScale = 0.88f * std::min(
+			viewportSize.x / PIXLUI::Layout::ReferenceWidth,
+			viewportSize.y / PIXLUI::Layout::ReferenceHeight);
 		const ImVec2 fixedSize(
-			std::floor(fixedWidth),
-			std::floor(fixedHeight));
+			std::floor(viewportSize.x),
+			std::floor(viewportSize.y));
 
-		PIXLUI::SetReferenceScale(
-			fixedSize.y /
-			PIXLUI::Layout::ReferenceHeight);
+		PIXLUI::SetReferenceScale(referenceScale);
 
 		ImGui::SetNextWindowPos(
-			ImGui::GetMainViewport()->GetCenter(),
+			ImGui::GetMainViewport()->WorkPos,
 			layoutCond,
-			ImVec2(0.5f, 0.5f));
+			ImVec2(0.0f, 0.0f));
 		ImGui::SetNextWindowSize(
 			fixedSize,
 			layoutCond);
@@ -852,19 +848,20 @@ void Menu::DrawSettings()
 		ImGuiWindowFlags_NoCollapse |
 		ImGuiWindowFlags_NoScrollbar |
 		ImGuiWindowFlags_NoDocking |
-		ImGuiWindowFlags_NoTitleBar;
+		ImGuiWindowFlags_NoTitleBar |
+		ImGuiWindowFlags_NoBackground;
 
 	// Advanced tuning is resizable; keep the reference scale independent of user
 	// size so enlarging the canvas adds usable space rather than larger controls.
 
 	// Only hide title bar when not docked.
 	if (settings.AdvancedMode) {
-		ImGui::PushStyleColor(ImGuiCol_WindowBg, PIXLUI::ToVec4(PIXLUI::Colors::Window));
+		ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(PIXLUI::Scale(8.0f), PIXLUI::Scale(8.0f)));
 	}
 	Util::BeginWithRoundedClose(title.c_str(), &IsEnabled, windowFlags);
 	{
-		if (settings.AdvancedMode) {
+		if (settings.AdvancedMode && false) {
 			const ImVec2 windowMin = ImGui::GetWindowPos();
 			const ImVec2 windowMax(
 				windowMin.x + ImGui::GetWindowSize().x,
@@ -907,7 +904,7 @@ void Menu::DrawSettings()
 						headerStart.x +
 							PIXLUI::Ref(20.0f),
 						headerStart.y +
-							PIXLUI::Ref(15.0f)));
+							PIXLUI::Ref(10.5f)));
 				ImGui::Image(
 					uiIcons.logo.texture,
 					ImVec2(
@@ -923,7 +920,7 @@ void Menu::DrawSettings()
 				ImVec2(
 					brandTextX,
 					headerStart.y +
-						PIXLUI::Ref(20.0f)));
+						PIXLUI::Ref(14.0f)));
 			{
 				MenuFonts::FontRoleGuard titleFont(
 					Menu::FontRole::Title);
@@ -945,58 +942,68 @@ void Menu::DrawSettings()
 				ImGui::TextColored(
 					PIXLUI::ToVec4(
 						PIXLUI::Colors::CyanSoft),
-					"VERSION 1.0.2");
+					"VERSION %s", Plugin::DISPLAY_VERSION.data());
 				ImGui::SetWindowFontScale(1.0f);
+			}
+
+			// Keep ownership state visible in the compact header.  This avoids the
+			// ambiguous "photo mode" wording: the world is live until inspection
+			// actually begins, and player controls remain blocked for the whole session.
+			const auto tunerMode =
+				TuningWorkspaceRenderer::GetTunerInteractionMode();
+			const char* tunerStatus = "LIVE";
+			ImU32 tunerStatusColor = PIXLUI::Colors::CyanSoft;
+			if (tunerMode == TuningWorkspaceRenderer::TunerInteractionMode::InspectMoving) {
+				tunerStatus = "INSPECT MOVING";
+				tunerStatusColor = PIXLUI::Colors::CyanBright;
+			} else if (tunerMode == TuningWorkspaceRenderer::TunerInteractionMode::InspectLocked) {
+				tunerStatus = "INSPECT FROZEN";
+				tunerStatusColor = PIXLUI::Colors::CyanBright;
+			}
+			ImGui::SetCursorScreenPos(
+				ImVec2(
+					headerStart.x + PIXLUI::Ref(344.0f),
+					headerStart.y + PIXLUI::Ref(19.0f)));
+			if (tunerMode == TuningWorkspaceRenderer::TunerInteractionMode::InspectLocked) {
+				ImGui::SetCursorScreenPos(ImVec2(headerStart.x + PIXLUI::Ref(344.0f), headerStart.y + PIXLUI::Ref(14.0f)));
+				if (PIXLUI::ActionButton("RETURN LIVE", ImVec2(PIXLUI::Ref(110.0f), PIXLUI::Ref(27.0f)), true))
+					TuningWorkspaceRenderer::CloseTunerInspection();
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Restore the player camera and world simulation; keep the tuner open.");
+			} else {
+				ImGui::TextColored(PIXLUI::ToVec4(tunerStatusColor), "%s", tunerStatus);
 			}
 
 			ImGui::SetCursorScreenPos(
 				ImVec2(
-					headerStart.x + PIXLUI::Ref(978.0f),
-					headerStart.y + PIXLUI::Ref(22.0f)));
+					headerStart.x + PIXLUI::Ref(466.0f),
+					headerStart.y + PIXLUI::Ref(14.0f)));
 			if (PIXLUI::ActionButton(
 					"RESTORE",
-					ImVec2(PIXLUI::Ref(124.0f), PIXLUI::Ref(32.0f)),
+					 ImVec2(PIXLUI::Ref(76.0f), PIXLUI::Ref(27.0f)),
 					false)) {
 				globals::state->Load();
 			}
 
 			ImGui::SetCursorScreenPos(
 				ImVec2(
-					headerStart.x + PIXLUI::Ref(1114.0f),
-					headerStart.y + PIXLUI::Ref(22.0f)));
+					headerStart.x + PIXLUI::Ref(554.0f),
+					headerStart.y + PIXLUI::Ref(14.0f)));
 			if (PIXLUI::ActionButton(
 					"SAVE LOOK",
-					ImVec2(PIXLUI::Ref(132.0f), PIXLUI::Ref(32.0f)),
+					ImVec2(PIXLUI::Ref(88.0f), PIXLUI::Ref(27.0f)),
 					true)) {
 				globals::state->Save();
 				globals::state->SaveTheme();
 				savedLookAt = static_cast<float>(ImGui::GetTime());
 			}
-
-			const ImVec2 commandStart(
-				rootPos.x + PIXLUI::Ref(PIXLUI::Layout::TuneCommandX),
-				rootPos.y + PIXLUI::Ref(PIXLUI::Layout::TuneCommandY));
-
-			ImGui::SetCursorScreenPos(commandStart);
-			if (PIXLUI::ActionButton(
-					"RETURN TO PLAYER UI",
-					ImVec2(PIXLUI::Ref(158.0f), PIXLUI::Ref(29.0f)),
-					false)) {
-				settings.AdvancedMode = false;
-				settings.DeveloperMode = false;
-				globals::state->Save();
+			ImGui::SetCursorScreenPos(ImVec2(headerStart.x + PIXLUI::Ref(654.0f), headerStart.y + PIXLUI::Ref(14.0f)));
+			ImGui::PushID("CloseTuner");
+			if (PIXLUI::ActionButton("X", ImVec2(PIXLUI::Ref(27.0f), PIXLUI::Ref(27.0f)), false)) {
+				TuningWorkspaceRenderer::CloseTunerInspection();
+				IsEnabled = false;
 			}
-
-			ImGui::SetCursorScreenPos(
-				ImVec2(
-					commandStart.x + PIXLUI::Ref(173.0f),
-					commandStart.y + PIXLUI::Ref(7.0f)));
-			{
-				MenuFonts::FontRoleGuard sub(Menu::FontRole::Subtext);
-				ImGui::TextColored(
-					PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
-					"PIXL WORKSHOP");
-			}
+			ImGui::PopID();
 
 		} else {
 			// Public shell remains untouched in Pass A.
@@ -1086,7 +1093,7 @@ void Menu::DrawSettings()
 					ImGui::TextColored(
 						PIXLUI::ToVec4(
 							PIXLUI::Colors::CyanSoft),
-					"VERSION 1.0.2");
+						"VERSION %s", Plugin::DISPLAY_VERSION.data());
 					ImGui::SetWindowFontScale(1.0f);
 				}
 
@@ -1196,9 +1203,18 @@ void Menu::DrawSettings()
 		Util::DrawClearShaderCacheConfirmation();
 	}
 	ImGui::End();
-	if (settings.AdvancedMode) {
+	if (tunerStyleAtFrameStart) {
 		ImGui::PopStyleVar();
 		ImGui::PopStyleColor();
+	}
+
+	// Closing the tuner while inspection owns native TFC must release that
+	// transaction as well.  Keep this separate from gameplay-control restoration;
+	// the existing input hook restores Skyrim's incoming state without enabling
+	// controls that another menu or scripted state had intentionally disabled.
+	if (wasEnabledAtFrameStart && !IsEnabled &&
+		TuningWorkspaceRenderer::IsDirectorPhotoModeActive()) {
+		TuningWorkspaceRenderer::CloseTunerInspection();
 	}
 }
 
@@ -1402,7 +1418,7 @@ void Menu::ProcessInputEventQueue()
 					event.keyCode;
 			}
 
-			if (TuningWorkspaceRenderer::
+			if (!IsEnabled && TuningWorkspaceRenderer::
 					IsDirectorPhotoModeActive()) {
 				TuningWorkspaceRenderer::
 					HandleDirectorGamepadInput(
@@ -1410,7 +1426,7 @@ void Menu::ProcessInputEventQueue()
 				continue;
 			}
 
-			if (TuningWorkspaceRenderer::
+			if (!IsEnabled && TuningWorkspaceRenderer::
 					HandleDirectorGamepadInput(
 						gamepadKey)) {
 				continue;
@@ -1423,8 +1439,18 @@ void Menu::ProcessInputEventQueue()
 			if (key == event.keyCode)
 				key = MapVirtualKeyEx(event.keyCode, MAPVK_VSC_TO_VK_EX, GetKeyboardLayout(0));
 
+			// Tuner ownership is evaluated before Director's legacy photo shortcuts
+			// and before ImGui routing.  Shift+navigation begins/continues inspection;
+			// releasing Shift immediately returns a locked camera to the UI.
+			if (TuningWorkspaceRenderer::HandleTunerKeyboardInput(
+					key,
+					event.IsPressed())) {
+				continue;
+			}
+
 			if (TuningWorkspaceRenderer::
-					IsDirectorPhotoModeActive()) {
+					IsDirectorPhotoModeActive() &&
+				!IsEnabled) {
 				if (event.IsDown()) {
 					TuningWorkspaceRenderer::
 						HandleDirectorKeyboardInput(
@@ -1436,7 +1462,7 @@ void Menu::ProcessInputEventQueue()
 				continue;
 			}
 
-			if (event.IsDown() &&
+			if (!IsEnabled && event.IsDown() &&
 				TuningWorkspaceRenderer::
 					HandleDirectorKeyboardInput(
 						key)) {
@@ -1476,8 +1502,10 @@ void Menu::ProcessInputEventQueue()
 					{ settings.ToggleKey, [this]() {
 						 if (!LaunchExperienceRenderer::ShouldShowFirstTimeSetup()) {
 							 IsEnabled = !IsEnabled;
-							 if (IsEnabled)
+							 if (IsEnabled) {
+								 settings.AdvancedMode = true;
 								 ImGui::GetIO().ClearInputKeys();  // Prevent toggle key from remaining "held" in ImGui after open.
+							 }
 						 }
 					 } },
 					{ settings.SkipCompilationKey, [this, shaderCache]() {
@@ -1518,11 +1546,13 @@ void Menu::ProcessInputEventQueue()
 
 			// Hardcoded Shift+Enter toggle for the CS menu (always available)
 			if (event.IsDown() && key == VK_RETURN && (GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
-				if (!LaunchExperienceRenderer::ShouldShowFirstTimeSetup()) {
-					IsEnabled = !IsEnabled;
-					if (IsEnabled)
-						ImGui::GetIO().ClearInputKeys();
+			if (!LaunchExperienceRenderer::ShouldShowFirstTimeSetup()) {
+				IsEnabled = !IsEnabled;
+				if (IsEnabled) {
+					settings.AdvancedMode = true;
+					ImGui::GetIO().ClearInputKeys();
 				}
+			}
 				continue;
 			}
 
@@ -1698,7 +1728,16 @@ void Menu::ProcessInputEvents(RE::InputEvent* const* a_events)
 
 bool Menu::ShouldSwallowInput()
 {
-	return IsEnabled || LaunchExperienceRenderer::ShouldShowFirstTimeSetup();
+	return IsEnabled || IsProfilerInteractive() ||
+		TuningWorkspaceRenderer::IsDirectorCameraTransitionPending() ||
+		LaunchExperienceRenderer::ShouldShowFirstTimeSetup();
+}
+
+bool Menu::IsProfilerInteractive() const
+{
+	return overlayVisible && globals::pipeline::pulseProfiler.settings.ShowInOverlay &&
+		!TuningWorkspaceRenderer::IsDirectorPhotoModeActive() &&
+		(GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
 }
 
 bool Menu::ShouldLockGameInputForDirector() const

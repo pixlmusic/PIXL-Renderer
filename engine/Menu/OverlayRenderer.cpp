@@ -167,6 +167,7 @@ void OverlayRenderer::RenderOverlay(
 	float currentFontSize)
 {
 	processInputEventQueue();
+	TuningWorkspaceRenderer::UpdateTunerInspection();
 	PIXLRenderer::WorldBenchmark::GetSingleton().Update();
 
 	if (ShouldSkipRendering()) {
@@ -184,16 +185,17 @@ void OverlayRenderer::RenderOverlay(
 	RenderShaderBlockingStatus();
 
 	if (menu.IsEnabled || LaunchExperienceRenderer::ShouldShowFirstTimeSetup()) {
-		ImGui::GetIO().MouseDrawCursor = true;
-		if (menu.IsEnabled) {
+		const bool inspectionMoving =
+			TuningWorkspaceRenderer::IsDirectorInspectionMoving();
+		ImGui::GetIO().MouseDrawCursor = !inspectionMoving;
+		if (menu.IsEnabled && !inspectionMoving) {
 			drawSettings();
 		}
 	} else {
-		ImGui::GetIO().MouseDrawCursor = false;
+		ImGui::GetIO().MouseDrawCursor = menu.IsProfilerInteractive();
 	}
 
-	TuningWorkspaceRenderer::
-		RenderDirectorPhotoModeOverlay();
+	TuningWorkspaceRenderer::RenderDirectorPhotoModeOverlay();
 
 	RenderFeatureOverlays();
 	RenderFirstTimeSetupOverlay();
@@ -513,7 +515,7 @@ void OverlayRenderer::RenderShaderCompilationStatus(const std::function<const ch
 
 		ImGui::SetWindowFontScale(0.82f);
 		centerText(
-			"VERSION 1.0.2a",
+			"VERSION 1.0.3-beta",
 			PIXLUI::Colors::CyanSoft);
 		ImGui::SetWindowFontScale(1.0f);
 

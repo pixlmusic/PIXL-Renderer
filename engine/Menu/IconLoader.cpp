@@ -126,7 +126,12 @@ namespace Util::IconLoader
 	std::vector<IconDefinition> GetIconDefinitions(Menu* menu)
 	{
 		return {
-			{ "Brand\\PIXL-Mark.png", &menu->uiIcons.logo.texture, &menu->uiIcons.logo.size, true }
+			{ "Brand\\PIXL-Mark.png", &menu->uiIcons.logo.texture, &menu->uiIcons.logo.size, true },
+			{ "Tuner\\PIXL-Renderer Button.png", &menu->uiIcons.tunerRenderer.texture, &menu->uiIcons.tunerRenderer.size, false },
+			{ "Tuner\\Lighting.png", &menu->uiIcons.tunerLighting.texture, &menu->uiIcons.tunerLighting.size, false },
+			{ "Tuner\\World.png", &menu->uiIcons.tunerWorld.texture, &menu->uiIcons.tunerWorld.size, false },
+			{ "Tuner\\Character.png", &menu->uiIcons.tunerCharacter.texture, &menu->uiIcons.tunerCharacter.size, false },
+			{ "Tuner\\Camera.png", &menu->uiIcons.tunerCamera.texture, &menu->uiIcons.tunerCamera.size, false }
 		};
 	}
 

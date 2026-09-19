@@ -4190,7 +4190,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float3 dirLegacyPhysicalDelta;
 	float dirLegacyPhysicalApplied;
 	PhysicalLighting::EvaluateDirect(
-		dirLightContext, material, tbnTr, uvOriginal, uvOriginal_ddx, uvOriginal_ddy, inWorld || inReflection, dirLightOutput,
+		dirLightContext, material, tbnTr, uvOriginal, uvOriginal_ddx, uvOriginal_ddy, inWorld || inReflection,
+#	if defined(EMAT)
+		complexMaterial,
+#	else
+		false,
+#	endif
+		dirLightOutput,
 		dirLegacyPhysicalDelta, dirLegacyPhysicalApplied);
 	// Enclosed interiors can retain a non-zero vanilla directional-light colour
 	// even though no sun is visible.  Diffuse remains under Skyrim's authored
@@ -4395,7 +4401,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #				endif
 #			endif
 		PhysicalLighting::EvaluateDirect(
-			pointLightContext, material, tbnTr, uvOriginal, uvOriginal_ddx, uvOriginal_ddy, inWorld || inReflection, pointLightOutput,
+			pointLightContext, material, tbnTr, uvOriginal, uvOriginal_ddx, uvOriginal_ddy, inWorld || inReflection,
+#		if defined(EMAT)
+			complexMaterial,
+#		else
+			false,
+#		endif
+			pointLightOutput,
 			pointLegacyPhysicalDelta, pointLegacyPhysicalApplied);
 #			if !defined(MATERIAL_FORGE)
 		legacyPhysicalDelta += pointLegacyPhysicalDelta;
@@ -4613,7 +4625,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #				endif
 #			endif
 		PhysicalLighting::EvaluateDirect(
-			pointLightContext, material, tbnTr, uvOriginal, uvOriginal_ddx, uvOriginal_ddy, inWorld || inReflection, pointLightOutput,
+			pointLightContext, material, tbnTr, uvOriginal, uvOriginal_ddx, uvOriginal_ddy, inWorld || inReflection,
+#		if defined(EMAT)
+			complexMaterial,
+#		else
+			false,
+#		endif
+			pointLightOutput,
 			pointLegacyPhysicalDelta, pointLegacyPhysicalApplied);
 #			if !defined(MATERIAL_FORGE)
 		legacyPhysicalDelta += pointLegacyPhysicalDelta;

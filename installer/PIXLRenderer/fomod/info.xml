@@ -2,7 +2,7 @@
 <fomod>
   <Name>PIXL Renderer</Name>
   <Author>PIXL Studio</Author>
-  <Version MachineVersion="1.0.2.0">1.0.2a</Version>
+  <Version MachineVersion="1.0.3.0">1.0.3</Version>
   <Website>https://www.nexusmods.com/skyrimspecialedition/mods/189836</Website>
   <Description>Modern DirectX 11 rendering for Skyrim SE. Owner-directed development, artwork and live testing with substantial AI assistance. Includes an optional, version-locked SurfaceTides 1.0.2 bridge.</Description>
   <Groups>

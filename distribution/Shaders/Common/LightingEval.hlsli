@@ -205,6 +205,7 @@ namespace PhysicalLighting
 		float2 uv_ddx,
 		float2 uv_ddy,
 		bool allowEnhancedLighting,
+		bool isComplexMaterial,
 		out DirectLightingOutput lightingOutput,
 		out float3 legacyPhysicalDelta,
 		out float legacyPhysicalApplied)
@@ -259,7 +260,8 @@ namespace PhysicalLighting
 		const float NdotL = dot(context.worldNormal, context.lightDir);
 		float3 softLightColor = context.lightColor * context.softShadow;
 #	if !defined(SPARKLE)
-		const bool physicalEnabled = SharedData::materialForgeSettings.EnableLegacyPhysicalDirectLighting != 0 && allowEnhancedLighting;
+		const bool physicalEnabled = SharedData::materialForgeSettings.EnableLegacyPhysicalDirectLighting != 0 &&
+			allowEnhancedLighting && !isComplexMaterial;
 		const bool comparePhysical = SharedData::materialForgeSettings.LegacyPhysicalDebugMode == 9;
 		DirectLightingOutput physicalOutput = (DirectLightingOutput)0;
 		DirectLightingOutput vanillaOutput = (DirectLightingOutput)0;

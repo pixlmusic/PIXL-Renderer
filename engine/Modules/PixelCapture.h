@@ -35,7 +35,7 @@ struct PixelCapture : public RenderModule
 	virtual void PostPostLoad() override;
 
 	/** @brief Captures a screenshot from the current back buffer and enqueues it for async encoding and save. */
-	void Capture();
+	void Capture(bool directorCapture = false);
 	/** @brief Checks for a pending capture request and executes Capture() if one is pending. Called after HDR Present processing. */
 	void ProcessCaptureRequest();
 	/** @brief Requests a full-frame capture to an exact path after the current frame is presented. */
@@ -296,7 +296,7 @@ private:
 	void EnsureWorkerThread();
 	void StopWorkerThread();
 	void EnqueueScreenshot(PendingScreenshot&& screenshot);
-	void CaptureImpl(const std::optional<std::filesystem::path>& outputPath, bool notify);
+	void CaptureImpl(const std::optional<std::filesystem::path>& outputPath, bool notify, bool directorCapture = false);
 	void StartPhotoFinishCapture();
 	void CapturePhotoFinishSample();
 	void SetPhotoFinishStage(PhotoFinishStage stage, float progress);

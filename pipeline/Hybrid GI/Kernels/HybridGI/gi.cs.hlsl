@@ -93,7 +93,7 @@ float GetVisibilityFunctionSmithJointApprox(float roughness, float NdotV, float 
 
 bool ReadWorldVoxelCascade(
 	float3 queryPositionWS, float3 receiverNormalWS, float3 sourceDirection, uint cascade,
-	inout float3 irradiance, inout float occupancy)
+	inout float3 irradiance, inout float occupancy, bool readRadiance)
 {
 	irradiance = 0.0;
 	occupancy = 0.0;
@@ -129,7 +129,7 @@ bool ReadWorldVoxelCascade(
 					leakWeight = lerp(1.0f, receiverGate * sourceGate, leakReduction);
 				}
 				valid = leakWeight > 1e-3;
-				if (valid) {
+				if (valid && readRadiance) {
 					irradiance = WorldCacheEvaluateRadiance(
 						srcWorldSH0.Load(int3(atlasCoord, 0)),
 						srcWorldSH1.Load(int3(atlasCoord, 0)),
@@ -145,7 +145,7 @@ bool ReadWorldVoxelCascade(
 // [Optimization 2]: Cleaned cascade branching to prevent unnecessary queries
 bool ReadWorldVoxel(
 	float3 queryPositionWS, float3 receiverNormalWS, float3 rayDirection, float3 cameraWS,
-	inout float3 irradiance, inout float cascadeMix, inout float occupancy)
+	inout float3 irradiance, inout float cascadeMix, inout float occupancy, bool readRadiance = true)
 {
 	irradiance = 0.0;
 	cascadeMix = 0.0;
@@ -158,7 +158,7 @@ bool ReadWorldVoxel(
 
 	if (blend < 0.999) {
 		nearValid = ReadWorldVoxelCascade(queryPositionWS, receiverNormalWS, rayDirection, 0u,
-			nearIrradiance, nearOccupancy);
+			nearIrradiance, nearOccupancy, readRadiance);
 	}
 
 	bool valid = false;
@@ -170,7 +170,7 @@ bool ReadWorldVoxel(
 		float3 farIrradiance = 0.0;
 		float farOccupancy = 0.0;
 		bool farValid = ReadWorldVoxelCascade(queryPositionWS, receiverNormalWS, rayDirection, 1u,
-			farIrradiance, farOccupancy);
+			farIrradiance, farOccupancy, readRadiance);
 
 		if (nearValid && farValid) {
 			irradiance = lerp(nearIrradiance, farIrradiance, blend);
@@ -227,7 +227,7 @@ void SampleWorldCache(
 			float cascade = 0.0;
 			float occupancy = 0.0;
 			if (ReadWorldVoxel(receiverPositionWS + direction * distance, receiverNormalWS, direction, cameraWS,
-					sampleIrradiance, cascade, occupancy)) {
+					sampleIrradiance, cascade, occupancy, !foundIrradiance)) {
 				float attenuation = rcp(1.0 + distance * inverseRadius);
 				if (computeDirectionalOcclusion)
 					directionalOcclusion += occupancy * rayTransmittance * attenuation;
@@ -240,6 +240,10 @@ void SampleWorldCache(
 					hitRatio += occupancy;
 					cascadeMix += cascade * occupancy;
 					foundIrradiance = true;
+					// Diffuse transport uses only the first radiating hit. Continue
+					// occupancy traversal only when directional occlusion consumes it.
+					if (!computeDirectionalOcclusion)
+						break;
 				}
 				if (rayTransmittance < 0.05)
 					break;
@@ -518,7 +522,9 @@ void CalculateGI(
 				float2 samplePxCoord = dtid + .5 + sampleOffset * sideSign;
 				float2 sampleUV = samplePxCoord * RCP_OUT_FRAME_DIM;
 
-				[branch] if (any(sampleUV > 1.0) || any(sampleUV < 0.0)) continue;
+				// Each side advances monotonically away from the receiver. Once
+				// outside the viewport, all later steps on that side are outside too.
+				[branch] if (any(sampleUV > 1.0) || any(sampleUV < 0.0)) break;
 
 				// SetupResources allocates exactly five levels (indices 0..4). Keep
 				// traversal explicit instead of relying on implicit sampler clamping.

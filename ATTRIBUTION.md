@@ -29,6 +29,15 @@ source so upstream work is not represented as PIXL-original.
 
 ## Required upstream infrastructure retained
 
+### SmoothCam compatibility interface
+
+`engine/Menu/SmoothCamAPI.h` is the unmodified modder API header from mwilsnd's
+SmoothCam, file revision `bf62523b24a1de45c2b4b18c35730246d2f5b48c`:
+https://github.com/mwilsnd/SkyrimSE-SmoothCam/blob/bf62523b24a1de45c2b4b18c35730246d2f5b48c/SmoothCam/include/SmoothCamAPI.h
+The header expressly permits modders to copy it into their projects for API use.
+Credit for the interface belongs to its upstream authors. PIXL's camera lease
+and restoration integration is PIXL code; SmoothCam itself is not bundled.
+
 Core plugin loading, SKSE/CommonLib integration, Direct3D hooks, shader-cache
 and shader-compiler infrastructure, settings/serialization, weather support,
 menu infrastructure, engine fixes, and many shared shaders remain derived from
