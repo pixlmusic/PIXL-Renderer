@@ -522,7 +522,7 @@ void OverlayRenderer::RenderShaderCompilationStatus(const std::function<const ch
 
 		ImGui::SetWindowFontScale(0.82f);
 		centerText(
-			"VERSION 1.0.2",
+			"VERSION 1.0.2a",
 			PIXLUI::Colors::CyanSoft);
 		ImGui::SetWindowFontScale(1.0f);
 
