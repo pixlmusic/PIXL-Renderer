@@ -1620,7 +1620,10 @@ PS_OUTPUT main(PS_INPUT input)
 		distanceBlendFactor);
 	float horizonSkirtFade = horizonAngleFade * horizonDistanceFade;
 	float3 horizonFogColor = Color::Fog(FogFarColor.xyz);
-	finalColor = lerp(horizonFogColor, finalColor, horizonSkirtFade);
+	// Keep ordinary water fully shaded; only the folded far-plane skirt fades into
+	// the atmosphere.  Reversing these arguments would turn all non-horizon water
+	// into fog because horizonSkirtFade is zero for normal water surfaces.
+	finalColor = lerp(finalColor, horizonFogColor, horizonSkirtFade);
 #		endif
 	psout.Lighting = float4(finalColor, isSpecular);
 #		endif
