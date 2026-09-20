@@ -209,10 +209,10 @@ function Package-Release {
     if (-not (Test-Path $marker)) { throw 'No successful deployment marker exists. Run BuildDeployAll.bat and test live first.' }
     $template = $env:PIXL_PACKAGE_TEMPLATE
     if (-not $template) {
-        $template = Get-ChildItem (Join-Path $Root 'dist') -Directory -Filter 'PIXL-Renderer-1.0.2-RELEASE-*' |
+        $template = Get-ChildItem (Join-Path $Root 'dist') -Directory -Filter 'PIXL-Renderer-1.0.3-RELEASE-*' |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
     }
-    $package = Join-Path $Root "dist\PIXL-Renderer-1.0.2-LIVE-$DeployStamp"
+    $package = Join-Path $Root "dist\PIXL-Renderer-1.0.3-LIVE-$DeployStamp"
     if ($template -and (Test-Path $template)) { Copy-Item $template $package -Recurse -Force }
     else { Copy-Item (Join-Path $Root 'distribution\*') $package -Recurse -Force }
 

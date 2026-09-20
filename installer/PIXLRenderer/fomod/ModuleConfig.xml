@@ -21,6 +21,8 @@ FIRST LAUNCH
 
 PIXL brings physically responsive lighting and materials, authored PBR/POM support, Hybrid GI and SkyBounce, atmospheric weather, WindowLife interiors, terrain and actor surface response, vegetation motion, water optics, camera tools and reconstruction into one DX11 renderer.
 
+Install as a normal Data mod with Vortex, MO2, or real manual extraction. NMM legacy .symlink deployment is not supported for PIXL shader files; do not enable a blanket Data\\Shaders override.
+
 PIXL Studio directs, tests and releases this project with substantial AI assistance in development, diagnostics and documentation.</description>
               <image path="fomod\images\pixl-materials.jpg" />
               <conditionFlags>

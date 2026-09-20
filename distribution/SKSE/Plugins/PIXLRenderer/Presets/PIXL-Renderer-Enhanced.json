@@ -981,7 +981,7 @@
                      "CloudDensity":  2.5,
                      "CloudDepth":  1.0,
                      "DetailStrength":  1.0,
-                     "EnableVolumetricClouds":  1,
+                     "EnableVolumetricClouds":  0,
                      "HorizonFade":  0.9900000095367432,
                      "Opacity":  0.5,
                      "PhaseEccentricity":  0.2800000011920929,

@@ -76,6 +76,12 @@ $descriptorIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Or
 $activeDescriptorIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 $retiredDescriptorIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 Get-ChildItem -LiteralPath (Join-Path $repo "pipeline") -Directory | ForEach-Object {
+    # Ignore empty directories left by a removed experimental module. They are
+    # not build/runtime inputs; requiring a descriptor for an empty directory
+    # makes cleanup fail even though the active pipeline is clean.
+    if (-not (Get-ChildItem -LiteralPath $_.FullName -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+        return
+    }
     $descriptor = Join-Path $_.FullName "Module.ini"
     if (-not (Test-Path -LiteralPath $descriptor)) {
         Add-Error "Pipeline directory has no Module.ini: $($_.Name)"

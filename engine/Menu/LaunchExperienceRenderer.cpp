@@ -172,7 +172,7 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	}
 
 	const char* versionText =
-		"VERSION 1.0.3-beta";
+		"VERSION 1.0.3";
 	centerItem(
 		ImGui::CalcTextSize(
 			versionText).x);

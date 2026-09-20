@@ -8,7 +8,7 @@ project(
     VERSION 1.0.3
     LANGUAGES CXX
 )
-set(PIXL_DISPLAY_VERSION "1.0.3-beta")
+set(PIXL_DISPLAY_VERSION "1.0.3")
 
 # PIXL Renderer is one closed DX11 pipeline: host code under engine/, integrated
 # shader modules under pipeline/, and the authored runtime image under

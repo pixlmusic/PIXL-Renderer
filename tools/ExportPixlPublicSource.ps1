@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = "Stop"
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $allowedRoot = [IO.Path]::GetFullPath($(if ($AllowedOutputRoot) { $AllowedOutputRoot } else { Join-Path $sourceRoot "dist" }))
-if (-not $ArchivePath) { $ArchivePath = Join-Path $allowedRoot "PIXL-Renderer-1.0.2-Source.zip" }
+if (-not $ArchivePath) { $ArchivePath = Join-Path $allowedRoot "PIXL-Renderer-1.0.3-Source.zip" }
 $archive = [IO.Path]::GetFullPath($ArchivePath)
 
 if (-not $archive.StartsWith($allowedRoot.TrimEnd('\') + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
@@ -44,7 +44,7 @@ if ($allowedPatchedSubmodule.Count -ne 0) {
 
 New-Item -ItemType Directory -Path (Split-Path -Parent $archive) -Force | Out-Null
 if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
-& git -C $sourceRoot archive --format=zip --prefix="PIXL-Renderer-1.0.2-Source/" --output=$archive $commit
+& git -C $sourceRoot archive --format=zip --prefix="PIXL-Renderer-1.0.3-Source/" --output=$archive $commit
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $archive)) {
     throw "git archive failed"
 }
@@ -56,7 +56,7 @@ if ($IncludeWorkingTree) {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $snapshot = [IO.Compression.ZipFile]::Open($archive, [IO.Compression.ZipArchiveMode]::Update)
     try {
-        $snapshotPrefix = 'PIXL-Renderer-1.0.2-Source/'
+        $snapshotPrefix = 'PIXL-Renderer-1.0.3-Source/'
         foreach ($entry in @($snapshot.Entries)) {
             if ($entry.FullName.EndsWith('/')) { continue }
             $relative = $entry.FullName.Substring($snapshotPrefix.Length)
@@ -83,7 +83,7 @@ try {
     $zip.Dispose()
 }
 
-$prefix = "PIXL-Renderer-1.0.2-Source/"
+$prefix = "PIXL-Renderer-1.0.3-Source/"
 $required = @(
     "CMakeLists.txt",
     "README.md",

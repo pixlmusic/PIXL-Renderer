@@ -42,13 +42,20 @@ Do not carry the bundled replacement DLL into a later SurfaceTides release.
 
 ### Install and first launch
 
-1. Close Skyrim. Install the release ZIP with Vortex or Mod Organizer 2 as a normal **Data** mod. For manual installation, extract its contents into Skyrim's `Data` directory, not beside `SkyrimSE.exe`.
+1. Close Skyrim. Install the release ZIP with Vortex or Mod Organizer 2 as a normal **Data** mod. For manual installation, extract its contents into Skyrim's `Data` directory, not beside `SkyrimSE.exe`. PIXL installs its own files beneath `SKSE`, `Shaders` and `Interface`; do not replace the complete `Data\Shaders` directory.
 2. Enable the included `PIXL-TerrainField.esp`. Install required dependencies separately.
 3. Disable other engine-level shader renderers and duplicate PIXL installations. Do not combine this release with Community Shaders, ENB or Kreate. ReShade is unvalidated; use a ReShade-free setup for the supported baseline. `SSEReShadeHelper.dll` is explicitly incompatible. Weather plugins and texture/mesh mods are separate from these renderers.
 4. Launch using your normal SKSE/mod-manager shortcut.
 5. Complete Quick Setup: choose Off, TAA, FSR Quality, DLSS Quality or **DLAA**. DLAA uses native-resolution DLSS anti-aliasing rather than upscaling. NVIDIA options are disabled when unavailable.
 6. Optionally check **Enable frame generation**. If setup requests a restart, save your game and relaunch normally. The confirmed exit option saves PIXL settings, **not game progress**, and does not automatically relaunch.
 7. Use **Page Down** for PIXL Renderer, **Home** for Photo Mode, and **SAVE LOOK** to keep adjustments. Reopen **QUICK SETUP** whenever needed.
+
+NMM's legacy virtual-install/symlink mode is not supported for PIXL shader
+assets. It can leave `.symlink` placeholders where Skyrim expects real HLSL
+files, which commonly presents as missing modules or repeated compilation. Use
+Vortex, MO2, or a real manual extraction instead. If Vortex or MO2 reports a
+file conflict, let PIXL win only the explicitly listed feature files and keep
+the documented load order; do not enable a blanket `Data\Shaders` override.
 
 The release ships owner-tuned fog and POM defaults, with reconstruction set to **Off/None**, frame generation off and real-time Neural Rendering off. Accepting the existing quality selection preserves the tuned look. The advanced tuner remains optional.
 

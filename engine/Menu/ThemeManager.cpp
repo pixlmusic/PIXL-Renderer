@@ -900,7 +900,7 @@ bool ThemeManager::SaveTheme(const std::string& themeName, const json& themeSett
 	json fullTheme = {
 		{ "DisplayName", displayName.empty() ? themeName : displayName },
 		{ "Description", description.empty() ? "Custom user theme" : description },
-		{ "Version", "1.0.3-beta" },
+		{ "Version", "1.0.3" },
 		{ "Author", "User" },
 		{ "Theme", themeSettings }
 	};

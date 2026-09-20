@@ -1,4 +1,4 @@
-# PIXL Renderer 1.0.2 installer notice
+# PIXL Renderer 1.0.3 installer notice
 
 PIXL Renderer is an owner-directed graphics project developed through hands-on
 testing, experimentation and substantial AI assistance. AI tools assisted with
@@ -9,6 +9,28 @@ This is a complex SKSE/DX11 renderer and cannot be validated against every GPU,
 Skyrim runtime or mod combination. Back up important files and saves, install
 through a mod manager, and allow shader compilation to finish before evaluating
 performance or visuals.
+
+## Deployment and shader ownership
+
+PIXL is packaged as a normal **Data** mod. The archive contains individual PIXL
+files under `SKSE`, `Shaders`, and `Interface`; it does not require replacing or
+merging the entire Skyrim `Data\Shaders` directory. Keep Community Shaders and
+other engine-level shader renderers disabled for this release. If a mod manager
+reports a conflict, resolve only the named PIXL feature files and follow the
+priority guidance below rather than allowing a blanket shader-folder override.
+
+Vortex and Mod Organizer 2 are the supported virtual-install paths. In Vortex,
+deploy PIXL after any mod that supplies a file PIXL is intentionally replacing.
+In MO2, put PIXL lower in the left pane so it wins those specific conflicts.
+Avoid NMM's legacy virtual-install/symlink mode for PIXL: `.symlink` placeholder
+files can leave shader assets unavailable to Skyrim even when the mod appears
+installed. Use a real extraction, Vortex, or MO2 and verify that the files exist
+under the active Skyrim `Data` view before launching SKSE.
+
+After changing priority or reinstalling a conflicting shader provider, close
+Skyrim and redeploy PIXL, then allow the shader cache to rebuild. Do not copy a
+second PIXL `Shaders` folder over the package or mix files from another PIXL
+version.
 
 ## SurfaceTides 1.0.2 bridge
 
