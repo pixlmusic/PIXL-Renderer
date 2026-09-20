@@ -145,6 +145,12 @@ New-Item -ItemType Directory -Path $shaderRoot,$moduleCatalog,$configRoot,$profi
 # One closed shader pipeline: Skyrim entry points plus every integrated PIXL kernel.
 Copy-Tree (Join-Path $sourceRoot "distribution\Shaders") $shaderRoot
 Get-ChildItem -LiteralPath (Join-Path $sourceRoot "pipeline") -Directory | Sort-Object Name | ForEach-Object {
+    # Empty directories are not modules. Local development can leave one
+    # behind after an experimental module is removed, while Git correctly has
+    # nothing to track or package there.
+    if (-not (Get-ChildItem -LiteralPath $_.FullName -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+        return
+    }
     $descriptor = Join-Path $_.FullName "Module.ini"
     $kernels = Join-Path $_.FullName "Kernels"
     if (-not (Test-Path -LiteralPath $descriptor)) { throw "Missing PIXL module descriptor: $descriptor" }
