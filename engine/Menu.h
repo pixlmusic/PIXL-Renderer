@@ -476,6 +476,8 @@ public:
 		bool RequireShiftToDock = true;                                                     // Require holding Shift to dock windows
 		bool UseResolutionFont = true;                                                      // When true, runtime font size scales with screen resolution; when persisted to theme files, FontSize is zeroed for backward compatibility
 		bool AdvancedMode = false;                                                          // Exposes the complete renderer subsystem navigator
+		bool AdvancedControls = false;                                                      // Global simple/advanced control visibility for every Tuner category
+		float SimpleLightingBalance = 1.0f;                                                 // Routed Lighting-category balance while AdvancedControls is off
 		bool DeveloperMode = false;                                                         // Enables diagnostics, debug compilation, and engineering tools
 		int RendererQuality = 2;                                                           // 0 Low, 1 Medium, 2 High, 3 Ultra
 		int LightingQuality = 2;

@@ -7,8 +7,16 @@
 #include "Utils/RestartSettings.h"
 
 #include <cstdint>
+#include <format>
+#include <functional>
+#include <nlohmann/json.hpp>
 #include <span>
+#include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
+
+using json = nlohmann::json;
 #ifdef TRACY_ENABLE
 #	include <Tracy/Tracy.hpp>
 #	include <Tracy/TracyD3D11.hpp>

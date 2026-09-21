@@ -2,10 +2,12 @@
 #include "PCH.h"
 
 #include <chrono>
+#include <format>
 #include <imgui.h>
 
 #include "Globals.h"
 #include "Menu.h"
+#include "ModuleVersions.h"
 #include "State.h"
 #include "PIXLStyle.h"
 #include "Fonts.h"
@@ -14,7 +16,7 @@
 #include "Renderer/QualityProfiles.h"
 
 bool LaunchExperienceRenderer::isFirstTimeSetupShown = false;
-uint32_t LaunchExperienceRenderer::keyThatClosedDialog = 0;
+std::uint32_t LaunchExperienceRenderer::keyThatClosedDialog = 0;
 bool LaunchExperienceRenderer::quickSetupRequested = false;
 
 namespace
@@ -83,7 +85,10 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	io.MouseDrawCursor = true;
 
 	const float scale = Util::GetUIScale();
-	const ImVec2 cardSize{ std::min(700.0f * scale, io.DisplaySize.x - 24.0f), std::min(760.0f * scale, io.DisplaySize.y - 24.0f) };
+	const ImVec2 cardSize{
+		std::max(1.0f, std::min(700.0f * scale, io.DisplaySize.x - 24.0f)),
+		std::max(1.0f, std::min(760.0f * scale, io.DisplaySize.y - 24.0f))
+	};
 	if (!ImGui::IsPopupOpen("##PIXLLaunchExperience"))
 		ImGui::OpenPopup("##PIXLLaunchExperience");
 	ImGui::SetNextWindowPos({ io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f }, ImGuiCond_Always, { 0.5f, 0.5f });
@@ -171,16 +176,15 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 		ImGui::SetWindowFontScale(1.0f);
 	}
 
-	const char* versionText =
-		"VERSION 1.0.3";
+	const std::string versionText = std::format("VERSION {}", Plugin::DISPLAY_VERSION.data());
 	centerItem(
 		ImGui::CalcTextSize(
-			versionText).x);
+			versionText.c_str()).x);
 	ImGui::TextColored(
 		PIXLUI::ToVec4(
 			PIXLUI::Colors::CyanSoft),
 		"%s",
-		versionText);
+		versionText.c_str());
 
 	ImGui::Spacing();
 	PIXLUI::SectionBanner(

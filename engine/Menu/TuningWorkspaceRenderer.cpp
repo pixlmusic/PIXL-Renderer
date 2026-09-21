@@ -18,7 +18,28 @@
 #include <unordered_set>
 
 #include "RenderModule.h"
+#include "Modules/AmbientProbe.h"
+#include "Modules/Atmosphere.h"
+#include "Modules/ContactShadows.h"
 #include "Modules/HybridGI.h"
+#include "Modules/LinearLightCore.h"
+#include "Modules/LightVolumes.h"
+#include "Modules/SkyBounce.h"
+#include "Modules/SkyVeil.h"
+#include "Modules/WorldProbes.h"
+#include "MaterialForge.h"
+#include "Modules/MaterialLayers.h"
+#include "Modules/WindowLife.h"
+#include "Modules/DistanceBlend.h"
+#include "Modules/GroundResponse.h"
+#include "Modules/FoliageDynamics.h"
+#include "Modules/TerrainDetail.h"
+#include "Modules/WaterOptics.h"
+#include "Modules/RainResponse.h"
+#include "Modules/SkinOptics.h"
+#include "Modules/TissueDiffusion.h"
+#include "Modules/StrandShading.h"
+#include "Modules/ThinSurface.h"
 #include "Modules/CameraSuite.h"
 #include "Modules/ImageReconstruction.h"
 #include "Modules/PixelCapture.h"
@@ -158,8 +179,14 @@ namespace
 	bool g_tunerShiftHeld = false;
 	std::string g_tunerSelectedFeature;
 	bool g_tunerOwnsInspection = false;
-	bool g_characterOrbitEnabled = false;
-	bool g_characterOrbitOwnsInspection = false;
+		bool g_characterOrbitEnabled = false;
+		bool g_characterOrbitOwnsInspection = false;
+		bool g_characterOrbitWasFirstPerson = false;
+		bool g_tunerDrawerCollapsed = false;
+		bool g_tunerPanelCollapsed = false;
+		std::unordered_map<std::string, json> g_simpleAdvancedSnapshots;
+		std::unordered_map<std::string, json> g_simplePendingAdvancedValues;
+		std::string g_simpleConflictFeature;
 	// Relative angle around the actor. Zero is always directly in front of the
 	// player's current heading; dragging adds a deliberate orbit offset.
 	float g_characterOrbitAngleDegrees = 0.0f;
@@ -183,19 +210,243 @@ namespace
 			g_characterOrbitEnabled = false;
 			if (g_characterOrbitOwnsInspection)
 				ExitDirectorPhotoMode();
+			if (g_characterOrbitWasFirstPerson) {
+				if (auto* camera = RE::PlayerCamera::GetSingleton())
+					camera->ForceFirstPerson();
+			}
+			g_characterOrbitWasFirstPerson = false;
 			g_characterOrbitOwnsInspection = false;
 			return;
 		}
 
+		if (auto* camera = RE::PlayerCamera::GetSingleton()) {
+			g_characterOrbitWasFirstPerson = camera->IsInFirstPerson();
+			if (g_characterOrbitWasFirstPerson)
+				camera->ForceThirdPerson();
+		}
 		const bool startsInspection = !g_directorPhotoMode.active;
-		if (startsInspection && !EnterDirectorPhotoMode())
+		if (startsInspection && !EnterDirectorPhotoMode()) {
+			if (g_characterOrbitWasFirstPerson)
+				if (auto* camera = RE::PlayerCamera::GetSingleton()) camera->ForceFirstPerson();
+			g_characterOrbitWasFirstPerson = false;
 			return;
+		}
 
 		g_characterOrbitEnabled = true;
 		g_characterOrbitOwnsInspection = startsInspection;
 		g_tunerOwnsInspection = true;
 		g_tunerInspectionMoving = false;
 		g_tunerShiftHeld = false;
+	}
+
+	void DrawSimpleLightingControls(RenderModule* feature)
+	{
+		if (!globals::menu || !feature)
+			return;
+		PIXLUI::SectionBanner(feature->GetDisplayName().c_str());
+		ImGui::TextDisabled("Simple mode shows the controls with the clearest visible result. Advanced exposes the full module.");
+		bool changed = false;
+		const auto save = [&]() { if (globals::state) globals::state->Save(); };
+		const auto slider = [&](const char* label, float* value, float min, float max) {
+			changed |= ImGui::SliderFloat(label, value, min, max, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Adjusts %s. Higher values make this effect more visible.", label);
+		};
+		const auto toggle = [&](const char* label, uint* value) {
+			bool enabled = *value != 0;
+			if (ImGui::Checkbox(label, &enabled)) { *value = enabled ? 1u : 0u; changed = true; }
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Turns %s on or off.", label);
+		};
+		const auto& name = feature->GetShortName();
+		json valuesBeforeEdit;
+		if (g_simpleAdvancedSnapshots.contains(name))
+			feature->SaveSettings(valuesBeforeEdit);
+		if (name == "HybridGI") {
+			auto& s = globals::pipeline::hybridGI.settings;
+			changed |= ImGui::Checkbox("Enabled", &s.Enabled);
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enables indirect light and soft ambient shading.");
+			slider("Indirect Lighting", &s.GIStrength, 0.0f, 2.0f);
+			slider("Ambient Occlusion", &s.AOPower, 0.0f, 2.0f);
+			slider("Lighting Radius", &s.GIRadius, 32.0f, 1024.0f);
+			slider("Reflections", &s.ReflectionIntensity, 0.0f, 2.0f);
+		} else if (name == "AmbientProbe") {
+			auto& s = globals::pipeline::ambientProbe.settings;
+			toggle("Enabled", &s.EnableAmbientProbe);
+			slider("Environment Lighting", &s.EnvironmentProbeScale, 0.0f, 2.0f);
+			slider("Sky Lighting", &s.SkyProbeScale, 0.0f, 2.0f);
+			slider("Environment Saturation", &s.EnvironmentProbeSaturation, 0.0f, 2.0f);
+		} else if (name == "Atmosphere") {
+			auto& s = globals::pipeline::atmosphere.settings;
+			toggle("Enabled", &s.enabled);
+			slider("Fog Density", &s.fogDensity, 0.0f, 1.0f);
+			slider("Sun Scattering", &s.directionalInscatteringMultiplier, 0.0f, 3.0f);
+			slider("Volumetric Scattering", &s.volumetricDirectionalScatteringIntensity, 0.0f, 3.0f);
+			slider("Sky Scattering", &s.volumetricSkyLightingIntensity, 0.0f, 3.0f);
+		} else if (name == "ContactShadows") {
+			auto& s = globals::pipeline::contactShadows.bendSettings;
+			toggle("Enabled", &s.Enable);
+			slider("Contact Strength", &s.Strength, 0.0f, 2.0f);
+			slider("Surface Thickness", &s.SurfaceThickness, 0.0f, 0.2f);
+			slider("Shadow Contrast", &s.ShadowContrast, 0.0f, 2.0f);
+		} else if (name == "LinearLightCore") {
+			auto& s = globals::pipeline::linearLightCore.settings;
+			toggle("Enabled", &s.enableLinearLightCore);
+			slider("Directional Light", &s.directionalLightMult, 0.0f, 2.0f);
+			slider("Ambient Light", &s.ambientMult, 0.0f, 2.0f);
+			slider("Diffuse Response", &s.vanillaDiffuseColorMult, 0.0f, 2.0f);
+		} else if (name == "SkyBounce") {
+			auto& s = globals::pipeline::skyBounce.settings;
+			slider("Diffuse Bounce", &s.MinDiffuseVisibility, 0.0f, 1.0f);
+			slider("Specular Bounce", &s.MinSpecularVisibility, 0.0f, 1.0f);
+		} else if (name == "LightVolumes") {
+			auto& s = globals::pipeline::lightVolumes.settings;
+			changed |= ImGui::Checkbox("Exterior Volumetrics", &s.ExteriorEnabled);
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enables light shafts and atmospheric depth outdoors.");
+			changed |= ImGui::SliderInt("Exterior Quality", &s.ExteriorQuality, 0, 3, "%d", ImGuiSliderFlags_AlwaysClamp);
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Balances outdoor light-shaft detail and performance.");
+			changed |= ImGui::SliderInt("Interior Quality", &s.InteriorQuality, 0, 3, "%d", ImGuiSliderFlags_AlwaysClamp);
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Balances indoor volumetric detail and performance.");
+		} else if (name == "WorldProbes") {
+			auto& s = globals::pipeline::worldProbes.settings;
+			bool probesEnabled = s.EnabledCreator != 0;
+			bool reflectionsEnabled = s.EnabledSSR != 0;
+			if (ImGui::Checkbox("Environment Probes", &probesEnabled)) { s.EnabledCreator = probesEnabled ? 1u : 0u; changed = true; }
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Adds surrounding scene light to materials.");
+			if (ImGui::Checkbox("Water Reflections", &reflectionsEnabled)) { s.EnabledSSR = reflectionsEnabled ? 1u : 0u; changed = true; }
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Controls reflections captured for water and glossy surfaces.");
+			slider("Reflection Tint", &s.CubemapColor.x, 0.0f, 2.0f);
+		} else if (name == "SkyVeil") {
+			auto& s = globals::pipeline::skyVeil.settings;
+			toggle("Volumetric Cloud Lighting", &s.EnableVolumetricClouds);
+			slider("Cloud Light Strength", &s.Opacity, 0.0f, 1.0f);
+			slider("Cloud Density", &s.CloudDensity, 0.0f, 2.0f);
+			slider("Cloud Shadow", &s.SelfShadowStrength, 0.0f, 1.0f);
+		} else if (name == "MaterialForge") {
+			auto& s = globals::pipeline::materialForge.settings;
+			toggle("Physical Materials", &s.EnableLegacyPhysicalDirectLighting);
+			slider("Ambient Occlusion", &s.VertexAOStrength, 0.0f, 2.0f);
+			slider("Specular Response", &s.LegacyPhysicalSpecularScale, 0.0f, 1.5f);
+			slider("Metalness Inference", &s.LegacyMetalInferenceStrength, 0.0f, 1.5f);
+			slider("Local Light Falloff", &s.PhysicalLocalLightFalloffStrength, 0.0f, 1.0f);
+		} else if (name == "MaterialLayers") {
+			auto& s = globals::pipeline::materialLayers.settings;
+			toggle("Complex Materials", &s.EnableComplexMaterial);
+			toggle("Parallax Depth", &s.EnableParallax);
+			toggle("Parallax Shadows", &s.EnableShadows);
+		} else if (name == "WindowLife") {
+			auto& s = globals::pipeline::windowLife.settings;
+			bool enabled = s.EnableWindowLife;
+			changed |= ImGui::Checkbox("Window Life", &enabled);
+			s.EnableWindowLife = enabled;
+			slider("Interior Activity", &s.DayActivity, 0.0f, 1.0f);
+			slider("Room Depth", &s.RoomDepthStrength, 0.0f, 1.0f);
+			slider("Glass Reflection", &s.GlassReflectionBoost, 0.0f, 2.0f);
+		} else if (name == "DistanceBlend") {
+			auto& s = globals::pipeline::distanceBlend.settings;
+			slider("Terrain LOD Brightness", &s.LODTerrainBrightness, 0.5f, 1.5f);
+			slider("Object LOD Brightness", &s.LODObjectBrightness, 0.5f, 1.5f);
+			slider("LOD Gamma", &s.LODTerrainGamma, 0.75f, 1.5f);
+		} else if (name == "GroundResponse") {
+			auto& s = globals::pipeline::groundResponse.settings;
+			bool enabled = s.EnableGroundResponse;
+			changed |= ImGui::Checkbox("Ground Response", &enabled);
+			s.EnableGroundResponse = enabled;
+			slider("Ground Interaction", &s.GroundResponseStrength, 0.0f, 2.0f);
+			slider("Snow Compaction", &s.SnowCompactionDarkening, 0.0f, 1.0f);
+			slider("Mud Wetness", &s.MudWetnessThreshold, 0.0f, 1.0f);
+		} else if (name == "FoliageDynamics") {
+			auto& s = globals::pipeline::foliageDynamics.settings;
+			toggle("Enhanced Vegetation", &s.EnableEnhancedVegetation);
+			toggle("Enhanced Wind", &s.EnableEnhancedWind);
+			slider("Wind Strength", &s.WindStrength, 0.0f, 2.0f);
+			slider("Leaf Transmission", &s.LeafTransmission, 0.0f, 1.5f);
+		} else if (name == "TerrainDetail") {
+			auto& s = globals::pipeline::terrainDetail.settings;
+			toggle("Terrain Detail", &s.enableLODTerrainTilingFix);
+		} else if (name == "WaterOptics") {
+			auto& s = globals::pipeline::waterOptics.settings;
+			slider("Water Reflections", &s.SurfaceSSRStrength, 0.0f, 2.0f);
+			slider("Caustics", &s.CausticsStrength, 0.0f, 2.0f);
+			slider("Water Tint", &s.WaterTintStrength, 0.0f, 1.0f);
+			slider("Foam", &s.FoamStrength, 0.0f, 2.0f);
+		} else if (name == "RainResponse") {
+			auto& s = globals::pipeline::rainResponse.settings;
+			toggle("Rain Response", &s.EnableRainResponse);
+			slider("Wetness", &s.MaxRainWetness, 0.0f, 2.0f);
+			slider("Puddle Wetness", &s.MaxPuddleWetness, 0.0f, 2.0f);
+			slider("Ripples", &s.RippleStrength, 0.0f, 2.0f);
+		} else if (name == "SkinOptics") {
+			auto& s = globals::pipeline::skinOptics.settings;
+			bool enabled = s.EnableSkin;
+			changed |= ImGui::Checkbox("Skin Optics", &enabled);
+			s.EnableSkin = enabled;
+			slider("Skin Roughness", &s.SkinMainRoughness, 0.05f, 1.0f);
+			slider("Skin Specular", &s.PhysicalSpecularStrength, 0.0f, 2.0f);
+			slider("Skin Detail", &s.SkinDetailStrength, 0.0f, 1.0f);
+			slider("Skin Wetness", &s.ExtraSkinWetness, 0.0f, 1.0f);
+		} else if (name == "TissueDiffusion") {
+			auto& s = globals::pipeline::tissueDiffusion.settings;
+			toggle("Character Lighting", &s.EnableCharacterLighting);
+			slider("Face Lighting", &s.CharacterLightingStrength, 0.0f, 2.0f);
+		} else if (name == "StrandShading") {
+			auto& s = globals::pipeline::strandShading.settings;
+			toggle("Hair Shading", &s.Enabled);
+			slider("Hair Gloss", &s.HairGlossiness, 0.0f, 120.0f);
+			slider("Hair Highlights", &s.SpecularMult, 0.0f, 2.0f);
+			slider("Hair Transmission", &s.Transmission, 0.0f, 2.0f);
+		} else if (name == "ThinSurface") {
+			auto& s = globals::pipeline::thinSurface.settings;
+			slider("Fabric Transmission", &s.AlphaReduction, 0.0f, 1.0f);
+			slider("Fabric Softness", &s.AlphaSoftness, 0.0f, 1.0f);
+			slider("Fabric Strength", &s.AlphaStrength, 0.0f, 1.0f);
+		} else {
+			ImGui::TextWrapped("This module is automatic in Simple mode. Use Advanced for its detailed controls.");
+		}
+		if (changed)
+		{
+			const auto snapshot = g_simpleAdvancedSnapshots.find(name);
+			if (snapshot != g_simpleAdvancedSnapshots.end()) {
+				json currentSettings;
+				feature->SaveSettings(currentSettings);
+				if (currentSettings != snapshot->second) {
+					// Do not silently destroy Advanced edits. Restore the last Simple
+					// baseline and require an explicit confirmation before overwriting it.
+					g_simplePendingAdvancedValues[name] = valuesBeforeEdit;
+					feature->LoadSettings(valuesBeforeEdit);
+					g_simpleConflictFeature = name;
+					ImGui::OpenPopup("Simple mode override confirmation");
+					changed = false;
+				}
+			}
+			if (changed)
+				save();
+		}
+
+		if (g_simpleConflictFeature == name && ImGui::BeginPopupModal(
+			"Simple mode override confirmation", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+			ImGui::TextWrapped("This module has Advanced values that differ from its last Simple-mode baseline.");
+			ImGui::TextWrapped("Returning to Simple control will replace those Advanced values. Continue?");
+			if (ImGui::Button("Apply Simple controls", ImVec2(PIXLUI::Ref(150.0f), 0.0f))) {
+				const auto snapshot = g_simpleAdvancedSnapshots.find(name);
+				if (snapshot != g_simpleAdvancedSnapshots.end())
+					feature->LoadSettings(snapshot->second);
+				g_simpleAdvancedSnapshots.erase(name);
+				g_simplePendingAdvancedValues.erase(name);
+				g_simpleConflictFeature.clear();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Keep Advanced values", ImVec2(PIXLUI::Ref(150.0f), 0.0f))) {
+				const auto pending = g_simplePendingAdvancedValues.find(name);
+				if (pending != g_simplePendingAdvancedValues.end())
+					feature->LoadSettings(pending->second);
+				g_simpleConflictFeature.clear();
+				g_simplePendingAdvancedValues.erase(name);
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
 	}
 
 	void UpdateTunerHudOwnership()
@@ -363,7 +614,9 @@ namespace
 		// Character photography is a primary Director use case. The earlier
 		// capsule fade made close portraits impossible, so keep the exact incoming
 		// alpha even if the free camera approaches or intersects the player.
-		player->SetAlpha(g_directorPhotoMode.originalPlayerAlpha);
+		player->SetAlpha(g_directorPhotoMode.originalPlayerAlpha <= 0.01f
+			? 1.0f
+			: g_directorPhotoMode.originalPlayerAlpha);
 	}
 
 	std::string DirectorLower(
@@ -696,6 +949,11 @@ namespace
 			player->GetAlpha();
 		g_directorPhotoMode.playerAlphaSnapshotValid =
 			true;
+		// Skyrim commonly keeps the player body at zero alpha while entering from
+		// first person.  Preserve that incoming value for restoration, but make the
+		// actor visible for Character Orbit after the safe third-person transition.
+		if (g_directorPhotoMode.originalPlayerAlpha <= 0.01f)
+			player->SetAlpha(1.0f);
 
 		g_directorPhotoMode.hudVisible = true;
 		g_directorPhotoMode.quickPanelVisible = false;
@@ -2283,7 +2541,9 @@ namespace
 			static_cast<float>(RE::GetSecondsSinceLastFrame()),
 			1.0f / 240.0f,
 			1.0f / 20.0f);
-		const float response = 1.0f - std::exp(-dt * 7.5f);
+			// A softer critically-damped response avoids the visible snap/overshoot
+			// when orbit takes ownership from SmoothCam or the gameplay camera.
+			const float response = 1.0f - std::exp(-dt * 4.2f);
 		auto& position = freeCameraState->translation;
 		position.x = std::lerp(position.x, desired.x, response);
 		position.y = std::lerp(position.y, desired.y, response);
@@ -4384,31 +4644,51 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 				ImGui::SetCursorScreenPos(ImVec2(railMin.x + PIXLUI::Ref(3.0f), railMin.y + y - PIXLUI::Ref(5.0f)));
 				const bool clicked = ImGui::InvisibleButton("##TunerRailButton", ImVec2(width - PIXLUI::Ref(6.0f), PIXLUI::Ref(57.0f)));
 				const bool hovered = ImGui::IsItemHovered();
-				const bool selected = (i < 4 && selectedMenu < menuList.size() &&
+					const bool selected = (i < 4 && selectedMenu < menuList.size() &&
 					std::holds_alternative<CategoryPage>(menuList[selectedMenu]) &&
 					std::get<CategoryPage>(menuList[selectedMenu]).name == railLabels[i]) ||
 					(i == 4 && selectedMenu < menuList.size() &&
 					std::holds_alternative<BuiltInMenu>(menuList[selectedMenu]) &&
-					std::get<BuiltInMenu>(menuList[selectedMenu]).name == railLabels[i]);
-				if (clicked) {
-					const std::string_view target = railLabels[i];
-					bool selectedTarget = false;
-					for (size_t menuIndex = 0; menuIndex < menuList.size(); ++menuIndex) {
-						if (std::holds_alternative<TuningWorkspaceRenderer::CategoryPage>(menuList[menuIndex]) &&
-							std::get<TuningWorkspaceRenderer::CategoryPage>(menuList[menuIndex]).name == target) {
-							selectedMenu = menuIndex;
-							const auto& page = std::get<CategoryPage>(menuList[menuIndex]);
-							g_tunerSelectedFeature = page.features.empty() ? "" : page.features.front()->GetShortName();
-							selectedTarget = true;
-							break;
+						std::get<BuiltInMenu>(menuList[selectedMenu]).name == railLabels[i]);
+					if (clicked) {
+						const std::string_view target = railLabels[i];
+						const bool wasSelected = selected;
+						bool selectedTarget = false;
+						for (size_t menuIndex = 0; menuIndex < menuList.size(); ++menuIndex) {
+							if (i < 4 && std::holds_alternative<CategoryPage>(menuList[menuIndex]) &&
+								std::get<CategoryPage>(menuList[menuIndex]).name == target) {
+								if (!wasSelected) {
+									selectedMenu = menuIndex;
+									const auto& page = std::get<CategoryPage>(menuList[menuIndex]);
+									g_tunerSelectedFeature = page.features.empty() ? "" : page.features.front()->GetShortName();
+								}
+								selectedTarget = true;
+								break;
+							}
+							if (i == 4 && std::holds_alternative<BuiltInMenu>(menuList[menuIndex]) &&
+								std::get<BuiltInMenu>(menuList[menuIndex]).name == target) {
+								if (!wasSelected)
+									selectedMenu = menuIndex;
+								selectedTarget = true;
+								break;
+							}
 						}
-						if (i == 4 && std::holds_alternative<TuningWorkspaceRenderer::BuiltInMenu>(menuList[menuIndex]) &&
-							std::get<TuningWorkspaceRenderer::BuiltInMenu>(menuList[menuIndex]).name == target) {
-							selectedMenu = menuIndex;
-							selectedTarget = true;
-							break;
+						if (selectedTarget) {
+							if (!wasSelected) {
+								g_tunerPanelCollapsed = false;
+								g_tunerDrawerCollapsed = false;
+							} else if (!g_tunerPanelCollapsed) {
+								// First press is the panel back button.
+								g_tunerPanelCollapsed = true;
+							} else if (!g_tunerDrawerCollapsed) {
+								// Second press retracts the module drawer, leaving only the rail.
+								g_tunerDrawerCollapsed = true;
+							} else {
+								// A third press restores the complete workspace.
+								g_tunerDrawerCollapsed = false;
+								g_tunerPanelCollapsed = false;
+							}
 						}
-					}
 					if (selectedTarget && target == "CHARACTER") {
 						g_characterOrbitDistance = 45.0f;
 						g_characterOrbitAngleDegrees = 0.0f;
@@ -4419,7 +4699,7 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 						SetCharacterOrbitEnabled(false);
 					}
 				}
-				const ImU32 glow = selected || hovered ? PIXLUI::Colors::CyanBright : PIXLUI::Colors::BorderSoft;
+					const ImU32 glow = selected || hovered ? PIXLUI::Colors::CyanBright : PIXLUI::Colors::BorderSoft;
 				ImGui::GetWindowDrawList()->AddRectFilled(
 					ImVec2(railMin.x + PIXLUI::Ref(4.0f), railMin.y + y - PIXLUI::Ref(4.0f)),
 					ImVec2(railMin.x + width - PIXLUI::Ref(4.0f), railMin.y + y + PIXLUI::Ref(53.0f)),
@@ -4459,6 +4739,72 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 				PIXLUI::Colors::CyanBright,
 				PIXLUI::Ref(2.0f));
 
+			// One global control governs simple/advanced parameter visibility for
+			// every module.  It deliberately lives on the category rail rather than
+			// inside a Lighting page so users do not have to hunt for it again.
+			const ImVec2 advancedPos(
+				railMin.x + PIXLUI::Ref(7.0f),
+				railMin.y + PIXLUI::Ref(684.0f));
+			ImGui::SetCursorScreenPos(advancedPos);
+				const bool advancedClicked = ImGui::InvisibleButton(
+				"##TunerAdvancedControls",
+				ImVec2(PIXLUI::Ref(42.0f), PIXLUI::Ref(46.0f)));
+				const bool advancedHovered = ImGui::IsItemHovered();
+				if (advancedClicked) {
+					const bool wasAdvanced = globals::menu->GetSettings().AdvancedControls;
+					if (!wasAdvanced && selectedMenu < menuList.size() &&
+						std::holds_alternative<CategoryPage>(menuList[selectedMenu])) {
+						for (RenderModule* module : std::get<CategoryPage>(menuList[selectedMenu]).features) {
+							if (!module)
+								continue;
+							json snapshot;
+							module->SaveSettings(snapshot);
+							g_simpleAdvancedSnapshots[module->GetShortName()] = std::move(snapshot);
+						}
+					}
+					globals::menu->GetSettings().AdvancedControls =
+						!globals::menu->GetSettings().AdvancedControls;
+					if (wasAdvanced)
+					{
+						g_simpleAdvancedSnapshots.clear();
+						g_simplePendingAdvancedValues.clear();
+					}
+					globals::state->Save();
+				}
+			const bool advanced = globals::menu->GetSettings().AdvancedControls;
+			const ImU32 advancedColor = advanced || advancedHovered
+				? PIXLUI::Colors::CyanBright
+				: PIXLUI::Colors::BorderSoft;
+			ImGui::GetWindowDrawList()->AddRect(
+				advancedPos,
+				ImVec2(advancedPos.x + PIXLUI::Ref(42.0f), advancedPos.y + PIXLUI::Ref(46.0f)),
+				advancedColor,
+				PIXLUI::Ref(4.0f),
+				0,
+				PIXLUI::Ref(advanced || advancedHovered ? 1.6f : 0.8f));
+			if (advanced) {
+				ImGui::GetWindowDrawList()->AddRectFilled(
+					ImVec2(advancedPos.x + PIXLUI::Ref(2.0f), advancedPos.y + PIXLUI::Ref(2.0f)),
+					ImVec2(advancedPos.x + PIXLUI::Ref(40.0f), advancedPos.y + PIXLUI::Ref(44.0f)),
+					IM_COL32(24, 102, 112, 105), PIXLUI::Ref(3.0f));
+			}
+			ImGui::SetCursorScreenPos(ImVec2(advancedPos.x, advancedPos.y + PIXLUI::Ref(8.0f)));
+			ImGui::SetWindowFontScale(0.62f);
+			const char* advancedLabel = advanced ? "ADV" : "SIMPLE";
+			const float advancedLabelWidth = ImGui::CalcTextSize(advancedLabel).x;
+			ImGui::SetCursorScreenPos(ImVec2(
+				advancedPos.x + (PIXLUI::Ref(42.0f) - advancedLabelWidth) * 0.5f,
+				advancedPos.y + PIXLUI::Ref(16.0f)));
+			ImGui::TextColored(PIXLUI::ToVec4(advancedColor), "%s", advancedLabel);
+			ImGui::SetWindowFontScale(1.0f);
+			if (advancedHovered && !ImGui::IsItemActive()) {
+				ImGui::BeginTooltip();
+				ImGui::TextUnformatted(advanced
+					? "Advanced controls enabled across all categories"
+					: "Simple controls shown; click to expose advanced controls everywhere");
+				ImGui::EndTooltip();
+			}
+
 			// The rail footer is the tuner-local back action.  Keeping it here
 			// avoids competing with the header actions and mirrors the reference
 			// application's compact vertical navigation.
@@ -4487,16 +4833,35 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 		}
 	}
 
-	static size_t previousCategory = static_cast<size_t>(-1);
-	static float drawerProgress = 1.0f;
-	if (previousCategory != selectedMenu) {
-		previousCategory = selectedMenu;
-		drawerProgress = 0.0f;
-	}
-	drawerProgress = std::min(1.0f, drawerProgress + ImGui::GetIO().DeltaTime / 0.18f);
-	const float slideOffset = PIXLUI::Ref(12.0f) * std::pow(1.0f - drawerProgress, 3.0f);
-	ImGui::SetCursorScreenPos(ImVec2(sidebarPos.x + slideOffset, sidebarPos.y));
-	{
+		static size_t previousCategory = static_cast<size_t>(-1);
+		static float drawerProgress = 1.0f;
+		if (previousCategory != selectedMenu) {
+			previousCategory = selectedMenu;
+			g_tunerDrawerCollapsed = false;
+			g_tunerPanelCollapsed = false;
+		}
+		const float drawerTarget = g_tunerDrawerCollapsed ? 0.0f : 1.0f;
+		drawerProgress = std::clamp(
+			drawerProgress + (drawerTarget - drawerProgress) *
+				std::min(1.0f, ImGui::GetIO().DeltaTime / 0.10f),
+			0.0f,
+			1.0f);
+		static float panelProgress = 1.0f;
+		const float panelTarget = g_tunerPanelCollapsed ? 0.0f : 1.0f;
+		panelProgress = std::clamp(
+			panelProgress + (panelTarget - panelProgress) *
+				std::min(1.0f, ImGui::GetIO().DeltaTime / 0.10f),
+			0.0f,
+			1.0f);
+		// Keep both surfaces anchored. A restrained fade is safer than translating
+		// full-size ImGui windows across one another, which can overlap controls at
+		// intermediate animation frames. Collapsed windows also stop receiving input.
+		const float drawerOffset = 0.0f;
+		const float panelOffset = 0.0f;
+		ImGui::PushStyleVar(ImGuiStyleVar_Alpha, drawerProgress);
+		if (drawerProgress > 0.01f) {
+			ImGui::SetCursorScreenPos(ImVec2(sidebarPos.x + drawerOffset, sidebarPos.y));
+		{
 		PIXLUI::ChromeScope sidebar(
 			"##PIXLAdvancedSidebar",
 			ImVec2(
@@ -4506,7 +4871,8 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 					PIXLUI::Layout::TuneSidebarFrameHeight)),
 			PIXLUI::ChromeStyle::Sidebar,
 			false,
-			ImGuiWindowFlags_NoScrollbar,
+			ImGuiWindowFlags_NoScrollbar |
+				(g_tunerDrawerCollapsed ? ImGuiWindowFlags_NoInputs : 0),
 			0.0f);
 
 		if (sidebar) {
@@ -4561,20 +4927,24 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 				categoryExpansionStates,
 				g_tunerSelectedFeature);
 		}
-	}
+		}
+		}
 
-	float orbitViewportMinX = contentPos.x + slideOffset +
+	float orbitViewportMinX = contentPos.x + panelOffset +
 		PIXLUI::Ref(PIXLUI::Layout::TuneContentFrameWidth + PIXLUI::Layout::TunePanelGap);
-	ImGui::SetCursorScreenPos(ImVec2(contentPos.x + slideOffset, contentPos.y));
+	ImGui::PopStyleVar();
+	ImGui::PushStyleVar(ImGuiStyleVar_Alpha, panelProgress);
+	if (panelProgress > 0.01f && drawerProgress > 0.01f) {
+		ImGui::SetCursorScreenPos(ImVec2(contentPos.x + panelOffset, contentPos.y));
 	{
 		const bool productPage = selectedMenu < menuList.size() &&
 			std::holds_alternative<BuiltInMenu>(menuList[selectedMenu]) &&
 			std::get<BuiltInMenu>(menuList[selectedMenu]).name == "PIXL Renderer";
 		const float contentWidth = productPage
 			? std::max(PIXLUI::Ref(PIXLUI::Layout::TuneContentFrameWidth),
-				ImGui::GetMainViewport()->WorkPos.x + ImGui::GetMainViewport()->WorkSize.x - contentPos.x - slideOffset - PIXLUI::Ref(16.0f))
+				ImGui::GetMainViewport()->WorkPos.x + ImGui::GetMainViewport()->WorkSize.x - contentPos.x - panelOffset - PIXLUI::Ref(16.0f))
 			: PIXLUI::Ref(PIXLUI::Layout::TuneContentFrameWidth);
-		orbitViewportMinX = contentPos.x + slideOffset + contentWidth +
+		orbitViewportMinX = contentPos.x + panelOffset + contentWidth +
 			PIXLUI::Ref(PIXLUI::Layout::TunePanelGap);
 		PIXLUI::ChromeScope content(
 			"##PIXLAdvancedContentFrame",
@@ -4584,7 +4954,8 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 					PIXLUI::Layout::TuneContentFrameHeight)),
 			PIXLUI::ChromeStyle::Content,
 			true,
-			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse,
+			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+				((g_tunerPanelCollapsed || g_tunerDrawerCollapsed) ? ImGuiWindowFlags_NoInputs : 0),
 			0.0f);
 
 		if (content) {
@@ -4628,11 +4999,13 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 			}
 			ImGui::EndChild();
 			ImGui::PopID();
-			ImGui::PopID();
+		ImGui::PopID();
+		}
 		}
 	}
+		ImGui::PopStyleVar();
 
-	DrawTunerControlReminder();
+		DrawTunerControlReminder();
 	UpdateCharacterOrbitPointerInteraction(orbitViewportMinX);
 
 }
@@ -4874,9 +5247,24 @@ void TuningWorkspaceRenderer::RenderLeftColumn(
 
 		if (selectedMenu < menuList.size() && std::holds_alternative<CategoryPage>(menuList[selectedMenu])) {
 			const auto& page = std::get<CategoryPage>(menuList[selectedMenu]);
-			for (RenderModule* feature : page.features) {
-				if (!feature)
-					continue;
+				for (RenderModule* feature : page.features) {
+					if (!feature)
+						continue;
+					// NaturalLighting is fully automatic in Simple mode and has no
+					// user-facing primary control. Keep it available in Advanced mode.
+					if (globals::menu && !globals::menu->GetSettings().AdvancedControls &&
+						((page.name == "LIGHTING" &&
+						  (feature->GetShortName() == "NaturalLighting" ||
+						 feature->GetShortName() == "RadiantGrid" ||
+						 feature->GetShortName() == "InteriorDaylight" ||
+						 feature->GetShortName() == "SkyContinuity" ||
+						 feature->GetShortName() == "VolumeOcclusion")) ||
+						 (page.name == "WORLD" &&
+						  (feature->GetShortName() == "TerrainField" ||
+						   feature->GetShortName() == "TerrainSeam" ||
+						   feature->GetShortName() == "TerrainOcclusion" ||
+						   feature->GetShortName() == "Waterbody"))))
+						continue;
 				if (!featureSearch.empty() && !Util::FeatureMatchesSearch(feature, featureSearch))
 					continue;
 				const std::string publicName = std::string(PIXLRendererPage::GetPublicName(feature->GetShortName(), feature->GetDisplayName()));
@@ -4922,6 +5310,18 @@ void TuningWorkspaceRenderer::RenderRightColumn(
 	if (selectedMenu < menuList.size()) {
 		if (std::holds_alternative<CategoryPage>(menuList[selectedMenu])) {
 			const auto& page = std::get<CategoryPage>(menuList[selectedMenu]);
+			if ((page.name == "LIGHTING" || page.name == "WORLD" || page.name == "CHARACTER") && globals::menu && !globals::menu->GetSettings().AdvancedControls) {
+				if (page.name == "CHARACTER")
+					DrawCharacterOrbitControls();
+				for (RenderModule* feature : page.features) {
+					if (feature && feature->GetShortName() == selectedFeatureName) {
+						DrawSimpleLightingControls(feature);
+						return;
+					}
+				}
+				ImGui::TextDisabled("Select a lighting module to tune its primary controls.");
+				return;
+			}
 			if (page.name == "CHARACTER")
 				DrawCharacterOrbitControls();
 			for (RenderModule* feature : page.features) {
@@ -5717,6 +6117,15 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 				PIXLUI::ToVec4(
 					PIXLUI::Colors::CyanSoft),
 				"UP / DOWN changes lens FOV. LEFT / RIGHT changes camera speed. Hold SHIFT for fast movement.");
+			if (capture) {
+				ImGui::Dummy(ImVec2(0, PIXLUI::Ref(5.0f)));
+				if (PIXLUI::LabeledToggle("Small PIXL watermark on saved photo", &capture->photoWatermarkEnabled)) {
+					if (globals::state)
+						globals::state->Save();
+				}
+				if (auto tooltip = Util::HoverTooltipWrapper())
+					ImGui::TextUnformatted("Adds a small, elegant PIXL mark in the bottom-right of Director captures. Off by default.");
+			}
 
 			ImGui::Dummy(
 				ImVec2(

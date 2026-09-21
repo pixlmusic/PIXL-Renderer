@@ -190,8 +190,11 @@ namespace
 
 	bool IsPresetThemeSelected()
 	{
-		std::string selected = globals::menu->GetSettings().SelectedThemePreset;
-		return !selected.empty() && ThemeManager::GetSingleton()->IsPresetTheme(selected);
+		if (!globals::menu)
+			return false;
+		const std::string& selected = globals::menu->GetSettings().SelectedThemePreset;
+		auto* themeManager = ThemeManager::GetSingleton();
+		return themeManager && !selected.empty() && themeManager->IsPresetTheme(selected);
 	}
 
 	void RenderSaveInfoText()

@@ -152,20 +152,23 @@ void RenderModule::Load(json& o_json)
 			logger::error("RenderModule has empty short name, cannot add to feature issues list");
 		}
 	} else {
-		// No errors, load settings now
-		if (o_json[GetName()].is_structured()) {
-			logger::info("Loading {} settings", GetName());
+		// No errors, load settings now. Reading a missing section must not mutate
+		// the root JSON by inserting a null value.
+		const std::string featureName = GetName();
+		const auto settingsIt = o_json.find(featureName);
+		if (settingsIt != o_json.end() && settingsIt->is_structured()) {
+			logger::info("Loading {} settings", featureName);
 			try {
-				LoadSettings(o_json[GetName()]);
+				LoadSettings(*settingsIt);
 			} catch (const std::exception& e) {
-				logger::warn("Invalid settings for {} ({}); using defaults.", GetName(), e.what());
+				logger::warn("Invalid settings for {} ({}); using defaults.", featureName, e.what());
 				RestoreDefaultSettings();
 			} catch (...) {
-				logger::warn("Invalid settings for {} (unknown error); using defaults.", GetName());
+				logger::warn("Invalid settings for {} (unknown error); using defaults.", featureName);
 				RestoreDefaultSettings();
 			}
 		} else {
-			logger::info("Loading default settings for {}", GetName());
+			logger::info("Loading default settings for {}", featureName);
 			RestoreDefaultSettings();
 		}
 	}

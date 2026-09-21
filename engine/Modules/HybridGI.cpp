@@ -322,7 +322,9 @@ void HybridGI::RestoreDefaultSettings()
 
 void HybridGI::DrawSettings()
 {
-	static bool showAdvanced = false;
+	// Advanced control visibility is owned by the Tuner rail so the same
+	// simple/advanced contract applies consistently across every category.
+	const bool showAdvanced = globals::menu && globals::menu->GetSettings().AdvancedControls;
 
 	if (!ShadersOK()) {
 		Util::Text::Error("%s", T(TKEY("shader_compile_error"), "Compute shaders failed to compile!"));
@@ -391,9 +393,8 @@ void HybridGI::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Restores the shipped unified Ultra lighting workload while preserving your artistic GI strength, colour and radius tuning.");
 
-		DrawPixlToggleField("Engineer Controls", &showAdvanced);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Shows low-level sampling, cache and reconstruction controls. The default view only exposes settings that are useful during normal gameplay tuning.");
+			ImGui::TextWrapped("Use the ADVANCED control on the Tuner rail to expose low-level sampling, cache and reconstruction controls across all categories.");
 	}
 
 	// -------------------------------------------------------------------------

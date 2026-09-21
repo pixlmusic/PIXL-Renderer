@@ -1,9 +1,13 @@
 #pragma once
 
 #include <d3d11.h>
+#include <algorithm>
+#include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <winrt/base.h>
 

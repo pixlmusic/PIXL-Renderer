@@ -322,7 +322,8 @@ void Atmosphere::DrawSettings()
 		Util::WeatherUI::SliderFloat(T(TKEY("directional_scattering_intensity"), "Directional Scattering Intensity"), this, "volumetricDirectionalScatteringIntensity", &settings.volumetricDirectionalScatteringIntensity, 0.0f, 10.0f, "%.2f");
 		Util::WeatherUI::SliderFloat(T(TKEY("sky_lighting_scattering_intensity"), "Sky Lighting Scattering Intensity"), this, "volumetricSkyLightingIntensity", &settings.volumetricSkyLightingIntensity, 0.0f, 10.0f, "%.2f");
 		Util::WeatherUI::SliderFloat(T(TKEY("local_light_scattering_intensity"), "Local Light Scattering Intensity"), this, "volumetricLocalLightScatteringIntensity", &settings.volumetricLocalLightScatteringIntensity, 0.0f, 10.0f, "%.2f");
-		if (ImGui::TreeNode(T(TKEY("advanced_volumetric_quality"), "Advanced Volumetric Quality"))) {
+		if ((!globals::menu || globals::menu->GetSettings().AdvancedControls) &&
+			ImGui::TreeNode(T(TKEY("advanced_volumetric_quality"), "Advanced Volumetric Quality"))) {
 			uint32_t minGridPixelSize = 4;
 			uint32_t maxGridPixelSize = 64;
 			uint32_t minGridSizeZ = 16;

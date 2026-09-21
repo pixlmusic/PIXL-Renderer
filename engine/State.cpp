@@ -1,6 +1,10 @@
 #include "State.h"
 
+#include <algorithm>
+#include <array>
 #include <codecvt>
+#include <filesystem>
+#include <thread>
 
 #include <pystring/pystring.h>
 
@@ -501,7 +505,9 @@ void State::Load(ConfigMode a_configMode, bool a_allowReload)
 			}
 		}
 
-		if (settings["Version"].is_string() && settings["Version"].get<std::string>() != Plugin::VERSION.string()) {
+		if (settings.contains("Version") &&
+			settings["Version"].is_string() &&
+			settings["Version"].get<std::string>() != Plugin::VERSION.string()) {
 			logger::info("Found older config for version {}; upgrading to {}", (std::string)settings["Version"], Plugin::VERSION.string());
 			Save(a_configMode);  // Use original config mode
 		}
@@ -599,6 +605,8 @@ void State::LoadFromJson(nlohmann::json& settings)
 
 	if (settings.contains("Advanced") && settings["Advanced"].is_object()) {
 		json& advanced = settings["Advanced"];
+		const auto maxCompilerThreads =
+			static_cast<int32_t>(std::max(1u, std::thread::hardware_concurrency()));
 		if (advanced.contains("Dump Shaders") && advanced["Dump Shaders"].is_boolean())
 			shaderCache->SetDump(advanced["Dump Shaders"]);
 		if (advanced.contains("Log Level") && advanced["Log Level"].is_number_integer())
@@ -606,9 +614,9 @@ void State::LoadFromJson(nlohmann::json& settings)
 		if (advanced.contains("Shader Defines") && advanced["Shader Defines"].is_string())
 			SetDefines(advanced["Shader Defines"]);
 		if (advanced.contains("Compiler Threads") && advanced["Compiler Threads"].is_number_integer())
-			shaderCache->compilationThreadCount = std::clamp(advanced["Compiler Threads"].get<int32_t>(), 1, static_cast<int32_t>(std::thread::hardware_concurrency()));
+			shaderCache->compilationThreadCount = std::clamp(advanced["Compiler Threads"].get<int32_t>(), 1, maxCompilerThreads);
 		if (advanced.contains("Background Compiler Threads") && advanced["Background Compiler Threads"].is_number_integer())
-			shaderCache->backgroundCompilationThreadCount = std::clamp(advanced["Background Compiler Threads"].get<int32_t>(), 1, static_cast<int32_t>(std::thread::hardware_concurrency()));
+			shaderCache->backgroundCompilationThreadCount = std::clamp(advanced["Background Compiler Threads"].get<int32_t>(), 1, maxCompilerThreads);
 		if (advanced.contains("Use FileWatcher") && advanced["Use FileWatcher"].is_boolean())
 			shaderCache->SetFileWatcher(advanced["Use FileWatcher"]);
 		if (advanced.contains("Frame Annotations") && advanced["Frame Annotations"].is_boolean())
@@ -1003,7 +1011,8 @@ void State::BeginPerfEvent(std::string_view title)
 	const TracyCZoneCtx ctx = ___tracy_emit_zone_begin_alloc(srcloc, true);
 	s_tracyPerfZones.push_back(ctx);
 #endif
-	pPerf->BeginEvent(std::wstring(title.begin(), title.end()).c_str());
+	if (pPerf)
+		pPerf->BeginEvent(std::wstring(title.begin(), title.end()).c_str());
 }
 
 void State::EndPerfEvent()
@@ -1016,12 +1025,14 @@ void State::EndPerfEvent()
 		logger::warn("EndPerfEvent called without a matching BeginPerfEvent");
 	}
 #endif
-	pPerf->EndEvent();
+	if (pPerf)
+		pPerf->EndEvent();
 }
 
 void State::SetPerfMarker(std::string_view title)
 {
-	pPerf->SetMarker(std::wstring(title.begin(), title.end()).c_str());
+	if (pPerf)
+		pPerf->SetMarker(std::wstring(title.begin(), title.end()).c_str());
 }
 
 void State::SetAdapterDescription(const std::wstring& description)

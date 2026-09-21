@@ -6,15 +6,21 @@
 
 #include <Buffer.h>
 #include <atomic>
+#include <cstdint>
+#include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 using json = nlohmann::json;
 
 #include <PipelineBuffer.h>
 
 #include <Hooks.h>
-#include <mutex>
 
 class State
 {

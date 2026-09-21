@@ -157,6 +157,8 @@ void PulsePanelRenderer::SetupTimingTableColumns(bool includePercentColumn)
 
 void PulsePanelRenderer::RenderGraph()
 {
+	if (!globals::profiler)
+		return;
 	auto& profiler = (*globals::profiler);
 	const auto& results = profiler.GetResults();
 	bool cpuMode = (timingMode == TimingMode::CPU);
@@ -207,6 +209,8 @@ void PulsePanelRenderer::RenderGraph()
 
 void PulsePanelRenderer::RenderStatistics(bool showTable, bool showModeToggle)
 {
+	if (!globals::profiler)
+		return;
 	auto& profiler = (*globals::profiler);
 
 	bool cpuMode = (timingMode == TimingMode::CPU);
@@ -344,6 +348,10 @@ void PulsePanelRenderer::RenderStatistics(bool showTable, bool showModeToggle)
 
 void PulsePanelRenderer::RenderFeatureTimers(const std::string& featurePrefix)
 {
+	if (!globals::profiler) {
+		ImGui::TextDisabled("%s", T("menu.profiling.no_timing_data", "No timing data"));
+		return;
+	}
 	auto& profiler = (*globals::profiler);
 	const auto& results = profiler.GetResults();
 
@@ -438,7 +446,7 @@ void PulsePanelRenderer::RenderFeatureTimers(const std::string& featurePrefix)
 
 		ImGui::TableNextRow();
 		ImGui::TableNextColumn();
-		const auto totalColor = globals::menu->GetTheme().StatusPalette.InfoColor;
+		const auto totalColor = globals::menu ? globals::menu->GetTheme().StatusPalette.InfoColor : Util::Colors::GetDefault();
 		ImGui::TextColored(totalColor, "%s", T("menu.profiling.total", "Total"));
 		ImGui::TableNextColumn();
 		ImGui::TextColored(totalColor, "%.3f", totalAvg);
@@ -453,6 +461,8 @@ void PulsePanelRenderer::RenderFeatureTimers(const std::string& featurePrefix)
 
 bool PulsePanelRenderer::HasFeatureTimers(const std::string& featurePrefix)
 {
+	if (!globals::profiler)
+		return false;
 	const auto prefix = GetFeatureTimerPrefix(featurePrefix);
 	const auto& results = globals::profiler->GetResults();
 

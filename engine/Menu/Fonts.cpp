@@ -160,9 +160,15 @@ namespace MenuFonts
 
 	TabBarPaddingGuard::TabBarPaddingGuard(FontRole tabFontRole)
 	{
-		// Get the font that will be used for tabs
-		ImFont* tabFont = globals::menu->GetFont(tabFontRole);
-		ImFont* bodyFont = globals::menu->GetFont(FontRole::Body);
+		Menu* menuInstance = globals::menu;
+		if (!menuInstance)
+			menuInstance = Menu::GetSingleton();
+		if (!menuInstance)
+			return;
+
+		// Get the fonts that will be used for the tab and body text.
+		ImFont* tabFont = menuInstance->GetFont(tabFontRole);
+		ImFont* bodyFont = menuInstance->GetFont(FontRole::Body);
 
 		if (tabFont && bodyFont) {
 			float fontScale = tabFont->LegacySize / bodyFont->LegacySize;

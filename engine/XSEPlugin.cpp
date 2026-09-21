@@ -15,6 +15,15 @@
 
 #include "ENB/ENBSeriesAPI.h"
 
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <filesystem>
+#include <format>
+#include <list>
+#include <string>
+#include <thread>
+
 #define DLLEXPORT __declspec(dllexport)
 
 std::list<std::string> errors;
@@ -36,6 +45,10 @@ namespace
 			return;
 
 		auto shaderCache = globals::shaderCache;
+		if (!shaderCache) {
+			logger::error("Unable to finalize renderer DataLoaded state: ShaderCache is unavailable");
+			return;
+		}
 		if (shaderCache->IsDiskCache())
 			shaderCache->WriteDiskCacheInfo();
 
@@ -49,6 +62,10 @@ namespace
 	void FinalizeRendererDataLoadedAfterCompilation()
 	{
 		auto shaderCache = globals::shaderCache;
+		if (!shaderCache) {
+			logger::error("Unable to wait for foreground compilation: ShaderCache is unavailable");
+			return;
+		}
 		if (!shaderCache->IsCompiling() || shaderCache->backgroundCompilation.load(std::memory_order_acquire)) {
 			FinalizeRendererDataLoaded();
 			return;
@@ -157,6 +174,9 @@ extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Query(const SKSE::QueryInterface*, 
 
 void MessageHandler(SKSE::MessagingInterface::Message* message)
 {
+	if (!message)
+		return;
+
 	switch (message->type) {
 	case SKSE::MessagingInterface::kPostLoad:
 		TuningWorkspaceRenderer::InitializeCameraCompatibility(false);
@@ -242,6 +262,10 @@ bool Load()
 	}
 
 	auto messaging = SKSE::GetMessagingInterface();
+	if (!messaging) {
+		logger::critical("SKSE messaging interface is unavailable; PIXL Renderer cannot initialize safely");
+		return false;
+	}
 	messaging->RegisterListener("SKSE", MessageHandler);
 
 	Util::PathHelpers::MigrateLegacyPluginState();
@@ -249,6 +273,10 @@ bool Load()
 	globals::ReInit();
 
 	auto state = globals::state;
+	if (!state || !globals::menu) {
+		logger::critical("PIXL Renderer globals were not initialized correctly");
+		return false;
+	}
 
 	// Initialize i18n system (loads English fallback and discovers available locales)
 	I18n::GetSingleton()->Init();
@@ -259,6 +287,10 @@ bool Load()
 	// Initialize theme system - create default themes and discover existing ones
 	globals::menu->CreateDefaultThemes();  // Creates JSON files if they don't exist
 	auto themeManager = ThemeManager::GetSingleton();
+	if (!themeManager) {
+		logger::critical("ThemeManager is unavailable; PIXL Renderer cannot initialize the menu safely");
+		return false;
+	}
 	themeManager->DiscoverThemes();  // Discover all available themes
 
 	auto log = spdlog::default_logger();

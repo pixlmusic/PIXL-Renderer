@@ -17,6 +17,7 @@ float Profiler::RollingHistory::GetPercentile(float p) const
 {
 	if (count == 0)
 		return lastMs;
+	p = std::clamp(p, 0.0f, 100.0f);
 
 	thread_local std::vector<float> sorted;
 	sorted.resize(count);
@@ -172,7 +173,7 @@ void Profiler::EndFrame()
 
 void Profiler::CollectResults()
 {
-	if (framesSinceInit < kFrameLatency)
+	if (!initialized || !context || framesSinceInit < kFrameLatency)
 		return;
 
 	readFrame = writeFrame;
@@ -196,7 +197,7 @@ void Profiler::CollectResults()
 	float activeTotalMs = 0.0f;
 	float activeCpuTotalMs = 0.0f;
 
-	if (!disjointData.Disjoint) {
+	if (!disjointData.Disjoint && disjointData.Frequency > 0) {
 		double ticksToMs = 1000.0 / static_cast<double>(disjointData.Frequency);
 
 		for (uint32_t i = 0; i < frame.activeCount; i++) {
@@ -206,6 +207,8 @@ void Profiler::CollectResults()
 			if (context->GetData(timer.begin.get(), &tsBegin, sizeof(tsBegin), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
 				continue;
 			if (context->GetData(timer.end.get(), &tsEnd, sizeof(tsEnd), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
+				continue;
+			if (tsEnd < tsBegin)
 				continue;
 
 			float ms = static_cast<float>(static_cast<double>(tsEnd - tsBegin) * ticksToMs);

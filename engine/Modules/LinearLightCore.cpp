@@ -57,7 +57,8 @@ void LinearLightCore::DrawSettings()
 			ImGui::EndTabItem();
 		}
 
-		if (ImGui::BeginTabItem(T(TKEY("tab_advanced"), "Advanced"))) {
+		if ((!globals::menu || globals::menu->GetSettings().AdvancedControls) &&
+			ImGui::BeginTabItem(T(TKEY("tab_advanced"), "Advanced"))) {
 			ImGui::SeparatorText(T(TKEY("gamma_settings"), "Gamma Settings"));
 			ImGui::SliderFloat(T(TKEY("light_gamma"), "Light Gamma"), &settings.lightGamma, 0.1f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 			ImGui::SliderFloat(T(TKEY("color_gamma"), "Color Gamma"), &settings.colorGamma, 0.1f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);

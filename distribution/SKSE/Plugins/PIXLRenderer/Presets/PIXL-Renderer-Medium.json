@@ -670,6 +670,8 @@
                         },
     "Menu":  {
                  "AdvancedMode":  false,
+                 "AdvancedControls": false,
+                 "SimpleLightingBalance": 1.0,
                  "AtmosphereQuality":  1,
                  "AutoHideFeatureList":  false,
                  "CameraQuality":  1,

@@ -1891,7 +1891,7 @@ std::string ImageReconstruction::ToggleNeuralRenderingFromHotkey()
 	if (d3d12SwapChainActive && neuralRenderingProvisionedAtBoot)
 		return "PIXL Neural Rendering enabled.";
 
-	return "Neural Rendering armed. Restart Skyrim once to provision the sidecar.";
+	return "Neural Rendering enabled for next launch. Restart Skyrim once to provision the sidecar; keep it enabled at startup.";
 }
 
 ImageReconstruction::FrameGenerationState ImageReconstruction::GetFrameGenerationState() const

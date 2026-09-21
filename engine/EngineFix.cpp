@@ -6,11 +6,13 @@
 
 const std::vector<EngineFix*>& EngineFix::GetOnPostPostLoadFixesList()
 {
+	// Function-local statics guarantee that fix instances exist before the
+	// registration list is first used and remain alive for the plugin lifetime.
 	static EffectShaderNoDecalsFix effectShaderNoDecalsFix;
 	static ShadowmapCascadeCullingFix shadowmapCascadeCullingFix;
 	static ShadowmapRasterizerFix shadowmapRasterizerFix;
 
-	static std::vector<EngineFix*> fixes = {
+	static const std::vector<EngineFix*> fixes = {
 		&effectShaderNoDecalsFix,
 		&shadowmapCascadeCullingFix,
 		&shadowmapRasterizerFix
@@ -21,14 +23,19 @@ const std::vector<EngineFix*>& EngineFix::GetOnPostPostLoadFixesList()
 
 const std::vector<EngineFix*>& EngineFix::GetOnDataLoadedFixesList()
 {
-	static std::vector<EngineFix*> fixes = {};
+	// Reserved for fixes that require Skyrim's data-loaded stage.
+	static const std::vector<EngineFix*> fixes;
 
 	return fixes;
 }
 
 void EngineFix::InstallFixes(const std::vector<EngineFix*>& fixes)
 {
-	for (const auto fix : fixes) {
+	for (EngineFix* const fix : fixes) {
+		if (!fix) {
+			logger::warn("[Engine Fixes] Skipped null fix registration");
+			continue;
+		}
 		fix->Install();
 		logger::info("[Engine Fixes] Installed {}", fix->GetName());
 	}

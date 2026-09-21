@@ -1023,7 +1023,7 @@ namespace
 		DrawQualityImageTooltip(
 			"Neural",
 			3,
-			"DLSS Neural Rendering adds the Ultra+ finish shown here. It requires NVIDIA RTX 30-series or newer hardware and an active DLSS session. Alt+N toggles it during gameplay; the first sidecar activation may require one restart.");
+			"DLSS Neural Rendering adds the Ultra+ finish shown here. It requires NVIDIA RTX 30-series or newer hardware and an active DLSS session. Ctrl+N toggles it during gameplay; the first sidecar activation may require one restart.");
 		ImGui::EndDisabled();
 
 		if (!nrHardwareSupported) {

@@ -6,6 +6,7 @@
 #include "Utils/FileSystem.h"
 #include "Utils/Game.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <unordered_set>
@@ -509,13 +510,15 @@ void SceneSettingsManager::SaveUserSettings(SceneType type)
 	auto typeName = GetSceneTypeName(type);
 	try {
 		std::ofstream file(path);
-		if (file.is_open()) {
-			file << data.dump(2);
-			if (file.fail())
-				logger::error("[SceneSettings] Write error saving {} settings (disk full or permissions issue)", typeName);
-			else
-				logger::info("[SceneSettings] Saved {} {} user settings", data.size(), typeName);
+		if (!file.is_open()) {
+			logger::error("[SceneSettings] Could not open {} settings file for writing: {}", typeName, path.string());
+			return;
 		}
+		file << data.dump(2);
+		if (file.fail())
+			logger::error("[SceneSettings] Write error saving {} settings (disk full or permissions issue)", typeName);
+		else
+			logger::info("[SceneSettings] Saved {} {} user settings", data.size(), typeName);
 	} catch (const std::exception& e) {
 		logger::error("[SceneSettings] Failed to save {} settings: {}", typeName, e.what());
 	}
@@ -527,7 +530,12 @@ void SceneSettingsManager::LoadUserSettings(SceneType type)
 	auto typeName = GetSceneTypeName(type);
 
 	std::error_code ec;
-	if (!std::filesystem::exists(path, ec))
+	const bool settingsFileExists = std::filesystem::exists(path, ec);
+	if (ec) {
+		logger::warn("[SceneSettings] Could not inspect {} settings file '{}': {}", typeName, path.string(), ec.message());
+		return;
+	}
+	if (!settingsFileExists)
 		return;
 
 	try {
@@ -572,8 +580,17 @@ void SceneSettingsManager::DiscoverOverwrites(SceneType type)
 	logger::info("[SceneSettings] Discovering {} overwrites in: {}", typeName, overwritesPath.string());
 
 	std::error_code ec;
-	if (!std::filesystem::exists(overwritesPath, ec)) {
+	const bool overwritesDirectoryExists = std::filesystem::exists(overwritesPath, ec);
+	if (ec) {
+		logger::warn("[SceneSettings] Could not inspect {} overwrites directory '{}': {}", typeName, overwritesPath.string(), ec.message());
+		return;
+	}
+	if (!overwritesDirectoryExists) {
 		logger::info("[SceneSettings] Overwrites directory does not exist: {}", overwritesPath.string());
+		return;
+	}
+	if (!std::filesystem::is_directory(overwritesPath, ec) || ec) {
+		logger::warn("[SceneSettings] Overwrites path is not a readable directory: {}", overwritesPath.string());
 		return;
 	}
 
@@ -585,8 +602,12 @@ void SceneSettingsManager::DiscoverOverwrites(SceneType type)
 			logger::error("[SceneSettings] Error iterating {} overwrites directory: {}", typeName, ec.message());
 			break;
 		}
-		if (!dirEntry.is_regular_file() || dirEntry.path().extension() != ".json")
+		std::error_code entryError;
+		if (!dirEntry.is_regular_file(entryError) || entryError || dirEntry.path().extension() != ".json") {
+			if (entryError)
+				logger::debug("[SceneSettings] Skipping unreadable directory entry: {}", entryError.message());
 			continue;
+		}
 
 		auto filename = dirEntry.path().filename().string();
 		filesFound++;

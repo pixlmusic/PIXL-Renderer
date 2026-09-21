@@ -1,5 +1,13 @@
 #include "TissueDiffusion.h"
 
+#include <RE/T/TESDataHandler.h>
+
+#include <array>
+#include <algorithm>
+#include <cctype>
+#include <string>
+#include <string_view>
+
 #include "../I18n/I18n.h"
 #include "Deferred.h"
 #include "ShaderCache.h"
@@ -405,7 +413,43 @@ void TissueDiffusion::Reset()
 		if (CharacterLightingStrengthOriginal == -1.0f) {
 			CharacterLightingStrengthOriginal = shaderManager->characterLightParams[2];
 		}
-		shaderManager->characterLightParams[2] = settings.CharacterLightingStrength * CharacterLightingStrengthOriginal;
+		bool faceLightingInstalled = false;
+		if (auto* data = RE::TESDataHandler::GetSingleton()) {
+			constexpr std::array<std::string_view, 5> faceLightingPlugins{
+				"FaceLight.esp", "Face Light.esp", "FaceLightSE.esp", "FaceLightSSE.esp", "FaceLight.esp" };
+			for (const auto plugin : faceLightingPlugins) {
+				if (data->LookupModByName(plugin)) {
+					faceLightingInstalled = true;
+					break;
+				}
+			}
+			// Some releases are packaged under a localized or author's filename.
+			// Inspect only loaded plugin names and require both tokens so unrelated
+			// face/lighting patches do not get classified as Face Light.
+			if (!faceLightingInstalled) {
+				for (std::uint8_t index = 0; index < data->GetLoadedModCount(); ++index) {
+					const auto* file = data->LookupLoadedModByIndex(index);
+					if (!file)
+						continue;
+					std::string name(file->GetFilename());
+					std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
+						return static_cast<char>(std::tolower(c));
+					});
+					if (name.find("face") != std::string::npos && name.find("light") != std::string::npos) {
+						faceLightingInstalled = true;
+						break;
+					}
+				}
+			}
+		}
+		const float faceLightingCompatibility = faceLightingInstalled ? 0.5f : 1.0f;
+		shaderManager->characterLightParams[2] = settings.CharacterLightingStrength *
+			CharacterLightingStrengthOriginal * faceLightingCompatibility;
+		static bool loggedFaceLightingCompatibility = false;
+		if (faceLightingInstalled && !loggedFaceLightingCompatibility) {
+			logger::info("[TissueDiffusion] Face Lighting compatibility detected; character light contribution reduced to 50%.");
+			loggedFaceLightingCompatibility = true;
+		}
 	}
 
 	if (updateKernels) {

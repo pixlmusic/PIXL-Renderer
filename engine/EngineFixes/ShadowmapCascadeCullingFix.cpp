@@ -10,6 +10,8 @@ void ShadowmapCascadeCullingFix::Install()
 void ShadowmapCascadeCullingFix::BSShadowDirectionalLight_SetFrameCamera_BuildCascadeCameraCullingPlanes::thunk(RE::BSShadowDirectionalLight* dirLight, RE::NiFrustumPlanes& outPlanes, FrustumSplit& frustumSplit, uint32_t splitCornerIndices[8], uint32_t numSplitCornerIndices, RE::NiPoint3& lightDir, RE::NiPoint3& cameraPos, uint32_t cornerOffsetIndex)
 {
 	func(dirLight, outPlanes, frustumSplit, splitCornerIndices, numSplitCornerIndices, lightDir, cameraPos, cornerOffsetIndex);
+	if (!gfSplitOverlap)
+		return;
 
 	// This fix pulls the far face corners back towards the near face corners by double fSplitOverlap to provide an effective overlap of 1 * fSplitOverlap in each direction.
 	// This corrects the vanilla behaviour which sets nearFace = farFace for the next cascade camera, where nearFace already includes +fSplitOverlap

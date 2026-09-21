@@ -4,6 +4,8 @@
 #include "Util.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
@@ -36,8 +38,20 @@ size_t SettingsOverrideManager::DiscoverOverrides()
 
 	auto overridesDir = GetOverridesDirectory();
 
-	if (!std::filesystem::exists(overridesDir)) {
+	std::error_code directoryError;
+	const bool overridesDirectoryExists = std::filesystem::exists(overridesDir, directoryError);
+	if (directoryError) {
+		logger::warn("Could not inspect overrides directory '{}': {}", overridesDir.string(), directoryError.message());
+		discovered = true;
+		return 0;
+	}
+	if (!overridesDirectoryExists) {
 		logger::info("Overrides directory does not exist: {}", overridesDir.string());
+		discovered = true;
+		return 0;
+	}
+	if (!std::filesystem::is_directory(overridesDir, directoryError) || directoryError) {
+		logger::warn("Overrides path is not a readable directory: {}", overridesDir.string());
 		discovered = true;
 		return 0;
 	}
@@ -46,7 +60,7 @@ size_t SettingsOverrideManager::DiscoverOverrides()
 
 	size_t filesProcessed = 0;
 	size_t filesLoaded = 0;
-	size_t maxFilesToProcess = 1000;  // Prevent processing too many files
+	constexpr size_t maxFilesToProcess = 1000;  // Prevent processing too many files
 
 	try {
 		for (const auto& entry : std::filesystem::directory_iterator(overridesDir)) {
@@ -155,6 +169,10 @@ size_t SettingsOverrideManager::ApplyOverrides(const std::string& featureName, j
 	auto it = featureOverrideMap.find(featureName);
 	if (it != featureOverrideMap.end()) {
 		for (size_t index : it->second) {
+			if (index >= overrides.size()) {
+				logger::warn("Ignoring stale override index {} for feature '{}'", index, featureName);
+				continue;
+			}
 			const auto& override = overrides[index];
 			if (override.enabled) {
 				try {
@@ -209,7 +227,8 @@ std::vector<const SettingsOverrideManager::OverrideInfo*> SettingsOverrideManage
 	auto it = featureOverrideMap.find(featureName);
 	if (it != featureOverrideMap.end()) {
 		for (size_t index : it->second) {
-			result.push_back(&overrides[index]);
+			if (index < overrides.size())
+				result.push_back(&overrides[index]);
 		}
 	}
 
@@ -899,7 +918,12 @@ void SettingsOverrideManager::ReportOverrideFailure(const std::string& modName, 
 	auto overridesDir = GetOverridesDirectory();
 	auto filePath = overridesDir / filename;
 
-	if (std::filesystem::exists(filePath)) {
+	std::error_code fileError;
+	const bool overrideFileExists = std::filesystem::exists(filePath, fileError);
+	if (fileError)
+		logger::debug("Could not inspect override failure path '{}': {}", filePath.string(), fileError.message());
+
+	if (!fileError && overrideFileExists) {
 		fileInfo.hasINI = true;  // Using hasINI to indicate file exists (even though it's JSON)
 		fileInfo.iniPath = filePath.string();
 
@@ -1075,7 +1099,8 @@ bool SettingsOverrideManager::HasUserOverride(const std::string& featureName) co
 
 	auto userFilePath = GetUserOverridesDirectory() / (featureName + ".user.json");
 	std::error_code ec;
-	return std::filesystem::exists(userFilePath, ec);
+	const bool exists = std::filesystem::exists(userFilePath, ec);
+	return !ec && exists;
 }
 
 bool SettingsOverrideManager::DeleteUserOverride(const std::string& featureName)
@@ -1087,7 +1112,12 @@ bool SettingsOverrideManager::DeleteUserOverride(const std::string& featureName)
 	auto userFilePath = GetUserOverridesDirectory() / (featureName + ".user.json");
 
 	std::error_code ec;
-	if (!std::filesystem::exists(userFilePath, ec)) {
+	const bool userOverrideExists = std::filesystem::exists(userFilePath, ec);
+	if (ec) {
+		logger::warn("Could not inspect user override file '{}': {}", userFilePath.string(), ec.message());
+		return false;
+	}
+	if (!userOverrideExists) {
 		return true;  // Already doesn't exist
 	}
 
@@ -1147,7 +1177,12 @@ void SettingsOverrideManager::CleanupStaleUserOverrides()
 	auto userDir = GetUserOverridesDirectory();
 	std::error_code ec;
 
-	if (!std::filesystem::exists(userDir, ec)) {
+	const bool userDirectoryExists = std::filesystem::exists(userDir, ec);
+	if (ec) {
+		logger::warn("Could not inspect user overrides directory '{}': {}", userDir.string(), ec.message());
+		return;
+	}
+	if (!userDirectoryExists) {
 		return;
 	}
 

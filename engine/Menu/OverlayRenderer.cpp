@@ -7,6 +7,7 @@
 
 #include <dxgi.h>
 #include <array>
+#include <format>
 #include <imgui.h>
 #include <imgui_impl_dx11.h>
 #include <imgui_impl_win32.h>
@@ -18,6 +19,7 @@
 #include "Globals.h"
 #include "I18n/I18n.h"
 #include "Menu.h"
+#include "ModuleVersions.h"
 #include "Menu/CursorLoader.h"
 #include "Menu/Fonts.h"
 #include "ShaderCache.h"
@@ -220,16 +222,18 @@ void OverlayRenderer::RenderOverlay(
 bool OverlayRenderer::ShouldSkipRendering()
 {
 	auto shaderCache = globals::shaderCache;
-	auto failed = shaderCache->GetCurrentFailedCount();
-	auto hide = shaderCache->IsHideErrors();
+	auto* menu = Menu::GetSingleton();
 	const bool foregroundCompilation =
+		shaderCache &&
 		shaderCache->IsCompiling() &&
 		!shaderCache->backgroundCompilation;
+	const auto failed = shaderCache ? shaderCache->GetCurrentFailedCount() : 0;
+	const bool hide = shaderCache ? shaderCache->IsHideErrors() : true;
 
 	return !(foregroundCompilation ||
-			 Menu::GetSingleton()->IsEnabled ||
+			 (menu && menu->IsEnabled) ||
 			 TuningWorkspaceRenderer::IsDirectorPhotoModeActive() ||
-			 (failed && !hide && !shaderCache->backgroundCompilation) ||
+			 (shaderCache && failed && !hide && !shaderCache->backgroundCompilation) ||
 			 globals::pipeline::pulseProfiler.settings.ShowInOverlay ||
 			 LaunchExperienceRenderer::ShouldShowFirstTimeSetup() ||
 			 LaunchExperienceRenderer::ShouldShowControlReminder());
@@ -278,6 +282,9 @@ void OverlayRenderer::InitializeImGuiFrame(Menu& menu)
 void OverlayRenderer::RenderShaderCompilationStatus(const std::function<const char*(std::vector<InputCombo>)>& keyIdToString)
 {
 	auto shaderCache = globals::shaderCache;
+	if (!shaderCache)
+		return;
+
 	auto failed = shaderCache->GetCurrentFailedCount();
 	auto hide = shaderCache->IsHideErrors();
 
@@ -338,7 +345,7 @@ void OverlayRenderer::RenderShaderCompilationStatus(const std::function<const ch
 		// Grow deterministically for optional diagnostic/status rows. This keeps
 		// the compiler surface scroll-free without using ImGui's AlwaysAutoResize
 		// + size-constraint path during renderer startup.
-		if (state->IsDeveloperMode())
+		if (state && state->IsDeveloperMode())
 			cardHeight += 24.0f * scale;
 		if (failed && !hide)
 			cardHeight += 34.0f * scale;
@@ -514,8 +521,9 @@ void OverlayRenderer::RenderShaderCompilationStatus(const std::function<const ch
 		}
 
 		ImGui::SetWindowFontScale(0.82f);
+		const std::string versionText = std::format("VERSION {}", Plugin::DISPLAY_VERSION.data());
 		centerText(
-			"VERSION 1.0.3",
+			versionText.c_str(),
 			PIXLUI::Colors::CyanSoft);
 		ImGui::SetWindowFontScale(1.0f);
 
@@ -739,7 +747,7 @@ void OverlayRenderer::RenderShaderBlockingStatus()
 	auto shaderCache = globals::shaderCache;
 	auto state = globals::state;
 
-	if (!state->IsDeveloperMode() || shaderCache->blockedKey.empty()) {
+	if (!shaderCache || !state || !state->IsDeveloperMode() || shaderCache->blockedKey.empty()) {
 		return;
 	}
 

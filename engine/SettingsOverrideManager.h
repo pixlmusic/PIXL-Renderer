@@ -1,10 +1,13 @@
 #pragma once
 
+#include <cstddef>
 #include <ctime>
 #include <filesystem>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 using json = nlohmann::json;

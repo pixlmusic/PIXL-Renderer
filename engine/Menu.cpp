@@ -187,6 +187,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	RequireShiftToDock,
 	UseResolutionFont,
 	AdvancedMode,
+	AdvancedControls,
+	SimpleLightingBalance,
 	DeveloperMode,
 	RendererQuality,
 	LightingQuality,
@@ -399,18 +401,36 @@ Menu::~Menu()
 	// Clean up blur resources
 	BackgroundBlur::Cleanup();
 
-	ImGui_ImplDX11_Shutdown();
-	ImGui_ImplWin32_Shutdown();
-	ImGui::DestroyContext();
+	if (ImGui::GetCurrentContext()) {
+		auto& io = ImGui::GetIO();
+		if (io.BackendRendererUserData)
+			ImGui_ImplDX11_Shutdown();
+		if (io.BackendPlatformUserData)
+			ImGui_ImplWin32_Shutdown();
+		ImGui::DestroyContext();
+	}
+	initialized = false;
 	dxgiAdapter3 = nullptr;
 }
 
 void Menu::Load(json& o_json)
 {
+	if (!o_json.is_object()) {
+		logger::warn("Menu settings root is not a JSON object; keeping current settings");
+		return;
+	}
+
 	// Store current Theme state before loading config
+	auto previousSettings = settings;
 	auto currentTheme = settings.Theme;
 
-	settings = o_json;
+	try {
+		settings = o_json;
+	} catch (const std::exception& e) {
+		logger::warn("Failed to load menu settings: {}. Keeping previous settings", e.what());
+		settings = std::move(previousSettings);
+		return;
+	}
 	// Quality values are persisted user input and may come from older or
 	// hand-edited JSON. Keep every array-indexed tier inside the public contract.
 	settings.RendererQuality = std::clamp(settings.RendererQuality, 0, 3);
@@ -546,7 +566,7 @@ void Menu::Save(json& o_json)
 
 void Menu::LoadTheme(json& o_json)
 {
-	if (o_json["Theme"].is_object()) {
+	if (o_json.contains("Theme") && o_json["Theme"].is_object()) {
 		bool hasFontRoles = o_json["Theme"].contains("FontRoles");
 		SanitizeFontRolesJson(o_json["Theme"]);
 		settings.Theme = o_json["Theme"];
@@ -606,6 +626,10 @@ bool Menu::LoadThemePreset(const std::string& themeName)
 	}
 
 	auto themeManager = ThemeManager::GetSingleton();
+	if (!themeManager) {
+		logger::warn("Cannot load theme '{}': ThemeManager is unavailable", themeName);
+		return false;
+	}
 	json themeSettings;
 
 	if (themeManager->LoadTheme(themeName, themeSettings)) {
@@ -663,11 +687,19 @@ bool Menu::LoadThemePreset(const std::string& themeName)
 void Menu::CreateDefaultThemes()
 {
 	auto themeManager = ThemeManager::GetSingleton();
-	themeManager->CreateDefaultThemeFiles();
+	if (themeManager)
+		themeManager->CreateDefaultThemeFiles();
+	else
+		logger::warn("Cannot create default themes: ThemeManager is unavailable");
 }
 
 void Menu::Init()
 {
+	if (initialized) {
+		logger::debug("Menu::Init() ignored because the menu is already initialized");
+		return;
+	}
+
 	// Setup Dear ImGui context
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
@@ -676,7 +708,7 @@ void Menu::Init()
 	// This prevents hardcoded ImGui defaults from ever showing through
 	auto* themeManager = ThemeManager::GetSingleton();
 	json defaultThemeSettings;
-	if (themeManager->LoadTheme("PIXL", defaultThemeSettings)) {
+	if (themeManager && themeManager->LoadTheme("PIXL", defaultThemeSettings)) {
 		// Temporarily create a minimal theme structure to apply defaults
 		json tempSettings;
 		tempSettings["Theme"] = defaultThemeSettings;
@@ -738,9 +770,9 @@ void Menu::Init()
 
 	{
 		winrt::com_ptr<IDXGIDevice> dxgiDevice;
-		if (!FAILED(globals::d3d::device->QueryInterface(dxgiDevice.put()))) {
+		if (SUCCEEDED(globals::d3d::device->QueryInterface(dxgiDevice.put()))) {
 			winrt::com_ptr<IDXGIAdapter> dxgiAdapter;
-			if (!FAILED(dxgiDevice->GetAdapter(dxgiAdapter.put()))) {
+			if (SUCCEEDED(dxgiDevice->GetAdapter(dxgiAdapter.put()))) {
 				dxgiAdapter->QueryInterface(dxgiAdapter3.put());
 			}
 		}
@@ -1469,11 +1501,11 @@ void Menu::ProcessInputEventQueue()
 				continue;
 			}
 
-			// Alt+N is a deliberately fixed, discoverable release shortcut. It is
+			// Ctrl+N is a deliberately fixed, discoverable release shortcut. It is
 			// omitted from first-run setup to keep onboarding focused on navigation;
 			// the launch reminder and Camera page advertise it when applicable.
 			if (event.IsDown() && key == 'N' &&
-				(GetAsyncKeyState(VK_MENU) & Constants::KEY_PRESSED_MASK)) {
+				(GetAsyncKeyState(VK_CONTROL) & Constants::KEY_PRESSED_MASK)) {
 				const std::string status = globals::pipeline::imageReconstruction
 					.ToggleNeuralRenderingFromHotkey();
 				if (auto* task = SKSE::GetTaskInterface()) {
@@ -1700,11 +1732,15 @@ void Menu::OnFocusChanged()
 		}
 	}
 	// Allows tab to work again after alt+tabbing back in.
-	ImGui::GetIO().ClearInputKeys();
+	if (ImGui::GetCurrentContext())
+		ImGui::GetIO().ClearInputKeys();
 }
 
 void Menu::ProcessInputEvents(RE::InputEvent* const* a_events)
 {
+	if (!a_events || !*a_events)
+		return;
+
 	for (auto it = *a_events; it; it = it->next) {
 		// Accept button, char, and thumbstick events
 		if (it->GetEventType() != RE::INPUT_EVENT_TYPE::kButton &&
