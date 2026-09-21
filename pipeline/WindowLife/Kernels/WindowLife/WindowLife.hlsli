@@ -1415,7 +1415,10 @@ namespace WindowLife
             ? saturate(baseRoomGrid)
             : baseRoomGrid - roomCell;
         float2 absoluteRoomCell = singleAperture
-            ? floor(centerPlane / max(roomSize, 1.0f.xx))
+            // Room identity must be uniform across a dedicated window. centerPlane
+            // contains the interpolated normal's horizontal axis and can cross a
+            // hash-cell boundary inside a triangle on smoothed/replacement meshes.
+            ? floor(geometryCenter.xy / max(roomSize, 1.0f.xx))
             : floor(centerPlane / roomSize) + roomCell;
         float instanceSalt = GetLayout0().x;
         float roomSeed = Hash21(
@@ -1461,6 +1464,7 @@ namespace WindowLife
                 ? 3.0f
                 : (nativeBackgroundWeight >= 0.35f ? 2.0f : 1.0f);
             if (useNativeBackground) {
+                bool dedicatedAperture = singleAperture;
                 roomSize = lerp(roomSize, paneLayout.roomSize, nativeBackgroundWeight);
                 centerPlane = lerp(centerPlane, paneLayout.centerPlane, nativeBackgroundWeight);
                 baseRoomLocal = saturate((plane - centerPlane) / max(roomSize, 1.0f.xx) + 0.5f);
@@ -1472,9 +1476,14 @@ namespace WindowLife
                 // therefore selects the same room, curtain and activity sequence.
                 float2 stableApertureCell = floor(centerPlane / 32.0f + 0.5f.xx);
                 float familySalt = GetAsset0().x * 37.0f;
-                roomSeed = Hash21(
-                    stableApertureCell + float2(familySalt, familySalt * 1.73f) +
-                    float2(instanceSalt * 311.7f, instanceSalt * 173.3f));
+                // A native fit controls framing, not the identity of an already
+                // bounded window. Its derivative-reconstructed centre can differ
+                // across UV triangles; hashing it would select unrelated artwork
+                // (and curtains/occupants) halfway through the same glass panel.
+                if (!dedicatedAperture)
+                    roomSeed = Hash21(
+                        stableApertureCell + float2(familySalt, familySalt * 1.73f) +
+                        float2(instanceSalt * 311.7f, instanceSalt * 173.3f));
             }
             allowOccupants = allowOccupants && useNativeLayers;
             allowCurtains = allowCurtains && useNativeLayers;

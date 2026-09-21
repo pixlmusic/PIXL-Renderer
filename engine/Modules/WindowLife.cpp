@@ -474,9 +474,9 @@ void WindowLife::SetupResources()
             DirectX::WIC_FLAGS_FORCE_SRGB,
             &pngMetadata,
             pngImage);
-        if (FAILED(pngLoadResult) || pngMetadata.width != 2048u || pngMetadata.height != 2048u) {
+        if (FAILED(pngLoadResult) || pngMetadata.width == 0u || pngMetadata.width != pngMetadata.height) {
             logger::warn(
-                "[WindowLife] {} PNG fallback '{}' unavailable or not 2048x2048 (HRESULT 0x{:08X}, {}x{}); {} fallback remains active.",
+                "[WindowLife] {} PNG fallback '{}' unavailable or not square (HRESULT 0x{:08X}, {}x{}); {} fallback remains active.",
                 label,
                 pngFallbackPath.string(),
                 static_cast<std::uint32_t>(pngLoadResult),
@@ -484,6 +484,23 @@ void WindowLife::SetupResources()
                 pngMetadata.height,
                 analyticFallback ? "analytic" : "procedural");
             return;
+        }
+
+        // The shaders use a 2048 atlas/tile padding contract. Normalize valid
+        // square replacement artwork once at load time before generating mips.
+        if (pngMetadata.width != 2048u) {
+            DirectX::ScratchImage resized;
+            const HRESULT resizeResult = DirectX::Resize(
+                *pngImage.GetImage(0, 0, 0), 2048u, 2048u,
+                static_cast<DirectX::TEX_FILTER_FLAGS>(DirectX::TEX_FILTER_CUBIC | DirectX::TEX_FILTER_SEPARATE_ALPHA), resized);
+            if (FAILED(resizeResult)) {
+                logger::warn("[WindowLife] {} atlas resize failed (HRESULT 0x{:08X}); fallback remains active.",
+                    label, static_cast<std::uint32_t>(resizeResult));
+                return;
+            }
+            logger::info("[WindowLife] Normalized {} atlas from {}x{} to 2048x2048", label, pngMetadata.width, pngMetadata.height);
+            pngImage = std::move(resized);
+            pngMetadata = pngImage.GetMetadata();
         }
 
         const HRESULT mipResult = DirectX::GenerateMipMaps(

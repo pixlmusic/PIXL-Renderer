@@ -469,15 +469,6 @@ void CalculateGI(
 
 	// [Optimization 1 & 9]: Precalculate constants for inside the slice/step loops
 	const float2 scaledOutFrameRcp = RCP_OUT_FRAME_DIM * OUT_FRAME_SCALE;
-	float3 receiverPositionWS = 0.0;
-	float3 receiverNormalWS = 0.0;
-	float3 cameraWS = 0.0;
-
-	if (WorldCacheEnabled != 0u) {
-		cameraWS = ViewToWorldPosition(0.0, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
-		receiverPositionWS = ViewToWorldPosition(pixCenterPos, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
-		receiverNormalWS = normalize(ViewToWorldVector(viewspaceNormal, FrameBuffer::CameraViewInverse));
-	}
 
 	for (uint slice = 0; slice < effectiveNumSlices; slice++) {
 		float phi = (Math::PI * rcpNumSlices) * (slice + noiseSlice);
@@ -584,8 +575,11 @@ void CalculateGI(
 
 				uint maskedBits = 0u;
 				if (needAOAngular) {
-					float3 sampleBackHorizonVec = normalize(sampleDelta - viewVec * Thickness);
-					float angleBack = FastMath::ACos(clamp(dot(sampleBackHorizonVec, viewVec), -1.0f, 1.0f));
+					float3 backDelta = sampleDelta - viewVec * Thickness;
+					// Only the cosine is consumed. Normalize that scalar projection
+					// instead of all three vector components for every horizon tap.
+					float backCosine = dot(backDelta, viewVec) * rsqrt(max(dot(backDelta, backDelta), EPSILON_LENGTH_SQ));
+					float angleBack = FastMath::ACos(clamp(backCosine, -1.0f, 1.0f));
 					float2 angleRange = -sideSign * (sideSign == -1 ? float2(angleFront, angleBack) : float2(angleBack, angleFront));
 					angleRange = smoothstep(0, 1, (angleRange + n) * Math::INV_PI + .5);
 					maskedBits = QuantizeAngularMask(angleRange);
@@ -598,8 +592,9 @@ void CalculateGI(
 #	endif
 
 				if (needGIAngular) {
-					float3 sampleBackHorizonVecGI = normalize(sampleDelta - viewVec * 300);
-					float angleBackGI = FastMath::ACos(clamp(dot(sampleBackHorizonVecGI, viewVec), -1.0f, 1.0f));
+					float3 backDeltaGI = sampleDelta - viewVec * 300;
+					float backCosineGI = dot(backDeltaGI, viewVec) * rsqrt(max(dot(backDeltaGI, backDeltaGI), EPSILON_LENGTH_SQ));
+					float angleBackGI = FastMath::ACos(clamp(backCosineGI, -1.0f, 1.0f));
 					float2 angleRangeGI = -sideSign * (sideSign == -1 ? float2(angleFront, angleBackGI) : float2(angleBackGI, angleFront));
 
 #	if defined(GI_SPECULAR) && !defined(HYBRID_REFLECTIONS)
@@ -636,9 +631,6 @@ void CalculateGI(
 						float frontBackMult = max(0.0, -dot(normalSample, sampleHorizonVec));
 
 						if (frontBackMult > 0.f) {
-							// CameraViewInverse is rigid; rotating a unit view vector preserves length.
-							float3 sampleHorizonVecWS = mul(FrameBuffer::CameraViewInverse, half4(sampleHorizonVec, 0)).xyz;
-
 							float3 sampleRadiance = srcRadiance.SampleLevel(samplerPointClamp, radianceSampleUV, mipLevelRadiance).rgb * frontBackMult * giBoost * validBitCount * 0.03125f;
 							// Clamp after geometric/distance weighting, where a sparse
 							// horizon sample can become a true outlier. Prefiltering the
@@ -646,7 +638,9 @@ void CalculateGI(
 							sampleRadiance = ClampFireflies(max(sampleRadiance, 0), RadianceFireflyClamp);
 							float3 sampleRadianceYCoCg = Color::RGBToYCoCg(sampleRadiance);
 
-							radianceY += sampleRadianceYCoCg.r * SphericalHarmonics::Evaluate(sampleHorizonVecWS);
+							// L1 projection and rotation are linear: accumulate in view
+							// space, then rotate the sum once after all horizon samples.
+							radianceY += sampleRadianceYCoCg.r * SphericalHarmonics::Evaluate(sampleHorizonVec);
 							radianceCoCg += sampleRadianceYCoCg.gb;
 
 #	if defined(GI_SPECULAR) && !defined(HYBRID_REFLECTIONS)
@@ -776,6 +770,11 @@ void CalculateGI(
 	o_bentVisibility = float4(encodedBentWS, storedDirectionalVisibility, observationConfidence);
 
 #ifdef GI
+	// Evaluate stores L1 as (-y, z, -x). Undo those signs/order before
+	// rotating and restore them afterwards; the L0 coefficient is invariant.
+	float3 radianceMomentWS = mul((float3x3)FrameBuffer::CameraViewInverse,
+		float3(-radianceY.w, -radianceY.y, radianceY.z));
+	radianceY.yzw = float3(-radianceMomentWS.y, radianceMomentWS.z, -radianceMomentWS.x);
 	radianceY *= rcpNumSlices;
 	radianceY = lerp(radianceY, 0, depthFade);
 
@@ -789,6 +788,10 @@ void CalculateGI(
 	float3 cacheReflectionRadiance = 0.0;
 	float cacheReflectionHit = 0.0;
 	if (WorldCacheEnabled != 0u) {
+		// Keep cache-only world coordinates out of the long horizon-loop lifetime.
+		float3 cameraWS = ViewToWorldPosition(0.0, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
+		float3 receiverPositionWS = ViewToWorldPosition(pixCenterPos, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
+		float3 receiverNormalWS = normalize(ViewToWorldVector(viewspaceNormal, FrameBuffer::CameraViewInverse));
 		const bool needCacheDiffuse = WorldCacheStrength > 1e-4f;
 		const bool needCacheDirectional = WorldCacheDirectionalOcclusionEnabled != 0u &&
 			WorldCacheDirectionalOcclusionStrength > 1e-4f;

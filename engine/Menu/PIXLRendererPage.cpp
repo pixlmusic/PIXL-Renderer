@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <unordered_map>
 #include <winrt/base.h>
+#include <shellapi.h>
 
 #include "RenderModule.h"
 #include "Modules/CameraSuite.h"
@@ -193,6 +194,124 @@ namespace
 				std::move(texture));
 		static_cast<void>(inserted);
 		return &it->second;
+	}
+
+	bool NeuralRuntimeFilePresent()
+	{
+		std::error_code error;
+		const std::filesystem::path path = L"Data/Shaders/ImageReconstruction/Streamline/nvngx_dlssnr.dll";
+		return std::filesystem::is_regular_file(path, error) && !error &&
+			std::filesystem::file_size(path, error) > 0 && !error;
+	}
+
+	void DrawNeuralSetupCard(bool canEnable, bool* quickSetupConfirmed = nullptr)
+	{
+		const auto* viewport = ImGui::GetMainViewport();
+		ImGui::SetNextWindowSize(ImVec2(std::min(PIXLUI::Ref(880.0f), viewport->WorkSize.x - 32.0f),
+			std::min(PIXLUI::Ref(820.0f), viewport->WorkSize.y - 32.0f)), ImGuiCond_Appearing);
+		ImGui::SetNextWindowPos(viewport->GetWorkCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+		bool open = true;
+		if (!ImGui::BeginPopupModal("NEURAL RENDERING | SETUP", &open, ImGuiWindowFlags_NoSavedSettings))
+			return;
+		static bool checked = false;
+		static bool found = false;
+		static bool browserFailed = false;
+		static bool saved = false;
+		if (ImGui::IsWindowAppearing()) {
+			checked = found = saved = browserFailed = false;
+		}
+		ImGui::PushTextWrapPos(0.0f);
+		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanBright), "YOUR OPTIONAL NEURAL RENDERING SETUP");
+		ImGui::TextWrapped("Four steps, then return here. PIXL does not download or install third-party DLLs.");
+		if (PIXLUI::ActionButton("OPEN RENODX DISCORD", ImVec2(PIXLUI::Ref(230.0f), PIXLUI::Ref(32.0f)), true)) {
+			// Fixed HTTPS destination; never execute user-supplied URLs or commands.
+			browserFailed = reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open",
+				L"https://discord.gg/renodx", nullptr, nullptr, SW_SHOWNORMAL)) <= 32;
+		}
+		if (browserFailed) {
+			ImGui::TextWrapped("Could not open your browser. Visit https://discord.gg/renodx manually.");
+		}
+		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::Warning), "EXPERIMENTAL THIRD-PARTY SOFTWARE");
+		ImGui::TextWrapped("The community build is not an NVIDIA-approved PIXL download. Obtain and use it only with the necessary permissions. These reference screenshots may change as Discord is updated.");
+		const float footer = PIXLUI::Ref(260.0f);
+		if (ImGui::BeginChild("##NRSetupSteps", ImVec2(0, std::max(PIXLUI::Ref(110.0f), ImGui::GetContentRegionAvail().y - footer)), ImGuiChildFlags_None)) {
+			const char* titles[] = { "01  OPEN THE FORUM", "02  PINNED / SHORTFUSE ONLY", "03  DOWNLOAD THE DLL", "04  COPY INTO SKYRIM" };
+			const char* instructions[] = {
+				"Open dlss5-forum, then the Patched DLSS-NR thread shown below.",
+				"Use ONLY the Pinned Messages tab. Find ShortFuse's pinned Patched DLSS-NR post (highlighted). Use ONLY that version, not replies, reposts or other builds.",
+				"Download nvngx_dlssnr.dll attached to that pinned ShortFuse post. PIXL does not fetch the file or verify its publisher.",
+				"If supplied as an archive, extract it first. Copy nvngx_dlssnr.dll into your Skyrim Special Edition installation at the path below. Do not overwrite other Streamline files."
+			};
+			const int columns = ImGui::GetContentRegionAvail().x >= PIXLUI::Ref(650.0f) ? 2 : 1;
+			if (ImGui::BeginTable("##NRSetupCards", columns, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_BordersInnerV)) {
+				for (int i = 0; i < 4; ++i) {
+					ImGui::TableNextColumn();
+					ImGui::PushID(i);
+					ImGui::TextColored(PIXLUI::ToVec4(i == 1 ? PIXLUI::Colors::CyanBright : PIXLUI::Colors::CyanSoft), "%s", titles[i]);
+					ImGui::TextWrapped("%s", instructions[i]);
+					if (auto* image = GetQualityPreviewTexture("NRSetup", i); image && image->srv && image->size.x > 0 && image->size.y > 0) {
+						const float scale = std::min(ImGui::GetContentRegionAvail().x / image->size.x, PIXLUI::Ref(250.0f) / image->size.y);
+						const ImVec2 size(image->size.x * scale, image->size.y * scale);
+						const ImVec2 origin = ImGui::GetCursorScreenPos();
+						ImGui::Image(image->srv.get(), size);
+						if (i == 1) {
+							ImGui::GetWindowDrawList()->AddRect(ImVec2(origin.x + size.x * 0.035f, origin.y + size.y * 0.59f),
+								ImVec2(origin.x + size.x * 0.985f, origin.y + size.y * 0.99f), PIXLUI::Colors::CyanBright, 3.0f, 0, 2.0f);
+						}
+						if (ImGui::IsItemHovered()) {
+							ImGui::BeginTooltip();
+							const float zoom = std::min(1.0f, std::min((viewport->WorkSize.x - 64.0f) / image->size.x, (viewport->WorkSize.y - 64.0f) / image->size.y));
+							ImGui::Image(image->srv.get(), ImVec2(image->size.x * zoom, image->size.y * zoom));
+							ImGui::EndTooltip();
+						}
+					} else {
+						ImGui::TextDisabled("Reference image unavailable; follow the instructions above.");
+					}
+					ImGui::Spacing();
+					ImGui::PopID();
+				}
+				ImGui::EndTable();
+			}
+		}
+		ImGui::EndChild();
+		ImGui::Separator();
+		ImGui::TextWrapped("Skyrim Special Edition / Data / Shaders / ImageReconstruction / Streamline / nvngx_dlssnr.dll");
+		if (ImGui::Button("I'VE COPIED IT - CHECK FILE")) {
+			found = NeuralRuntimeFilePresent();
+			checked = true;
+			saved = false;
+		}
+		if (checked) {
+			ImGui::PushStyleColor(ImGuiCol_Text, PIXLUI::ToVec4(found ? PIXLUI::Colors::Success : PIXLUI::Colors::Danger));
+			ImGui::TextWrapped("%s", found ? "File found. Presence only: compatibility, authenticity and licensing are not verified." : "File not found at the destination above. Check the folder, filename and extraction, then retry.");
+			ImGui::PopStyleColor();
+		}
+		if (checked && found && canEnable)
+			ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanBright), "READY | Confirm below, then restart after saving settings.");
+		ImGui::BeginDisabled(!checked || !found || !canEnable);
+		if (ImGui::Button(quickSetupConfirmed ? "CONFIRM NR SETUP & RETURN" : "SAVE NR ENABLED FOR NEXT LAUNCH")) {
+			// Recheck after returning from the browser; never load/execute the DLL
+			// merely to inspect it, and do not rely on an earlier presence result.
+			found = NeuralRuntimeFilePresent();
+			if (found) {
+				if (quickSetupConfirmed) {
+					*quickSetupConfirmed = true;
+					ImGui::CloseCurrentPopup();
+				} else {
+					globals::pipeline::imageReconstruction.settings.neuralRenderingEnabled = true;
+					globals::state->Save();
+					saved = true;
+				}
+			}
+		}
+		ImGui::EndDisabled();
+		if (!canEnable)
+			ImGui::TextWrapped("Select DLSS on a PIXL-supported NVIDIA adapter before enabling NR.");
+		ImGui::TextWrapped("%s", quickSetupConfirmed ? "After checking the file, confirm and return to Quick Setup. Save & Continue applies your graphics choices together, then offers the required restart." : saved ? "Saved. Save your game, fully exit Skyrim, then launch it again. The DX11/DX12 sidecar is initialized at startup; reloading a save is not enough." : "After copying, return here to check the file and save NR enabled. A full game restart is required; PIXL will not quit the game for you.");
+		if (ImGui::Button("CLOSE"))
+			ImGui::CloseCurrentPopup();
+		ImGui::PopTextWrapPos();
+		ImGui::EndPopup();
 	}
 
 	void DrawQualityPreview(
@@ -1015,6 +1134,10 @@ namespace
 		if (ToggleControl(
 				"Neural Rendering",
 				&settings.neuralRenderingEnabled)) {
+			if (settings.neuralRenderingEnabled && !NeuralRuntimeFilePresent()) {
+				settings.neuralRenderingEnabled = false;
+				ImGui::OpenPopup("NEURAL RENDERING | SETUP");
+			}
 			imageReconstruction.pendingNeuralRenderingReset.store(true, std::memory_order_release);
 			changed = true;
 			if (!nrSessionProvisioned)
@@ -1025,6 +1148,10 @@ namespace
 			3,
 			"DLSS Neural Rendering adds the Ultra+ finish shown here. It requires NVIDIA RTX 30-series or newer hardware and an active DLSS session. Ctrl+N toggles it during gameplay; the first sidecar activation may require one restart.");
 		ImGui::EndDisabled();
+
+		if (PIXLUI::ActionButton("NR SETUP GUIDE", ImVec2(PIXLUI::Ref(180.0f), PIXLUI::Ref(30.0f)), false))
+			ImGui::OpenPopup("NEURAL RENDERING | SETUP");
+		DrawNeuralSetupCard(nrControlAvailable);
 
 		if (!nrHardwareSupported) {
 			ImGui::TextColored(
@@ -1048,7 +1175,7 @@ namespace
 		}
 		ImGui::TextColored(
 			PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
-			"ALT+N QUICK TOGGLE  |  DLSS SR  >  NR FINAL COMPOSITE  >  FRAME GENERATION  >  UI");
+			"LEFT CTRL+N QUICK TOGGLE  |  DLSS SR  >  NR FINAL COMPOSITE  >  FRAME GENERATION  >  UI");
 		Tooltip(
 			"The installed Feature 18 contract consumes display-resolution, post-DLSS colour plus render-resolution depth and motion guides. A pre-DLSS mode would instead receive Skyrim's linear HDR render target, require a hard DX12-to-DX11 hand-back every frame, and invalidate the model's validated colour/extent contract. PIXL therefore keeps the stable gameplay order. Photo Finish accumulates synchronized completed neural frames and performs its larger offline output reconstruction afterward.");
 
@@ -2509,6 +2636,11 @@ namespace
 		}
 	}
 
+}
+
+void PIXLRendererPage::RenderNeuralSetupGuide(bool canEnable, bool* quickSetupConfirmed)
+{
+	DrawNeuralSetupCard(canEnable, quickSetupConfirmed);
 }
 
 void PIXLRendererPage::Render()

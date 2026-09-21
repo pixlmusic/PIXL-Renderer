@@ -4,6 +4,22 @@ An integrated DirectX 11 renderer for Skyrim Special Edition.
 
 ## Installation
 
+### Optional Neural Rendering: manual installation
+
+Neural Rendering (NR) is experimental and optional. **The NR runtime `nvngx_dlssnr.dll` is not included in PIXL or its FOMOD.** Normal rendering does not require it. PIXL does not download or install it automatically.
+
+1. In **Quick Setup**, select **Enable Neural Rendering (experimental)** to open the four-card guide. You can also open **PIXL Renderer → Neural Rendering → NR Setup Guide**.
+2. Open the [RenoDX Discord](https://discord.gg/renodx), find **dlss5-forum**, and open the **Patched DLSS-NR** discussion.
+3. Use **Pinned Messages only**, and **ShortFuse's pinned version only** for the illustrated setup. Do not substitute random chat attachments. If that post is unavailable, leave NR disabled rather than using a mirror.
+4. Obtain the runtime only if you have permission to use it. Extract it if supplied in an archive, then place the DLL at:
+   ```text
+   Skyrim Special Edition/Data/Shaders/ImageReconstruction/Streamline/nvngx_dlssnr.dll
+   ```
+5. Return to PIXL and select **I've copied it — Check File**. Green means found; red means missing; cyan means ready to confirm. This verifies file presence, **not authenticity, compatibility or licensing**.
+6. Confirm and return to Quick Setup, then **Save & Continue**. Use supported NVIDIA hardware, DLSS/DLAA, SDR and borderless/windowed mode. Save your game, fully exit Skyrim, and relaunch through SKSE. A save reload is not enough: the DX11/DX12 sidecar is initialized at startup.
+
+This is a third-party experimental runtime, not a NVIDIA-approved PIXL download. Availability and upstream instructions may change. Installing this silent 1.0.3 update does not require deleting your shader cache or resetting your settings.
+
 ### Requirements
 
 - Skyrim Special Edition on Windows, with SKSE matching your game runtime.

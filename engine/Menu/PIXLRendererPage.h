@@ -111,4 +111,8 @@ namespace PIXLRendererPage
 
 	/** @brief Draws the complete, themed PIXL Renderer control centre. */
 	void Render();
+
+	// Caller opens "NEURAL RENDERING | SETUP" in its own ImGui ID scope.
+	// Quick Setup defers persistence until all pending graphics choices are saved.
+	void RenderNeuralSetupGuide(bool canEnable, bool* quickSetupConfirmed = nullptr);
 }

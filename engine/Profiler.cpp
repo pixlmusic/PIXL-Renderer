@@ -1,6 +1,7 @@
 #include "Profiler.h"
 
 #include <algorithm>
+#include <format>
 #include <unordered_map>
 
 float Profiler::RollingHistory::GetAverage() const
@@ -23,13 +24,16 @@ float Profiler::RollingHistory::GetPercentile(float p) const
 	sorted.resize(count);
 	for (uint32_t i = 0; i < count; i++)
 		sorted[i] = history[i];
-	std::sort(sorted.begin(), sorted.end());
-
 	float idx = (p / 100.0f) * static_cast<float>(count - 1);
 	uint32_t lo = static_cast<uint32_t>(idx);
 	uint32_t hi = std::min(lo + 1, count - 1);
 	float frac = idx - static_cast<float>(lo);
-	return sorted[lo] * (1.0f - frac) + sorted[hi] * frac;
+	// Select the two order statistics instead of sorting all 300 samples four
+	// times per pass per frame. This preserves percentile interpolation exactly.
+	std::nth_element(sorted.begin(), sorted.begin() + hi, sorted.end());
+	const float high = sorted[hi];
+	const float low = lo == hi ? high : *std::max_element(sorted.begin(), sorted.begin() + hi);
+	return low * (1.0f - frac) + high * frac;
 }
 
 void Profiler::Initialize(ID3D11Device* device, ID3D11DeviceContext* a_context)
@@ -78,6 +82,7 @@ void Profiler::Initialize(ID3D11Device* device, ID3D11DeviceContext* a_context)
 	writeFrame = 0;
 	readFrame = 0;
 	framesSinceInit = 0;
+	collectedFrameCount = 0;
 	initialized = true;
 }
 
@@ -97,7 +102,9 @@ void Profiler::Release()
 	writeFrame = 0;
 	readFrame = 0;
 	framesSinceInit = 0;
+	collectedFrameCount = 0;
 	frameActive = false;
+	frameSkipped = false;
 	cpuTicksToMs = 0.0;
 	initialized = false;
 	context = nullptr;
@@ -105,12 +112,18 @@ void Profiler::Release()
 
 void Profiler::BeginFrame()
 {
-	if (!initialized || !context || frameActive)
+	if (!initialized || !context || frameActive || frameSkipped)
 		return;
 
 	CollectResults();
 
 	auto& frame = frames[writeFrame];
+	// A busy GPU may need more than three frames. Never overwrite pending
+	// timestamps or stall rendering to wait for diagnostic data.
+	if (frame.inFlight) {
+		frameSkipped = true;
+		return;
+	}
 	frame.activeCount = 0;
 	frame.inFlight = true;
 	frameActive = true;
@@ -124,6 +137,8 @@ void Profiler::BeginPass(const std::string& name)
 
 	if (!frameActive)
 		BeginFrame();
+	if (!frameActive)
+		return;
 
 	auto& frame = frames[writeFrame];
 	if (frame.activeCount >= kMaxTimers)
@@ -162,6 +177,10 @@ void Profiler::EndPass()
 
 void Profiler::EndFrame()
 {
+	if (frameSkipped) {
+		frameSkipped = false;
+		return;
+	}
 	if (!initialized || !context || !frameActive)
 		return;
 
@@ -173,7 +192,7 @@ void Profiler::EndFrame()
 
 void Profiler::CollectResults()
 {
-	if (!initialized || !context || framesSinceInit < kFrameLatency)
+	if (!initialized || !context)
 		return;
 
 	readFrame = writeFrame;
@@ -186,7 +205,10 @@ void Profiler::CollectResults()
 	if (hr != S_OK)
 		return;
 
-	frame.inFlight = false;
+	if (disjointData.Disjoint || disjointData.Frequency == 0) {
+		frame.inFlight = false;
+		return;
+	}
 
 	struct ActiveTimerData
 	{
@@ -205,11 +227,13 @@ void Profiler::CollectResults()
 			UINT64 tsBegin = 0, tsEnd = 0;
 
 			if (context->GetData(timer.begin.get(), &tsBegin, sizeof(tsBegin), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
-				continue;
+				return;
 			if (context->GetData(timer.end.get(), &tsEnd, sizeof(tsEnd), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
-				continue;
-			if (tsEnd < tsBegin)
-				continue;
+				return;
+			if (tsEnd < tsBegin) {
+				frame.inFlight = false;
+				return;
+			}
 
 			float ms = static_cast<float>(static_cast<double>(tsEnd - tsBegin) * ticksToMs);
 			auto& entry = activeTimers[timer.name];
@@ -218,16 +242,20 @@ void Profiler::CollectResults()
 			activeTotalMs += ms;
 			activeCpuTotalMs += timer.cpuMs;
 
-			auto [it, inserted] = knownTimerIndex.try_emplace(timer.name, knownTimers.size());
-			if (inserted) {
-				KnownTimer kt;
-				kt.name = timer.name;
-				knownTimers.push_back(std::move(kt));
-			}
-			auto& known = knownTimers[it->second];
-			known.gpu.PushSample(ms);
-			known.cpu.PushSample(timer.cpuMs);
 		}
+	}
+	frame.inFlight = false;
+	// Commit only a complete frame, aggregating repeated calls before history.
+	for (const auto& [name, sample] : activeTimers) {
+		auto [it, inserted] = knownTimerIndex.try_emplace(name, knownTimers.size());
+		if (inserted) {
+			KnownTimer kt;
+			kt.name = name;
+			knownTimers.push_back(std::move(kt));
+		}
+		auto& known = knownTimers[it->second];
+		known.gpu.PushSample(sample.gpuMs);
+		known.cpu.PushSample(sample.cpuMs);
 	}
 
 	totalTimeMs = activeTotalMs;
@@ -243,8 +271,8 @@ void Profiler::CollectResults()
 			result.gpuTimeMs = it->second.gpuMs;
 			result.cpuTimeMs = it->second.cpuMs;
 		} else {
-			result.gpuTimeMs = known.gpu.lastMs;
-			result.cpuTimeMs = known.cpu.lastMs;
+			result.gpuTimeMs = 0.0f;
+			result.cpuTimeMs = 0.0f;
 		}
 		result.avgMs = known.gpu.GetAverage();
 		result.p95Ms = known.gpu.GetPercentile(95.0f);
@@ -252,10 +280,38 @@ void Profiler::CollectResults()
 		result.cpuAvgMs = known.cpu.GetAverage();
 		result.cpuP95Ms = known.cpu.GetPercentile(95.0f);
 		result.cpuP99Ms = known.cpu.GetPercentile(99.0f);
-		result.valid = true;
+		result.valid = it != activeTimers.end();
 		result.historyBuffer = known.gpu.history;
 		result.historyHead = known.gpu.head;
 		result.historyCount = known.gpu.count;
 		results.push_back(std::move(result));
+	}
+
+	// Emit a compact periodic trace that can be correlated with an in-game
+	// profiler screenshot without logging every frame. This deliberately reports
+	// the individual GPU passes rather than the shader-type buckets shown by the
+	// overlay, making expensive modules such as Radiance Weave immediately clear.
+	++collectedFrameCount;
+	if (collectedFrameCount % 120u == 0u && !results.empty()) {
+		std::vector<size_t> order;
+		for (size_t i = 0; i < results.size(); ++i)
+			if (results[i].valid)
+				order.push_back(i);
+		std::sort(order.begin(), order.end(), [this](size_t lhs, size_t rhs) {
+			return results[lhs].gpuTimeMs > results[rhs].gpuTimeMs;
+		});
+		std::string topPasses;
+		const size_t count = order.size();
+		for (size_t i = 0; i < count; ++i) {
+			if (i > 0)
+				topPasses += " | ";
+			const auto& result = results[order[i]];
+			topPasses += std::format("{}={:.2f}ms (avg {:.2f}, p95 {:.2f}, CPU {:.2f})", result.name, result.gpuTimeMs, result.avgMs, result.p95Ms, result.cpuTimeMs);
+		}
+		logger::info(
+			"[PIXL Perf] Profiled pass sums: GPU {:.2f}ms CPU submission {:.2f}ms | {}",
+			totalTimeMs,
+			cpuTotalTimeMs,
+			topPasses);
 	}
 }

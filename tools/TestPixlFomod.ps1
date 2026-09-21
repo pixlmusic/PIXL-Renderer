@@ -6,6 +6,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path -LiteralPath $PackageDirectory).Path
+if (Get-ChildItem -LiteralPath $root -Recurse -File | Where-Object { $_.Name -iin @('nvngx_dlssnr.dll', 'dlssnr.dll', 'nr.dll') }) {
+    throw 'FOMOD must not bundle manual-install NR runtimes.'
+}
 $configPath = Join-Path $root 'fomod\ModuleConfig.xml'
 $infoPath = Join-Path $root 'fomod\info.xml'
 if (!(Test-Path -LiteralPath $configPath) -or !(Test-Path -LiteralPath $infoPath)) { throw 'Missing FOMOD XML.' }
@@ -62,11 +65,7 @@ $vendorRuntimeRoot = Join-Path $root 'PIXL-Core\Shaders\ImageReconstruction'
 if (Test-Path -LiteralPath $vendorRuntimeRoot) {
     foreach ($vendorDll in Get-ChildItem -LiteralPath $vendorRuntimeRoot -File -Recurse -Filter '*.dll') {
         $signature = Get-AuthenticodeSignature -LiteralPath $vendorDll.FullName
-        if ($vendorDll.Name -ieq 'nvngx_dlssnr.dll') {
-            if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-                Write-Warning "Neural Rendering runtime signature status is $($signature.Status): $($vendorDll.FullName)"
-            }
-        } elseif ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+        if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
             throw "Vendor runtime signature is not valid ($($signature.Status)): $($vendorDll.FullName)"
         }
     }

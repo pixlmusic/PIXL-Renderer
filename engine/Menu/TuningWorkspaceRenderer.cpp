@@ -184,6 +184,20 @@ namespace
 		bool g_characterOrbitWasFirstPerson = false;
 		bool g_tunerDrawerCollapsed = false;
 		bool g_tunerPanelCollapsed = false;
+		void OpenTunerPanel()
+		{
+			// Selection is a forward action even when the selected module has not
+			// changed. Never leave a selected destination behind a collapsed surface.
+			g_tunerDrawerCollapsed = false;
+			g_tunerPanelCollapsed = false;
+		}
+		void SelectTunerPanel(bool alreadySelected)
+		{
+			if (alreadySelected && !g_tunerDrawerCollapsed)
+				g_tunerPanelCollapsed = !g_tunerPanelCollapsed;
+			else
+				OpenTunerPanel();
+		}
 		std::unordered_map<std::string, json> g_simpleAdvancedSnapshots;
 		std::unordered_map<std::string, json> g_simplePendingAdvancedValues;
 		std::string g_simpleConflictFeature;
@@ -239,7 +253,9 @@ namespace
 		g_tunerShiftHeld = false;
 	}
 
-	void DrawSimpleLightingControls(RenderModule* feature)
+	// Retained grouped-effect route for future opt-in automation. The release
+	// tuner always uses each module's native controls and never applies this route.
+	[[maybe_unused]] void DrawSimpleLightingControls(RenderModule* feature)
 	{
 		if (!globals::menu || !feature)
 			return;
@@ -4210,6 +4226,13 @@ void TuningWorkspaceRenderer::UpdateTunerInspection()
 
 void TuningWorkspaceRenderer::InitializeCameraCompatibility(bool requestInterface)
 {
+	// Optional provider: registering a named listener for an absent plugin makes
+	// CommonLib emit an error even though vanilla camera support is available.
+	if (!GetModuleHandleW(L"SmoothCam.dll")) {
+		if (!requestInterface)
+			logger::info("[PIXL Camera] SmoothCam is not loaded; using native camera ownership");
+		return;
+	}
 	auto* messaging = SKSE::GetMessagingInterface();
 	if (!messaging)
 		return;
@@ -4648,8 +4671,7 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 					std::holds_alternative<CategoryPage>(menuList[selectedMenu]) &&
 					std::get<CategoryPage>(menuList[selectedMenu]).name == railLabels[i]) ||
 					(i == 4 && selectedMenu < menuList.size() &&
-					std::holds_alternative<BuiltInMenu>(menuList[selectedMenu]) &&
-						std::get<BuiltInMenu>(menuList[selectedMenu]).name == railLabels[i]);
+					std::holds_alternative<BuiltInMenu>(menuList[selectedMenu]));
 					if (clicked) {
 						const std::string_view target = railLabels[i];
 						const bool wasSelected = selected;
@@ -4677,23 +4699,17 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 							if (!wasSelected) {
 								g_tunerPanelCollapsed = false;
 								g_tunerDrawerCollapsed = false;
-							} else if (!g_tunerPanelCollapsed) {
-								// First press is the panel back button.
-								g_tunerPanelCollapsed = true;
-							} else if (!g_tunerDrawerCollapsed) {
-								// Second press retracts the module drawer, leaving only the rail.
-								g_tunerDrawerCollapsed = true;
 							} else {
-								// A third press restores the complete workspace.
-								g_tunerDrawerCollapsed = false;
-								g_tunerPanelCollapsed = false;
+								// The category owns the whole drawer; its module row owns
+								// the detail toggle. Preserve detail state while hiding both.
+								g_tunerDrawerCollapsed = !g_tunerDrawerCollapsed;
 							}
 						}
-					if (selectedTarget && target == "CHARACTER") {
+					if (selectedTarget && !wasSelected && target == "CHARACTER") {
 						g_characterOrbitDistance = 45.0f;
 						g_characterOrbitAngleDegrees = 0.0f;
 						SetCharacterOrbitEnabled(true);
-					} else if (selectedTarget && g_characterOrbitEnabled) {
+					} else if (selectedTarget && target != "CHARACTER" && g_characterOrbitEnabled) {
 						// Category navigation is an explicit return-to-live boundary for
 						// Character Orbit. Shift+WASD remains the hand-off to inspection.
 						SetCharacterOrbitEnabled(false);
@@ -4739,71 +4755,6 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 				PIXLUI::Colors::CyanBright,
 				PIXLUI::Ref(2.0f));
 
-			// One global control governs simple/advanced parameter visibility for
-			// every module.  It deliberately lives on the category rail rather than
-			// inside a Lighting page so users do not have to hunt for it again.
-			const ImVec2 advancedPos(
-				railMin.x + PIXLUI::Ref(7.0f),
-				railMin.y + PIXLUI::Ref(684.0f));
-			ImGui::SetCursorScreenPos(advancedPos);
-				const bool advancedClicked = ImGui::InvisibleButton(
-				"##TunerAdvancedControls",
-				ImVec2(PIXLUI::Ref(42.0f), PIXLUI::Ref(46.0f)));
-				const bool advancedHovered = ImGui::IsItemHovered();
-				if (advancedClicked) {
-					const bool wasAdvanced = globals::menu->GetSettings().AdvancedControls;
-					if (!wasAdvanced && selectedMenu < menuList.size() &&
-						std::holds_alternative<CategoryPage>(menuList[selectedMenu])) {
-						for (RenderModule* module : std::get<CategoryPage>(menuList[selectedMenu]).features) {
-							if (!module)
-								continue;
-							json snapshot;
-							module->SaveSettings(snapshot);
-							g_simpleAdvancedSnapshots[module->GetShortName()] = std::move(snapshot);
-						}
-					}
-					globals::menu->GetSettings().AdvancedControls =
-						!globals::menu->GetSettings().AdvancedControls;
-					if (wasAdvanced)
-					{
-						g_simpleAdvancedSnapshots.clear();
-						g_simplePendingAdvancedValues.clear();
-					}
-					globals::state->Save();
-				}
-			const bool advanced = globals::menu->GetSettings().AdvancedControls;
-			const ImU32 advancedColor = advanced || advancedHovered
-				? PIXLUI::Colors::CyanBright
-				: PIXLUI::Colors::BorderSoft;
-			ImGui::GetWindowDrawList()->AddRect(
-				advancedPos,
-				ImVec2(advancedPos.x + PIXLUI::Ref(42.0f), advancedPos.y + PIXLUI::Ref(46.0f)),
-				advancedColor,
-				PIXLUI::Ref(4.0f),
-				0,
-				PIXLUI::Ref(advanced || advancedHovered ? 1.6f : 0.8f));
-			if (advanced) {
-				ImGui::GetWindowDrawList()->AddRectFilled(
-					ImVec2(advancedPos.x + PIXLUI::Ref(2.0f), advancedPos.y + PIXLUI::Ref(2.0f)),
-					ImVec2(advancedPos.x + PIXLUI::Ref(40.0f), advancedPos.y + PIXLUI::Ref(44.0f)),
-					IM_COL32(24, 102, 112, 105), PIXLUI::Ref(3.0f));
-			}
-			ImGui::SetCursorScreenPos(ImVec2(advancedPos.x, advancedPos.y + PIXLUI::Ref(8.0f)));
-			ImGui::SetWindowFontScale(0.62f);
-			const char* advancedLabel = advanced ? "ADV" : "SIMPLE";
-			const float advancedLabelWidth = ImGui::CalcTextSize(advancedLabel).x;
-			ImGui::SetCursorScreenPos(ImVec2(
-				advancedPos.x + (PIXLUI::Ref(42.0f) - advancedLabelWidth) * 0.5f,
-				advancedPos.y + PIXLUI::Ref(16.0f)));
-			ImGui::TextColored(PIXLUI::ToVec4(advancedColor), "%s", advancedLabel);
-			ImGui::SetWindowFontScale(1.0f);
-			if (advancedHovered && !ImGui::IsItemActive()) {
-				ImGui::BeginTooltip();
-				ImGui::TextUnformatted(advanced
-					? "Advanced controls enabled across all categories"
-					: "Simple controls shown; click to expose advanced controls everywhere");
-				ImGui::EndTooltip();
-			}
 
 			// The rail footer is the tuner-local back action.  Keeping it here
 			// avoids competing with the header actions and mirrors the reference
@@ -4847,7 +4798,7 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 			0.0f,
 			1.0f);
 		static float panelProgress = 1.0f;
-		const float panelTarget = g_tunerPanelCollapsed ? 0.0f : 1.0f;
+		const float panelTarget = (g_tunerPanelCollapsed || g_tunerDrawerCollapsed) ? 0.0f : 1.0f;
 		panelProgress = std::clamp(
 			panelProgress + (panelTarget - panelProgress) *
 				std::min(1.0f, ImGui::GetIO().DeltaTime / 0.10f),
@@ -4977,6 +4928,10 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 			ImGui::PushTextWrapPos(ImGui::GetWindowSize().x - PIXLUI::Ref(16.0f));
 			ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "%s", panelTitle.c_str());
 			ImGui::PopTextWrapPos();
+			ImGui::PushTextWrapPos(ImGui::GetWindowSize().x - PIXLUI::Ref(16.0f));
+			ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
+				"Drag a slider to preview the scene. Hover controls for help.");
+			ImGui::PopTextWrapPos();
 			const float bodyTop = std::max(PIXLUI::Ref(44.0f), ImGui::GetCursorPosY() + PIXLUI::Ref(8.0f));
 			// A nested, padded surface keeps native module controls clear of the
 			// frame. Key it by selection so scroll state belongs to each module.
@@ -4987,6 +4942,11 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 			// Long release modules need an independently scrollable surface; hiding
 			// this scrollbar made lower controls inaccessible at common resolutions.
 			if (ImGui::BeginChild("##TunerModuleSurface", innerSize, ImGuiChildFlags_None, ImGuiWindowFlags_None)) {
+			ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, PIXLUI::Ref(3.0f));
+			ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(PIXLUI::Ref(8.0f), PIXLUI::Ref(9.0f)));
+			ImGui::PushStyleColor(ImGuiCol_SliderGrab, PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft));
+			ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, PIXLUI::ToVec4(PIXLUI::Colors::CyanBright));
+			ImGui::PushStyleColor(ImGuiCol_CheckMark, PIXLUI::ToVec4(PIXLUI::Colors::CyanBright));
 			ImGui::SetWindowFontScale(0.9f);
 			ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.48f);
 			RenderRightColumn(
@@ -4996,6 +4956,8 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 				g_tunerSelectedFeature);
 			ImGui::PopItemWidth();
 			ImGui::SetWindowFontScale(1.0f);
+			ImGui::PopStyleColor(3);
+			ImGui::PopStyleVar(2);
 			}
 			ImGui::EndChild();
 			ImGui::PopID();
@@ -5138,6 +5100,8 @@ void TuningWorkspaceRenderer::HandlePendingFeatureSelection(
 				const auto& page = std::get<CategoryPage>(menuList[i]);
 				if (std::ranges::any_of(page.features, [&](RenderModule* feature) { return feature->GetShortName() == pendingFeatureSelection; })) {
 					selectedMenu = i;
+					g_tunerSelectedFeature = pendingFeatureSelection;
+					OpenTunerPanel();
 					break;
 				}
 			}
@@ -5145,6 +5109,7 @@ void TuningWorkspaceRenderer::HandlePendingFeatureSelection(
 				RenderModule* feature = std::get<RenderModule*>(menuList[i]);
 				if (feature->GetShortName() == pendingFeatureSelection) {
 					selectedMenu = i;
+					OpenTunerPanel();
 					logger::info("Navigated to {} feature menu", pendingFeatureSelection);
 					break;
 				}
@@ -5250,27 +5215,18 @@ void TuningWorkspaceRenderer::RenderLeftColumn(
 				for (RenderModule* feature : page.features) {
 					if (!feature)
 						continue;
-					// NaturalLighting is fully automatic in Simple mode and has no
-					// user-facing primary control. Keep it available in Advanced mode.
-					if (globals::menu && !globals::menu->GetSettings().AdvancedControls &&
-						((page.name == "LIGHTING" &&
-						  (feature->GetShortName() == "NaturalLighting" ||
-						 feature->GetShortName() == "RadiantGrid" ||
-						 feature->GetShortName() == "InteriorDaylight" ||
-						 feature->GetShortName() == "SkyContinuity" ||
-						 feature->GetShortName() == "VolumeOcclusion")) ||
-						 (page.name == "WORLD" &&
-						  (feature->GetShortName() == "TerrainField" ||
-						   feature->GetShortName() == "TerrainSeam" ||
-						   feature->GetShortName() == "TerrainOcclusion" ||
-						   feature->GetShortName() == "Waterbody"))))
-						continue;
 				if (!featureSearch.empty() && !Util::FeatureMatchesSearch(feature, featureSearch))
 					continue;
 				const std::string publicName = std::string(PIXLRendererPage::GetPublicName(feature->GetShortName(), feature->GetDisplayName()));
 				const bool selected = selectedFeatureName == feature->GetShortName();
-				if (PIXLUI::NavItem(feature->GetShortName().c_str(), publicName.c_str(), selected, PIXLUI::Ref(38.0f)))
+				if (PIXLUI::NavItem(feature->GetShortName().c_str(), publicName.c_str(), selected, PIXLUI::Ref(38.0f))) {
+					SelectTunerPanel(selected);
 					selectedFeatureName = feature->GetShortName();
+				}
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("%s", selected
+						? (g_tunerPanelCollapsed ? "Show this module's settings" : "Hide this module's settings")
+						: "Open this module's settings");
 			}
 
 		}
@@ -5310,18 +5266,6 @@ void TuningWorkspaceRenderer::RenderRightColumn(
 	if (selectedMenu < menuList.size()) {
 		if (std::holds_alternative<CategoryPage>(menuList[selectedMenu])) {
 			const auto& page = std::get<CategoryPage>(menuList[selectedMenu]);
-			if ((page.name == "LIGHTING" || page.name == "WORLD" || page.name == "CHARACTER") && globals::menu && !globals::menu->GetSettings().AdvancedControls) {
-				if (page.name == "CHARACTER")
-					DrawCharacterOrbitControls();
-				for (RenderModule* feature : page.features) {
-					if (feature && feature->GetShortName() == selectedFeatureName) {
-						DrawSimpleLightingControls(feature);
-						return;
-					}
-				}
-				ImGui::TextDisabled("Select a lighting module to tune its primary controls.");
-				return;
-			}
 			if (page.name == "CHARACTER")
 				DrawCharacterOrbitControls();
 			for (RenderModule* feature : page.features) {
@@ -5344,8 +5288,10 @@ void TuningWorkspaceRenderer::ListMenuVisitor::operator()(const BuiltInMenu& men
 	if (isPipelineHealth)
 		ImGui::PushStyleColor(ImGuiCol_Text, globals::menu->GetSettings().Theme.StatusPalette.Error);
 
-	if (PIXLUI::NavItem(fmt::format("BuiltIn{}", listId).c_str(), menu.name.c_str(), selectedMenuRef == listId))
+	if (PIXLUI::NavItem(fmt::format("BuiltIn{}", listId).c_str(), menu.name.c_str(), selectedMenuRef == listId)) {
+		SelectTunerPanel(selectedMenuRef == listId);
 		selectedMenuRef = listId;
+	}
 
 	if (isPipelineHealth)
 		ImGui::PopStyleColor();
@@ -5413,6 +5359,7 @@ void TuningWorkspaceRenderer::ListMenuVisitor::operator()(const CategoryPage& pa
 			page.name.c_str(),
 			selectedMenuRef == listId,
 			PIXLUI::Ref(PIXLUI::Layout::NavigationHeight))) {
+		SelectTunerPanel(selectedMenuRef == listId);
 		selectedMenuRef = listId;
 	}
 	ImGui::Dummy(
@@ -5452,6 +5399,7 @@ void TuningWorkspaceRenderer::ListMenuVisitor::operator()(RenderModule* feat)
 	const auto nativeName = feat->GetDisplayName();
 	const auto publicName = PIXLRendererPage::GetPublicName(feat->GetShortName(), nativeName);
 	if (ImGui::Selectable(fmt::format(" {} ", publicName).c_str(), selectedMenuRef == listId, ImGuiSelectableFlags_SpanAllColumns)) {
+		SelectTunerPanel(selectedMenuRef == listId);
 		selectedMenuRef = listId;
 	}
 	ImGui::PopStyleColor();

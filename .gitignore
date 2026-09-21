@@ -122,6 +122,7 @@ __folder_managed_by_vortex
 # Downloaded local compiler bundle; the renderer build does not consume it.
 /extern/DirectXShaderCompiler/
 
-# NVIDIA Neural Rendering runtime is local proprietary binary data. Public release
-# staging can include it only through the explicit -NeuralRuntimePath input.
-/pipeline/ImageReconstruction/Kernels/ImageReconstruction/Streamline/nvngx_dlssnr.dll
+# Optional Neural Rendering binaries are local-only, never public release payloads.
+nvngx_dlssnr.dll
+dlssnr.dll
+nr.dll

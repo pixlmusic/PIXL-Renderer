@@ -15,6 +15,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if (-not [string]::IsNullOrWhiteSpace($NeuralRuntimePath)) {
+    throw 'NR runtimes are manual-install only and cannot be bundled. Omit -NeuralRuntimePath.'
+}
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $sourceCommit = (& git -C $sourceRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $sourceCommit) { throw "Unable to resolve package source commit." }
@@ -169,27 +172,7 @@ Get-ChildItem -LiteralPath (Join-Path $sourceRoot "pipeline") -Directory | Sort-
     if (Test-Path -LiteralPath $kernels) { Copy-TrackedTree $kernels $shaderRoot }
 }
 
-# The experimental NR runtime is intentionally not stored in Git. Include it
-# only through an explicit release input so ignored local files cannot leak into
-# a package merely because they happen to be beside tracked shader assets.
-if (-not [string]::IsNullOrWhiteSpace($NeuralRuntimePath)) {
-    $resolvedNeuralRuntime = (Resolve-Path -LiteralPath $NeuralRuntimePath).Path
-    if ([IO.Path]::GetFileName($resolvedNeuralRuntime) -cne 'nvngx_dlssnr.dll') {
-        throw "Unexpected Neural Rendering runtime filename: $resolvedNeuralRuntime"
-    }
-    $neuralVersionInfo = (Get-Item -LiteralPath $resolvedNeuralRuntime).VersionInfo
-    $neuralVersion = $neuralVersionInfo.FileVersion
-    if ($neuralVersionInfo.FileMajorPart -ne 310 -or $neuralVersionInfo.FileMinorPart -ne 8) {
-        throw "PIXL requires the validated DLSSNR 310.8.x contract; found '$neuralVersion'"
-    }
-    $neuralDestination = Join-Path $shaderRoot 'ImageReconstruction\Streamline\nvngx_dlssnr.dll'
-    New-Item -ItemType Directory -Path (Split-Path -Parent $neuralDestination) -Force | Out-Null
-    Copy-Item -LiteralPath $resolvedNeuralRuntime -Destination $neuralDestination -Force
-    $neuralSignature = Get-AuthenticodeSignature -LiteralPath $neuralDestination
-    if ($neuralSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-        Write-Warning "Neural Rendering runtime signature status is $($neuralSignature.Status). Nexus may flag this DLL."
-    }
-}
+# Local NR binaries are intentionally excluded by the tracked-source copy above.
 
 # Validate the optional DLSS-G runtime as a coherent package before release.
 $sidecarRuntime = Join-Path $shaderRoot 'ImageReconstruction\StreamlineDX12'
@@ -321,14 +304,13 @@ if ($nestedArchives.Count) {
     throw "Public package contains nested archive(s): $($nestedArchives.FullName -join ', ')"
 }
 $vendorRuntimeRoot = Join-Path $shaderRoot 'ImageReconstruction'
+if (Get-ChildItem -LiteralPath $output -Recurse -File | Where-Object { $_.Name -iin @('nvngx_dlssnr.dll', 'dlssnr.dll', 'nr.dll') }) {
+    throw 'Public package contains a prohibited manual-install NR runtime.'
+}
 if (Test-Path -LiteralPath $vendorRuntimeRoot) {
     foreach ($vendorDll in Get-ChildItem -LiteralPath $vendorRuntimeRoot -File -Recurse -Filter '*.dll') {
         $signature = Get-AuthenticodeSignature -LiteralPath $vendorDll.FullName
-        if ($vendorDll.Name -ieq 'nvngx_dlssnr.dll') {
-            if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-                Write-Warning "Neural Rendering runtime signature status is $($signature.Status): $($vendorDll.FullName)"
-            }
-        } elseif ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+        if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
             throw "Vendor runtime signature is not valid ($($signature.Status)): $($vendorDll.FullName)"
         }
     }

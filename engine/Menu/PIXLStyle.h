@@ -2073,6 +2073,10 @@ namespace PIXLUI
 		return minValue + (maxValue - minValue) * t;
 	}
 
+	// Custom tracks use InvisibleButton rather than ImGui's native slider path.
+	// Publish only this frame's activity so the tuner preview can include them.
+	inline int activeSliderDragFrame = -1;
+
 	inline bool SliderFloatField(
 		const char* label,
 		float* value,
@@ -2113,6 +2117,8 @@ namespace PIXLUI
 				"##sliderHoverMotion",
 				hovered || active,
 				24.0f);
+		if (active && ImGui::IsMouseDragging(ImGuiMouseButton_Left))
+			activeSliderDragFrame = ImGui::GetFrameCount();
 		bool changed = false;
 
 		if (active && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
@@ -2239,6 +2245,8 @@ namespace PIXLUI
 
 		if (outHovered)
 			*outHovered = hovered || active;
+		if (active && ImGui::IsMouseDragging(ImGuiMouseButton_Left))
+			activeSliderDragFrame = ImGui::GetFrameCount();
 
 		bool changed = false;
 

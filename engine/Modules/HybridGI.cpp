@@ -322,9 +322,8 @@ void HybridGI::RestoreDefaultSettings()
 
 void HybridGI::DrawSettings()
 {
-	// Advanced control visibility is owned by the Tuner rail so the same
-	// simple/advanced contract applies consistently across every category.
-	const bool showAdvanced = globals::menu && globals::menu->GetSettings().AdvancedControls;
+	// The unified module panel exposes every control regardless of legacy UI mode.
+	constexpr bool showAdvanced = true;
 
 	if (!ShadersOK()) {
 		Util::Text::Error("%s", T(TKEY("shader_compile_error"), "Compute shaders failed to compile!"));
@@ -337,7 +336,7 @@ void HybridGI::DrawSettings()
 	// QUICK SETUP
 	// -------------------------------------------------------------------------
 	PIXLUI::SectionBanner("QUICK SETUP");
-	ImGui::TextWrapped("Choose a quality target first, then tune the lighting to taste. Advanced controls are kept out of the way unless you need them.");
+	ImGui::TextWrapped("Choose a quality target, then adjust bounced light and contact shading. Quality changes affect GPU cost; the sections below fine-tune the result.");
 
 	if (ImGui::BeginTable("PIXL GI Status", 3, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings)) {
 		ImGui::TableNextColumn();

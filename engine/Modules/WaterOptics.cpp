@@ -176,9 +176,21 @@ void WaterOptics::SetupResources()
 	// shader advects it through the flow map, so it follows tessellated/displaced
 	// water instead of remaining a flat legacy overlay. It is optional and the
 	// procedural path remains available if a texture replacer removes it.
-	constexpr auto rapidWaterPath = L"Data\\Textures\\effects\\fxwhitewater01noalpha.dds";
-	const auto rapidResult = DirectX::CreateDDSTextureFromFile(
-		device, context, rapidWaterPath, nullptr, rapidWaterView.put());
+	// Resolve both loose replacers and vanilla BSA assets through the game.
+	RE::BSResourceNiBinaryStream rapidStream("Textures\\effects\\fxwhitewater01noalpha.dds");
+	HRESULT rapidResult = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+	if (rapidStream.good() && rapidStream.stream) {
+		const auto size = rapidStream.stream->totalSize;
+		if (size > 0 && size <= 64u * 1024u * 1024u) {
+			std::vector<std::uint8_t> data(size);
+			if (rapidStream.read(data.data(), size))
+				rapidResult = DirectX::CreateDDSTextureFromMemory(device, context, data.data(), data.size(), nullptr, rapidWaterView.put());
+			else
+				rapidResult = HRESULT_FROM_WIN32(ERROR_READ_FAULT);
+		} else {
+			rapidResult = HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+		}
+	}
 	if (FAILED(rapidResult) || !rapidWaterView) {
 		logger::warn(
 			"[PIXL Water Optics] Optional authored rapid-water texture unavailable (HRESULT 0x{:08X}); using procedural flow foam",

@@ -177,8 +177,10 @@ private:
 	uint32_t writeFrame = 0;
 	uint32_t readFrame = 0;
 	uint32_t framesSinceInit = 0;
+	uint64_t collectedFrameCount = 0;
 	bool initialized = false;
 	bool frameActive = false;
+	bool frameSkipped = false;
 	double cpuTicksToMs = 0.0;
 
 	PerfEventCallback beginPerfEvent;

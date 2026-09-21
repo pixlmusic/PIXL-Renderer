@@ -892,6 +892,7 @@ void Menu::DrawSettings()
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(PIXLUI::Scale(8.0f), PIXLUI::Scale(8.0f)));
 	}
 	Util::BeginWithRoundedClose(title.c_str(), &IsEnabled, windowFlags);
+	ImGuiWindow* tunerRootWindow = ImGui::GetCurrentWindow();
 	{
 		if (settings.AdvancedMode && false) {
 			const ImVec2 windowMin = ImGui::GetWindowPos();
@@ -1238,6 +1239,38 @@ void Menu::DrawSettings()
 	if (tunerStyleAtFrameStart) {
 		ImGui::PopStyleVar();
 		ImGui::PopStyleColor();
+	}
+
+	// Fade the completed tuner draw lists, including custom chrome with explicit
+	// packed colours. Style.Alpha alone does not cover those surfaces. This never
+	// changes hit testing, input capture, settings or unrelated overlay windows.
+	static float tunerPreviewOpacity = 1.0f;
+	ImGuiContext& ui = *ImGui::GetCurrentContext();
+	const auto horizontalDirections = (1u << ImGuiDir_Left) | (1u << ImGuiDir_Right);
+	const auto verticalDirections = (1u << ImGuiDir_Up) | (1u << ImGuiDir_Down);
+	const bool numericDrag = ui.ActiveId != 0 && ui.TempInputId != ui.ActiveId &&
+		(ui.ActiveIdUsingNavDirMask == horizontalDirections || ui.ActiveIdUsingNavDirMask == verticalDirections ||
+			PIXLUI::activeSliderDragFrame == ImGui::GetFrameCount());
+	const bool previewDrag = tunerStyleAtFrameStart && IsEnabled && numericDrag &&
+		ui.ActiveIdWindow && ImGui::IsWindowChildOf(ui.ActiveIdWindow, tunerRootWindow, false, false) &&
+		ImGui::IsMouseDragging(ImGuiMouseButton_Left) &&
+		!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+	const float previewTarget = previewDrag ? 0.10f : 1.0f;
+	tunerPreviewOpacity += (previewTarget - tunerPreviewOpacity) *
+		std::min(1.0f, ImGui::GetIO().DeltaTime * 28.0f);
+	if (!tunerStyleAtFrameStart || !IsEnabled || std::abs(tunerPreviewOpacity - previewTarget) < 0.005f)
+		tunerPreviewOpacity = tunerStyleAtFrameStart && IsEnabled ? previewTarget : 1.0f;
+	if (tunerStyleAtFrameStart && tunerPreviewOpacity < 1.0f) {
+		for (ImGuiWindow* window : ui.Windows) {
+			if (!window->Active || (window->Flags & ImGuiWindowFlags_Popup) ||
+				!ImGui::IsWindowChildOf(window, tunerRootWindow, false, false))
+				continue;
+			for (ImDrawVert& vertex : window->DrawList->VtxBuffer) {
+				const unsigned alpha = (vertex.col >> IM_COL32_A_SHIFT) & 0xFFu;
+				vertex.col = (vertex.col & ~IM_COL32_A_MASK) |
+					(static_cast<unsigned>(alpha * tunerPreviewOpacity) << IM_COL32_A_SHIFT);
+			}
+		}
 	}
 
 	// Closing the tuner while inspection owns native TFC must release that

@@ -10,6 +10,7 @@
 #include "ModuleVersions.h"
 #include "State.h"
 #include "PIXLStyle.h"
+#include "PIXLRendererPage.h"
 #include "Fonts.h"
 #include "Utils/Input.h"
 #include "Modules/ImageReconstruction.h"
@@ -199,6 +200,7 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	static int setupUpscaler = 0;
 	static bool setupFrameGeneration = false;
 	static bool setupNeuralRendering = false;
+	static bool nrSetupConfirmed = false;
 	const bool dlssAvailable = globals::pipeline::imageReconstruction.streamline.featureDLSS;
 	if (ImGui::IsWindowAppearing()) {
 		setupQuality = std::clamp(menu->GetSettings().RendererQuality, 0, 3);
@@ -209,6 +211,7 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 			setupUpscaler = 4;
 		setupFrameGeneration = reconstruction.frameGenerationMode != 0;
 		setupNeuralRendering = reconstruction.neuralRenderingEnabled;
+		nrSetupConfirmed = false;
 	}
 
 	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "IMAGE PATH");
@@ -238,12 +241,25 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	const auto& reconstructionRuntime = globals::pipeline::imageReconstruction;
 	const bool neuralAvailable = dlssAvailable && reconstructionRuntime.streamline.neuralRenderingSupportedOnCurrentAdapter;
 	ImGui::BeginDisabled(!neuralAvailable);
-	if (ImGui::Checkbox("Enable Neural Rendering (experimental)", &setupNeuralRendering) && setupNeuralRendering && setupUpscaler < 3)
-		setupUpscaler = 4;  // NR requires DLSS; preserve native resolution with DLAA.
+	if (ImGui::Checkbox("Enable Neural Rendering (experimental)", &setupNeuralRendering)) {
+		nrSetupConfirmed = false;
+		if (setupNeuralRendering) {
+			if (setupUpscaler < 3)
+				setupUpscaler = 4;  // NR requires DLSS; preserve native resolution with DLAA.
+			ImGui::OpenPopup("NEURAL RENDERING | SETUP");
+		}
+	}
 	ImGui::EndDisabled();
 	if (!neuralAvailable)
 		ImGui::TextWrapped("Neural Rendering requires supported NVIDIA hardware and the installed NR runtime.");
 	if (setupNeuralRendering) {
+		if (PIXLUI::ActionButton("NR INSTALLATION GUIDE", ImVec2(0, 0), false))
+			ImGui::OpenPopup("NEURAL RENDERING | SETUP");
+		if (nrSetupConfirmed)
+			ImGui::PushStyleColor(ImGuiCol_Text, PIXLUI::ToVec4(PIXLUI::Colors::CyanBright));
+		ImGui::TextWrapped("%s", nrSetupConfirmed ? "READY | Installation checked. Save & Continue will apply your choices." : "Review the four installation cards and check the runtime before saving setup. If already installed, use Check File in the guide.");
+		if (nrSetupConfirmed)
+			ImGui::PopStyleColor();
 		ImGui::TextWrapped("Requires DLSS or DLAA and SDR. First activation requires a restart to prepare Neural Rendering; use borderless/windowed mode. Normal DLSS remains the fallback if NR is unavailable.");
 		if (setupUpscaler < 3)
 			ImGui::TextWrapped("Select DLSS or DLAA above to enable Neural Rendering.");
@@ -295,7 +311,10 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 
 	const bool escapePressed = ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Escape);
 	const bool enterPressed = ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter);
-	if (!capturing && (continuePressed || enterPressed || escapePressed)) {
+	const bool needsNRGuide = setupNeuralRendering && neuralAvailable && setupUpscaler >= 3 && !nrSetupConfirmed;
+	if (!capturing && !escapePressed && (continuePressed || enterPressed) && needsNRGuide)
+		ImGui::OpenPopup("NEURAL RENDERING | SETUP");
+	if (!capturing && (escapePressed || ((continuePressed || enterPressed) && !needsNRGuide))) {
 		if (!escapePressed) {
 			// Do not replace the owner's tuned release defaults just by accepting setup.
 			if (setupQuality != menu->GetSettings().RendererQuality)
@@ -323,6 +342,7 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 		}
 	}
 
+	PIXLRendererPage::RenderNeuralSetupGuide(neuralAvailable && setupUpscaler >= 3, &nrSetupConfirmed);
 	ImGui::EndPopup();
 	ImGui::PopStyleVar(3);
 }
