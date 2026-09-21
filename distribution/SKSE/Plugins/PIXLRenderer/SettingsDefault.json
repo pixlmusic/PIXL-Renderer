@@ -806,6 +806,7 @@
         "PhotoFinishRenderScaleMode": 1,
         "PhotoFinishScale": 2,
         "PhotoFinishTemporalSamples": 8,
+        "PhotoWatermarkEnabled": false,
         "PhotoLensDofApertureBlades": 7,
         "PhotoLensDofEnabled": false,
         "PhotoLensDofHighlightBoost": 0.11999999731779099,

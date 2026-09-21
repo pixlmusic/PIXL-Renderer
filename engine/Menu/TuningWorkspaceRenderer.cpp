@@ -2,6 +2,7 @@
 
 #include <RE/C/CrosshairPickData.h>
 #include <RE/F/FreeCameraState.h>
+#include <RE/H/HUDMenu.h>
 #include <SKSE/InputMap.h>
 
 #include <algorithm>
@@ -11,6 +12,7 @@
 #include <cstdio>
 #include <format>
 #include <imgui.h>
+#include <numbers>
 #include <ranges>
 #include <unordered_map>
 #include <unordered_set>
@@ -134,6 +136,12 @@ namespace
 		// close-camera fade and stealth/fade state is restored exactly on exit.
 		bool playerAlphaSnapshotValid = false;
 		float originalPlayerAlpha = 1.0f;
+
+		// Director capture temporarily hides Skyrim's HUD (not just PIXL's ImGui
+		// viewfinder). Preserve the incoming state exactly so dialogue, scripted
+		// scenes and HUD-hiding mods are never overridden after the photo is saved.
+		bool gameHudVisibilitySnapshotValid = false;
+		bool gameHudWasVisible = true;
 	};
 
 	DirectorPhotoModeState
@@ -150,10 +158,104 @@ namespace
 	bool g_tunerShiftHeld = false;
 	std::string g_tunerSelectedFeature;
 	bool g_tunerOwnsInspection = false;
+	bool g_characterOrbitEnabled = false;
+	bool g_characterOrbitOwnsInspection = false;
+	// Relative angle around the actor. Zero is always directly in front of the
+	// player's current heading; dragging adds a deliberate orbit offset.
+	float g_characterOrbitAngleDegrees = 0.0f;
+	float g_characterOrbitDistance = 150.0f;
+	bool g_tunerHudVisibilitySnapshotValid = false;
+	bool g_tunerHudWasVisible = true;
 	SmoothCamAPI::IVSmoothCam1* g_smoothCam = nullptr;
 	bool g_smoothCamLease = false;  // Accessed only on SKSE's game thread.
+	bool g_smoothCamCrosshairLease = false;  // Separate SmoothCam-owned resource.
 	std::atomic_bool g_directorEntryPending{ false };
 	std::atomic_int g_directorEntryResult{ 0 };
+	bool EnterDirectorPhotoMode();
+	void ExitDirectorPhotoMode();
+
+	void SetCharacterOrbitEnabled(bool enabled)
+	{
+		if (enabled == g_characterOrbitEnabled)
+			return;
+
+		if (!enabled) {
+			g_characterOrbitEnabled = false;
+			if (g_characterOrbitOwnsInspection)
+				ExitDirectorPhotoMode();
+			g_characterOrbitOwnsInspection = false;
+			return;
+		}
+
+		const bool startsInspection = !g_directorPhotoMode.active;
+		if (startsInspection && !EnterDirectorPhotoMode())
+			return;
+
+		g_characterOrbitEnabled = true;
+		g_characterOrbitOwnsInspection = startsInspection;
+		g_tunerOwnsInspection = true;
+		g_tunerInspectionMoving = false;
+		g_tunerShiftHeld = false;
+	}
+
+	void UpdateTunerHudOwnership()
+	{
+		const bool tunerOwnsHud = globals::menu && globals::menu->IsEnabled &&
+			globals::menu->GetSettings().AdvancedMode;
+		auto* ui = RE::UI::GetSingleton();
+		auto hud = ui ? ui->GetMenu<RE::HUDMenu>() : nullptr;
+
+		if (tunerOwnsHud) {
+			if (!hud || !hud->uiMovie)
+				return;
+			if (!g_tunerHudVisibilitySnapshotValid) {
+				g_tunerHudWasVisible = hud->uiMovie->GetVisible();
+				g_tunerHudVisibilitySnapshotValid = true;
+			}
+			hud->uiMovie->SetVisible(false);
+			return;
+		}
+
+		if (!g_tunerHudVisibilitySnapshotValid)
+			return;
+		if (!hud || !hud->uiMovie)
+			return;  // Keep the pending restore across menu/loading transitions.
+
+		hud->uiMovie->SetVisible(g_tunerHudWasVisible);
+		g_tunerHudVisibilitySnapshotValid = false;
+		g_tunerHudWasVisible = true;
+	}
+
+	void HideGameHudForDirectorCapture()
+	{
+		auto* ui = RE::UI::GetSingleton();
+		if (!ui)
+			return;
+
+		auto hud = ui->GetMenu<RE::HUDMenu>();
+		if (!hud || !hud->uiMovie)
+			return;
+
+		if (!g_directorPhotoMode.gameHudVisibilitySnapshotValid) {
+			g_directorPhotoMode.gameHudWasVisible = hud->uiMovie->GetVisible();
+			g_directorPhotoMode.gameHudVisibilitySnapshotValid = true;
+		}
+		hud->uiMovie->SetVisible(false);
+	}
+
+	void RestoreGameHudAfterDirectorCapture()
+	{
+		if (!g_directorPhotoMode.gameHudVisibilitySnapshotValid)
+			return;
+
+		if (auto* ui = RE::UI::GetSingleton()) {
+			if (auto hud = ui->GetMenu<RE::HUDMenu>(); hud && hud->uiMovie)
+				hud->uiMovie->SetVisible(g_directorPhotoMode.gameHudWasVisible);
+		}
+
+		g_directorPhotoMode.gameHudVisibilitySnapshotValid = false;
+		g_directorPhotoMode.gameHudWasVisible = true;
+	}
 
 	bool EvaluateDirectorPhotoModeEligibility(
 		std::string* reason)
@@ -612,6 +714,8 @@ namespace
 		g_directorPhotoMode.captureDelayFrames = 0;
 		g_directorPhotoMode.captureHideFrames = 0;
 		g_directorPhotoMode.capturePoseValid = false;
+		g_directorPhotoMode.gameHudVisibilitySnapshotValid = false;
+		g_directorPhotoMode.gameHudWasVisible = true;
 		g_directorCaptureLocked.store(false, std::memory_order_release);
 		g_directorCaptureDispatched.store(false, std::memory_order_release);
 
@@ -637,10 +741,25 @@ namespace
 					return;
 				}
 				g_smoothCamLease = true;
+				const auto crosshairResult = g_smoothCam->RequestCrosshairControl(
+					SKSE::GetPluginHandle(), true);
+				if (crosshairResult == SmoothCamAPI::APIResult::OK) {
+					g_smoothCamCrosshairLease = true;
+				} else {
+					// Camera ownership remains useful and the vanilla HUD capture guard
+					// still applies. A foreign crosshair owner must not abort Photo Mode.
+					logger::warn(
+						"[PIXL Camera] SmoothCam crosshair control unavailable ({}); continuing with Skyrim HUD isolation",
+						static_cast<int>(crosshairResult));
+				}
 			}
 			nativeCamera->ToggleFreeCameraMode(true);
 			const bool entered = nativeCamera->IsInFreeCameraMode();
 			if (!entered && g_smoothCamLease) {
+				if (g_smoothCamCrosshairLease) {
+					g_smoothCam->ReleaseCrosshairControl(SKSE::GetPluginHandle());
+					g_smoothCamCrosshairLease = false;
+				}
 				g_smoothCam->ReleaseCameraControl(SKSE::GetPluginHandle());
 				g_smoothCamLease = false;
 			}
@@ -675,6 +794,8 @@ namespace
 		if (g_directorExitTaskComplete.exchange(
 				false,
 				std::memory_order_acq_rel)) {
+			RestoreGameHudAfterDirectorCapture();
+
 			auto& cameraSuite =
 				globals::pipeline::cameraSuite;
 
@@ -696,6 +817,8 @@ namespace
 			g_tunerInspectionMoving = false;
 			g_tunerOwnsInspection = false;
 			g_tunerShiftHeld = false;
+			g_characterOrbitEnabled = false;
+			g_characterOrbitOwnsInspection = false;
 			g_directorPhotoMode.snapshotValid = false;
 			g_directorPhotoMode.weatherPreset =
 				DirectorWeatherPreset::Original;
@@ -837,6 +960,10 @@ namespace
 							player->SetAlpha(originalAlpha);
 					}
 					if (g_smoothCamLease && g_smoothCam) {
+						if (g_smoothCamCrosshairLease) {
+							g_smoothCam->ReleaseCrosshairControl(SKSE::GetPluginHandle());
+							g_smoothCamCrosshairLease = false;
+						}
 						g_smoothCam->ReleaseCameraControl(SKSE::GetPluginHandle());
 						g_smoothCamLease = false;
 					}
@@ -1352,6 +1479,11 @@ namespace
 			capture->IsPhotoFinishBusy() ||
 			g_directorCaptureLocked.load(std::memory_order_acquire))
 			return;
+
+		// The presented framebuffer contains Skyrim's HUD. Hide it before the
+		// clean-frame delay so the crosshair and HUD widgets are absent from every
+		// temporal sample, then restore the exact incoming visibility after save.
+		HideGameHudForDirectorCapture();
 
 		if (auto* camera = RE::PlayerCamera::GetSingleton();
 			camera && camera->IsInFreeCameraMode()) {
@@ -2115,6 +2247,87 @@ namespace
 		freeCameraState->translation = motion.cameraMotionPosition;
 	}
 
+	bool UpdateCharacterOrbitCamera(
+		RE::PlayerCamera* playerCamera,
+		RE::FreeCameraState* freeCameraState)
+	{
+		if (!g_characterOrbitEnabled || !playerCamera || !freeCameraState)
+			return false;
+
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		if (!player || !player->Is3DLoaded()) {
+			SetCharacterOrbitEnabled(false);
+			return false;
+		}
+
+		const RE::NiPoint3 playerPosition = player->GetPosition();
+		const float angle = player->GetAngleZ() + g_characterOrbitAngleDegrees *
+			(std::numbers::pi_v<float> / 180.0f);
+		const float distance = std::clamp(g_characterOrbitDistance, 38.0f, 340.0f);
+		const float distanceBlend = std::clamp((distance - 38.0f) / (340.0f - 38.0f), 0.0f, 1.0f);
+		// Close inspection meets the actor at head level; pulling back eases the
+		// rig downward so the wider view naturally includes more of the body.
+		const float focusHeight = std::lerp(118.0f, 92.0f, distanceBlend);
+		const RE::NiPoint3 actorTarget{
+			playerPosition.x,
+			playerPosition.y,
+			playerPosition.z + focusHeight
+		};
+		const RE::NiPoint3 desired{
+			actorTarget.x + std::sin(angle) * distance,
+			actorTarget.y + std::cos(angle) * distance,
+			actorTarget.z + std::lerp(0.5f, 5.0f, distanceBlend)
+		};
+
+		const float dt = std::clamp(
+			static_cast<float>(RE::GetSecondsSinceLastFrame()),
+			1.0f / 240.0f,
+			1.0f / 20.0f);
+		const float response = 1.0f - std::exp(-dt * 7.5f);
+		auto& position = freeCameraState->translation;
+		position.x = std::lerp(position.x, desired.x, response);
+		position.y = std::lerp(position.y, desired.y, response);
+		position.z = std::lerp(position.z, desired.z, response);
+
+		// Aim left of the actor along the camera plane. The actor consequently
+		// occupies the open right third instead of disappearing behind PIXL's
+		// left-side tuning panels. Scaling by distance keeps composition stable
+		// throughout the zoom range.
+		const float radialX = actorTarget.x - position.x;
+		const float radialY = actorTarget.y - position.y;
+		const float radialLength = std::max(std::sqrt(radialX * radialX + radialY * radialY), 1.0f);
+		const float rightX = radialY / radialLength;
+		const float rightY = -radialX / radialLength;
+		const float compositionOffset = distance * 0.38f;
+		const RE::NiPoint3 compositionTarget{
+			actorTarget.x - rightX * compositionOffset,
+			actorTarget.y - rightY * compositionOffset,
+			actorTarget.z
+		};
+		const float dx = compositionTarget.x - position.x;
+		const float dy = compositionTarget.y - position.y;
+		const float dz = compositionTarget.z - position.z;
+		const float horizontal = std::max(std::sqrt(dx * dx + dy * dy), 1.0f);
+		const float desiredYaw = std::atan2(dx, dy);
+		const float desiredPitch = -std::atan2(dz, horizontal);
+		auto lerpAngle = [response](float current, float targetAngle) {
+			float delta = std::remainder(targetAngle - current, 2.0f * std::numbers::pi_v<float>);
+			return current + delta * response;
+		};
+		freeCameraState->rotation.x = std::clamp(
+			lerpAngle(freeCameraState->rotation.x, desiredPitch), -1.35f, 1.35f);
+		freeCameraState->rotation.y = lerpAngle(freeCameraState->rotation.y, desiredYaw);
+		freeCameraState->useRunSpeed = false;
+		freeCameraState->verticalDirection = 0;
+		freeCameraState->zUpDown = {};
+		playerCamera->rotationInput = {};
+		playerCamera->translationInput = {};
+		playerCamera->zoomInput = 0.0f;
+		g_directorPhotoMode.cameraMotionPosition = position;
+		g_directorPhotoMode.cameraMotionVelocity = {};
+		return true;
+	}
+
 	void EnforceDirectorCameraBoundary(
 		RE::PlayerCamera* playerCamera)
 	{
@@ -2150,6 +2363,9 @@ namespace
 			g_directorPhotoMode.cameraMotionVelocity = {};
 			return;
 		}
+
+		if (UpdateCharacterOrbitCamera(playerCamera, freeCameraState))
+			return;
 
 		// Let Skyrim's native free-camera state remain authoritative.  External
 		// camera systems can update the same transform during their camera pass;
@@ -2735,6 +2951,7 @@ namespace
 			g_directorCaptureDispatched.load(std::memory_order_acquire)) {
 			auto* capture = GetDirectorCapture();
 			if (!capture || !capture->IsPhotoFinishBusy()) {
+				RestoreGameHudAfterDirectorCapture();
 				g_directorPhotoMode.capturePoseValid = false;
 				g_directorPhotoMode.captureHideFrames = 0;
 				g_directorCaptureDispatched.store(false, std::memory_order_release);
@@ -3525,6 +3742,120 @@ namespace
 	double g_nextConstraintScanTime = 0.0;
 }
 
+namespace
+{
+	void DrawTunerControlReminder()
+	{
+		if (!globals::menu || !globals::menu->IsEnabled || g_tunerInspectionMoving)
+			return;
+
+		const ImVec2 display = ImGui::GetIO().DisplaySize;
+		if (display.x <= 0.0f || display.y <= 0.0f)
+			return;
+
+		const float scale = Util::GetUIScale();
+		const float appear = PIXLUI::Animate01("##PIXL_TunerControlReminder", true, 10.0f);
+		const std::string closeKey = Util::Input::KeyIdToString(globals::menu->GetSettings().ToggleKey);
+		const char* inspectHint = g_directorPhotoMode.active
+			? "HOLD SHIFT + WASD    MOVE INSPECTION CAMERA"
+			: "HOLD SHIFT + WASD    INSPECT CAMERA";
+		const std::string photoHint = std::format(
+			"HOME  PHOTO MODE    END  CAPTURE    {}  CLOSE TUNER",
+			closeKey.empty() ? "PAGE DOWN" : closeKey);
+
+		const ImVec2 firstSize = ImGui::CalcTextSize(inspectHint);
+		const ImVec2 secondSize = ImGui::CalcTextSize(photoHint.c_str());
+		const float width = std::max(firstSize.x, secondSize.x) + 34.0f * scale;
+		const float height = 51.0f * scale;
+		const ImVec2 max(display.x - 22.0f * scale,
+			display.y - (20.0f + (1.0f - appear) * 10.0f) * scale);
+		const ImVec2 min(max.x - width, max.y - height);
+		auto* draw = ImGui::GetForegroundDrawList();
+		const ImU32 background = IM_COL32(5, 9, 12, static_cast<int>(205.0f * appear));
+		const ImU32 border = ImGui::ColorConvertFloat4ToU32(
+			ImVec4(0.22f, 0.70f, 0.75f, 0.55f * appear));
+		draw->AddRectFilled(min, max, background, 5.0f * scale);
+		draw->AddRect(min, max, border, 5.0f * scale, 0, 1.0f * scale);
+		draw->AddLine(
+			ImVec2(min.x + 8.0f * scale, min.y + 1.0f * scale),
+			ImVec2(min.x + 62.0f * scale, min.y + 1.0f * scale),
+			PIXLUI::Colors::CyanBright,
+			1.4f * scale);
+		draw->AddText(
+			ImVec2(min.x + 17.0f * scale, min.y + 9.0f * scale),
+			PIXLUI::Colors::CyanSoft,
+			inspectHint);
+		draw->AddText(
+			ImVec2(min.x + 17.0f * scale, min.y + 28.0f * scale),
+			PIXLUI::Colors::TextDim,
+			photoHint.c_str());
+	}
+
+	void DrawCharacterOrbitControls()
+	{
+		PIXLUI::SectionBanner("CHARACTER FOCUS");
+		bool orbitEnabled = g_characterOrbitEnabled;
+		if (PIXLUI::LabeledToggle("Orbit player", &orbitEnabled))
+			SetCharacterOrbitEnabled(orbitEnabled);
+
+		const float reveal = PIXLUI::Animate01(
+			"##CharacterOrbitControls", g_characterOrbitEnabled, 12.0f);
+		if (reveal <= 0.01f)
+			return;
+
+		ImGui::PushStyleVar(ImGuiStyleVar_Alpha, reveal);
+		ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.48f);
+		ImGui::SliderFloat(
+			"##CharacterOrbitAngle",
+			&g_characterOrbitAngleDegrees,
+			-180.0f,
+			180.0f,
+			"ANGLE %.0f DEG",
+			ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SameLine();
+		ImGui::SetNextItemWidth(-1.0f);
+		ImGui::SliderFloat(
+			"##CharacterOrbitDistance",
+			&g_characterOrbitDistance,
+			38.0f,
+			340.0f,
+			"DISTANCE %.0f",
+			ImGuiSliderFlags_AlwaysClamp);
+		ImGui::TextColored(
+			PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
+			"Wheel: zoom    Hold middle mouse + move: orbit    Shift + WASD: inspect");
+		ImGui::PopStyleVar();
+		ImGui::Separator();
+		ImGui::Spacing();
+	}
+
+	void UpdateCharacterOrbitPointerInteraction(float viewportMinX)
+	{
+		if (!g_characterOrbitEnabled || !globals::menu || !globals::menu->IsEnabled)
+			return;
+
+		auto& io = ImGui::GetIO();
+		const bool overViewport = io.MousePos.x >= viewportMinX &&
+			io.MousePos.y >= PIXLUI::Ref(PIXLUI::Layout::TuneSidebarY);
+		if (!overViewport || ImGui::IsAnyItemHovered() || ImGui::IsAnyItemActive())
+			return;
+
+		if (std::abs(io.MouseWheel) > 0.001f) {
+			const float zoomStep = std::clamp(g_characterOrbitDistance * 0.10f, 5.0f, 24.0f);
+			g_characterOrbitDistance = std::clamp(
+				g_characterOrbitDistance - io.MouseWheel * zoomStep,
+				38.0f,
+				340.0f);
+		}
+
+		if (ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
+			g_characterOrbitAngleDegrees = std::remainder(
+				g_characterOrbitAngleDegrees - io.MouseDelta.x * 0.32f,
+				360.0f);
+		}
+	}
+}
+
 bool TuningWorkspaceRenderer::IsDirectorPhotoModeActive()
 {
 	return
@@ -3594,6 +3925,7 @@ void TuningWorkspaceRenderer::CloseTunerInspection()
 
 void TuningWorkspaceRenderer::UpdateTunerInspection()
 {
+	UpdateTunerHudOwnership();
 	if (g_directorEntryPending.load(std::memory_order_acquire)) {
 		const int result = g_directorEntryResult.load(std::memory_order_acquire);
 		if (result == 0)
@@ -3681,6 +4013,8 @@ bool TuningWorkspaceRenderer::HandleTunerKeyboardInput(
 		// Locked inspection is deliberately re-entrant: Shift + navigation starts
 		// a new movement transaction without closing or reopening the tuner.
 		if (pressed && g_tunerShiftHeld && navigationKey) {
+			g_characterOrbitEnabled = false;
+			g_characterOrbitOwnsInspection = false;
 			g_tunerInspectionMoving = true;
 			return true;
 		}
@@ -3991,6 +4325,11 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 		if (!stillVisible && !page.features.empty())
 			g_tunerSelectedFeature = page.features.front()->GetShortName();
 	}
+	const bool characterCategorySelected = selectedMenu < menuList.size() &&
+		std::holds_alternative<CategoryPage>(menuList[selectedMenu]) &&
+		std::get<CategoryPage>(menuList[selectedMenu]).name == "CHARACTER";
+	if (g_characterOrbitEnabled && !characterCategorySelected)
+		SetCharacterOrbitEnabled(false);
 
 	const ImVec2 rootPos =
 		ImGui::GetWindowPos();
@@ -4027,8 +4366,6 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 		if (rail) {
 			const ImVec2 railMin = ImGui::GetWindowPos();
 			const float width = ImGui::GetWindowSize().x;
-			ImGui::SetCursorScreenPos(ImVec2(railMin.x + PIXLUI::Ref(12.0f), railMin.y + PIXLUI::Ref(15.0f)));
-			ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::Text), "PIXL");
 			const std::array<std::string_view, 5> railLabels{
 				PIXLRendererPage::CategoryOrder[0], PIXLRendererPage::CategoryOrder[1],
 				PIXLRendererPage::CategoryOrder[2], PIXLRendererPage::CategoryOrder[3], "PIXL Renderer" };
@@ -4055,19 +4392,31 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 					std::get<BuiltInMenu>(menuList[selectedMenu]).name == railLabels[i]);
 				if (clicked) {
 					const std::string_view target = railLabels[i];
+					bool selectedTarget = false;
 					for (size_t menuIndex = 0; menuIndex < menuList.size(); ++menuIndex) {
 						if (std::holds_alternative<TuningWorkspaceRenderer::CategoryPage>(menuList[menuIndex]) &&
 							std::get<TuningWorkspaceRenderer::CategoryPage>(menuList[menuIndex]).name == target) {
 							selectedMenu = menuIndex;
 							const auto& page = std::get<CategoryPage>(menuList[menuIndex]);
 							g_tunerSelectedFeature = page.features.empty() ? "" : page.features.front()->GetShortName();
+							selectedTarget = true;
 							break;
 						}
 						if (i == 4 && std::holds_alternative<TuningWorkspaceRenderer::BuiltInMenu>(menuList[menuIndex]) &&
 							std::get<TuningWorkspaceRenderer::BuiltInMenu>(menuList[menuIndex]).name == target) {
 							selectedMenu = menuIndex;
+							selectedTarget = true;
 							break;
 						}
+					}
+					if (selectedTarget && target == "CHARACTER") {
+						g_characterOrbitDistance = 45.0f;
+						g_characterOrbitAngleDegrees = 0.0f;
+						SetCharacterOrbitEnabled(true);
+					} else if (selectedTarget && g_characterOrbitEnabled) {
+						// Category navigation is an explicit return-to-live boundary for
+						// Character Orbit. Shift+WASD remains the hand-off to inspection.
+						SetCharacterOrbitEnabled(false);
 					}
 				}
 				const ImU32 glow = selected || hovered ? PIXLUI::Colors::CyanBright : PIXLUI::Colors::BorderSoft;
@@ -4214,6 +4563,8 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 		}
 	}
 
+	float orbitViewportMinX = contentPos.x + slideOffset +
+		PIXLUI::Ref(PIXLUI::Layout::TuneContentFrameWidth + PIXLUI::Layout::TunePanelGap);
 	ImGui::SetCursorScreenPos(ImVec2(contentPos.x + slideOffset, contentPos.y));
 	{
 		const bool productPage = selectedMenu < menuList.size() &&
@@ -4223,6 +4574,8 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 			? std::max(PIXLUI::Ref(PIXLUI::Layout::TuneContentFrameWidth),
 				ImGui::GetMainViewport()->WorkPos.x + ImGui::GetMainViewport()->WorkSize.x - contentPos.x - slideOffset - PIXLUI::Ref(16.0f))
 			: PIXLUI::Ref(PIXLUI::Layout::TuneContentFrameWidth);
+		orbitViewportMinX = contentPos.x + slideOffset + contentWidth +
+			PIXLUI::Ref(PIXLUI::Layout::TunePanelGap);
 		PIXLUI::ChromeScope content(
 			"##PIXLAdvancedContentFrame",
 			ImVec2(
@@ -4278,6 +4631,9 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 			ImGui::PopID();
 		}
 	}
+
+	DrawTunerControlReminder();
+	UpdateCharacterOrbitPointerInteraction(orbitViewportMinX);
 
 }
 
@@ -4528,6 +4884,7 @@ void TuningWorkspaceRenderer::RenderLeftColumn(
 				if (PIXLUI::NavItem(feature->GetShortName().c_str(), publicName.c_str(), selected, PIXLUI::Ref(38.0f)))
 					selectedFeatureName = feature->GetShortName();
 			}
+
 		}
 
 		// The product controls remain below the visual categories, but they use
@@ -4565,6 +4922,8 @@ void TuningWorkspaceRenderer::RenderRightColumn(
 	if (selectedMenu < menuList.size()) {
 		if (std::holds_alternative<CategoryPage>(menuList[selectedMenu])) {
 			const auto& page = std::get<CategoryPage>(menuList[selectedMenu]);
+			if (page.name == "CHARACTER")
+				DrawCharacterOrbitControls();
 			for (RenderModule* feature : page.features) {
 				if (feature && feature->GetShortName() == selectedFeatureName) {
 					std::visit(DrawMenuVisitor{ pendingFeatureSelection }, MenuFuncInfo{ feature });
@@ -5575,6 +5934,18 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 				ImVec2(
 					0,
 					PIXLUI::Ref(6.0f)));
+
+			if (capture) {
+				if (PIXLUI::LabeledToggle(
+						"PIXL logo on saved photo",
+						&capture->photoWatermarkEnabled)) {
+					if (globals::state)
+						globals::state->Save();
+				}
+				if (auto tooltip = Util::HoverTooltipWrapper())
+					ImGui::TextUnformatted("Adds the white PIXL mark to the bottom-right of Director captures. Off by default.");
+				ImGui::Dummy(ImVec2(0, PIXLUI::Ref(5.0f)));
+			}
 
 			ImGui::BeginDisabled(
 				!capture ||

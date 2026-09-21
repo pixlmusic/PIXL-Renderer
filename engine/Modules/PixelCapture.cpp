@@ -153,6 +153,102 @@ namespace
 		}
 	}
 
+	bool ApplyPixlPhotoWatermark(DirectX::ScratchImage& image, bool hdrPqEncoded)
+	{
+		const auto* source = image.GetImage(0, 0, 0);
+		if (!source || !source->pixels || source->width < 64 || source->height < 64)
+			return false;
+
+		DirectX::ScratchImage logo;
+		DirectX::TexMetadata logoMetadata{};
+		const auto logoPath = Util::PathHelpers::GetIconsPath() / "Brand" / "PIXL-Mark.png";
+		if (FAILED(DirectX::LoadFromWICFile(
+				logoPath.c_str(), DirectX::WIC_FLAGS_NONE, &logoMetadata, logo))) {
+			logger::warn("Photo watermark skipped: could not load {}", logoPath.string());
+			return false;
+		}
+
+		const auto* logoSource = logo.GetImage(0, 0, 0);
+		if (!logoSource || !logoSource->pixels || logoSource->width == 0 || logoSource->height == 0)
+			return false;
+
+		// Scale with the finished image so 2x/4x Photo Finish output preserves the
+		// same restrained signature size. The source colour is intentionally
+		// ignored: PIXL-Mark is used as an alpha mask and rendered clean white.
+		const size_t targetWidth = std::clamp<size_t>(
+			static_cast<size_t>(std::lround(static_cast<double>(source->width) * 0.055)),
+			64,
+			std::max<size_t>(64, source->width / 5));
+		const size_t targetHeight = std::max<size_t>(
+			1,
+			static_cast<size_t>(std::lround(
+				static_cast<double>(targetWidth) * static_cast<double>(logoSource->height) /
+				static_cast<double>(logoSource->width))));
+
+		DirectX::ScratchImage resizedLogo;
+		if (FAILED(DirectX::Resize(
+				*logoSource,
+				targetWidth,
+				targetHeight,
+				DirectX::TEX_FILTER_CUBIC,
+				resizedLogo)))
+			return false;
+
+		DirectX::ScratchImage sceneFloat;
+		if (FAILED(DirectX::Convert(
+				image.GetImages(), image.GetImageCount(), image.GetMetadata(),
+				DXGI_FORMAT_R32G32B32A32_FLOAT, DirectX::TEX_FILTER_DEFAULT, 0.0f, sceneFloat)))
+			return false;
+
+		DirectX::ScratchImage logoFloat;
+		if (FAILED(DirectX::Convert(
+				resizedLogo.GetImages(), resizedLogo.GetImageCount(), resizedLogo.GetMetadata(),
+				DXGI_FORMAT_R32G32B32A32_FLOAT, DirectX::TEX_FILTER_DEFAULT, 0.0f, logoFloat)))
+			return false;
+
+		auto* sceneImage = sceneFloat.GetImage(0, 0, 0);
+		const auto* logoImage = logoFloat.GetImage(0, 0, 0);
+		if (!sceneImage || !logoImage)
+			return false;
+
+		const size_t margin = std::max<size_t>(
+			12,
+			static_cast<size_t>(std::lround(
+				static_cast<double>(std::min(source->width, source->height)) * 0.022)));
+		const size_t originX = source->width > targetWidth + margin
+			? source->width - targetWidth - margin
+			: 0;
+		const size_t originY = source->height > targetHeight + margin
+			? source->height - targetHeight - margin
+			: 0;
+
+		// HDR capture textures are already PQ encoded. 0.58 is close to a clean
+		// paper-white signature; writing 1.0 would create a distracting 10,000-nit
+		// mark. SDR keeps conventional display white.
+		const float whiteLevel = hdrPqEncoded ? 0.58f : 1.0f;
+		for (size_t y = 0; y < targetHeight && originY + y < source->height; ++y) {
+			auto* destination = reinterpret_cast<float*>(
+				sceneImage->pixels + (originY + y) * sceneImage->rowPitch) + originX * 4;
+			const auto* mask = reinterpret_cast<const float*>(
+				logoImage->pixels + y * logoImage->rowPitch);
+			for (size_t x = 0; x < targetWidth && originX + x < source->width; ++x) {
+				const float alpha = std::clamp(mask[x * 4 + 3] * 0.90f, 0.0f, 0.90f);
+				for (size_t channel = 0; channel < 3; ++channel)
+					destination[x * 4 + channel] = std::lerp(
+						destination[x * 4 + channel], whiteLevel, alpha);
+			}
+		}
+
+		DirectX::ScratchImage composited;
+		if (FAILED(DirectX::Convert(
+				sceneFloat.GetImages(), sceneFloat.GetImageCount(), sceneFloat.GetMetadata(),
+				image.GetMetadata().format, DirectX::TEX_FILTER_DEFAULT, 0.0f, composited)))
+			return false;
+
+		image = std::move(composited);
+		return true;
+	}
+
 	// Tonemaps a linear RGB ScratchImage in-place: Reinhard c/(1+c), then gamma-2.2.
 	void TonemapHdrToSrgb(DirectX::ScratchImage& image)
 	{
@@ -1980,6 +2076,8 @@ void PixelCapture::LoadSettings(json& a_json)
 				a_json["PhotoFinishMotionAngleDegrees"],
 				-180.0f,
 				180.0f);
+	if (a_json.contains("PhotoWatermarkEnabled"))
+		photoWatermarkEnabled = a_json["PhotoWatermarkEnabled"];
 
 	if (auto it = a_json.find("DirectorPhotoPresets");
 		it != a_json.end() && it->is_array()) {
@@ -2045,6 +2143,7 @@ void PixelCapture::SaveSettings(json& a_json)
 		photoFinishMotionStrength;
 	a_json["PhotoFinishMotionAngleDegrees"] =
 		photoFinishMotionAngleDegrees;
+	a_json["PhotoWatermarkEnabled"] = photoWatermarkEnabled;
 	a_json["DirectorPhotoPresets"] = json::array();
 	for (const auto& preset : directorPhotoPresets) {
 		a_json["DirectorPhotoPresets"].push_back({
@@ -2442,6 +2541,7 @@ void PixelCapture::StartPhotoFinishCapture()
 		&srcDesc);
 
 	PhotoFinishBurst burst;
+	burst.addPixlWatermark = photoWatermarkEnabled;
 	burst.useNeuralSource = useNeuralSource;
 	burst.warmupFramesTotal =
 		photoFinishLightingWarmupFrames >= 16u ? 16u :
@@ -3100,6 +3200,7 @@ void PixelCapture::CapturePhotoFinishSample()
 		burst.copyToClipboard;
 	screenshot.notify =
 		burst.notify;
+	screenshot.addPixlWatermark = burst.addPixlWatermark;
 
 	SetPhotoFinishStage(
 		PhotoFinishStage::Resolving,
@@ -3248,6 +3349,10 @@ void PixelCapture::ScreenshotWorkerLoop()
 			SetPhotoFinishStage(
 				PhotoFinishStage::Saving,
 				0.96f);
+
+		if (screenshot.addPixlWatermark &&
+			!ApplyPixlPhotoWatermark(image, screenshot.saveAsHdrPng))
+			logger::warn("Photo saved without PIXL watermark because the watermark composite failed.");
 
 		Util::FileHelpers::EnsureDirectoryExists(screenshot.outputPath.parent_path());
 
@@ -3414,6 +3519,7 @@ void PixelCapture::CaptureImpl(const std::optional<std::filesystem::path>& outpu
 	screenshot.outputPath = outputPath.value_or(BuildScreenshotPath(screenshotPath, saveAsHdrPng || saveAsSdrPng));
 	screenshot.copyToClipboard = outputPath.has_value() ? false : copyToClipboard;
 	screenshot.notify = notify;
+	screenshot.addPixlWatermark = directorCapture && photoWatermarkEnabled;
 	EnqueueScreenshot(std::move(screenshot));
 }
 #undef I18N_KEY_PREFIX

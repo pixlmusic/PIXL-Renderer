@@ -2760,6 +2760,7 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 {
 	auto* ui = globals::game::ui;
 	bool isMainOrLoadingMenu = globals::state->IsDisplayReferredModelMenuOpen(ui);
+	const bool isLoadingPresentation = globals::state->IsMainOrLoadingMenuOpen(ui);
 	// FidelityFX composites UI onto its real/generated frames itself. DLSS-G
 	// expects the real backbuffer to already contain HUD pixels and uses the
 	// separate UI guide for interpolation, so it must not skip this composite.
@@ -2767,6 +2768,24 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 		globals::pipeline::imageReconstruction.dx12SwapChain.presenter == DX12SwapChain::Presenter::kFidelityFX;
 	const float frameDelta = std::clamp(static_cast<float>(RE::GetSecondsSinceLastFrame()), 1.0f / 240.0f, 0.1f);
 	const std::uint32_t currentFrame = globals::state ? globals::state->frameCount : 0u;
+	if (isLoadingPresentation) {
+		if (!displayMenuWasActive) {
+			displayMenuTransition = 0.0f;
+			displayMenuTransitionFrame = currentFrame;
+			displayMenuWasActive = true;
+		} else if (displayMenuTransitionFrame != currentFrame) {
+			displayMenuTransition = std::min(
+				1.0f,
+				displayMenuTransition + frameDelta / 0.20f);
+			displayMenuTransitionFrame = currentFrame;
+		}
+	} else {
+		displayMenuWasActive = false;
+		displayMenuTransitionFrame = currentFrame;
+		displayMenuTransition = 1.0f;
+	}
+	const float displayMenuReveal = displayMenuTransition * displayMenuTransition *
+		(3.0f - 2.0f * displayMenuTransition);
 
 	// PIXL weather semantics are resolved once by WeatherManager. RainResponse is
 	// still fused below as a secondary signal so its explicit debug override keeps
@@ -2923,7 +2942,8 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 	data.uiBrightness = settings.hdrUIBrightness;
 	data.isSceneLinear = isSceneLinear ? 1.f : 0.f;
 	data.pad0 = isMainOrLoadingMenu ? 1.f : 0.f;
-	data.menuSceneBrightness = std::clamp(settings.menuSceneBrightness, 0.75f, 3.0f);
+	data.menuSceneBrightness = std::clamp(settings.menuSceneBrightness, 0.75f, 3.0f) *
+		(isLoadingPresentation ? displayMenuReveal : 1.0f);
 	// TweenMenu = pause UI. ScaleUIBrightnessForFG skips while GameIsPaused(), so HDROutputCS applies the same mid-alpha boost when compositing gamma UI.
 	data.fgTweenMenuMidAlphaBoost = (ui && ui->IsMenuOpen(RE::TweenMenu::MENU_NAME)) ? 1.f : 0.f;
 	data.previewSDR = 0.f;

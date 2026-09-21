@@ -728,12 +728,33 @@ namespace Hooks
 
 	struct WndProcHandler_Hook
 	{
+		static void ReleaseDesktopPointerOwnership() noexcept
+		{
+			// Win32 normally releases capture when the game window is destroyed, but
+			// shutdown/focus transitions can race an ImGui drag or Skyrim's cursor
+			// confinement. Explicitly unwind both OS states so the desktop never
+			// inherits a captured or clipped pointer from PIXL's final frame.
+			ReleaseCapture();
+			ClipCursor(nullptr);
+			if (ImGui::GetCurrentContext())
+				ImGui::GetIO().ClearInputMouse();
+		}
+
 		static LRESULT thunk(HWND a_hwnd, UINT a_msg, WPARAM a_wParam, LPARAM a_lParam)
 		{
 			auto menu = globals::menu;
 			if ((a_msg == WM_KILLFOCUS || a_msg == WM_SETFOCUS) && menu->initialized) {
 				menu->focusChanged = true;
 			}
+			const bool releasePointer =
+				a_msg == WM_KILLFOCUS ||
+				(a_msg == WM_ACTIVATEAPP && a_wParam == FALSE) ||
+				a_msg == WM_CANCELMODE ||
+				a_msg == WM_CLOSE ||
+				a_msg == WM_DESTROY ||
+				a_msg == WM_NCDESTROY;
+			if (releasePointer)
+				ReleaseDesktopPointerOwnership();
 			if (a_msg == WM_CLOSE) {
 				globals::OnGameWindowClose();
 			}

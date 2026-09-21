@@ -106,7 +106,8 @@ namespace PIXLUI
 		static constexpr float TunePanelGap = 12.0f;
 		static constexpr float TuneRailX = 15.0f;
 		static constexpr float TuneRailWidth = 56.0f;
-		static constexpr float TuneHeaderWidth = 213.0f + TunePanelGap + 560.0f;
+		static constexpr float TuneHeaderWidth = TuneRailWidth + TunePanelGap +
+			213.0f + TunePanelGap + 560.0f;
 		static constexpr float TuneHeaderHeight = 55.0f;
 		static constexpr float TuneCommandWidth = 400.0f;
 		static constexpr float TuneCommandHeight = 33.0f;

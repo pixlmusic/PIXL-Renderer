@@ -873,12 +873,14 @@ void Menu::DrawSettings()
 		if (settings.AdvancedMode) {
 			const ImVec2 rootPos = ImGui::GetWindowPos();
 
-			const ImVec2 headerStart(
-				rootPos.x + PIXLUI::Ref(PIXLUI::Layout::TuneHeaderX),
-				rootPos.y + PIXLUI::Ref(PIXLUI::Layout::TuneHeaderY));
 			const ImVec2 headerSize(
 				PIXLUI::Ref(PIXLUI::Layout::TuneHeaderWidth),
 				PIXLUI::Ref(PIXLUI::Layout::TuneHeaderHeight));
+			// Align the command bar with the complete rail + drawer + content stack.
+			// Equal outer insets make the authoring shell read as one precise unit.
+			const ImVec2 headerStart(
+				rootPos.x + PIXLUI::Ref(PIXLUI::Layout::TuneRailX),
+				rootPos.y + PIXLUI::Ref(PIXLUI::Layout::TuneHeaderY));
 
 			PIXLUI::DrawChrome(
 				headerStart,
@@ -960,12 +962,14 @@ void Menu::DrawSettings()
 				tunerStatus = "INSPECT FROZEN";
 				tunerStatusColor = PIXLUI::Colors::CyanBright;
 			}
+			const float closeX = headerStart.x + headerSize.x - PIXLUI::Ref(47.0f);
+			const float saveX = closeX - PIXLUI::Ref(100.0f);
+			const float restoreX = saveX - PIXLUI::Ref(88.0f);
+			const float statusX = restoreX - PIXLUI::Ref(122.0f);
 			ImGui::SetCursorScreenPos(
-				ImVec2(
-					headerStart.x + PIXLUI::Ref(344.0f),
-					headerStart.y + PIXLUI::Ref(19.0f)));
+				ImVec2(statusX, headerStart.y + PIXLUI::Ref(19.0f)));
 			if (tunerMode == TuningWorkspaceRenderer::TunerInteractionMode::InspectLocked) {
-				ImGui::SetCursorScreenPos(ImVec2(headerStart.x + PIXLUI::Ref(344.0f), headerStart.y + PIXLUI::Ref(14.0f)));
+				ImGui::SetCursorScreenPos(ImVec2(statusX, headerStart.y + PIXLUI::Ref(14.0f)));
 				if (PIXLUI::ActionButton("RETURN LIVE", ImVec2(PIXLUI::Ref(110.0f), PIXLUI::Ref(27.0f)), true))
 					TuningWorkspaceRenderer::CloseTunerInspection();
 				if (ImGui::IsItemHovered())
@@ -975,9 +979,7 @@ void Menu::DrawSettings()
 			}
 
 			ImGui::SetCursorScreenPos(
-				ImVec2(
-					headerStart.x + PIXLUI::Ref(466.0f),
-					headerStart.y + PIXLUI::Ref(14.0f)));
+				ImVec2(restoreX, headerStart.y + PIXLUI::Ref(14.0f)));
 			if (PIXLUI::ActionButton(
 					"RESTORE",
 					 ImVec2(PIXLUI::Ref(76.0f), PIXLUI::Ref(27.0f)),
@@ -986,9 +988,7 @@ void Menu::DrawSettings()
 			}
 
 			ImGui::SetCursorScreenPos(
-				ImVec2(
-					headerStart.x + PIXLUI::Ref(554.0f),
-					headerStart.y + PIXLUI::Ref(14.0f)));
+				ImVec2(saveX, headerStart.y + PIXLUI::Ref(14.0f)));
 			if (PIXLUI::ActionButton(
 					"SAVE LOOK",
 					ImVec2(PIXLUI::Ref(88.0f), PIXLUI::Ref(27.0f)),
@@ -997,7 +997,7 @@ void Menu::DrawSettings()
 				globals::state->SaveTheme();
 				savedLookAt = static_cast<float>(ImGui::GetTime());
 			}
-			ImGui::SetCursorScreenPos(ImVec2(headerStart.x + PIXLUI::Ref(654.0f), headerStart.y + PIXLUI::Ref(14.0f)));
+			ImGui::SetCursorScreenPos(ImVec2(closeX, headerStart.y + PIXLUI::Ref(14.0f)));
 			ImGui::PushID("CloseTuner");
 			if (PIXLUI::ActionButton("X", ImVec2(PIXLUI::Ref(27.0f), PIXLUI::Ref(27.0f)), false)) {
 				TuningWorkspaceRenderer::CloseTunerInspection();

@@ -141,6 +141,9 @@ struct PixelCapture : public RenderModule
 	bool photoFinishMotionEnabled = false;
 	float photoFinishMotionStrength = 0.18f;
 	float photoFinishMotionAngleDegrees = 0.0f;
+	// Optional Director-only PIXL signature. It is composited into the saved
+	// image on the worker thread, never into gameplay or the live viewfinder.
+	bool photoWatermarkEnabled = false;
 
 	struct DirectorPhotoPreset
 	{
@@ -207,6 +210,7 @@ private:
 		int hdrPngBitDepth = 11;
 		bool copyToClipboard = false;
 		bool notify = true;
+		bool addPixlWatermark = false;
 	};
 
 	struct PhotoFinishBurst
@@ -257,6 +261,7 @@ private:
 		int hdrPngBitDepth = 11;
 		bool copyToClipboard = false;
 		bool notify = true;
+		bool addPixlWatermark = false;
 	};
 
 	struct CustomCaptureRequest

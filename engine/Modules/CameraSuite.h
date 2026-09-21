@@ -439,6 +439,12 @@ public:
 	mutable float coldLensState = 0.0f;
 	mutable float fireLensState = 0.0f;
 	mutable float frostImpactLensState = 0.0f;
+	// Main/loading preview geometry can arrive one render pass before its authored
+	// colour textures. A short scene-only reveal masks that white placeholder
+	// frame without dimming UI text or affecting gameplay exposure.
+	mutable bool displayMenuWasActive = false;
+	mutable std::uint32_t displayMenuTransitionFrame = UINT32_MAX;
+	mutable float displayMenuTransition = 1.0f;
 
 	// Director keeps PIXL's optional depth-dependent camera effects isolated from
 	// its clean capture path. Skyrim's native DOF remains governed by the public
