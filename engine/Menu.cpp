@@ -1,4 +1,5 @@
 #include "Menu.h"
+#include "Menu/ExtensionPillar.h"
 
 #include <SKSE/InputMap.h>
 
@@ -370,8 +371,15 @@ const Menu::ThemeSettings::FontRoleSettings& Menu::GetDefaultFontRole(FontRole r
 	return MenuFonts::GetDefaultRole(role);
 }
 
+Menu::Menu()
+{
+	// Construct registry first so its static lifetime encloses Menu teardown.
+	(void)PIXLUI::Extensions::GetRegistry();
+}
+
 Menu::~Menu()
 {  // Release icon textures if loaded
+	PIXLUI::Extensions::Shutdown();
 	uiIcons.saveSettings.Release();
 	uiIcons.loadSettings.Release();
 	uiIcons.deleteSettings.Release();
@@ -462,6 +470,18 @@ void Menu::Load(json& o_json)
 	};
 
 	migrateKey(o_json, "ToggleKey", settings.ToggleKey);
+	migrateKey(o_json, "NeuralRenderingKey", settings.NeuralRenderingKey);
+	migrateKey(o_json, "FrameGenerationKey", settings.FrameGenerationKey);
+	migrateKey(o_json, "PhotoModeKey", settings.PhotoModeKey);
+	migrateKey(o_json, "PhotoZoomInKey", settings.PhotoZoomInKey);
+	migrateKey(o_json, "PhotoZoomOutKey", settings.PhotoZoomOutKey);
+	migrateKey(o_json, "PhotoSpeedDownKey", settings.PhotoSpeedDownKey);
+	migrateKey(o_json, "PhotoSpeedUpKey", settings.PhotoSpeedUpKey);
+	migrateKey(o_json, "PhotoQuickPreviousKey", settings.PhotoQuickPreviousKey);
+	migrateKey(o_json, "PhotoQuickNextKey", settings.PhotoQuickNextKey);
+	migrateKey(o_json, "PhotoQuickDecreaseKey", settings.PhotoQuickDecreaseKey);
+	migrateKey(o_json, "PhotoQuickIncreaseKey", settings.PhotoQuickIncreaseKey);
+	migrateKey(o_json, "TunerFlycamKey", settings.TunerFlycamKey);
 	migrateKey(o_json, "SkipCompilationKey", settings.SkipCompilationKey);
 	migrateKey(o_json, "EffectToggleKey", settings.EffectToggleKey);
 	migrateKey(o_json, "OverlayToggleKey", settings.OverlayToggleKey);
@@ -482,6 +502,18 @@ void Menu::Load(json& o_json)
 	};
 
 	loadComboList(o_json, "ToggleKey", settings.ToggleKey);
+	loadComboList(o_json, "NeuralRenderingKey", settings.NeuralRenderingKey);
+	loadComboList(o_json, "FrameGenerationKey", settings.FrameGenerationKey);
+	loadComboList(o_json, "PhotoModeKey", settings.PhotoModeKey);
+	loadComboList(o_json, "PhotoZoomInKey", settings.PhotoZoomInKey);
+	loadComboList(o_json, "PhotoZoomOutKey", settings.PhotoZoomOutKey);
+	loadComboList(o_json, "PhotoSpeedDownKey", settings.PhotoSpeedDownKey);
+	loadComboList(o_json, "PhotoSpeedUpKey", settings.PhotoSpeedUpKey);
+	loadComboList(o_json, "PhotoQuickPreviousKey", settings.PhotoQuickPreviousKey);
+	loadComboList(o_json, "PhotoQuickNextKey", settings.PhotoQuickNextKey);
+	loadComboList(o_json, "PhotoQuickDecreaseKey", settings.PhotoQuickDecreaseKey);
+	loadComboList(o_json, "PhotoQuickIncreaseKey", settings.PhotoQuickIncreaseKey);
+	loadComboList(o_json, "TunerFlycamKey", settings.TunerFlycamKey);
 	loadComboList(o_json, "SkipCompilationKey", settings.SkipCompilationKey);
 	loadComboList(o_json, "EffectToggleKey", settings.EffectToggleKey);
 	loadComboList(o_json, "OverlayToggleKey", settings.OverlayToggleKey);
@@ -557,6 +589,18 @@ void Menu::Save(json& o_json)
 
 	// Manually save input combos using the smart serializer
 	InputCombo::ComboList::to_json(o_json["ToggleKey"], settings.ToggleKey);
+	InputCombo::ComboList::to_json(o_json["NeuralRenderingKey"], settings.NeuralRenderingKey);
+	InputCombo::ComboList::to_json(o_json["FrameGenerationKey"], settings.FrameGenerationKey);
+	InputCombo::ComboList::to_json(o_json["PhotoModeKey"], settings.PhotoModeKey);
+	InputCombo::ComboList::to_json(o_json["PhotoZoomInKey"], settings.PhotoZoomInKey);
+	InputCombo::ComboList::to_json(o_json["PhotoZoomOutKey"], settings.PhotoZoomOutKey);
+	InputCombo::ComboList::to_json(o_json["PhotoSpeedDownKey"], settings.PhotoSpeedDownKey);
+	InputCombo::ComboList::to_json(o_json["PhotoSpeedUpKey"], settings.PhotoSpeedUpKey);
+	InputCombo::ComboList::to_json(o_json["PhotoQuickPreviousKey"], settings.PhotoQuickPreviousKey);
+	InputCombo::ComboList::to_json(o_json["PhotoQuickNextKey"], settings.PhotoQuickNextKey);
+	InputCombo::ComboList::to_json(o_json["PhotoQuickDecreaseKey"], settings.PhotoQuickDecreaseKey);
+	InputCombo::ComboList::to_json(o_json["PhotoQuickIncreaseKey"], settings.PhotoQuickIncreaseKey);
+	InputCombo::ComboList::to_json(o_json["TunerFlycamKey"], settings.TunerFlycamKey);
 	InputCombo::ComboList::to_json(o_json["SkipCompilationKey"], settings.SkipCompilationKey);
 	InputCombo::ComboList::to_json(o_json["EffectToggleKey"], settings.EffectToggleKey);
 	InputCombo::ComboList::to_json(o_json["OverlayToggleKey"], settings.OverlayToggleKey);
@@ -825,8 +869,6 @@ void Menu::DrawSettings()
 	// Apply theme styling with universal contrast enhancement
 	ThemeManager::SetupImGuiStyle(*this);
 
-	ImGui::DockSpaceOverViewport(0, NULL, ImGuiDockNodeFlags_PassthruCentralNode);
-
 	// The authoring shell is an intentional viewport overlay, not a dockable
 	// remembered window. Reapply its geometry on every open so an older full-size
 	// tuner layout cannot overlap or clip the compact reference composition.
@@ -837,7 +879,7 @@ void Menu::DrawSettings()
 
 	if (settings.AdvancedMode) {
 		const ImVec2 viewportSize =
-			ImGui::GetMainViewport()->Size;
+			ImGui::GetMainViewport()->WorkSize;
 		const float referenceScale = 0.88f * std::min(
 			viewportSize.x / PIXLUI::Layout::ReferenceWidth,
 			viewportSize.y / PIXLUI::Layout::ReferenceHeight);
@@ -858,14 +900,18 @@ void Menu::DrawSettings()
 			fixedSize,
 			ImGui::GetMainViewport()->WorkSize);
 	} else {
+		const auto* viewport = ImGui::GetMainViewport();
+		// Public controls must not inherit the tuner's last reference scale.
+		PIXLUI::SetReferenceScale(Util::GetUIScale());
 		ImGui::SetNextWindowPos(
-			Util::GetNativeViewportSizeScaled(0.5f),
+			ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+				viewport->WorkPos.y + viewport->WorkSize.y * 0.5f),
 			layoutCond,
 			ImVec2(0.5f, 0.5f));
 		ImGui::SetNextWindowSize(
 			ImVec2(
-				Util::GetNativeViewportSizeScaled(0.72f).x,
-				Util::GetNativeViewportSizeScaled(0.78f).y),
+				viewport->WorkSize.x * 0.72f,
+				viewport->WorkSize.y * 0.78f),
 			layoutCond);
 	}
 
@@ -882,10 +928,9 @@ void Menu::DrawSettings()
 		ImGuiWindowFlags_NoScrollbar |
 		ImGuiWindowFlags_NoDocking |
 		ImGuiWindowFlags_NoTitleBar |
+		ImGuiWindowFlags_NoMove |
+		ImGuiWindowFlags_NoResize |
 		ImGuiWindowFlags_NoBackground;
-
-	// Advanced tuning is resizable; keep the reference scale independent of user
-	// size so enlarging the canvas adds usable space rather than larger controls.
 
 	// Only hide title bar when not docked.
 	if (settings.AdvancedMode) {
@@ -895,13 +940,6 @@ void Menu::DrawSettings()
 	Util::BeginWithRoundedClose(title.c_str(), &IsEnabled, windowFlags);
 	ImGuiWindow* tunerRootWindow = ImGui::GetCurrentWindow();
 	{
-		if (settings.AdvancedMode && false) {
-			const ImVec2 windowMin = ImGui::GetWindowPos();
-			const ImVec2 windowMax(
-				windowMin.x + ImGui::GetWindowSize().x,
-				windowMin.y + ImGui::GetWindowSize().y);
-			PIXLUI::DrawWindowShell(windowMin, windowMax);
-		}
 		static float savedLookAt = -100.0f;
 
 		if (settings.AdvancedMode) {
@@ -1258,7 +1296,7 @@ void Menu::DrawSettings()
 		!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
 	const float previewTarget = previewDrag ? 0.10f : 1.0f;
 	tunerPreviewOpacity += (previewTarget - tunerPreviewOpacity) *
-		std::min(1.0f, ImGui::GetIO().DeltaTime * 28.0f);
+		(1.0f - std::exp(-28.0f * std::max(0.0f, ImGui::GetIO().DeltaTime)));
 	if (!tunerStyleAtFrameStart || !IsEnabled || std::abs(tunerPreviewOpacity - previewTarget) < 0.005f)
 		tunerPreviewOpacity = tunerStyleAtFrameStart && IsEnabled ? previewTarget : 1.0f;
 	if (tunerStyleAtFrameStart && tunerPreviewOpacity < 1.0f) {
@@ -1464,9 +1502,9 @@ void Menu::ProcessInputEventQueue()
 			logger::trace("Detect mouse scan code {} value {} pressed: {}", event.keyCode, event.value, event.IsPressed());
 			if (event.keyCode > 7) {  // middle scroll
 				io.AddMouseWheelEvent(0, event.value * (event.keyCode == 8 ? 1 : -1));
-			} else {
-				if (event.keyCode > 5)
-					event.keyCode = 5;
+			} else if (event.keyCode < IM_ARRAYSIZE(io.MouseDown)) {
+				// ImGui supports five mouse buttons (0..4). Do not alias additional
+				// Skyrim buttons to a non-existent sixth button or to a primary click.
 				io.AddMouseButtonEvent(event.keyCode, event.IsPressed());
 			}
 		}
@@ -1505,6 +1543,13 @@ void Menu::ProcessInputEventQueue()
 			if (key == event.keyCode)
 				key = MapVirtualKeyEx(event.keyCode, MAPVK_VSC_TO_VK_EX, GetKeyboardLayout(0));
 
+			const bool wasCapturingHotkey = IsCapturingHotkeyInput();
+			const bool popupOpen = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+			// Remember ownership on key-down: Escape may dismiss a popup/input
+			// before key-up, but must not then also close the entire workspace.
+			if (event.IsDown() && (io.WantTextInput || popupOpen))
+				_comboFiredKeys.insert(key);
+
 			// Tuner ownership is evaluated before Director's legacy photo shortcuts
 			// and before ImGui routing.  Shift+navigation begins/continues inspection;
 			// releasing Shift immediately returns a locked camera to the UI.
@@ -1535,29 +1580,14 @@ void Menu::ProcessInputEventQueue()
 				continue;
 			}
 
-			// Ctrl+N is a deliberately fixed, discoverable release shortcut. It is
-			// omitted from first-run setup to keep onboarding focused on navigation;
-			// the launch reminder and Camera page advertise it when applicable.
-			if (event.IsDown() && key == 'N' &&
-				(GetAsyncKeyState(VK_CONTROL) & Constants::KEY_PRESSED_MASK)) {
-				const std::string status = globals::pipeline::imageReconstruction
-					.ToggleNeuralRenderingFromHotkey();
-				if (auto* task = SKSE::GetTaskInterface()) {
-					task->AddTask([status]() {
-						RE::SendHUDMessage::ShowHUDMessage(status.c_str(), nullptr, true);
-					});
-				}
-				_comboFiredKeys.insert(key);
-				continue;
-			}
-
-			const bool wasCapturingHotkey = IsCapturingHotkeyInput();
 			const bool allowSetupCloseKey = wasCapturingHotkey && LaunchExperienceRenderer::ShouldShowFirstTimeSetup() &&
 			                                (key == VK_RETURN || key == VK_ESCAPE);
 
 			// Dispatch bound hotkey actions for `key`. Combo bindings (modifier + key)
 			// fire on key-down for responsiveness; single-key bindings fire on key-up.
 			auto dispatchHotkeyActions = [this, key](bool combosOnly) {
+				if (ImGui::GetIO().WantTextInput || ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel))
+					return false;
 				struct KeyAction
 				{
 					std::vector<InputCombo>& settingKey;
@@ -1575,6 +1605,17 @@ void Menu::ProcessInputEventQueue()
 							 }
 						 }
 					 } },
+					{ settings.NeuralRenderingKey, [this]() {
+						const std::string status = globals::pipeline::imageReconstruction.ToggleNeuralRenderingFromHotkey();
+						if (auto* task = SKSE::GetTaskInterface())
+							task->AddTask([status]() { RE::SendHUDMessage::ShowHUDMessage(status.c_str(), nullptr, true); });
+					 } },
+					{ settings.FrameGenerationKey, [this]() {
+						const std::string status = globals::pipeline::imageReconstruction.ToggleFrameGenerationFromHotkey();
+						if (auto* task = SKSE::GetTaskInterface())
+							task->AddTask([status]() { RE::SendHUDMessage::ShowHUDMessage(status.c_str(), nullptr, true); });
+					 } },
+					{ settings.PhotoModeKey, []() { TuningWorkspaceRenderer::OpenDirectorPhotoMode(); } },
 					{ settings.SkipCompilationKey, [this, shaderCache]() {
 						 // ENTER SKYRIM converts foreground compilation into background
 						 // compilation. OverlayRenderer observes this flag on the same
@@ -1588,9 +1629,9 @@ void Menu::ProcessInputEventQueue()
 							 logger::info("ENTER SKYRIM accepted: shader compilation continuing in background.");
 						 }
 					 } },
-					{ settings.EffectToggleKey, [shaderCache]() { shaderCache->SetEnabled(!shaderCache->IsEnabled()); } },
-					{ settings.ShaderBlockPrevKey, [this, shaderCache]() { if (settings.EnableShaderBlocking) shaderCache->IterateShaderBlock(); } },
-					{ settings.ShaderBlockNextKey, [this, shaderCache]() { if (settings.EnableShaderBlocking) shaderCache->IterateShaderBlock(false); } },
+					{ settings.EffectToggleKey, [shaderCache]() { if (shaderCache) shaderCache->SetEnabled(!shaderCache->IsEnabled()); } },
+					{ settings.ShaderBlockPrevKey, [this, shaderCache]() { if (shaderCache && settings.EnableShaderBlocking) shaderCache->IterateShaderBlock(); } },
+					{ settings.ShaderBlockNextKey, [this, shaderCache]() { if (shaderCache && settings.EnableShaderBlocking) shaderCache->IterateShaderBlock(false); } },
 					{ settings.OverlayToggleKey, []() { Menu::GetSingleton()->overlayVisible = !Menu::GetSingleton()->overlayVisible; } },
 					{ settings.ScreenshotKey, []() {
 						 // END/Photo Mode belongs exclusively to Director capture.
@@ -1612,7 +1653,7 @@ void Menu::ProcessInputEventQueue()
 			};
 
 			// Hardcoded Shift+Enter toggle for the CS menu (always available)
-			if (event.IsDown() && key == VK_RETURN && (GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
+			if (event.IsDown() && key == VK_RETURN && !io.WantTextInput && !wasCapturingHotkey && !popupOpen && (GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
 			if (!LaunchExperienceRenderer::ShouldShowFirstTimeSetup()) {
 				IsEnabled = !IsEnabled;
 				if (IsEnabled) {
@@ -1625,12 +1666,41 @@ void Menu::ProcessInputEventQueue()
 			}
 
 			if (!event.IsPressed()) {
+				bool handled = false;
 				// Skip key release if it was used to close the first-time setup dialog
 				if (LaunchExperienceRenderer::ShouldSkipKeyRelease(key)) {
 					io.AddKeyEvent(Util::Input::VirtualKeyToImGuiKey(key), event.IsPressed());
 					continue;
 				}
 
+				if (settingCustomHotkey && customHotkeyTarget) {
+					// Enter/Escape belong to the first-run dialog while it is
+					// visible; never persist either as a user hotkey.
+					if (key == VK_ESCAPE ||
+						(LaunchExperienceRenderer::ShouldShowFirstTimeSetup() && key == VK_RETURN)) {
+						CancelCustomHotkeyCapture();
+						handled = true;
+					} else {
+						const bool isModifier = key == VK_CONTROL || key == VK_LCONTROL || key == VK_RCONTROL ||
+							key == VK_SHIFT || key == VK_LSHIFT || key == VK_RSHIFT ||
+							key == VK_MENU || key == VK_LMENU || key == VK_RMENU;
+						if (isModifier) {
+							handled = true;
+						} else {
+							std::vector<InputCombo> combo;
+							if (GetAsyncKeyState(VK_CONTROL) & Constants::KEY_PRESSED_MASK)
+								combo.push_back(InputCombo::Keyboard(VK_CONTROL));
+							if (GetAsyncKeyState(VK_SHIFT) & Constants::KEY_PRESSED_MASK)
+								combo.push_back(InputCombo::Keyboard(VK_SHIFT));
+							if (GetAsyncKeyState(VK_MENU) & Constants::KEY_PRESSED_MASK)
+								combo.push_back(InputCombo::Keyboard(VK_MENU));
+							combo.push_back(InputCombo::Keyboard(key));
+							*customHotkeyTarget = std::move(combo);
+							CancelCustomHotkeyCapture();
+							handled = true;
+						}
+					}
+				}
 				struct HotkeyAction
 				{
 					std::vector<InputCombo>* settingKey;
@@ -1649,7 +1719,6 @@ void Menu::ProcessInputEventQueue()
 					{ &settings.ShaderBlockNextKey, &settingShaderBlockNextKey, [this](std::vector<InputCombo> keys) { settings.ShaderBlockNextKey = keys; settingShaderBlockNextKey = false; } },
 					{ &settings.ScreenshotKey, &settingScreenshotKey, [this](std::vector<InputCombo> keys) { settings.ScreenshotKey = keys; settingScreenshotKey = false; } },
 				};
-				bool handled = false;
 				for (auto& h : hotkeyActions) {
 					if (*(h.settingFlag)) {
 						// During first-time setup, don't capture Enter or Escape as hotkeys
@@ -1693,16 +1762,17 @@ void Menu::ProcessInputEventQueue()
 						break;
 					}
 				}
-				if (!handled) {
+				const bool ownedKeyRelease = _comboFiredKeys.erase(key) != 0;
+				if (!handled && !wasCapturingHotkey) {
 					// Single-key hotkeys fire on key-up; combos already fired on key-down.
 					// If this key's key-down already fired a combo, suppress the single-key
 					// binding so releasing the modifier first doesn't trigger it as well.
-					if (_comboFiredKeys.erase(key) == 0)
+					if (!ownedKeyRelease)
 						dispatchHotkeyActions(false);
 				}
 
 				// Escape closes the single PIXL interface.
-				if (key == VK_ESCAPE) {
+				if (key == VK_ESCAPE && !ownedKeyRelease && !wasCapturingHotkey && !io.WantTextInput && !popupOpen) {
 					if (IsEnabled) {
 						IsEnabled = false;
 					}
@@ -1718,11 +1788,16 @@ void Menu::ProcessInputEventQueue()
 			// Don't forward hotkey events to ImGui when input is captured (prevents e.g. End key scrolling the feature list)
 			// SkipCompilationKey (ESC) is excluded â€” ESC must reach ImGui for menu/dialog close.
 			const std::vector<InputCombo>* hotkeys[] = {
-				&settings.ToggleKey, &settings.EffectToggleKey,
+				&settings.ToggleKey, &settings.NeuralRenderingKey, &settings.FrameGenerationKey,
+				&settings.PhotoModeKey, &settings.PhotoZoomInKey, &settings.PhotoZoomOutKey,
+				&settings.PhotoSpeedDownKey, &settings.PhotoSpeedUpKey,
+				&settings.PhotoQuickPreviousKey, &settings.PhotoQuickNextKey,
+				&settings.PhotoQuickDecreaseKey, &settings.PhotoQuickIncreaseKey,
+				&settings.EffectToggleKey,
 				&settings.OverlayToggleKey, &settings.ShaderBlockPrevKey, &settings.ShaderBlockNextKey,
 				&settings.ScreenshotKey
 			};
-			bool isHotkey = ShouldSwallowInput() && std::any_of(std::begin(hotkeys), std::end(hotkeys),
+			bool isHotkey = !io.WantTextInput && !popupOpen && ShouldSwallowInput() && std::any_of(std::begin(hotkeys), std::end(hotkeys),
 														[key](const auto* combo) { return InputCombo::MatchesKeyboardCombo(*combo, key); });
 
 			// Always forward key-up events. Suppress key-down during active hotkeys,
@@ -1750,7 +1825,8 @@ void Menu::ProcessInputEventQueue()
 bool Menu::IsCapturingHotkeyInput() const
 {
 	return settingToggleKey || settingSkipCompilationKey || settingsEffectsToggle ||
-	       settingOverlayToggleKey || settingShaderBlockPrevKey || settingShaderBlockNextKey || settingScreenshotKey;
+	       settingOverlayToggleKey || settingShaderBlockPrevKey || settingShaderBlockNextKey || settingScreenshotKey ||
+	       settingCustomHotkey;
 }
 
 void Menu::addToEventQueue(KeyEvent e)
@@ -1761,6 +1837,7 @@ void Menu::addToEventQueue(KeyEvent e)
 
 void Menu::OnFocusChanged()
 {
+	CancelCustomHotkeyCapture();
 	// Solves the alt+tab stuck issue, but disables tab after tabbing back in.
 	if (const auto& inputMgr = RE::BSInputDeviceManager::GetSingleton()) {
 		if (const auto& device = inputMgr->GetKeyboard()) {
@@ -1770,6 +1847,7 @@ void Menu::OnFocusChanged()
 	// Allows tab to work again after alt+tabbing back in.
 	if (ImGui::GetCurrentContext())
 		ImGui::GetIO().ClearInputKeys();
+	_comboFiredKeys.clear();
 }
 
 void Menu::ProcessInputEvents(RE::InputEvent* const* a_events)

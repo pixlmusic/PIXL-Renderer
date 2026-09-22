@@ -28,9 +28,15 @@
 #include <format>
 #include <functional>
 #include <malloc.h>
+#include <atomic>
 
 namespace
 {
+	// Capture names are intentionally independent of Skyrim/Community Shaders
+	// naming.  Keep the counter process-local, then skip any existing files so
+	// repeated launches never overwrite an earlier PIXL photograph.
+	std::atomic_uint32_t g_nextPixlCaptureIndex{ 1u };
+
 	// Capture source for the current runtime. SRV is non-owning - the texture's
 	// lifetime is owned by the slot or a caller-held com_ptr.
 	struct CaptureSource
@@ -560,16 +566,18 @@ namespace
 
 	std::filesystem::path BuildScreenshotPath(const std::string& screenshotPath, bool usePng)
 	{
-		SYSTEMTIME st;
-		GetLocalTime(&st);
-		char buf[80];
 		const char* extension = usePng ? ".png" : ".bmp";
-		snprintf(buf, sizeof(buf), "CS_%04d-%02d-%02d_%02d-%02d-%02d_%03d%s",
-			st.wYear, st.wMonth, st.wDay,
-			st.wHour, st.wMinute, st.wSecond,
-			st.wMilliseconds,
-			extension);
-		return ResolveToAbsoluteGamePath(std::filesystem::path(screenshotPath) / buf);
+		const auto directory = ResolveToAbsoluteGamePath(std::filesystem::path(screenshotPath));
+		std::error_code error;
+		for (;;) {
+			const auto index = g_nextPixlCaptureIndex.fetch_add(1u, std::memory_order_relaxed);
+			const auto filename = std::format("PIXL-R-{}-{:04d}{}", Plugin::DISPLAY_VERSION, index, extension);
+			const auto candidate = directory / filename;
+			if (!std::filesystem::exists(candidate, error) || error) {
+				return candidate;
+			}
+			error.clear();
+		}
 	}
 
 	struct HdrFormatInfo
@@ -2232,7 +2240,11 @@ void PixelCapture::DrawSettings()
 	if (ImGui::Button(T(TKEY("open"), "Open"))) {
 		std::error_code ec;
 		std::filesystem::create_directories(screenshotPath, ec);
-		ShellExecuteA(nullptr, "open", screenshotPath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+		// A user-authored path is a directory, never an executable or URI.
+		if (!ec && std::filesystem::is_directory(screenshotPath, ec) && !ec)
+			ShellExecuteA(nullptr, "open", screenshotPath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+		else
+			logger::warn("[PIXL Capture] Cannot open screenshot directory: {}", ec.message());
 	}
 	ImGui::EndDisabled();
 	ImGui::SameLine();
@@ -2264,7 +2276,7 @@ void PixelCapture::DrawSettings()
 	const auto src = SelectCaptureSource(previewTextureKeepAlive, /*forCapture=*/false);
 
 	ID3D11ShaderResourceView* previewView = src.srv;
-	if (src.texture && (src.needsPreviewCache || !previewView)) {
+	if (globals::d3d::context && src.texture && (src.needsPreviewCache || !previewView)) {
 		EnsurePreviewCache(src.texture);
 		if (previewCacheSRV && previewCacheTexture) {
 			globals::d3d::context->CopySubresourceRegion(
@@ -2278,7 +2290,7 @@ void PixelCapture::DrawSettings()
 
 void PixelCapture::EnsurePreviewCache(ID3D11Texture2D* sourceTexture)
 {
-	if (!sourceTexture) {
+	if (!sourceTexture || !globals::d3d::device) {
 		return;
 	}
 	D3D11_TEXTURE2D_DESC srcDesc{};

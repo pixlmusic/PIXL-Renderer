@@ -709,9 +709,8 @@ void CameraSuite::DrawSettings()
 					changed = true;
 				}
 				ImGui::EndDisabled();
-				DrawSettingsTooltip("Blends the selected LUT with the neutral tonemap in real time from 0 to 100%. Values around 20-45% preserve weather and texture authorship best.");
+				DrawSettingsTooltip("Blends the selected colour grade from 0 to 100%. Start low to preserve weather and texture colours; Cinematic starts at a restrained 7%.");
 			}
-			ImGui::SameLine();
 			if (ImGui::Button("Bodycam Preset")) {
 				settings.cameraAutoExposure = true;
 				settings.cameraExposureCompensationEV = 0.0f;

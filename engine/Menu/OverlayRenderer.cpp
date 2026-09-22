@@ -4,6 +4,8 @@
 #include "ThemeManager.h"
 #include "TuningWorkspaceRenderer.h"
 #include "PIXLStyle.h"
+#include "ExtensionPillar.h"
+#include "PIXLRendererPage.h"
 
 #include <dxgi.h>
 #include <array>
@@ -169,7 +171,13 @@ void OverlayRenderer::RenderOverlay(
 	float currentFontSize)
 {
 	processInputEventQueue();
+	if (!menu.IsEnabled) {
+		menu.CancelCustomHotkeyCapture();
+		PIXLRendererPage::FlushPendingEdits(true);
+	}
 	TuningWorkspaceRenderer::UpdateTunerInspection();
+	if (!menu.IsEnabled || !menu.GetSettings().AdvancedMode)
+		PIXLUI::Extensions::ClosePillar();
 	PIXLRenderer::WorldBenchmark::GetSingleton().Update();
 
 	if (ShouldSkipRendering()) {
@@ -192,8 +200,13 @@ void OverlayRenderer::RenderOverlay(
 		ImGui::GetIO().MouseDrawCursor = !inspectionMoving;
 		if (menu.IsEnabled && !inspectionMoving) {
 			drawSettings();
+			if (menu.IsEnabled && menu.GetSettings().AdvancedMode)
+				PIXLUI::Extensions::DrawPillar();
+			else
+				PIXLUI::Extensions::ClosePillar();
 		}
 	} else {
+		PIXLUI::Extensions::ClosePillar();
 		ImGui::GetIO().MouseDrawCursor = menu.IsProfilerInteractive();
 	}
 
@@ -216,6 +229,7 @@ void OverlayRenderer::RenderOverlay(
 		PatchOverlappingWindowBackgrounds();
 	}
 
+	PIXLRendererPage::FlushPendingEdits();
 	FinalizeImGuiFrame();
 }
 

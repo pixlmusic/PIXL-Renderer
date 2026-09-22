@@ -534,6 +534,23 @@ namespace WindowLife
                 SamplePaneGlowEvidence(materialUV + float2(0.0f, glowTexel.y * 2.0f), atlasTile)));
         float authoredCore = smoothstep(0.10f, 0.68f, neighborFloor);
 
+        // Native glow maps are often authored with a one-texel bloom/antialias
+        // halo around the pane.  The coarse four-neighbour test above is useful
+        // for joining leaded sub-panes, but it can still promote that halo (and
+        // therefore a thin slice of the wooden/stone frame) into glass.  Require
+        // the immediate neighbours to remain pane evidence as well.  This keeps
+        // the procedural path inside the visible frame while leaving installed
+        // exact masks authoritative and untouched.
+        float immediateFloor = min(
+            min(
+                SamplePaneGlowEvidence(materialUV - float2(glowTexel.x, 0.0f), atlasTile),
+                SamplePaneGlowEvidence(materialUV + float2(glowTexel.x, 0.0f), atlasTile)),
+            min(
+                SamplePaneGlowEvidence(materialUV - float2(0.0f, glowTexel.y), atlasTile),
+                SamplePaneGlowEvidence(materialUV + float2(0.0f, glowTexel.y), atlasTile)));
+        float borderGuard = smoothstep(0.18f, 0.72f, immediateFloor);
+        authoredCore *= borderGuard;
+
         // Some architectural glow atlases include luminous trim, frames, or even
         // broad facade texels. The glow map says where a pane may exist; the
         // locally flat tangent normal confirms that the texel is glass. This is

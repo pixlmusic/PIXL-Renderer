@@ -6,6 +6,7 @@
 #include <imgui.h>
 
 #include "Fonts.h"
+#include "Controls.h"
 #include "ThemeManager.h"
 #include "../Util.h"
 
@@ -160,6 +161,30 @@ namespace PIXLUI
 	{
 		return value * gReferenceScale;
 	}
+
+	// DrawList colours bypass ImGui's style alpha. Apply it once to each custom
+	// primitive so disabled controls and closing panel chrome fade consistently.
+	class DrawingAlphaScope
+	{
+	public:
+		DrawingAlphaScope() : draw_(ImGui::GetWindowDrawList()), first_(draw_->VtxBuffer.Size), alpha_(ImGui::GetStyle().Alpha) {}
+		~DrawingAlphaScope()
+		{
+			if (alpha_ >= 1.0f)
+				return;
+			for (int i = first_; i < draw_->VtxBuffer.Size; ++i) {
+				auto& colour = draw_->VtxBuffer[i].col;
+				const auto alpha = static_cast<ImU32>(((colour & IM_COL32_A_MASK) >> IM_COL32_A_SHIFT) * alpha_);
+				colour = (colour & ~IM_COL32_A_MASK) | (alpha << IM_COL32_A_SHIFT);
+			}
+		}
+		DrawingAlphaScope(const DrawingAlphaScope&) = delete;
+		DrawingAlphaScope& operator=(const DrawingAlphaScope&) = delete;
+	private:
+		ImDrawList* draw_;
+		int first_;
+		float alpha_;
+	};
 
 	enum class ChromeStyle : std::uint8_t
 	{
@@ -927,6 +952,7 @@ namespace PIXLUI
 
 	inline void DrawChrome(ImVec2 min, ImVec2 max, ChromeStyle style, bool accent = false)
 	{
+		DrawingAlphaScope opacity;
 		ImDrawList* draw = ImGui::GetWindowDrawList();
 		if (!draw || max.x <= min.x || max.y <= min.y)
 			return;
@@ -1217,6 +1243,7 @@ namespace PIXLUI
 
 	inline bool NavItem(const char* id, const char* label, bool selected, float height = 0.0f)
 	{
+		DrawingAlphaScope opacity;
 		ImGui::PushID(id);
 
 		const float baseWidth =
@@ -1237,7 +1264,7 @@ namespace PIXLUI
 				"##nav",
 				ImVec2(
 					baseWidth,
-					h));
+					h), ImGuiButtonFlags_EnableNav);
 		const bool hovered =
 			ImGui::IsItemHovered();
 
@@ -1584,6 +1611,7 @@ namespace PIXLUI
 
 	inline bool Toggle(const char* id, bool* value)
 	{
+		DrawingAlphaScope opacity;
 		ImGui::PushID(id);
 
 		const float w =
@@ -1598,7 +1626,7 @@ namespace PIXLUI
 				"##sigilSwitch",
 				ImVec2(
 					w,
-					h));
+					h), ImGuiButtonFlags_EnableNav);
 
 		if (pressed)
 			*value = !*value;
@@ -1746,10 +1774,14 @@ namespace PIXLUI
 
 	inline bool ActionButton(const char* label, ImVec2 size = ImVec2(0, 0), bool primary = false)
 	{
+		DrawingAlphaScope opacity;
+		ImGui::PushID(label);
 		const ImVec2 textSize =
 			ImGui::CalcTextSize(label);
 
-		if (size.x <= 0.0f)
+		if (size.x < 0.0f)
+			size.x = std::max(1.0f, ImGui::GetContentRegionAvail().x + size.x);
+		else if (size.x == 0.0f)
 			size.x =
 				textSize.x +
 				Ref(
@@ -1765,8 +1797,8 @@ namespace PIXLUI
 			ImGui::GetCursorScreenPos();
 		const bool pressed =
 			ImGui::InvisibleButton(
-				label,
-				size);
+				"##action",
+				size, ImGuiButtonFlags_EnableNav);
 		const bool hovered =
 			ImGui::IsItemHovered();
 		const bool active =
@@ -1867,6 +1899,7 @@ namespace PIXLUI
 					hoverT)),
 			label);
 
+		ImGui::PopID();
 		return pressed;
 	}
 
@@ -1877,6 +1910,7 @@ namespace PIXLUI
 		bool selected,
 		ImVec2 size)
 	{
+		DrawingAlphaScope opacity;
 		ImGui::PushID(id);
 
 		const ImVec2 p =
@@ -1884,7 +1918,7 @@ namespace PIXLUI
 		const bool pressed =
 			ImGui::InvisibleButton(
 				"##page",
-				size);
+				size, ImGuiButtonFlags_EnableNav);
 		const bool hovered =
 			ImGui::IsItemHovered();
 
@@ -2073,435 +2107,6 @@ namespace PIXLUI
 		return minValue + (maxValue - minValue) * t;
 	}
 
-	// Custom tracks use InvisibleButton rather than ImGui's native slider path.
-	// Publish only this frame's activity so the tuner preview can include them.
-	inline int activeSliderDragFrame = -1;
-
-	inline bool SliderFloatField(
-		const char* label,
-		float* value,
-		float minValue,
-		float maxValue,
-		const char* format = "%.2f",
-		bool logarithmic = false)
-	{
-		ImGui::PushID(label);
-
-		const ImVec2 start = ImGui::GetCursorScreenPos();
-		const float width = std::min(ImGui::GetContentRegionAvail().x, Ref(720.0f));
-		const float height = Ref(30.0f);
-		const float labelWidth =
-			std::clamp(width * 0.34f, Ref(120.0f), Ref(205.0f));
-		const float valueWidth = Ref(72.0f);
-		const float trackMinX = start.x + labelWidth;
-		const float trackMaxX = start.x + width - valueWidth;
-		const float trackWidth = std::max(Ref(70.0f), trackMaxX - trackMinX);
-		const float cy = start.y + height * 0.5f;
-
-		const ImVec2 trackButtonMin(
-			trackMinX,
-			start.y + Ref(5.0f));
-		const ImVec2 trackButtonSize(
-			trackWidth,
-			height - Ref(10.0f));
-
-		ImGui::SetCursorScreenPos(trackButtonMin);
-		ImGui::InvisibleButton(
-			"##track",
-			trackButtonSize);
-
-		const bool hovered = ImGui::IsItemHovered();
-		const bool active = ImGui::IsItemActive();
-		const float hoverT =
-			Animate01(
-				"##sliderHoverMotion",
-				hovered || active,
-				24.0f);
-		if (active && ImGui::IsMouseDragging(ImGuiMouseButton_Left))
-			activeSliderDragFrame = ImGui::GetFrameCount();
-		bool changed = false;
-
-		if (active && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-			const float mouseX = ImGui::GetIO().MousePos.x;
-			const float t =
-				std::clamp(
-					(mouseX - trackMinX) / trackWidth,
-					0.0f,
-					1.0f);
-			const float newValue =
-				DisplayTToLinear(
-					t,
-					minValue,
-					maxValue,
-					logarithmic);
-
-			if (std::abs(newValue - *value) > 0.000001f) {
-				*value = newValue;
-				changed = true;
-			}
-		}
-
-		ImDrawList* draw = ImGui::GetWindowDrawList();
-
-		const ImVec2 labelSize = ImGui::CalcTextSize(label);
-		draw->AddText(
-			ImVec2(
-				start.x,
-				cy - labelSize.y * 0.5f),
-			hovered ? Colors::Text : Colors::TextMuted,
-			label);
-
-		const float railY = cy;
-		draw->AddLine(
-			ImVec2(trackMinX, railY),
-			ImVec2(trackMinX + trackWidth, railY),
-			MixColor(
-				IM_COL32(51, 61, 66, 235),
-				IM_COL32(63, 84, 89, 245),
-				hoverT),
-			Ref(4.0f));
-
-		const float t =
-			LinearToDisplayT(
-				*value,
-				minValue,
-				maxValue,
-				logarithmic);
-		const float markerX =
-			trackMinX + trackWidth * t;
-
-		draw->AddLine(
-			ImVec2(trackMinX, railY),
-			ImVec2(markerX, railY),
-			hovered || active ? Colors::Cyan : Colors::CyanSoft,
-			Ref(3.0f));
-
-		const float r = Ref(5.0f);
-		draw->AddQuadFilled(
-			ImVec2(markerX, railY - r),
-			ImVec2(markerX + r, railY),
-			ImVec2(markerX, railY + r),
-			ImVec2(markerX - r, railY),
-			active ? Colors::CyanBright : Colors::Text);
-
-		char buffer[64]{};
-		std::snprintf(
-			buffer,
-			sizeof(buffer),
-			format,
-			*value);
-
-		const ImVec2 valueSize = ImGui::CalcTextSize(buffer);
-		draw->AddText(
-			ImVec2(
-				start.x + width - valueSize.x,
-				cy - valueSize.y * 0.5f),
-			Colors::Text,
-			buffer);
-
-		ImGui::SetCursorScreenPos(start);
-		ImGui::Dummy(ImVec2(width, height));
-
-		ImGui::PopID();
-		return changed;
-	}
-
-	inline bool SliderIntField(
-		const char* label,
-		int* value,
-		int minValue,
-		int maxValue,
-		const char* const* valueNames = nullptr,
-		bool* outHovered = nullptr)
-	{
-		ImGui::PushID(label);
-
-		*value = std::clamp(*value, minValue, maxValue);
-
-		const ImVec2 start = ImGui::GetCursorScreenPos();
-		const float width = std::min(ImGui::GetContentRegionAvail().x, Ref(720.0f));
-		const float height = Ref(30.0f);
-		const float labelWidth =
-			std::clamp(width * 0.34f, Ref(120.0f), Ref(205.0f));
-		const float valueWidth = Ref(78.0f);
-		const float trackMinX = start.x + labelWidth;
-		const float trackMaxX = start.x + width - valueWidth;
-		const float trackWidth = std::max(Ref(90.0f), trackMaxX - trackMinX);
-		const float cy = start.y + height * 0.5f;
-		const int steps = std::max(1, maxValue - minValue);
-
-		ImGui::SetCursorScreenPos(
-			ImVec2(
-				trackMinX,
-				start.y + Ref(5.0f)));
-		ImGui::InvisibleButton(
-			"##track",
-			ImVec2(
-				trackWidth,
-				height - Ref(10.0f)));
-
-		const bool hovered = ImGui::IsItemHovered();
-		const bool active = ImGui::IsItemActive();
-
-		if (outHovered)
-			*outHovered = hovered || active;
-		if (active && ImGui::IsMouseDragging(ImGuiMouseButton_Left))
-			activeSliderDragFrame = ImGui::GetFrameCount();
-
-		bool changed = false;
-
-		if (active &&
-			ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-			const float mouseT =
-				std::clamp(
-					(ImGui::GetIO().MousePos.x - trackMinX) /
-						trackWidth,
-					0.0f,
-					1.0f);
-
-			const int snapped =
-				std::clamp(
-					minValue +
-						static_cast<int>(
-							std::lround(
-								mouseT *
-								static_cast<float>(steps))),
-					minValue,
-					maxValue);
-
-			if (snapped != *value) {
-				*value = snapped;
-				changed = true;
-			}
-		}
-
-		ImDrawList* draw = ImGui::GetWindowDrawList();
-
-		const ImVec2 labelSize =
-			ImGui::CalcTextSize(label);
-		draw->AddText(
-			ImVec2(
-				start.x,
-				cy - labelSize.y * 0.5f),
-			hovered
-				? Colors::Text
-				: Colors::TextMuted,
-			label);
-
-		draw->AddLine(
-			ImVec2(trackMinX, cy),
-			ImVec2(
-				trackMinX + trackWidth,
-				cy),
-			IM_COL32(51, 61, 66, 235),
-			Ref(3.0f));
-
-		for (int i = 0; i <= steps; ++i) {
-			const float detentX =
-				trackMinX +
-				trackWidth *
-					(static_cast<float>(i) /
-					 static_cast<float>(steps));
-
-			const float d = Ref(2.5f);
-			draw->AddQuadFilled(
-				ImVec2(detentX, cy - d),
-				ImVec2(detentX + d, cy),
-				ImVec2(detentX, cy + d),
-				ImVec2(detentX - d, cy),
-				Colors::BorderBright);
-		}
-
-		const float t =
-			static_cast<float>(*value - minValue) /
-			static_cast<float>(steps);
-		const float markerX =
-			trackMinX + trackWidth * t;
-
-		draw->AddLine(
-			ImVec2(trackMinX, cy),
-			ImVec2(markerX, cy),
-			hovered || active
-				? Colors::Cyan
-				: Colors::CyanSoft,
-			Ref(3.0f));
-
-		const float r = Ref(5.0f);
-		draw->AddQuadFilled(
-			ImVec2(markerX, cy - r),
-			ImVec2(markerX + r, cy),
-			ImVec2(markerX, cy + r),
-			ImVec2(markerX - r, cy),
-			active
-				? Colors::CyanBright
-				: Colors::Text);
-
-		char numeric[16]{};
-		const char* display = nullptr;
-		if (valueNames) {
-			display =
-				valueNames[
-					std::clamp(
-						*value - minValue,
-						0,
-						steps)];
-		} else {
-			std::snprintf(
-				numeric,
-				sizeof(numeric),
-				"%d",
-				*value);
-			display = numeric;
-		}
-
-		const ImVec2 valueSize =
-			ImGui::CalcTextSize(display);
-		draw->AddText(
-			ImVec2(
-				start.x + width - valueSize.x,
-				cy - valueSize.y * 0.5f),
-			Colors::Text,
-			display);
-
-		ImGui::SetCursorScreenPos(start);
-		ImGui::Dummy(
-			ImVec2(
-				width,
-				height));
-
-		ImGui::PopID();
-		return changed;
-	}
-
-	inline bool CycleSelector(
-		const char* label,
-		int* value,
-		const char* const* labels,
-		int count)
-	{
-		if (!labels || count <= 0)
-			return false;
-
-		*value =
-			std::clamp(
-				*value,
-				0,
-				count - 1);
-
-		ImGui::PushID(label);
-
-		const ImVec2 start = ImGui::GetCursorScreenPos();
-		const float width = std::min(ImGui::GetContentRegionAvail().x, Ref(720.0f));
-		const float height = Ref(30.0f);
-		const float labelWidth =
-			std::clamp(width * 0.34f, Ref(120.0f), Ref(205.0f));
-		const float selectorX = start.x + labelWidth;
-		const float selectorWidth =
-			std::max(Ref(140.0f), width - labelWidth);
-		const float arrowWidth = Ref(34.0f);
-
-		const ImVec2 labelSize = ImGui::CalcTextSize(label);
-		ImGui::GetWindowDrawList()->AddText(
-			ImVec2(
-				start.x,
-				start.y + (height - labelSize.y) * 0.5f),
-			Colors::TextMuted,
-			label);
-
-		bool changed = false;
-
-		ImGui::SetCursorScreenPos(
-			ImVec2(selectorX, start.y + Ref(3.0f)));
-		if (ImGui::InvisibleButton(
-				"##previous",
-				ImVec2(
-					arrowWidth,
-					height - Ref(6.0f)))) {
-			*value =
-				(*value + count - 1) % count;
-			changed = true;
-		}
-
-		ImGui::SetCursorScreenPos(
-			ImVec2(
-				selectorX + selectorWidth - arrowWidth,
-				start.y + Ref(3.0f)));
-		if (ImGui::InvisibleButton(
-				"##next",
-				ImVec2(
-					arrowWidth,
-					height - Ref(6.0f)))) {
-			*value =
-				(*value + 1) % count;
-			changed = true;
-		}
-
-		ImDrawList* draw = ImGui::GetWindowDrawList();
-
-		FillChamfered(
-			draw,
-			ImVec2(selectorX, start.y + Ref(3.0f)),
-			ImVec2(
-				selectorX + selectorWidth,
-				start.y + height - Ref(3.0f)),
-			Ref(4.0f),
-			IM_COL32(14, 18, 22, 245));
-
-		StrokeChamfered(
-			draw,
-			ImVec2(selectorX, start.y + Ref(3.0f)),
-			ImVec2(
-				selectorX + selectorWidth,
-				start.y + height - Ref(3.0f)),
-			Ref(4.0f),
-			Colors::BorderSoft,
-			Ref(1.0f));
-
-		const float cy =
-			start.y + height * 0.5f;
-		const ImU32 arrowColor =
-			Colors::TextMuted;
-
-		draw->AddLine(
-			ImVec2(selectorX + Ref(20.0f), cy - Ref(4.0f)),
-			ImVec2(selectorX + Ref(15.0f), cy),
-			arrowColor,
-			Ref(1.5f));
-		draw->AddLine(
-			ImVec2(selectorX + Ref(15.0f), cy),
-			ImVec2(selectorX + Ref(20.0f), cy + Ref(4.0f)),
-			arrowColor,
-			Ref(1.5f));
-
-		const float rx =
-			selectorX + selectorWidth - Ref(18.0f);
-		draw->AddLine(
-			ImVec2(rx - Ref(3.0f), cy - Ref(4.0f)),
-			ImVec2(rx + Ref(2.0f), cy),
-			arrowColor,
-			Ref(1.5f));
-		draw->AddLine(
-			ImVec2(rx + Ref(2.0f), cy),
-			ImVec2(rx - Ref(3.0f), cy + Ref(4.0f)),
-			arrowColor,
-			Ref(1.5f));
-
-		const ImVec2 currentSize =
-			ImGui::CalcTextSize(labels[*value]);
-		draw->AddText(
-			ImVec2(
-				selectorX +
-					(selectorWidth - currentSize.x) * 0.5f,
-				cy - currentSize.y * 0.5f),
-			Colors::Text,
-			labels[*value]);
-
-		ImGui::SetCursorScreenPos(start);
-		ImGui::Dummy(ImVec2(width, height));
-
-		ImGui::PopID();
-		return changed;
-	}
 
 	inline bool LabeledToggle(
 		const char* label,
@@ -2511,9 +2116,11 @@ namespace PIXLUI
 
 		const ImVec2 start = ImGui::GetCursorScreenPos();
 		const float width = ImGui::GetContentRegionAvail().x;
-		const float height = Ref(28.0f);
 		const float latchWidth = Ref(60.0f);
 		const float rowGap = Ref(8.0f);
+		const float labelWidth = std::max(1.0f, width - latchWidth - rowGap);
+		const ImVec2 labelSize = ImGui::CalcTextSize(label, nullptr, false, labelWidth);
+		const float height = std::max(Ref(28.0f), labelSize.y + Ref(6.0f));
 
 		// Make the complete label side of the row interactive.  This gives every
 		// normal module toggle a comfortable mouse/controller target while keeping
@@ -2528,14 +2135,12 @@ namespace PIXLUI
 		if (labelPressed)
 			*value = !*value;
 
-		const ImVec2 labelSize =
-			ImGui::CalcTextSize(label);
-		ImGui::GetWindowDrawList()->AddText(
+		ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
 			ImVec2(
 				start.x,
 				start.y + (height - labelSize.y) * 0.5f),
-			Colors::TextMuted,
-			label);
+			ImGui::GetColorU32(ToVec4(Colors::TextMuted)),
+			label, nullptr, labelWidth);
 
 		ImGui::SetCursorScreenPos(
 			ImVec2(

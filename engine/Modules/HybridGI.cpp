@@ -392,8 +392,6 @@ void HybridGI::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Restores the shipped unified Ultra lighting workload while preserving your artistic GI strength, colour and radius tuning.");
 
-		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Use the ADVANCED control on the Tuner rail to expose low-level sampling, cache and reconstruction controls across all categories.");
 	}
 
 	// -------------------------------------------------------------------------
@@ -526,7 +524,7 @@ void HybridGI::DrawSettings()
 			}
 		}
 
-		if (showAdvanced && settings.EnableExperimentalSpecularGI) {
+		if (showAdvanced && settings.EnableExperimentalSpecularGI && ImGui::CollapsingHeader("Reflection tracing details")) {
 			ImGui::TextDisabled("Advanced Reflection Tracing");
 			if (BeginSettingsTable("PIXL Hybrid Reflections Advanced")) {
 				BeginSettingRow("Trace Distance", "Maximum view-space distance a screen-space reflection ray can travel before falling back.");
@@ -609,8 +607,7 @@ void HybridGI::DrawSettings()
 	// -------------------------------------------------------------------------
 	// ADVANCED
 	// -------------------------------------------------------------------------
-	if (showAdvanced) {
-		ImGui::SeparatorText("Advanced");
+	if (showAdvanced && ImGui::CollapsingHeader("Sampling & cache quality")) {
 		ImGui::TextWrapped("These controls trade GPU cost, cache responsiveness and reconstruction stability. Presets manage them automatically for most users.");
 		{
 			auto guard = Util::DisableGuard(!settings.Enabled);

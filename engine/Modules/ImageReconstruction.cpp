@@ -1894,6 +1894,18 @@ std::string ImageReconstruction::ToggleNeuralRenderingFromHotkey()
 	return "Neural Rendering enabled for next launch. Restart Skyrim once to provision the sidecar; keep it enabled at startup.";
 }
 
+std::string ImageReconstruction::ToggleFrameGenerationFromHotkey()
+{
+	settings.frameGenerationMode = settings.frameGenerationMode ? 0u : 1u;
+	if (settings.frameGenerationMode)
+		settings.frameGenerationForceEnable = 1;
+	if (globals::state)
+		globals::state->Save();
+	return settings.frameGenerationMode
+		? "Frame Generation enabled for next launch. Restart Skyrim if the runtime path is not active."
+		: "Frame Generation disabled for next launch.";
+}
+
 ImageReconstruction::FrameGenerationState ImageReconstruction::GetFrameGenerationState() const
 {
 	const bool requested = settings.frameGenerationMode != 0;

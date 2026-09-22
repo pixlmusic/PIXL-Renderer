@@ -524,30 +524,31 @@ void ExternalPostProcessing::DrawENBQuickStyles()
 		ImGui::PushID(static_cast<int>(i));
 		auto& style = quickStyles[i];
 		const bool saved = style.valid;
-		ImGui::ColorButton("##state", saved ? ImVec4(0.35f, 0.82f, 0.55f, 1.0f) : ImVec4(0.96f, 0.68f, 0.38f, 1.0f), ImGuiColorEditFlags_NoTooltip, ImVec2(10.0f, 10.0f));
-		ImGui::SameLine();
-		ImGui::SetNextItemWidth(160.0f);
-		ImGui::InputText("##name", style.name.data(), style.name.size());
-		ImGui::SameLine();
-		if (ImGui::SmallButton("Apply") && saved)
-			ApplyQuickStyle(style);
-		ImGui::SameLine();
-		if (ImGui::SmallButton(saved ? "Replace with current" : "Save current")) {
-			const auto name = std::string(style.name.data()).empty() ? std::format("Style {}", i + 1) : std::string(style.name.data());
-			style = CaptureCurrentStyle(name);
-			enbStatus = std::format("{} saved from the current PIXL look.", style.name.data());
-		}
-		if (saved) {
+		if (ImGui::TreeNodeEx("##style", ImGuiTreeNodeFlags_None, "%s%s", style.name.data(), saved ? "" : " (empty)")) {
+			ImGui::SetNextItemWidth(-FLT_MIN);
+			ImGui::InputTextWithHint("##name", "Style name", style.name.data(), style.name.size());
+			ImGui::BeginDisabled(!saved);
+			if (ImGui::Button("Apply"))
+				ApplyQuickStyle(style);
+			ImGui::EndDisabled();
 			ImGui::SameLine();
-			if (ImGui::SmallButton("Clear")) style.valid = false;
+			if (ImGui::Button(saved ? "Replace with current" : "Save current")) {
+				const auto name = std::string(style.name.data()).empty() ? std::format("Style {}", i + 1) : std::string(style.name.data());
+				style = CaptureCurrentStyle(name);
+				enbStatus = std::format("{} saved from the current PIXL look.", style.name.data());
+			}
+			if (saved && ImGui::Button("Clear snapshot"))
+				style.valid = false;
+			ImGui::TreePop();
 		}
 		ImGui::PopID();
 	}
 }
 
-void ExternalPostProcessing::DrawENBQuickStylePalette()
+bool ExternalPostProcessing::DrawENBQuickStylePalette()
 {
 	InitializeQuickStyles();
+	bool changed = false;
 
 	const float gap = ImGui::GetStyle().ItemSpacing.x;
 	const float buttonWidth = std::max(1.0f, (ImGui::GetContentRegionAvail().x - gap) * 0.5f);
@@ -556,8 +557,10 @@ void ExternalPostProcessing::DrawENBQuickStylePalette()
 		auto& style = quickStyles[i];
 		const bool canApply = style.valid;
 		ImGui::BeginDisabled(!canApply);
-		if (ImGui::Button(style.name.data(), ImVec2(buttonWidth, 0.0f)))
+		if (ImGui::Button(style.name.data(), ImVec2(buttonWidth, 0.0f))) {
 			ApplyQuickStyle(style);
+			changed = true;
+		}
 		ImGui::EndDisabled();
 		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
 			ImGui::SetTooltip(canApply ? "Apply this PIXL visual style. It is a starting look; every camera setting remains adjustable." : "This style has not been saved yet.");
@@ -565,4 +568,5 @@ void ExternalPostProcessing::DrawENBQuickStylePalette()
 			ImGui::SameLine(0.0f, gap);
 		ImGui::PopID();
 	}
+	return changed;
 }

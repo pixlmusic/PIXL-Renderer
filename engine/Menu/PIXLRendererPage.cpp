@@ -76,6 +76,7 @@ namespace
 
 	std::unordered_map<std::string, QualityPreviewTexture>
 		g_qualityPreviewTextures;
+	ID3D11Device* g_qualityPreviewDevice = nullptr;  // Identity only; SRVs own the resources.
 
 	const char* QualityTierName(int tier)
 	{
@@ -123,6 +124,10 @@ namespace
 			assetKey[0] == '\0') {
 			return nullptr;
 		}
+		if (g_qualityPreviewDevice != globals::d3d::device) {
+			g_qualityPreviewTextures.clear();
+			g_qualityPreviewDevice = globals::d3d::device;
+		}
 
 		const std::string cacheKey =
 			std::format(
@@ -155,8 +160,13 @@ namespace
 							QualityTierName(tier))) +
 				L".png");
 
-		if (!std::filesystem::exists(path))
-			return nullptr;
+		// Cache misses as well as successes. Missing optional art must not cause
+		// filesystem probes or repeated image decoding on every visible frame.
+		auto [cached, inserted] = g_qualityPreviewTextures.try_emplace(cacheKey);
+		static_cast<void>(inserted);
+		std::error_code error;
+		if (!std::filesystem::is_regular_file(path, error) || error)
+			return &cached->second;
 
 		DirectX::TexMetadata metadata{};
 		DirectX::ScratchImage image;
@@ -188,12 +198,8 @@ namespace
 				static_cast<float>(
 					metadata.height));
 
-		auto [it, inserted] =
-			g_qualityPreviewTextures.emplace(
-				cacheKey,
-				std::move(texture));
-		static_cast<void>(inserted);
-		return &it->second;
+		cached->second = std::move(texture);
+		return &cached->second;
 	}
 
 	bool NeuralRuntimeFilePresent()
@@ -546,21 +552,23 @@ namespace
 		g_deferredStateSave = true;
 	}
 
-	void FlushDeferredStateSave()
+	void FlushDeferredStateSave(bool force = false)
 	{
 		if (!g_deferredStateSave)
 			return;
 
 		// Slider values and renderer constant data remain live every frame.
 		// Only the JSON/disk commit waits for the user's interaction to end.
-		if (ImGui::IsMouseDown(
+		if (!force && (ImGui::IsMouseDown(
 				ImGuiMouseButton_Left) ||
-			ImGui::IsAnyItemActive()) {
+			ImGui::IsAnyItemActive())) {
 			return;
 		}
 
-		globals::state->Save();
-		g_deferredStateSave = false;
+		if (globals::state) {
+			globals::state->Save();
+			g_deferredStateSave = false;
+		}
 	}
 
 	RenderModule* FindFeature(
@@ -1192,7 +1200,7 @@ namespace
 		}
 		ImGui::TextColored(
 			PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
-			"LEFT CTRL+N QUICK TOGGLE  |  DLSS SR  >  NR FINAL COMPOSITE  >  FRAME GENERATION  >  UI");
+			"SHIFT+N QUICK TOGGLE  |  DLSS SR  >  NR FINAL COMPOSITE  >  FRAME GENERATION  >  UI  |  Rebind in PIXL Renderer > Hotkeys");
 		Tooltip(
 			"The installed Feature 18 contract consumes display-resolution, post-DLSS colour plus render-resolution depth and motion guides. A pre-DLSS mode would instead receive Skyrim's linear HDR render target, require a hard DX12-to-DX11 hand-back every frame, and invalidate the model's validated colour/extent contract. PIXL therefore keeps the stable gameplay order. Photo Finish accumulates synchronized completed neural frames and performs its larger offline output reconstruction afterward.");
 
@@ -1675,13 +1683,19 @@ namespace
 		}
 	}
 
-
 	void DrawColourPresetControls()
 	{
 		auto& camera = globals::pipeline::cameraSuite;
 		bool changed = false;
 
 		SectionHeading("COLOUR & STYLE PRESETS");
+		const float columnWidth = std::max(1.0f, ImGui::GetContentRegionAvail().x * 0.5f -
+													 2.0f * (ImGui::GetStyle().WindowPadding.x + ImGui::GetStyle().CellPadding.x));
+		const float controlsHeight = PIXLUI::ControlRow::Height("Colour grade", columnWidth) +
+		                             PIXLUI::ControlRow::Height("LUT strength", columnWidth);
+		const float presetHeight = ImGui::GetTextLineHeightWithSpacing() +
+		                           std::max(controlsHeight, 3.0f * ImGui::GetFrameHeightWithSpacing()) +
+		                           2.0f * ImGui::GetStyle().WindowPadding.y;
 		if (ImGui::BeginTable(
 				"##CameraPresetStrip",
 				2,
@@ -1689,47 +1703,47 @@ namespace
 					ImGuiTableFlags_NoSavedSettings)) {
 			ImGui::TableNextColumn();
 			{
-				PIXLUI::PanelScope colourPanel("##CameraColourPresets", ImVec2(0, PIXLUI::Ref(76.0f)), true);
+				PIXLUI::PanelScope colourPanel("##CameraColourPresets", ImVec2(0, presetHeight), true);
 				if (colourPanel) {
 					ImGui::TextColored(
 						PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
 						"COLOUR GRADE");
 
-			const char* looks[] = {
-				"Original", "Nordic Neutral", "Saga", "Dramatic", "Hearthfire", "Bleak",
-				"Bleach", "Winter", "Sunset", "Fantasy Green", "Nightfall", "Cinematic"
-			};
-			const int previousLook = std::clamp(static_cast<int>(camera.settings.lookPreset), 0, static_cast<int>(std::size(looks)) - 1);
-			int look = previousLook;
-			if (CycleControl("Colour grade", &look, looks, static_cast<int>(std::size(looks)),
-				"Applies a PIXL-authored LUT after the physical camera. Original is a neutral bypass.")) {
-				camera.settings.lookPreset = static_cast<uint>(look);
-				// Cinematic is intentionally subtle by default. Users can still choose a
-				// stronger blend below after selecting it.
-				if (look == 11 && previousLook != 11)
-					camera.settings.lookOpacity = 0.07f;
-				camera.LoadLookTexture();
-				changed = true;
-			}
+					const char* looks[] = {
+						"Original", "Nordic Neutral", "Saga", "Dramatic", "Hearthfire", "Bleak",
+						"Bleach", "Winter", "Sunset", "Fantasy Green", "Nightfall", "Cinematic"
+					};
+					const int previousLook = std::clamp(static_cast<int>(camera.settings.lookPreset), 0, static_cast<int>(std::size(looks)) - 1);
+					int look = previousLook;
+					if (CycleControl("Colour grade", &look, looks, static_cast<int>(std::size(looks)),
+							"Applies a PIXL-authored LUT after the physical camera. Original is a neutral bypass.")) {
+						camera.settings.lookPreset = static_cast<uint>(look);
+						// Cinematic is intentionally subtle by default. Users can still choose a
+						// stronger blend below after selecting it.
+						if (look == 11 && previousLook != 11)
+							camera.settings.lookOpacity = 0.07f;
+						camera.LoadLookTexture();
+						changed = true;
+					}
 
-			ImGui::BeginDisabled(camera.settings.lookPreset == 0);
-			float lookPercent = std::clamp(camera.settings.lookOpacity * 100.0f, 0.0f, 100.0f);
-			if (SliderControl("LUT strength", &lookPercent, 0.0f, 100.0f, "%.0f%%", false)) {
-				camera.settings.lookOpacity = lookPercent * 0.01f;
-				changed = true;
-			}
+					ImGui::BeginDisabled(camera.settings.lookPreset == 0);
+					float lookPercent = std::clamp(camera.settings.lookOpacity * 100.0f, 0.0f, 100.0f);
+					if (SliderControl("LUT strength", &lookPercent, 0.0f, 100.0f, "%.0f%%", false)) {
+						camera.settings.lookOpacity = lookPercent * 0.01f;
+						changed = true;
+					}
 					ImGui::EndDisabled();
 				}
 			}
 
 			ImGui::TableNextColumn();
 			{
-				PIXLUI::PanelScope stylePanel("##CameraQuickStyles", ImVec2(0, PIXLUI::Ref(76.0f)), true);
+				PIXLUI::PanelScope stylePanel("##CameraQuickStyles", ImVec2(0, presetHeight), true);
 				if (stylePanel) {
 					ImGui::TextColored(
 						PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
 						"QUICK STYLES");
-					ExternalPostProcessing::DrawENBQuickStylePalette();
+					changed |= ExternalPostProcessing::DrawENBQuickStylePalette();
 				}
 			}
 			ImGui::EndTable();
@@ -1755,9 +1769,8 @@ namespace
 		bool changed = false;
 		bool lightingChanged = false;
 
-		// CAMERA + POST FX is a fixed no-scroll product page. Keep the mature
-		// settings structurally identical, but place them around the permanent
-		// live scene preview instead of stacking three unrelated columns.
+		// Keep primary controls beside the preview; the enclosing page owns
+		// scrolling so individual control cards do not trap the mouse wheel.
 		const ImVec2 originalSpacing =
 			ImGui::GetStyle().ItemSpacing;
 
@@ -2657,6 +2670,7 @@ void PIXLRendererPage::Render()
 	ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.62f + 0.38f * pageReveal);
 	ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (1.0f - pageReveal) * PIXLUI::Ref(6.0f));
 
+	ImGui::PushID(static_cast<int>(currentPage));
 	if (ImGui::BeginChild(
 			"##PIXLPublicPage",
 			ImVec2(0, 0),
@@ -2702,8 +2716,14 @@ void PIXLRendererPage::Render()
 	}
 
 	ImGui::EndChild();
+	ImGui::PopID();
 	ImGui::PopStyleVar(3);
 	ImGui::PopStyleColor();
 
 	FlushDeferredStateSave();
+}
+
+void PIXLRendererPage::FlushPendingEdits(bool force)
+{
+	FlushDeferredStateSave(force);
 }

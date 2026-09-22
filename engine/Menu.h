@@ -170,6 +170,8 @@ public:
 	bool settingSkipCompilationKey = false;
 	bool settingsEffectsToggle = false;
 	bool settingOverlayToggleKey = false;
+	bool settingCustomHotkey = false;
+	std::vector<InputCombo>* customHotkeyTarget = nullptr;
 	bool settingShaderBlockPrevKey = false;      // Debug: capture shader block prev key
 	bool settingShaderBlockNextKey = false;      // Debug: capture shader block next key
 	bool settingScreenshotKey = false;           // Screenshot capture key
@@ -459,6 +461,20 @@ public:
 	struct Settings
 	{
 		std::vector<InputCombo> ToggleKey = { InputCombo::Keyboard(VK_NEXT) };  // Page Down; Home opens Photo Mode.
+		std::vector<InputCombo> NeuralRenderingKey = { InputCombo::Keyboard(VK_SHIFT), InputCombo::Keyboard('N') };
+		// No default preserves the previous behavior; users can opt into a toggle.
+		std::vector<InputCombo> FrameGenerationKey{};
+		std::vector<InputCombo> PhotoModeKey = { InputCombo::Keyboard(VK_HOME) };
+		std::vector<InputCombo> PhotoZoomInKey = { InputCombo::Keyboard(VK_UP) };
+		std::vector<InputCombo> PhotoZoomOutKey = { InputCombo::Keyboard(VK_DOWN) };
+		std::vector<InputCombo> PhotoSpeedDownKey = { InputCombo::Keyboard(VK_LEFT) };
+		std::vector<InputCombo> PhotoSpeedUpKey = { InputCombo::Keyboard(VK_RIGHT) };
+		std::vector<InputCombo> PhotoQuickPreviousKey = { InputCombo::Keyboard(VK_NUMPAD8) };
+		std::vector<InputCombo> PhotoQuickNextKey = { InputCombo::Keyboard(VK_NUMPAD2) };
+		std::vector<InputCombo> PhotoQuickDecreaseKey = { InputCombo::Keyboard(VK_NUMPAD4) };
+		std::vector<InputCombo> PhotoQuickIncreaseKey = { InputCombo::Keyboard(VK_NUMPAD6) };
+		std::vector<InputCombo> TunerFlycamKey = { InputCombo::Keyboard(VK_SHIFT) };
+		bool TunerFlycamHoldRequired = true;
 		std::vector<InputCombo> SkipCompilationKey = { InputCombo::Keyboard(VK_ESCAPE) };
 		std::vector<InputCombo> EffectToggleKey = { InputCombo::Keyboard(VK_MULTIPLY) };    // toggle all effects
 		std::vector<InputCombo> OverlayToggleKey = { InputCombo::Keyboard(VK_F10) };        // Global overlay toggle key for all overlays
@@ -563,6 +579,22 @@ public:
 		[[nodiscard]] constexpr bool IsUp() const noexcept { return (value == 0.0F) && IsRepeating(); }
 	};
 
+	[[nodiscard]] bool IsCapturingHotkeyInput() const;
+	void BeginCustomHotkeyCapture(std::vector<InputCombo>& target)
+	{
+		customHotkeyTarget = &target;
+		settingCustomHotkey = true;
+	}
+	void CancelCustomHotkeyCapture()
+	{
+		settingCustomHotkey = false;
+		customHotkeyTarget = nullptr;
+	}
+	[[nodiscard]] bool IsCustomHotkeyCaptureFor(const std::vector<InputCombo>& target) const
+	{
+		return settingCustomHotkey && customHotkeyTarget == &target;
+	}
+
 private:
 	Settings settings;
 
@@ -582,7 +614,7 @@ private:
 	// the modifier is released first.
 	std::unordered_set<uint32_t> _comboFiredKeys;
 
-	Menu() = default;
+	Menu();
 
 	void DrawGeneralSettings();
 	void DrawAdvancedSettings();
@@ -592,6 +624,5 @@ private:
 
 	void addToEventQueue(KeyEvent e);
 	void ProcessInputEventQueue();
-	bool IsCapturingHotkeyInput() const;
 	winrt::com_ptr<IDXGIAdapter3> dxgiAdapter3;
 };

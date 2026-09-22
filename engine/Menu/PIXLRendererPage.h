@@ -111,6 +111,9 @@ namespace PIXLRendererPage
 
 	/** @brief Draws the complete, themed PIXL Renderer control centre. */
 	void Render();
+	// Commit an already queued public-page edit even after navigating away.
+	// Call on the UI thread; force is used only when the menu has closed.
+	void FlushPendingEdits(bool force = false);
 
 	// Caller opens "NEURAL RENDERING | SETUP" in its own ImGui ID scope.
 	// Quick Setup defers persistence until all pending graphics choices are saved.

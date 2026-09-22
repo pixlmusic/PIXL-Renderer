@@ -692,55 +692,64 @@ void RainResponse::DrawSettings()
 		ImGui::SliderFloat("Mist Vertical Depth", &settings.RainMistHeight, 100.0f, 1800.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
 		tooltip("Vertical thickness of the low rain-spray layer relative to camera/ground level.");
 		ImGui::SliderFloat("Rain Lighting Boost", &settings.RainLightingBoost, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			tooltip("Optical visibility lift for illuminated/backlit rain, biased toward the mid/far field. It scales accumulated scene lighting rather than making rain emissive.");
+		tooltip("Optical visibility lift for illuminated/backlit rain, biased toward the mid/far field. It scales accumulated scene lighting rather than making rain emissive.");
 
-			ImGui::Checkbox("World-Space Rain Streaks", &g_snowPrecipitation.EnableWorldSpaceRain);
-			tooltip("Builds the visible rain streak direction from two projected world-space points instead of allowing the precipitation card to rotate with the camera.");
+		ImGui::Checkbox("World-Space Rain Streaks", &g_snowPrecipitation.EnableWorldSpaceRain);
+		tooltip("Builds the visible rain streak direction from two projected world-space points instead of allowing the precipitation card to rotate with the camera.");
 
-			ImGui::SeparatorText("Falling Snow Rendering");
-			ImGui::Checkbox("Enhanced Falling Snow", &g_snowPrecipitation.EnableSnowEnhancement);
-			tooltip("Enhances Skyrim's active vanilla/modded snow emitter and authored flake texture without replacing the weather system.");
+		ImGui::EndDisabled();
+		ImGui::TreePop();
+	}
 
-			ImGui::BeginDisabled(!g_snowPrecipitation.EnableSnowEnhancement);
+	// Snow is an independent emitter path, not a dependent rain enhancement.
+	if (ImGui::TreeNodeEx("Falling Snow Rendering")) {
+		ImGui::Checkbox("Enhanced Falling Snow", &g_snowPrecipitation.EnableSnowEnhancement);
+		tooltip("Enhances Skyrim's active vanilla/modded snow emitter and authored flake texture without replacing the weather system.");
 
-			ImGui::SliderFloat("Snow Distance Visibility", &g_snowPrecipitation.SnowDistanceVisibility, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			tooltip("Snow-specific mid/far visibility and stable outer-volume depth boost.");
+		ImGui::BeginDisabled(!g_snowPrecipitation.EnableSnowEnhancement);
 
-			ImGui::SliderFloat("Snow Lighting Response", &g_snowPrecipitation.SnowLightingResponse, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			tooltip("Crystalline directional/light readability. This uses scene lighting rather than making flakes emissive.");
+		ImGui::SliderFloat("Snow Distance Visibility", &g_snowPrecipitation.SnowDistanceVisibility, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip("Snow-specific mid/far visibility and stable outer-volume depth boost.");
 
-			ImGui::SliderFloat("Snow Wind Drift", &g_snowPrecipitation.SnowWindDrift, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			tooltip("Broad world-space drift along Skyrim's active precipitation wind.");
+		ImGui::SliderFloat("Snow Lighting Response", &g_snowPrecipitation.SnowLightingResponse, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip("Crystalline directional/light readability. This uses scene lighting rather than making flakes emissive.");
 
-			ImGui::SliderFloat("Snow Flutter", &g_snowPrecipitation.SnowFlutter, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			tooltip("World-space cross-wind flutter and micro-motion seeded from absolute world position.");
+		ImGui::SliderFloat("Snow Wind Drift", &g_snowPrecipitation.SnowWindDrift, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip("Broad world-space drift along Skyrim's active precipitation wind.");
 
-			ImGui::SliderFloat("Snow Density / Depth", &g_snowPrecipitation.SnowDensityBoost, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			tooltip("Recovers subtle authored flake alpha in the distance while preserving transparent texels.");
+		ImGui::SliderFloat("Snow Flutter", &g_snowPrecipitation.SnowFlutter, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip("World-space cross-wind flutter and micro-motion seeded from absolute world position.");
 
-			ImGui::SliderFloat("Snow Far Volume", &g_snowPrecipitation.SnowFarVolume, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			tooltip("Moves a stable subset of flakes farther into the precipitation volume so distant terrain remains visibly inside snowfall.");
+		ImGui::SliderFloat("Snow Density / Depth", &g_snowPrecipitation.SnowDensityBoost, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip("Recovers subtle authored flake alpha in the distance while preserving transparent texels.");
 
-			ImGui::SliderFloat("Snow Tumble", &g_snowPrecipitation.SnowTumble, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			tooltip("World-space flake tumble; camera rotation only changes projection.");
+		ImGui::SliderFloat("Snow Far Volume", &g_snowPrecipitation.SnowFarVolume, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip("Moves a stable subset of flakes farther into the precipitation volume so distant terrain remains visibly inside snowfall.");
 
-			ImGui::SliderFloat("Snow Flake Scale", &g_snowPrecipitation.SnowFlakeScale, 0.65f, 1.50f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat("Snow Tumble", &g_snowPrecipitation.SnowTumble, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip("World-space flake tumble; camera rotation only changes projection.");
 
-			ImGui::SliderFloat("Snow Depth Start", &g_snowPrecipitation.SnowDepthStart, 100.0f, 6000.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
-			ImGui::SliderFloat("Snow Depth End", &g_snowPrecipitation.SnowDepthEnd, 3000.0f, 24000.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
-			g_snowPrecipitation.SnowDepthEnd = std::max(
-				g_snowPrecipitation.SnowDepthEnd,
-				g_snowPrecipitation.SnowDepthStart + 512.0f);
-			tooltip("Near/far bounds for snowfall depth visibility.");
+		ImGui::SliderFloat("Snow Flake Scale", &g_snowPrecipitation.SnowFlakeScale, 0.65f, 1.50f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 
-			ImGui::EndDisabled();
+		ImGui::SliderFloat("Snow Depth Start", &g_snowPrecipitation.SnowDepthStart, 100.0f, 6000.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat("Snow Depth End", &g_snowPrecipitation.SnowDepthEnd, 3000.0f, 24000.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
+		g_snowPrecipitation.SnowDepthEnd = std::max(
+			g_snowPrecipitation.SnowDepthEnd,
+			g_snowPrecipitation.SnowDepthStart + 512.0f);
+		tooltip("Near/far bounds for snowfall depth visibility.");
 
-			ImGui::SeparatorText("Roof / Awning Runoff");
-			ImGui::SliderFloat("Roof Runoff Strength", &settings.RainRunoffStrength, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			tooltip("World-space roof/awning runoff. Broad precipitation-blocking roof edges accumulate water, grow/merge beads, release intermittent gravity-driven drops and short heavy-rain streams, and create small terminal splashes.");
+		ImGui::EndDisabled();
 
-			ImGui::SliderFloat("Roof Runoff Distance", &g_roofRunoffDistance, 600.0f, 16000.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
-			tooltip("Maximum camera distance at which roof/awning runoff is detected and rendered. The 1.50 debug view obeys this distance too. Lower it to keep runoff local and reduce the amount of roof geometry participating in the pass.");
+		ImGui::TreePop();
+	}
+
+	if (ImGui::TreeNodeEx("Roof / Awning Runoff")) {
+		ImGui::BeginDisabled(settings.EnableRainParticleEnhancement == 0);
+		ImGui::SliderFloat("Roof Runoff Strength", &settings.RainRunoffStrength, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		tooltip("World-space roof/awning runoff. Broad precipitation-blocking roof edges accumulate water, grow/merge beads, release intermittent gravity-driven drops and short heavy-rain streams, and create small terminal splashes.");
+
+		ImGui::SliderFloat("Roof Runoff Distance", &g_roofRunoffDistance, 600.0f, 16000.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
+		tooltip("Maximum camera distance at which roof/awning runoff is detected and rendered. The 1.50 debug view obeys this distance too. Lower it to keep runoff local and reduce the amount of roof geometry participating in the pass.");
 
 		ImGui::EndDisabled();
 		ImGui::TreePop();
@@ -846,7 +855,7 @@ void RainResponse::DrawSettings()
 	ImGui::Spacing();
 	ImGui::Spacing();
 
-	if (ImGui::TreeNodeEx(T(TKEY("advanced"), "Advanced"), ImGuiTreeNodeFlags_DefaultOpen)) {
+	if (ImGui::TreeNodeEx(T(TKEY("advanced"), "Advanced"))) {
 		ImGui::SliderFloat(T(TKEY("weather_transition_speed"), "Weather transition speed"), &settings.WeatherTransitionSpeed, 0.2f, 8.0f);
 		if (ImGui::IsItemDeactivatedAfterEdit())
 			DetectCurrentPreset();
@@ -897,7 +906,7 @@ void RainResponse::DrawSettings()
 		ImGui::TreePop();
 	}
 
-	if (globals::state->IsDeveloperMode() && ImGui::TreeNodeEx(T(TKEY("debug"), "Debug"), ImGuiTreeNodeFlags_DefaultOpen)) {
+	if (globals::state && globals::state->IsDeveloperMode() && ImGui::TreeNodeEx(T(TKEY("debug"), "Debug"))) {
 		ImGui::Checkbox(T(TKEY("enable_wetness_override"), "Enable Wetness Override"), &debugSettings.EnableWetnessOverride);
 		tooltip("Overrides weather-driven surface wetness with the values below for real-time diagnostics. Not intended for normal gameplay.");
 		ImGui::Checkbox(T(TKEY("enable_puddle_override"), "Enable Puddle Override"), &debugSettings.EnablePuddleOverride);
@@ -994,7 +1003,7 @@ float RainResponse::GetLiveRainIntensity() const
 	// surface-wetness feature so CameraSuite/Stormglass can always be diagnosed.
 	if (debugSettings.EnableRainOverride) {
 		const float overrideValue = exterior ? debugSettings.RainOverride.y :
-			(debugSettings.EnableIntExOverride ? debugSettings.RainOverride.x : debugSettings.RainOverride.y);
+		                                       (debugSettings.EnableIntExOverride ? debugSettings.RainOverride.x : debugSettings.RainOverride.y);
 		return std::clamp(overrideValue, 0.0f, 1.0f);
 	}
 
@@ -1023,7 +1032,8 @@ float RainResponse::GetLiveRainIntensity() const
 			return 0.0f;
 
 		const float density = weather->precipitationData->GetSettingValue(
-			RE::BGSShaderParticleGeometryData::DataID::kParticleDensity).f;
+															RE::BGSShaderParticleGeometryData::DataID::kParticleDensity)
+		                          .f;
 		return std::clamp(density / MAX_RAIN_PARTICLE_DENSITY, 0.0f, 1.0f);
 	};
 
@@ -1043,15 +1053,15 @@ float RainResponse::GetLiveRainIntensity() const
 	// geometry can be created/retired at a different point in the frame.
 	const float weatherPct = std::clamp(sky->currentWeatherPct, 0.0f, 1.0f);
 	const bool currentWeatherRain = sky->currentWeather &&
-		sky->currentWeather->data.flags.any(RE::TESWeather::WeatherDataFlag::kRainy) &&
-		weatherPct > 0.015f;
+	                                sky->currentWeather->data.flags.any(RE::TESWeather::WeatherDataFlag::kRainy) &&
+	                                weatherPct > 0.015f;
 	const bool lastWeatherRain = sky->lastWeather &&
-		sky->lastWeather->data.flags.any(RE::TESWeather::WeatherDataFlag::kRainy) &&
-		weatherPct < 0.985f;
+	                             sky->lastWeather->data.flags.any(RE::TESWeather::WeatherDataFlag::kRainy) &&
+	                             weatherPct < 0.985f;
 
 	const bool engineRain = sky->IsRaining();
 	const bool visibleRain = engineRain || currentEmitterRain || lastEmitterRain ||
-		currentWeatherRain || lastWeatherRain;
+	                         currentWeatherRain || lastWeatherRain;
 	if (!visibleRain)
 		return 0.0f;
 

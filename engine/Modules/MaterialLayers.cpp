@@ -350,7 +350,7 @@ void MaterialLayers::Prepass()
 
 void MaterialLayers::DrawSettings()
 {
-	ImGui::TextDisabled("PIXL Material Tuning v3.13 | Relief-POM + Microdetail");
+	ImGui::TextWrapped("Authored height maps take priority. Synthetic relief adds depth where compatible authored data is unavailable.");
 	ImGui::Separator();
 	if (ImGui::TreeNodeEx(T(TKEY("complex_material"), "Complex Material"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		Util::UIntCheckbox(T(TKEY("enable_complex_material"), "Enable Complex Material"), &settings.EnableComplexMaterial);
@@ -390,131 +390,132 @@ void MaterialLayers::DrawSettings()
 		if (Util::UIntCheckbox("Terrain Auto-POM", &tuningSettings.EnableTerrainAutoPOM))
 			DataLoaded();
 
-		ImGui::SeparatorText("Authored / Object POM");
-		ImGui::SliderFloat("Object Authored Depth", &tuningSettings.ObjectAuthoredDepthScale, 0.10f, 4.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
-		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Scales displacement from authored PBR/CM height data. Higher values make relief more pronounced; the texel-shift limit below still protects against stretched UVs.");
-		ImGui::SliderFloat("Object Auto-POM Depth", &tuningSettings.ObjectAutoHeightScale, 0.001f, 0.080f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
-		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Scales synthetic relief when a material has no usable authored height. Higher values improve depth on ordinary texture replacers but cost more and can exaggerate noisy albedo.");
-		ImGui::SliderFloat("Object Max Texel Shift", &tuningSettings.ObjectMaxTexelShift, 1.0f, 64.0f, "%.1f texels", ImGuiSliderFlags_AlwaysClamp);
-		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Maximum visible UV displacement. Raise this together with depth when the effect appears capped; lower it if silhouettes stretch at grazing angles.");
-		ImGui::SliderFloat("Object Grazing Protection", &tuningSettings.ObjectGrazingProtection, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Object Fade Start", &tuningSettings.ObjectFadeStart, 128.0f, 2048.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Object Fade End", &tuningSettings.ObjectFadeEnd, 512.0f, 4096.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
-		tuningSettings.ObjectFadeEnd = std::max(tuningSettings.ObjectFadeEnd, tuningSettings.ObjectFadeStart + 32.0f);
-		ImGui::SliderFloat("Object Max Height Mip", &tuningSettings.ObjectMaxMip, 2.0f, 10.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
-		int objectNearSteps = static_cast<int>(tuningSettings.ObjectNearSteps);
-		int objectMaxSteps = static_cast<int>(tuningSettings.ObjectMaxSteps);
-		int objectRefinement = static_cast<int>(tuningSettings.ObjectRefinementSteps);
-		if (ImGui::SliderInt("Object Near Steps", &objectNearSteps, 4, 24))
-			tuningSettings.ObjectNearSteps = static_cast<uint>(std::clamp(objectNearSteps, 4, 24));
-		if (ImGui::SliderInt("Object Maximum Steps", &objectMaxSteps, 4, 32))
-			tuningSettings.ObjectMaxSteps = static_cast<uint>(std::clamp(objectMaxSteps, 4, 32));
-		if (ImGui::SliderInt("Object Refinement Steps", &objectRefinement, 2, 12))
-			tuningSettings.ObjectRefinementSteps = static_cast<uint>(std::clamp(objectRefinement, 2, 12));
-
-		ImGui::SeparatorText("Synthetic Height Reconstruction");
-		ImGui::SliderFloat("Height Contrast", &tuningSettings.AutoHeightContrast, 0.25f, 5.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Normal-map Influence", &tuningSettings.AutoHeightNormalInfluence, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Reference Mip Offset", &tuningSettings.AutoHeightReferenceMipOffset, 1.0f, 8.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Chroma Rejection", &tuningSettings.AutoHeightChromaRejection, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Minimum Visible Shift", &tuningSettings.AutoMinTexelShift, 0.0f, 2.0f, "%.2f texels", ImGuiSliderFlags_AlwaysClamp);
-
-		ImGui::SeparatorText("Terrain Auto-Height Classifier");
-		static constexpr const char* polarityNames[] = {
-			"Dark Features Rise (recommended for current vanilla terrain)",
-			"Bright Features Rise"
-		};
-		int terrainPolarity = tuningSettings.TerrainSyntheticPolarity >= 0.0f ? 1 : 0;
-		if (ImGui::Combo("Synthetic Height Polarity", &terrainPolarity, polarityNames, 2))
-			tuningSettings.TerrainSyntheticPolarity = terrainPolarity != 0 ? 1.0f : -1.0f;
-		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("The old Auto-POM always raised brighter fine detail. On vanilla terrain that can turn painted grass/fibres into POM spikes. Flip this only if the reconstructed rocks are visibly inverted.");
-		ImGui::SliderFloat("Geometry Source Mip Bias", &tuningSettings.TerrainSourceMipBias, 0.0f, 3.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Builds geometry from a slightly coarser mip so tiny grass/fibre albedo detail does not become vertical relief. PIXL microdetail still restores those frequencies visually.");
-		ImGui::SliderFloat("Fine Detail Rejection", &tuningSettings.TerrainHeightDeadZone, 0.0f, 0.15f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Legacy Alpha Assist", &tuningSettings.TerrainAlphaAssist, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Alpha Evidence Threshold", &tuningSettings.TerrainAlphaEvidenceThreshold, 0.001f, 0.10f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Synthetic Layer Scale", &tuningSettings.TerrainSyntheticScaleFloor, 0.25f, 4.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
-		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Minimum POM scale for terrain layers with no authored displacement scale. This fixes roads/PBR layers that had HeightScale=0 and could never respond to the v3.12 Auto-POM sliders.");
-		ImGui::SliderFloat("Synthetic Gain", &tuningSettings.TerrainSyntheticGain, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Relief Gamma", &tuningSettings.TerrainReliefGamma, 0.35f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-
-		ImGui::SeparatorText("Terrain Relief-POM");
-		ImGui::SliderFloat("Terrain Depth", &tuningSettings.TerrainDepthScale, 0.10f, 8.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Terrain Synthetic Height", &tuningSettings.TerrainHeightStrength, 0.0f, 5.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Terrain Height Contrast", &tuningSettings.TerrainHeightContrast, 0.25f, 6.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Terrain Max Texel Shift", &tuningSettings.TerrainMaxTexelShift, 4.0f, 256.0f, "%.0f texels", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Terrain Grazing Protection", &tuningSettings.TerrainGrazingProtection, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Terrain Reference Mip Offset", &tuningSettings.TerrainReferenceMipOffset, 1.5f, 8.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Terrain Fade Start", &tuningSettings.TerrainFadeStart, 256.0f, 3072.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Terrain Fade End", &tuningSettings.TerrainFadeEnd, 768.0f, 6144.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
-		tuningSettings.TerrainFadeEnd = std::max(tuningSettings.TerrainFadeEnd, tuningSettings.TerrainFadeStart + 64.0f);
-		ImGui::SliderFloat("Terrain Max Height Mip", &tuningSettings.TerrainMaxMip, 2.0f, 10.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Terrain Height Blend Strength", &tuningSettings.TerrainHeightBlendStrength, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		int terrainNearSteps = static_cast<int>(tuningSettings.TerrainNearSteps);
-		int terrainMaxSteps = static_cast<int>(tuningSettings.TerrainMaxSteps);
-		int terrainRefinement = static_cast<int>(tuningSettings.TerrainRefinementSteps);
-		if (ImGui::SliderInt("Terrain Near Steps", &terrainNearSteps, 4, 32))
-			tuningSettings.TerrainNearSteps = static_cast<uint>(std::clamp(terrainNearSteps, 4, 32));
-		if (ImGui::SliderInt("Terrain Maximum Steps", &terrainMaxSteps, 4, 64))
-			tuningSettings.TerrainMaxSteps = static_cast<uint>(std::clamp(terrainMaxSteps, 4, 64));
-		if (ImGui::SliderInt("Terrain Refinement Steps", &terrainRefinement, 2, 16))
-			tuningSettings.TerrainRefinementSteps = static_cast<uint>(std::clamp(terrainRefinement, 2, 16));
-
-		Util::UIntCheckbox(T(TKEY("enable_height_blending"), "Enable Terrain Height Blending"), &settings.EnableHeightBlending);
-		Util::UIntCheckbox(T(TKEY("enable_parallax_warping_fix"), "Enable Parallax Warping Fix"), &settings.EnableParallaxWarpingFix);
-
-		ImGui::SeparatorText("Virtual Relief Depth");
-		ImGui::TextWrapped("Virtual depth affects deferred lighting and GI only; it does not change silhouettes, collision, or hardware visibility.");
-		ImGui::Checkbox("Preview Virtual Depth Offsets", &showEffectsDepthDebug);
-		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Diagnostic view: blue is recessed relief, orange is protrusion, black is unchanged. Shows the generated offset before the near-camera safety limit. Turn off for normal lighting.");
-		ImGui::TextDisabled("%s", effectsDepthFailed ? "Effects depth unavailable - see PIXLRenderer.log" :
-			effectsDepthReady ? "Effects depth active" : "Effects depth inactive");
-		ImGui::SliderFloat("Object Virtual Depth Strength", &tuningSettings.ObjectVirtualDepthStrength, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Object Virtual Depth Limit", &tuningSettings.ObjectVirtualDepthMaxWorld, 1.0f, 16.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
-		Util::UIntCheckbox("Enable Terrain Virtual Depth", &tuningSettings.EnableTerrainVirtualDepth);
-		ImGui::SliderFloat("Virtual Depth Strength", &tuningSettings.TerrainVirtualDepthStrength, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Virtual Depth Max World", &tuningSettings.TerrainVirtualDepthMaxWorld, 2.0f, 64.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Virtual Depth Max UV", &tuningSettings.TerrainVirtualDepthMaxUV, 0.02f, 0.50f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-		ImGui::SliderFloat("Virtual Protrusion", &tuningSettings.TerrainVirtualDepthProtrusion, 0.0f, 0.50f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Virtual depth makes depth-based effects see the POM surface. Protrusion is experimental and cannot create pixels outside the original terrain mesh silhouette.");
-
-		ImGui::SeparatorText("Material Detail Reconstruction");
-		Util::UIntCheckbox("Enable Detail Reconstruction", &tuningSettings.EnableDetailReconstruction);
-		if (tuningSettings.EnableDetailReconstruction != 0u) {
-			int quality = static_cast<int>(std::min(tuningSettings.DetailQuality, 2u));
-			static constexpr const char* qualityNames[] = { "Off", "Albedo", "Albedo + Normal + Roughness" };
-			if (ImGui::Combo("Detail Quality", &quality, qualityNames, static_cast<int>(std::size(qualityNames))))
-				tuningSettings.DetailQuality = static_cast<uint>(std::clamp(quality, 0, 2));
-			ImGui::SliderFloat("Object Detail Strength", &tuningSettings.DetailObjectStrength, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			ImGui::SliderFloat("Terrain Detail Strength", &tuningSettings.DetailTerrainStrength, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			ImGui::SliderFloat("Albedo Microcontrast", &tuningSettings.DetailAlbedoStrength, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			ImGui::SliderFloat("Normal Microdetail", &tuningSettings.DetailNormalStrength, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			ImGui::SliderFloat("Roughness Microdetail", &tuningSettings.DetailRoughnessStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			ImGui::SliderFloat("Detail Mip Separation", &tuningSettings.DetailMipSeparation, 0.5f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			ImGui::SliderFloat("Detail Contrast", &tuningSettings.DetailContrast, 0.25f, 2.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			ImGui::SliderFloat("Anti-Shimmer", &tuningSettings.DetailAntiShimmer, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			ImGui::SliderFloat("Detail Fade Start", &tuningSettings.DetailFadeStart, 64.0f, 1536.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
-			ImGui::SliderFloat("Detail Fade End", &tuningSettings.DetailFadeEnd, 256.0f, 4096.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
-			tuningSettings.DetailFadeEnd = std::max(tuningSettings.DetailFadeEnd, tuningSettings.DetailFadeStart + 32.0f);
-			ImGui::SliderFloat("Detail Max Mip", &tuningSettings.DetailMaxMip, 1.0f, 8.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
-			ImGui::SliderFloat("Protect Dark Materials", &tuningSettings.DetailDarkProtection, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			ImGui::SliderFloat("Protect Smooth Materials", &tuningSettings.DetailSmoothProtection, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			ImGui::SliderFloat("Dominant Terrain Layer Gate", &tuningSettings.DetailDominantTerrainMinWeight, 0.35f, 0.95f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		if (ImGui::CollapsingHeader("Authored / Object POM", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::SliderFloat("Object Authored Depth", &tuningSettings.ObjectAuthoredDepthScale, 0.10f, 4.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("Scales displacement from authored PBR/CM height data. Higher values make relief more pronounced; the texel-shift limit below still protects against stretched UVs.");
+			ImGui::SliderFloat("Object Auto-POM Depth", &tuningSettings.ObjectAutoHeightScale, 0.001f, 0.080f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("Scales synthetic relief when a material has no usable authored height. Higher values improve depth on ordinary texture replacers but cost more and can exaggerate noisy albedo.");
+			ImGui::SliderFloat("Object Max Texel Shift", &tuningSettings.ObjectMaxTexelShift, 1.0f, 64.0f, "%.1f texels", ImGuiSliderFlags_AlwaysClamp);
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("Maximum visible UV displacement. Raise this together with depth when the effect appears capped; lower it if silhouettes stretch at grazing angles.");
+			ImGui::SliderFloat("Object Grazing Protection", &tuningSettings.ObjectGrazingProtection, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Object Fade Start", &tuningSettings.ObjectFadeStart, 128.0f, 2048.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Object Fade End", &tuningSettings.ObjectFadeEnd, 512.0f, 4096.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+			tuningSettings.ObjectFadeEnd = std::max(tuningSettings.ObjectFadeEnd, tuningSettings.ObjectFadeStart + 32.0f);
+			ImGui::SliderFloat("Object Max Height Mip", &tuningSettings.ObjectMaxMip, 2.0f, 10.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+			int objectNearSteps = static_cast<int>(tuningSettings.ObjectNearSteps);
+			int objectMaxSteps = static_cast<int>(tuningSettings.ObjectMaxSteps);
+			int objectRefinement = static_cast<int>(tuningSettings.ObjectRefinementSteps);
+			if (ImGui::SliderInt("Object Near Steps", &objectNearSteps, 4, 24))
+				tuningSettings.ObjectNearSteps = static_cast<uint>(std::clamp(objectNearSteps, 4, 24));
+			if (ImGui::SliderInt("Object Maximum Steps", &objectMaxSteps, 4, 32))
+				tuningSettings.ObjectMaxSteps = static_cast<uint>(std::clamp(objectMaxSteps, 4, 32));
+			if (ImGui::SliderInt("Object Refinement Steps", &objectRefinement, 2, 12))
+				tuningSettings.ObjectRefinementSteps = static_cast<uint>(std::clamp(objectRefinement, 2, 12));
 		}
+		if (ImGui::CollapsingHeader("Synthetic Height Reconstruction")) {
+			ImGui::SliderFloat("Height Contrast", &tuningSettings.AutoHeightContrast, 0.25f, 5.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Normal-map Influence", &tuningSettings.AutoHeightNormalInfluence, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Reference Mip Offset", &tuningSettings.AutoHeightReferenceMipOffset, 1.0f, 8.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Chroma Rejection", &tuningSettings.AutoHeightChromaRejection, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Minimum Visible Shift", &tuningSettings.AutoMinTexelShift, 0.0f, 2.0f, "%.2f texels", ImGuiSliderFlags_AlwaysClamp);
+		}
+		if (ImGui::CollapsingHeader("Terrain Auto-Height Classifier")) {
+			static constexpr const char* polarityNames[] = {
+				"Dark Features Rise (recommended for current vanilla terrain)",
+				"Bright Features Rise"
+			};
+			int terrainPolarity = tuningSettings.TerrainSyntheticPolarity >= 0.0f ? 1 : 0;
+			if (ImGui::Combo("Synthetic Height Polarity", &terrainPolarity, polarityNames, 2))
+				tuningSettings.TerrainSyntheticPolarity = terrainPolarity != 0 ? 1.0f : -1.0f;
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("The old Auto-POM always raised brighter fine detail. On vanilla terrain that can turn painted grass/fibres into POM spikes. Flip this only if the reconstructed rocks are visibly inverted.");
+			ImGui::SliderFloat("Geometry Source Mip Bias", &tuningSettings.TerrainSourceMipBias, 0.0f, 3.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("Builds geometry from a slightly coarser mip so tiny grass/fibre albedo detail does not become vertical relief. PIXL microdetail still restores those frequencies visually.");
+			ImGui::SliderFloat("Fine Detail Rejection", &tuningSettings.TerrainHeightDeadZone, 0.0f, 0.15f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Legacy Alpha Assist", &tuningSettings.TerrainAlphaAssist, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Alpha Evidence Threshold", &tuningSettings.TerrainAlphaEvidenceThreshold, 0.001f, 0.10f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Synthetic Layer Scale", &tuningSettings.TerrainSyntheticScaleFloor, 0.25f, 4.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("Minimum POM scale for terrain layers with no authored displacement scale. This fixes roads/PBR layers that had HeightScale=0 and could never respond to the v3.12 Auto-POM sliders.");
+			ImGui::SliderFloat("Synthetic Gain", &tuningSettings.TerrainSyntheticGain, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Relief Gamma", &tuningSettings.TerrainReliefGamma, 0.35f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		}
+		if (ImGui::CollapsingHeader("Terrain Relief-POM")) {
+			ImGui::SliderFloat("Terrain Depth", &tuningSettings.TerrainDepthScale, 0.10f, 8.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Terrain Synthetic Height", &tuningSettings.TerrainHeightStrength, 0.0f, 5.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Terrain Height Contrast", &tuningSettings.TerrainHeightContrast, 0.25f, 6.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Terrain Max Texel Shift", &tuningSettings.TerrainMaxTexelShift, 4.0f, 256.0f, "%.0f texels", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Terrain Grazing Protection", &tuningSettings.TerrainGrazingProtection, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Terrain Reference Mip Offset", &tuningSettings.TerrainReferenceMipOffset, 1.5f, 8.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Terrain Fade Start", &tuningSettings.TerrainFadeStart, 256.0f, 3072.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Terrain Fade End", &tuningSettings.TerrainFadeEnd, 768.0f, 6144.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+			tuningSettings.TerrainFadeEnd = std::max(tuningSettings.TerrainFadeEnd, tuningSettings.TerrainFadeStart + 64.0f);
+			ImGui::SliderFloat("Terrain Max Height Mip", &tuningSettings.TerrainMaxMip, 2.0f, 10.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Terrain Height Blend Strength", &tuningSettings.TerrainHeightBlendStrength, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			int terrainNearSteps = static_cast<int>(tuningSettings.TerrainNearSteps);
+			int terrainMaxSteps = static_cast<int>(tuningSettings.TerrainMaxSteps);
+			int terrainRefinement = static_cast<int>(tuningSettings.TerrainRefinementSteps);
+			if (ImGui::SliderInt("Terrain Near Steps", &terrainNearSteps, 4, 32))
+				tuningSettings.TerrainNearSteps = static_cast<uint>(std::clamp(terrainNearSteps, 4, 32));
+			if (ImGui::SliderInt("Terrain Maximum Steps", &terrainMaxSteps, 4, 64))
+				tuningSettings.TerrainMaxSteps = static_cast<uint>(std::clamp(terrainMaxSteps, 4, 64));
+			if (ImGui::SliderInt("Terrain Refinement Steps", &terrainRefinement, 2, 16))
+				tuningSettings.TerrainRefinementSteps = static_cast<uint>(std::clamp(terrainRefinement, 2, 16));
 
+			Util::UIntCheckbox(T(TKEY("enable_height_blending"), "Enable Terrain Height Blending"), &settings.EnableHeightBlending);
+			Util::UIntCheckbox(T(TKEY("enable_parallax_warping_fix"), "Enable Parallax Warping Fix"), &settings.EnableParallaxWarpingFix);
+		}
+		if (ImGui::CollapsingHeader("Virtual Relief Depth")) {
+			ImGui::TextWrapped("Virtual depth affects deferred lighting and GI only; it does not change silhouettes, collision, or hardware visibility.");
+			ImGui::Checkbox("Preview Virtual Depth Offsets", &showEffectsDepthDebug);
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("Diagnostic view: blue is recessed relief, orange is protrusion, black is unchanged. Shows the generated offset before the near-camera safety limit. Turn off for normal lighting.");
+			ImGui::TextDisabled("%s", effectsDepthFailed ? "Effects depth unavailable - see PIXLRenderer.log" :
+									  effectsDepthReady  ? "Effects depth active" :
+														   "Effects depth inactive");
+			ImGui::SliderFloat("Object Virtual Depth Strength", &tuningSettings.ObjectVirtualDepthStrength, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Object Virtual Depth Limit", &tuningSettings.ObjectVirtualDepthMaxWorld, 1.0f, 16.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+			Util::UIntCheckbox("Enable Terrain Virtual Depth", &tuningSettings.EnableTerrainVirtualDepth);
+			ImGui::SliderFloat("Virtual Depth Strength", &tuningSettings.TerrainVirtualDepthStrength, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Virtual Depth Max World", &tuningSettings.TerrainVirtualDepthMaxWorld, 2.0f, 64.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Virtual Depth Max UV", &tuningSettings.TerrainVirtualDepthMaxUV, 0.02f, 0.50f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Virtual Protrusion", &tuningSettings.TerrainVirtualDepthProtrusion, 0.0f, 0.50f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("Virtual depth makes depth-based effects see the POM surface. Protrusion is experimental and cannot create pixels outside the original terrain mesh silhouette.");
+		}
+		if (ImGui::CollapsingHeader("Material Detail Reconstruction")) {
+			Util::UIntCheckbox("Enable Detail Reconstruction", &tuningSettings.EnableDetailReconstruction);
+			if (tuningSettings.EnableDetailReconstruction != 0u) {
+				int quality = static_cast<int>(std::min(tuningSettings.DetailQuality, 2u));
+				static constexpr const char* qualityNames[] = { "Off", "Albedo", "Albedo + Normal + Roughness" };
+				if (ImGui::Combo("Detail Quality", &quality, qualityNames, static_cast<int>(std::size(qualityNames))))
+					tuningSettings.DetailQuality = static_cast<uint>(std::clamp(quality, 0, 2));
+				ImGui::SliderFloat("Object Detail Strength", &tuningSettings.DetailObjectStrength, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+				ImGui::SliderFloat("Terrain Detail Strength", &tuningSettings.DetailTerrainStrength, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+				ImGui::SliderFloat("Albedo Microcontrast", &tuningSettings.DetailAlbedoStrength, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+				ImGui::SliderFloat("Normal Microdetail", &tuningSettings.DetailNormalStrength, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+				ImGui::SliderFloat("Roughness Microdetail", &tuningSettings.DetailRoughnessStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+				ImGui::SliderFloat("Detail Mip Separation", &tuningSettings.DetailMipSeparation, 0.5f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+				ImGui::SliderFloat("Detail Contrast", &tuningSettings.DetailContrast, 0.25f, 2.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+				ImGui::SliderFloat("Anti-Shimmer", &tuningSettings.DetailAntiShimmer, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+				ImGui::SliderFloat("Detail Fade Start", &tuningSettings.DetailFadeStart, 64.0f, 1536.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+				ImGui::SliderFloat("Detail Fade End", &tuningSettings.DetailFadeEnd, 256.0f, 4096.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+				tuningSettings.DetailFadeEnd = std::max(tuningSettings.DetailFadeEnd, tuningSettings.DetailFadeStart + 32.0f);
+				ImGui::SliderFloat("Detail Max Mip", &tuningSettings.DetailMaxMip, 1.0f, 8.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+				ImGui::SliderFloat("Protect Dark Materials", &tuningSettings.DetailDarkProtection, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+				ImGui::SliderFloat("Protect Smooth Materials", &tuningSettings.DetailSmoothProtection, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+				ImGui::SliderFloat("Dominant Terrain Layer Gate", &tuningSettings.DetailDominantTerrainMinWeight, 0.35f, 0.95f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			}
+		}
 		ImGui::Spacing();
 		ImGui::TreePop();
 	}
 
-	if (ImGui::TreeNodeEx(T(TKEY("soft_shadows"), "Parallax Self Shadows"), ImGuiTreeNodeFlags_DefaultOpen)) {
+	if (ImGui::TreeNodeEx(T(TKEY("soft_shadows"), "Parallax Self Shadows"))) {
 		Util::UIntCheckbox(T(TKEY("enable_shadows"), "Enable Authored POM Shadows"), &settings.EnableShadows);
 		Util::UIntCheckbox("Enable Auto-POM Shadows", &tuningSettings.EnableAutoPOMSelfShadows);
 		Util::UIntCheckbox("Enable Terrain POM Shadows", &tuningSettings.EnableTerrainSelfShadows);

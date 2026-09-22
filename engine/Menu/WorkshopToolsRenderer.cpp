@@ -22,6 +22,10 @@
 void WorkshopToolsRenderer::RenderAdvancedSettings(
 	const std::function<void()>& drawDisableAtBootSettings)
 {
+	if (!globals::state || !globals::shaderCache || !globals::menu) {
+		ImGui::TextWrapped("Developer tools are available once the renderer has initialized.");
+		return;
+	}
 	// Use TabBar system - tabs sorted alphabetically
 	if (ImGui::BeginTabBar("##AdvancedSettingsTabs", ImGuiTabBarFlags_None)) {
 		// Developer Tab
@@ -90,7 +94,6 @@ void WorkshopToolsRenderer::RenderLoggingSection()
 	};
 	int item_current = static_cast<int>(logLevel);
 	if (ImGui::Combo(T("menu.advanced.log_level", "Log Level"), &item_current, items, IM_ARRAYSIZE(items))) {
-		ImGui::SameLine();
 		globals::state->SetLogLevel(static_cast<spdlog::level::level_enum>(item_current));
 	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -237,7 +240,7 @@ void WorkshopToolsRenderer::RenderShaderDebugSection()
 		ImGui::PushStyleColor(ImGuiCol_ChildBg, blockedBgColor);
 
 		float maxHeight = ImGui::GetContentRegionAvail().y * 0.3f;  // Limit to 30% to keep Active Shaders visible
-		if (ImGui::BeginChild("##BlockedShaderInfo", ImVec2(0, maxHeight), true, ImGuiChildFlags_AutoResizeY)) {
+		if (ImGui::BeginChild("##BlockedShaderInfo", ImVec2(0, std::max(ImGui::GetFrameHeight(), maxHeight)), ImGuiChildFlags_Borders)) {
 			Util::Text::Error(T("menu.advanced.shader_blocking_active", "Shader Blocking Active"));
 			ImGui::SameLine();
 			if (ImGui::SmallButton(T("menu.advanced.stop_blocking", "Stop Blocking##Section"))) {
@@ -371,6 +374,7 @@ void WorkshopToolsRenderer::RenderShaderDebugSection()
 		};
 
 		std::vector<ShaderRow> shaderRows;
+		shaderRows.reserve(activeShaders.size());
 		for (const auto& shader : activeShaders) {
 			shaderRows.push_back({ shader, totalDrawCalls });
 		}

@@ -87,12 +87,14 @@ void StrandShading::DrawSettings()
 							  "Enables screen-space self-shadowing for hair.\n"
 							  "Marschner hair model might have overly bright transmission without self-shadowing.\n"));
 	}
+	ImGui::BeginDisabled(settings.EnableSelfShadow == 0);
 	ImGui::SliderFloat(T(TKEY("self_shadow_strength"), "Self Shadow Strength"), &settings.SelfShadowStrength, 0.0f, 1.0f, "%.2f");
 	tooltip("Blends the screen-space strand occlusion into direct hair lighting.");
 	ImGui::SliderFloat(T(TKEY("self_shadow_exponent"), "Self Shadow Exponent"), &settings.SelfShadowExponent, 0.0f, 10.0f, "%.2f");
 	tooltip("Shapes how rapidly multiple screen-space blockers turn into a dense strand shadow.");
 	ImGui::SliderFloat(T(TKEY("self_shadow_scale"), "Self Shadow Scale"), &settings.SelfShadowScale, 0.0f, 10.0f, "%.2f");
 	tooltip("Length of the bounded screen-space visibility ray. Large values can cross unrelated geometry.");
+	ImGui::EndDisabled();
 }
 
 void StrandShading::LoadSettings(json& o_json)

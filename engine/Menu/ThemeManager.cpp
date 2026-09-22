@@ -39,7 +39,7 @@ namespace
 	// -------------------------
 	// Disabled text alpha: Makes inactive UI elements visually distinct but still readable
 	// Value calibrated for accessibility - too low = invisible, too high = looks enabled
-	constexpr float DISABLED_TEXT_ALPHA = 0.3f;  // 30% opacity for disabled elements
+	constexpr float DISABLED_TEXT_ALPHA = 0.55f;  // Inactive but still readable on the dark shell.
 
 	// Resize grip hover alpha: Subtle hover effect to avoid visual clutter
 	// Low value maintains minimalist aesthetic while providing hover feedback
@@ -163,7 +163,11 @@ void ThemeManager::SetupImGuiStyle(const Menu& menu)
 	bool isThemeCorrupted = (themeSettings.FullPalette.size() < ImGuiCol_COUNT / 2) ||
 	                        (themeSettings.Palette.Background.w == 0.0f && themeSettings.Palette.Text.w == 0.0f);
 
-	if (isThemeCorrupted) {
+	static bool attemptedRecovery = false;
+	if (!isThemeCorrupted)
+		attemptedRecovery = false;
+	if (isThemeCorrupted && !attemptedRecovery) {
+		attemptedRecovery = true;
 		logger::warn("Theme appears corrupted, attempting emergency reload of PIXL.json");
 		// Emergency recovery: const_cast is acceptable here to prevent total UI failure
 		if (const_cast<Menu*>(&menu)->LoadThemePreset("PIXL")) {
@@ -916,17 +920,25 @@ bool ThemeManager::SaveTheme(const std::string& themeName, const json& themeSett
 		std::filesystem::create_directories(themesDir);
 		logger::debug("SaveTheme: Themes directory ensured: {}", themesDir.string());
 
-		// Write the theme file
-		std::ofstream file(filePath);
+		// Serialize and finish the replacement before touching a user's theme.
+		// A full disk or write error must leave the previous preferences intact.
+		const auto serialized = fullTheme.dump(4);
+		auto temporaryPath = filePath;
+		temporaryPath += L".tmp";
+		std::ofstream file(temporaryPath, std::ios::binary | std::ios::trunc);
 		if (!file.is_open()) {
 			logger::warn("Failed to create theme file: {}", filePath.string());
 			return false;
 		}
 
-		file << fullTheme.dump(4);  // Pretty print with 4-space indentation
+		file << serialized;
 		file.close();
 		if (!file) {
 			logger::warn("Failed to finish writing theme file: {}", filePath.string());
+			return false;
+		}
+		if (!MoveFileExW(temporaryPath.c_str(), filePath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+			logger::warn("Failed to replace theme file: {} (Win32 {})", filePath.string(), GetLastError());
 			return false;
 		}
 

@@ -153,7 +153,7 @@ void FoliageDynamics::DrawSettings()
 		ImGui::TreePop();
 	}
 
-	if (ImGui::TreeNodeEx("Grass Material Controls", ImGuiTreeNodeFlags_DefaultOpen)) {
+	if (ImGui::TreeNodeEx("Grass Material Controls")) {
 		ImGui::TextWrapped("Fine control over grass card normals, alpha coverage and world-fit response. These settings use a dedicated b13 buffer and do not expand FeatureData.");
 
 		ImGui::SeparatorText("Normals");

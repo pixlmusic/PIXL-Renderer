@@ -134,16 +134,20 @@ void Waterbody::DrawSettings()
 
 	ImGui::Spacing();
 
-	if (globals::state->IsDeveloperMode() && ImGui::TreeNodeEx(T(TKEY("debug"), "Debug"), ImGuiTreeNodeFlags_DefaultOpen)) {
+	if (globals::state && globals::state->IsDeveloperMode() && ImGui::TreeNode(T(TKEY("debug"), "Debug"))) {
+		ImGui::BeginDisabled(!flowmap);
 		if (ImGui::Button(T(TKEY("regenerate_flowmap"), "Regenerate Flowmap")) && flowmap) {
 			if (flowmap->RegenerateAndLoadFlowmap())
 				SetFlowmapTex();
 		}
+		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Rebuilds and reloads the current worldspace flowmap. Use after changing flowmap source data; this may take a moment and is not needed for ordinary runtime sliders.");
 
+		ImGui::BeginDisabled(!waterCache);
 		if (ImGui::Button(T(TKEY("regenerate_caches"), "Regenerate Caches")) && waterCache)
 			waterCache->RegenerateCaches();
+		ImGui::EndDisabled();
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Rebuilds PIXL water geometry caches. Use after changing mesh-generation settings; progress is shown in the renderer overlay.");
 

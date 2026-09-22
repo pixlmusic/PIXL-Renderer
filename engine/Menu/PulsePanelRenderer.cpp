@@ -140,6 +140,10 @@ void PulsePanelRenderer::RenderTimingModeToggle()
 	const auto newMode = static_cast<TimingMode>(mode);
 	if (newMode != timingMode) {
 		timingMode = newMode;
+		// CPU submit time and GPU execution time are different measurements;
+		// do not join their samples into one apparently continuous history.
+		gpuGraph = ImGuiUtils::ProfilerGraph{ Profiler::kHistorySize };
+		featureGraphs.clear();
 		timeSinceLastUpdate = kStatsRefreshSeconds;
 	}
 }

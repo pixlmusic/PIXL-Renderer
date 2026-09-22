@@ -17,6 +17,7 @@
 #include "ShaderCache.h"
 #include "State.h"
 #include "ThemeManager.h"
+#include "PIXLStyle.h"
 
 using json = nlohmann::json;
 
@@ -200,10 +201,31 @@ namespace
 	void RenderSaveInfoText()
 	{
 		auto& ts = globals::menu->GetSettings().Theme;
-		ImGui::PushStyleColor(ImGuiCol_Text, ts.StatusPalette.InfoColor);
-		ImGui::TextWrapped("%s", T("menu.settings.theme_save_info",
-									 "Theme changes are not saved with the global \"Save Settings\" button. Use the Themes tab to save changes to this theme."));
-		ImGui::PopStyleColor();
+		static double feedbackUntil = 0.0;
+		static bool saved = false;
+		if (PIXLUI::ActionButton("SAVE INTERFACE")) {
+			auto* themes = ThemeManager::GetSingleton();
+			auto& selected = globals::menu->GetSettings().SelectedThemePreset;
+			// Keep the shipped theme intact. User preferences use the existing
+			// custom-theme schema and do not change rendering presets.
+			const std::string target = selected.empty() || themes->IsPresetTheme(selected) ? "PIXL-User" : selected;
+			json data;
+			globals::menu->SaveTheme(data);
+			const auto* current = themes->GetThemeInfo(target);
+			saved = themes->SaveTheme(target, data["Theme"],
+				current ? current->displayName : "PIXL User Preferences",
+				current ? current->description : "Personal interface preferences; rendering settings are saved separately.");
+			if (saved) {
+				selected = target;
+				if (globals::state)
+					globals::state->Save();
+			}
+			feedbackUntil = ImGui::GetTime() + 4.0;
+		}
+		ImGui::TextWrapped("Save interface preferences separately from your rendering look. The shipped PIXL theme remains unchanged.");
+		if (ImGui::GetTime() < feedbackUntil)
+			ImGui::TextColored(saved ? ts.StatusPalette.SuccessColor : ts.StatusPalette.Error,
+				"%s", saved ? "Interface saved." : "Interface could not be saved. See PIXLRenderer.log.");
 		ImGui::Spacing();
 	}
 }
@@ -224,6 +246,11 @@ void RuntimeSettingsRenderer::RenderShadersTab()
 	auto tabLabel = std::format("{}##{}", T("menu.settings.tab_shaders", "Shaders"), "GeneralShadersTab");
 	if (BeginTabItemWithFont(tabLabel.c_str(), Menu::FontRole::Heading)) {
 		auto shaderCache = globals::shaderCache;
+		if (!shaderCache) {
+			ImGui::TextWrapped("Shader settings are available once the renderer has initialized.");
+			ImGui::EndTabItem();
+			return;
+		}
 
 		bool useCustomShaders = shaderCache->IsEnabled();
 		if (ImGui::Checkbox(T("menu.settings.use_custom_shaders", "Enable PIXL Renderer Shaders"), &useCustomShaders)) {
@@ -319,12 +346,12 @@ void RuntimeSettingsRenderer::RenderShadersTab()
 
 				// Draw segments
 				float x = cursor.x;
+				const float right = cursor.x + barWidth;
 				for (auto& seg : segments) {
 					if (seg.count == 0 || total == 0)
 						continue;
 					float segWidth = (static_cast<float>(seg.count) / static_cast<float>(total)) * barWidth;
-					if (segWidth < 1.0f)
-						segWidth = 1.0f;
+					segWidth = std::min(std::max(1.0f, segWidth), std::max(0.0f, right - x));
 					drawList->AddRectFilled(ImVec2(x, cursor.y), ImVec2(x + segWidth, cursor.y + barHeight), seg.color);
 					x += segWidth;
 				}
@@ -344,7 +371,7 @@ void RuntimeSettingsRenderer::RenderShadersTab()
 			}
 
 			auto state = globals::state;
-			if (state->IsDeveloperMode()) {
+			if (state && state->IsDeveloperMode()) {
 				ImGui::Text("Threads: %d compile, %d background, %d pool | P-cores: %d",
 					(int)shaderCache->compilationThreadCount,
 					(int)shaderCache->backgroundCompilationThreadCount,
@@ -465,52 +492,8 @@ void RuntimeSettingsRenderer::RenderBehaviorTab()
 
 		SeparatorTextWithFont(T("menu.settings.ui_behavior", "UI Behavior"), Menu::FontRole::Subheading);
 
-		ImGui::Checkbox(T("menu.settings.show_icon_buttons_in_header", "Show Icon Buttons in Header"), &themeSettings.ShowActionIcons);
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T("menu.settings.show_icon_buttons_in_header_tooltip",
-								  "When enabled: Shows action buttons (Save, Load, Clear Cache) as icons in the header\n"
-								  "When disabled: Shows as text buttons below the header"));
-		}
-
-		if (themeSettings.ShowActionIcons) {
-			ImGui::Indent();
-			if (ImGui::Checkbox(T("menu.settings.use_monochrome_icons", "Use Monochrome Icons"), &themeSettings.UseMonochromeIcons)) {
-				globals::menu->pendingIconReload = true;
-			}
-			if (auto _tt = Util::HoverTooltipWrapper()) {
-				ImGui::Text("%s", T("menu.settings.use_monochrome_icons_tooltip", "Uses white monochrome icons that adapt to your theme's text color"));
-			}
-			ImGui::SameLine();
-			if (ImGui::Checkbox(T("menu.settings.use_monochrome_cs_logo", "Use Monochrome PIXL Logo"), &themeSettings.UseMonochromeLogo)) {
-				globals::menu->pendingIconReload = true;
-			}
-			if (auto _tt = Util::HoverTooltipWrapper()) {
-				ImGui::Text("%s", T("menu.settings.use_monochrome_cs_logo_tooltip", "Uses monochrome version of the PIXL Renderer logo"));
-			}
-			ImGui::Unindent();
-		}
-
-		ImGui::Checkbox(T("menu.settings.show_footer", "Show Footer"), &themeSettings.ShowFooter);
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T("menu.settings.show_footer_tooltip", "Shows the footer with game version, swap chain, and GPU information at the bottom of the window"));
-		}
-
-		ImGui::Checkbox(T("menu.settings.center_header_title", "Center Header Title"), &themeSettings.CenterHeader);
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T("menu.settings.center_header_title_tooltip", "Centers the PIXL Renderer title and logo in the header title bar"));
-		}
-
-		ImGui::Checkbox(T("menu.settings.auto_hide_feature_list", "Auto-hide Feature List"), &globals::menu->GetSettings().AutoHideFeatureList);
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T("menu.settings.auto_hide_feature_list_tooltip", "Automatically hides the left feature list panel. Move cursor to the left edge to show it."));
-		}
-
-		if (ImGui::Checkbox(T("menu.settings.require_shift_to_dock", "Require Shift to Dock"), &globals::menu->GetSettings().RequireShiftToDock)) {
-			ImGui::GetIO().ConfigDockingWithShift = globals::menu->GetSettings().RequireShiftToDock;
-		}
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T("menu.settings.require_shift_to_dock_tooltip", "When enabled, you must hold Shift while dragging to dock/snap windows. Prevents accidental docking."));
-		}
+		// Header/footer and hover-drawer switches from the retired layout have
+		// no consumers. Keep their serialized keys, not misleading controls.
 
 		ImGui::SliderFloat(T("menu.settings.tooltip_hover_delay", "Tooltip Hover Delay"), &themeSettings.TooltipHoverDelay, 0.0f, 2.0f, "%.2f s", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -742,6 +725,7 @@ void RuntimeSettingsRenderer::RenderThemesTab()
 					changedSettings.clear();
 				}
 			}
+			currentThemeInfo = themeManager->GetThemeInfo(currentThemePreset);
 			if (auto _tt = Util::HoverTooltipWrapper()) {
 				ImGui::Text(T("menu.settings.save_theme_tooltip", "Updates the currently selected theme (%s) with your current settings"), currentThemePreset.c_str());
 			}
@@ -915,6 +899,8 @@ void RuntimeSettingsRenderer::RenderThemesTab()
 			}
 		}
 
+		// Theme creation can also refresh the vector backing this pointer.
+		currentThemeInfo = themeManager->GetThemeInfo(currentThemePreset);
 		if (deleteThemePopup.Draw() && currentThemeInfo && !currentThemeInfo->filePath.empty()) {
 			auto result = Util::FileHelpers::SafeDelete(currentThemeInfo->filePath, "Theme '" + currentThemePreset + "'");
 			if (result.success) {

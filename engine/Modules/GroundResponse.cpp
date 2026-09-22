@@ -3350,7 +3350,7 @@ void GroundResponse::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Darkens compressed snow slightly to reveal granular tracks without painting black decals.");
 
-		if (ImGui::TreeNodeEx("Geometric Snow & Mud Surface", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (ImGui::TreeNodeEx("Geometric Snow & Mud Surface")) {
 			changed |= ImGui::Checkbox("Enable Geometric Snow + Mud", &settings.EnableGeometricSnow);
 			if (auto _tt = Util::HoverTooltipWrapper())
 				ImGui::TextWrapped("Replays the real landscape as a raised adaptive shell. The shell samples the persistent absolute-world compaction map in the domain shader: untouched texels stay raised, stamped texels collapse toward the original landscape. Snow and mud use the same footprint data but different physical thickness/floor values.");
@@ -3424,7 +3424,7 @@ void GroundResponse::DrawSettings()
 			ImGui::TextWrapped("Higher values make fresh compressed mud smoother with a stronger wet dielectric highlight. This reuses the existing mud roughness field, so the shared-data ABI stays unchanged.");
 
 		ImGui::Separator();
-		if (ImGui::TreeNodeEx("Movement Resistance", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (ImGui::TreeNodeEx("Movement Resistance")) {
 			changed |= ImGui::Checkbox(
 				"Enable Snow / Mud Resistance",
 				&g_groundResistanceSettings.EnableMovementResistance);
@@ -3521,7 +3521,7 @@ void GroundResponse::DrawSettings()
 		}
 
 		ImGui::Separator();
-		if (ImGui::TreeNodeEx("World Interactions", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (ImGui::TreeNodeEx("World Interactions")) {
 			changed |= ImGui::Checkbox("Animated Havok Body Contacts", &settings.EnableAnimatedBodyContacts);
 			if (auto _tt = Util::HoverTooltipWrapper())
 				ImGui::TextWrapped("Uses live third-person Havok body bounds for independent feet, paws, limbs, hands and ragdolls. The old single player capsule is retained only as a fail-soft fallback.");
@@ -3559,7 +3559,7 @@ void GroundResponse::DrawSettings()
 		changed |= ImGui::SliderFloat("Track Recovery Rate", &settings.TrackRecoveryRate, 0.05f, 2.0f, "%.2f units/s", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Recovery speed after Track Hold Time expires. Internally this is converted to normalized compaction recovery using the snow-shell thickness, so snow and mud share one persistent footprint lifetime.");
-		if (globals::state->IsDeveloperMode()) {
+		if (globals::state && globals::state->IsDeveloperMode()) {
 			const auto seasonContext = SeasonIntegration::GetSingleton().GetContext();
 			ImGui::SeparatorText("Season Compatibility");
 			ImGui::Text("Provider: %s", seasonContext.providerAvailable ? "Detected" : "Not detected");
@@ -3577,7 +3577,7 @@ void GroundResponse::DrawSettings()
 		ImGui::TreePop();
 	}
 
-	if (changed)
+	if (changed && globals::state)
 		globals::state->UpdateFeatureData(globals::state->inWorld);
 }
 

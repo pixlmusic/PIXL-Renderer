@@ -4113,7 +4113,12 @@ namespace
 		auto& io = ImGui::GetIO();
 		const bool overViewport = io.MousePos.x >= viewportMinX &&
 			io.MousePos.y >= PIXLUI::Ref(PIXLUI::Layout::TuneSidebarY);
-		if (!overViewport || ImGui::IsAnyItemHovered() || ImGui::IsAnyItemActive())
+		// Other root windows (extensions, profiler and popups) own their scroll
+		// and drag input, even before their widgets are submitted this frame.
+		const bool otherWindow = ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) &&
+			!ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
+		if (!overViewport || otherWindow || ImGui::IsAnyItemHovered() || ImGui::IsAnyItemActive() ||
+			ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel))
 			return;
 
 		if (std::abs(io.MouseWheel) > 0.001f) {
@@ -4255,6 +4260,16 @@ bool TuningWorkspaceRenderer::HandleTunerKeyboardInput(
 	if (!globals::menu || !globals::menu->IsEnabled)
 		return false;
 
+	// Editing and dialogs own their keyboard input, including Shift and Escape.
+	// In particular, Shift must reach ImGui for selection/uppercase text rather
+	// than being interpreted as an inspection-camera modifier.
+	if (!g_tunerInspectionMoving && (ImGui::GetIO().WantTextInput ||
+		globals::menu->IsCapturingHotkeyInput() ||
+		ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel))) {
+		g_tunerShiftHeld = false;
+		return false;
+	}
+
 	// Escape is an explicit ownership boundary while the tuner is open.  It
 	// must close both the UI and any active inspection transaction, including
 	// native free-camera mode, without forwarding the key to Skyrim.
@@ -4273,7 +4288,9 @@ bool TuningWorkspaceRenderer::HandleTunerKeyboardInput(
 	if (InputCombo::MatchesKeyboardCombo(globals::menu->GetSettings().ToggleKey, virtualKey))
 		return false;
 
-	const bool isShift = virtualKey == VK_LSHIFT || virtualKey == VK_SHIFT;
+	const auto& tunerHotkeys = globals::menu->GetSettings();
+	const bool isFlycamKey = InputCombo::MatchesKeyboardCombo(tunerHotkeys.TunerFlycamKey, virtualKey);
+	const bool isShift = isFlycamKey || virtualKey == VK_LSHIFT || virtualKey == VK_SHIFT;
 	if (isShift) {
 		g_tunerShiftHeld = pressed;
 		if (g_directorPhotoMode.active && !pressed)
@@ -4295,7 +4312,7 @@ bool TuningWorkspaceRenderer::HandleTunerKeyboardInput(
 
 		// Locked inspection is deliberately re-entrant: Shift + navigation starts
 		// a new movement transaction without closing or reopening the tuner.
-		if (pressed && g_tunerShiftHeld && navigationKey) {
+		if (pressed && (g_tunerShiftHeld || !tunerHotkeys.TunerFlycamHoldRequired) && navigationKey) {
 			g_characterOrbitEnabled = false;
 			g_characterOrbitOwnsInspection = false;
 			g_tunerInspectionMoving = true;
@@ -4304,7 +4321,7 @@ bool TuningWorkspaceRenderer::HandleTunerKeyboardInput(
 		return false;
 	}
 
-	if (pressed && g_tunerShiftHeld && navigationKey) {
+	if (pressed && (g_tunerShiftHeld || !tunerHotkeys.TunerFlycamHoldRequired) && navigationKey) {
 		if (EnterDirectorPhotoMode()) {
 			g_tunerOwnsInspection = true;
 			g_tunerInspectionMoving = true;
@@ -4331,7 +4348,8 @@ bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
 		return true;
 	}
 
-	if (virtualKey == VK_HOME) {
+	const auto& hotkeys = globals::menu->GetSettings();
+	if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoModeKey, virtualKey)) {
 		if (g_directorPhotoMode.active)
 			ExitDirectorPhotoMode();
 		else
@@ -4345,21 +4363,21 @@ bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
 
 	// These four framing controls remain available even with the Director HUD
 	// hidden, so a clean composition never requires reopening a settings panel.
-	switch (virtualKey) {
-	case VK_UP:
+	if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoZoomInKey, virtualKey)) {
 		ApplyDirectorWorldFov(GetDirectorWorldFov() + 2.0f);
 		return true;
-	case VK_DOWN:
+	}
+	if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoZoomOutKey, virtualKey)) {
 		ApplyDirectorWorldFov(GetDirectorWorldFov() - 2.0f);
 		return true;
-	case VK_LEFT:
+	}
+	if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoSpeedDownKey, virtualKey)) {
 		ApplyDirectorCameraMoveSpeed(GetDirectorCameraMoveSpeed() - 0.10f);
 		return true;
-	case VK_RIGHT:
+	}
+	if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoSpeedUpKey, virtualKey)) {
 		ApplyDirectorCameraMoveSpeed(GetDirectorCameraMoveSpeed() + 0.10f);
 		return true;
-	default:
-		break;
 	}
 
 	if (!g_directorPhotoMode.hudVisible) {
@@ -4390,46 +4408,46 @@ bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
 		return true;
 	}
 
-	switch (virtualKey) {
-	case VK_END:
+	if (virtualKey == VK_END) {
 		ArmDirectorPhotoCapture();
 		return true;
-
-	case VK_INSERT:
-		g_directorPhotoMode.quickPanelVisible =
-			!g_directorPhotoMode
-				 .quickPanelVisible;
+	}
+	if (virtualKey == VK_INSERT) {
+		g_directorPhotoMode.quickPanelVisible = !g_directorPhotoMode.quickPanelVisible;
 		return true;
-
-	case VK_DELETE:
-		g_directorPhotoMode.hudVisible =
-			!g_directorPhotoMode.hudVisible;
+	}
+	if (virtualKey == VK_DELETE) {
+		g_directorPhotoMode.hudVisible = !g_directorPhotoMode.hudVisible;
 		return true;
+	}
 
-	case VK_NUMPAD8:
+	if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoQuickPreviousKey, virtualKey)) {
 		g_directorPhotoMode.quickPanelVisible = true;
 		g_directorPhotoMode.selectedQuickOption =
 			(g_directorPhotoMode.selectedQuickOption +
-			 kDirectorQuickOptionCount - 1) %
+			kDirectorQuickOptionCount - 1) %
 			kDirectorQuickOptionCount;
 		return true;
-
-	case VK_NUMPAD2:
+	}
+	if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoQuickNextKey, virtualKey)) {
 		g_directorPhotoMode.quickPanelVisible = true;
 		g_directorPhotoMode.selectedQuickOption =
-			(g_directorPhotoMode.selectedQuickOption + 1) %
+		(g_directorPhotoMode.selectedQuickOption + 1) %
 			kDirectorQuickOptionCount;
 		return true;
-
-	case VK_NUMPAD4:
+	}
+	if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoQuickDecreaseKey, virtualKey)) {
 		g_directorPhotoMode.quickPanelVisible = true;
 		AdjustDirectorQuickOption(-1);
 		return true;
-
-	case VK_NUMPAD6:
+	}
+	if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoQuickIncreaseKey, virtualKey)) {
 		g_directorPhotoMode.quickPanelVisible = true;
 		AdjustDirectorQuickOption(1);
 		return true;
+	}
+
+	switch (virtualKey) {
 
 	case VK_PRIOR:  // Page Up
 		if (g_directorPhotoMode.quickPanelVisible) {
@@ -4665,16 +4683,28 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 				const float iconSize = PIXLUI::Ref(i == 4 ? 48.0f : 50.0f);
 				ImGui::PushID(static_cast<int>(i));
 				ImGui::SetCursorScreenPos(ImVec2(railMin.x + PIXLUI::Ref(3.0f), railMin.y + y - PIXLUI::Ref(5.0f)));
-				const bool clicked = ImGui::InvisibleButton("##TunerRailButton", ImVec2(width - PIXLUI::Ref(6.0f), PIXLUI::Ref(57.0f)));
+				const bool clicked = ImGui::InvisibleButton("##TunerRailButton", ImVec2(width - PIXLUI::Ref(6.0f), PIXLUI::Ref(57.0f)), ImGuiButtonFlags_EnableNav);
 				const bool hovered = ImGui::IsItemHovered();
 					const bool selected = (i < 4 && selectedMenu < menuList.size() &&
 					std::holds_alternative<CategoryPage>(menuList[selectedMenu]) &&
 					std::get<CategoryPage>(menuList[selectedMenu]).name == railLabels[i]) ||
 					(i == 4 && selectedMenu < menuList.size() &&
 					std::holds_alternative<BuiltInMenu>(menuList[selectedMenu]));
+				if (auto tip = Util::HoverTooltipWrapper())
+					ImGui::Text("%s: click to %s modules.", railLabels[i].data(), selected && !g_tunerDrawerCollapsed ? "hide" : "show");
+				if (selected)
+					ImGui::GetWindowDrawList()->AddLine(
+						ImVec2(railMin.x + width - PIXLUI::Ref(2.0f), railMin.y + y),
+						ImVec2(railMin.x + width - PIXLUI::Ref(2.0f), railMin.y + y + PIXLUI::Ref(48.0f)),
+						PIXLUI::Colors::CyanBright, PIXLUI::Ref(2.0f));
 					if (clicked) {
 						const std::string_view target = railLabels[i];
-						const bool wasSelected = selected;
+						// The PIXL rail represents the whole built-in group, but its
+						// icon click returns specifically to the public PIXL page when
+						// a sibling such as Hotkeys is selected.
+						const bool wasSelected = i < 4 ? selected :
+							(selectedMenu < menuList.size() && std::holds_alternative<BuiltInMenu>(menuList[selectedMenu]) &&
+							 std::get<BuiltInMenu>(menuList[selectedMenu]).name == "PIXL Renderer");
 						bool selectedTarget = false;
 						for (size_t menuIndex = 0; menuIndex < menuList.size(); ++menuIndex) {
 							if (i < 4 && std::holds_alternative<CategoryPage>(menuList[menuIndex]) &&
@@ -4749,11 +4779,6 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 				ImGui::SetWindowFontScale(1.0f);
 				ImGui::PopID();
 			}
-			ImGui::GetWindowDrawList()->AddLine(
-				ImVec2(railMin.x + width - PIXLUI::Ref(2.0f), railMin.y + PIXLUI::Ref(42.0f)),
-				ImVec2(railMin.x + width - PIXLUI::Ref(2.0f), railMin.y + PIXLUI::Ref(93.0f)),
-				PIXLUI::Colors::CyanBright,
-				PIXLUI::Ref(2.0f));
 
 
 			// The rail footer is the tuner-local back action.  Keeping it here
@@ -4792,16 +4817,18 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 			g_tunerPanelCollapsed = false;
 		}
 		const float drawerTarget = g_tunerDrawerCollapsed ? 0.0f : 1.0f;
+		// Exponential response gives the same short fade at 30, 60 and 144 Hz.
+		const float transitionBlend = 1.0f - std::exp(-46.0f * std::max(0.0f, ImGui::GetIO().DeltaTime));
 		drawerProgress = std::clamp(
 			drawerProgress + (drawerTarget - drawerProgress) *
-				std::min(1.0f, ImGui::GetIO().DeltaTime / 0.10f),
+				transitionBlend,
 			0.0f,
 			1.0f);
 		static float panelProgress = 1.0f;
 		const float panelTarget = (g_tunerPanelCollapsed || g_tunerDrawerCollapsed) ? 0.0f : 1.0f;
 		panelProgress = std::clamp(
 			panelProgress + (panelTarget - panelProgress) *
-				std::min(1.0f, ImGui::GetIO().DeltaTime / 0.10f),
+				transitionBlend,
 			0.0f,
 			1.0f);
 		// Keep both surfaces anchored. A restrained fade is safer than translating
@@ -4972,6 +4999,56 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 
 }
 
+void TuningWorkspaceRenderer::DrawHotkeysSettings()
+{
+	if (!globals::menu)
+		return;
+	auto& menu = *globals::menu;
+	auto& settings = menu.GetSettings();
+	bool changed = false;
+	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "HOTKEYS");
+	ImGui::TextWrapped("Assign PIXL and Photo Mode shortcuts to fit your load order. Existing bindings are preserved when upgrading.");
+	ImGui::TextDisabled("Click a key, press a key combination, then release. Press Escape to cancel.");
+
+	auto drawBinding = [&](const char* label, std::vector<InputCombo>& binding, const char* id) {
+		bool recording = menu.IsCustomHotkeyCaptureFor(binding);
+		const bool wasRecording = recording;
+		changed |= Util::InputComboWidget(label, binding, recording, id);
+		if (!wasRecording && recording)
+			menu.BeginCustomHotkeyCapture(binding);
+		else if (wasRecording && !recording)
+			menu.CancelCustomHotkeyCapture();
+	};
+
+	if (ImGui::TreeNodeEx("PIXL actions", ImGuiTreeNodeFlags_DefaultOpen)) {
+		drawBinding("Neural Rendering", settings.NeuralRenderingKey, "NeuralRendering");
+		drawBinding("Frame Generation", settings.FrameGenerationKey, "FrameGeneration");
+		drawBinding("PIXL Renderer menu", settings.ToggleKey, "RendererMenu");
+		drawBinding("Photo Mode", settings.PhotoModeKey, "PhotoMode");
+		ImGui::TreePop();
+	}
+	if (ImGui::TreeNodeEx("Photo camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+		drawBinding("Zoom in", settings.PhotoZoomInKey, "PhotoZoomIn");
+		drawBinding("Zoom out", settings.PhotoZoomOutKey, "PhotoZoomOut");
+		drawBinding("Camera speed down", settings.PhotoSpeedDownKey, "PhotoSpeedDown");
+		drawBinding("Camera speed up", settings.PhotoSpeedUpKey, "PhotoSpeedUp");
+		drawBinding("Quick panel previous", settings.PhotoQuickPreviousKey, "PhotoQuickPrevious");
+		drawBinding("Quick panel next", settings.PhotoQuickNextKey, "PhotoQuickNext");
+		drawBinding("Quick option decrease", settings.PhotoQuickDecreaseKey, "PhotoQuickDecrease");
+		drawBinding("Quick option increase", settings.PhotoQuickIncreaseKey, "PhotoQuickIncrease");
+		ImGui::TreePop();
+	}
+	if (ImGui::TreeNodeEx("Tuner inspection camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+		drawBinding("Flycam activation", settings.TunerFlycamKey, "TunerFlycam");
+		ImGui::Checkbox("Hold activation key while moving", &settings.TunerFlycamHoldRequired);
+		if (auto tip = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("When disabled, opening the tuner immediately pauses the scene and W/A/S/D movement starts the inspection camera without holding a modifier.");
+		ImGui::TreePop();
+	}
+	if (changed)
+		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "Changed — use SAVE LOOK to keep these bindings for future versions.");
+}
+
 std::vector<TuningWorkspaceRenderer::MenuFuncInfo> TuningWorkspaceRenderer::BuildMenuList(
 	const std::string& featureSearch,
 	std::map<std::string, bool>& categoryExpansionStates,
@@ -5066,6 +5143,7 @@ std::vector<TuningWorkspaceRenderer::MenuFuncInfo> TuningWorkspaceRenderer::Buil
 
 	// Product and general controls deliberately live below visual categories.
 	menuList.push_back(BuiltInMenu{ "PIXL Renderer", []() { PIXLRendererPage::Render(); } });
+	menuList.push_back(BuiltInMenu{ "Hotkeys", []() { DrawHotkeysSettings(); } });
 	menuList.push_back(BuiltInMenu{ "General", drawGeneralSettings });
 	if (globals::menu->GetSettings().DeveloperMode) {
 		menuList.push_back(BuiltInMenu{ "Advanced", drawAdvancedSettings });
@@ -6838,8 +6916,8 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::RenderFeatureSettings(RenderModul
 			{
 				const auto& featureShortName = feat->GetShortName();
 				auto* sceneMgr = globals::sceneSettingsManager;
-				bool scenePaused = sceneMgr->IsFeaturePaused(featureShortName);
-				if (sceneControlled || scenePaused) {
+				bool scenePaused = sceneMgr && sceneMgr->IsFeaturePaused(featureShortName);
+				if (sceneMgr && (sceneControlled || scenePaused)) {
 					bool active =
 						!scenePaused;
 

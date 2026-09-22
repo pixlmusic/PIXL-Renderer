@@ -103,6 +103,7 @@ void SkinOptics::DrawSettings()
 	ImGui::Spacing();
 
 	ImGui::Checkbox(T("feature.skin_optics.enable_sss_transmission", "Enable SSS Transmission"), &settings.UseSSS);
+	ImGui::BeginDisabled(!settings.UseSSS);
 
 	ImGui::SliderFloat(T("feature.skin_optics.translucency", "Translucency"), &settings.Translucency, 0.0f, 1.0f, "%.2f");
 	if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -113,6 +114,7 @@ void SkinOptics::DrawSettings()
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T("feature.skin_optics.width_of_the_sss_transmittance_effect", "Width of the SSS Transmittance effect"));
 	}
+	ImGui::EndDisabled();
 
 	ImGui::Spacing();
 
@@ -129,11 +131,9 @@ void SkinOptics::DrawSettings()
 	if (isDynamicWetnessAvailable) {
 		ImGui::Text("%s", T("feature.skin_optics.dynamic_wetness_detected", "Dynamic Wetness detected."));
 		ImGui::Checkbox(T("feature.skin_optics.use_dynamic_wetness", "Use Dynamic Wetness"), &settings.UseDynamicWetness);
-	} else {
-		settings.UseDynamicWetness = false;
 	}
 
-	if (!settings.UseDynamicWetness) {
+	if (!settings.UseDynamicWetness || !isDynamicWetnessAvailable) {
 		ImGui::SliderFloat(T("feature.skin_optics.stamina_threshold_for_sweat", "Stamina Threshold for Sweat"), &settings.StartSweat, 0.0f, 1.0f, "%.2f",
 			ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -171,6 +171,7 @@ void SkinOptics::DrawSettings()
 		ImGui::Text("%s", T("feature.skin_optics.enable_skin_detail_texture", "Enable skin detail texture"));
 	}
 
+	ImGui::BeginDisabled(!settings.EnableSkinDetail);
 	ImGui::SliderFloat(T("feature.skin_optics.skin_detail_strength", "Micro Detail Strength"), &settings.SkinDetailStrength, -2.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T("feature.skin_optics.strength_of_skin_detail_texture", "Strength of skin detail texture"));
@@ -185,6 +186,7 @@ void SkinOptics::DrawSettings()
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T("feature.skin_optics.multiply_the_tiling_for_the_body_to_match", "Multiply the tiling for the body to match the face"));
 	}
+	ImGui::EndDisabled();
 
 	if (globals::state && globals::state->IsDeveloperMode()) {
 		if (ImGui::Button(T("feature.skin_optics.reload_skin_detail_texture", "Reload Skin Detail Texture"))) {

@@ -104,6 +104,8 @@ public:
 	static bool HandleTunerKeyboardInput(std::uint32_t virtualKey, bool pressed);
 	static bool HandleDirectorGamepadInput(std::uint32_t gamepadKeyCode);
 	static void RenderDirectorPhotoModeOverlay();
+	/** Draws the user-facing hotkey module under the PIXL Renderer group. */
+	static void DrawHotkeysSettings();
 
 private:
 	struct ListMenuVisitor

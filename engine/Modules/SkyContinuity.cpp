@@ -46,7 +46,7 @@ void SkyContinuity::DrawSettings()
 	}
 
 	if (settings.UseAlternateSunPath) {
-		if (ImGui::SliderInt(T(TKEY("sun_path"), "Sun path"), &settings.SunPath, 0, static_cast<uint8_t>(SunPath::Count) - 1, sunPathNames[settings.SunPath], ImGuiSliderFlags_AlwaysClamp))
+		if (ImGui::Combo(T(TKEY("sun_path"), "Sun path"), &settings.SunPath, sunPathNames, IM_ARRAYSIZE(sunPathNames)))
 			SetSunAngle();
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextUnformatted(T(TKEY("sun_path_tooltip"), "Choose the trajectory the sun takes across the sky."));
@@ -61,7 +61,7 @@ void SkyContinuity::DrawSettings()
 		}
 	}
 
-	ImGui::SliderInt(T(TKEY("moon_light_source"), "Moon light source"), &settings.MoonLightSource, 0, static_cast<uint8_t>(MoonLightSource::Count) - 1, moonLightSourceNames[settings.MoonLightSource], ImGuiSliderFlags_AlwaysClamp);
+	ImGui::Combo(T(TKEY("moon_light_source"), "Moon light source"), &settings.MoonLightSource, moonLightSourceNames, IM_ARRAYSIZE(moonLightSourceNames));
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted(T(TKEY("moon_light_source_tooltip"), "Select which moon casts shadows during the night."));
 	}

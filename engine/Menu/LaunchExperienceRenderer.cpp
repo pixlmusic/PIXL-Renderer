@@ -272,11 +272,15 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	Util::AddTooltip("Enhanced is the recommended default: higher lighting and material fidelity with a controlled performance budget. Cinematic is intended for powerful systems and photo work.");
 
 	ImGui::TextWrapped(
-		"Press Home for Photo Mode: pause the scene, compose a shot, adjust camera and finish settings, then capture without changing your normal gameplay profile. Page Down opens PIXL Renderer by default.");
+		"Use the buttons below to choose your PIXL Renderer and Photo Mode hotkeys. These choices are saved with setup and remain available in PIXL Renderer > Hotkeys.");
 	ImGui::Spacing();
 
-	const bool capturing = menu->settingToggleKey;
-	const std::string keyLabel = capturing ? "PRESS A KEY" : Util::Input::KeyIdToString(menu->GetSettings().ToggleKey);
+	auto& menuSettings = menu->GetSettings();
+	const bool capturingMenuKey = menu->settingToggleKey;
+	const bool capturingPhotoKey = menu->IsCustomHotkeyCaptureFor(menuSettings.PhotoModeKey);
+	const bool capturing = capturingMenuKey || capturingPhotoKey;
+	const std::string keyLabel = capturingMenuKey ? "PRESS A KEY" : Util::Input::KeyIdToString(menuSettings.ToggleKey);
+	const std::string photoKeyLabel = capturingPhotoKey ? "PRESS A KEY" : Util::Input::KeyIdToString(menuSettings.PhotoModeKey);
 	const ImVec2 keyButtonSize{ 245.0f * scale, 40.0f * scale };
 	const float controlGap = 18.0f * scale;
 	const float controlsWidth = keyButtonSize.x * 2.0f + controlGap;
@@ -287,9 +291,9 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 		const auto pulse = Util::GetPulsingColor(menu->GetTheme().StatusPalette.CurrentHotkey);
 		ImGui::PushStyleColor(ImGuiCol_Button, pulse);
 	}
-	if (PIXLUI::ActionButton(keyLabel.c_str(), keyButtonSize, capturing) && !capturing)
+	if (PIXLUI::ActionButton(keyLabel.c_str(), keyButtonSize, capturingMenuKey) && !capturing)
 		menu->settingToggleKey = true;
-	if (capturing)
+	if (capturingMenuKey)
 		ImGui::PopStyleColor();
 	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "Quality, camera and renderer controls");
 	ImGui::EndGroup();
@@ -297,7 +301,14 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	ImGui::SameLine(0.0f, controlGap);
 	ImGui::BeginGroup();
 	ImGui::TextDisabled("PHOTO MODE");
-	PIXLUI::ActionButton("HOME", keyButtonSize, false);
+	if (capturingPhotoKey) {
+		const auto pulse = Util::GetPulsingColor(menu->GetTheme().StatusPalette.CurrentHotkey);
+		ImGui::PushStyleColor(ImGuiCol_Button, pulse);
+	}
+	if (PIXLUI::ActionButton(photoKeyLabel.c_str(), keyButtonSize, capturingPhotoKey) && !capturing)
+		menu->BeginCustomHotkeyCapture(menuSettings.PhotoModeKey);
+	if (capturingPhotoKey)
+		ImGui::PopStyleColor();
 	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "Photo mode and high-quality capture");
 	ImGui::EndGroup();
 
@@ -378,9 +389,11 @@ void LaunchExperienceRenderer::RenderControlReminder()
 		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "PIXL RENDERER READY");
 		ImGui::Separator();
 		const std::string menuKey = Util::Input::KeyIdToString(menu->GetSettings().ToggleKey);
+		const std::string photoKey = Util::Input::KeyIdToString(menu->GetSettings().PhotoModeKey);
+		const std::string neuralKey = Util::Input::KeyIdToString(menu->GetSettings().NeuralRenderingKey);
 		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::Text), "[ %-12s ]  PIXL MENU", menuKey.c_str());
-		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::Text), "[ HOME         ]  PHOTO MODE");
-		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::Text), "[ ALT + N      ]  NEURAL RENDERING");
+		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::Text), "[ %-12s ]  PHOTO MODE", photoKey.c_str());
+		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::Text), "[ %-12s ]  NEURAL RENDERING", neuralKey.c_str());
 		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "NR requires DLSS and NVIDIA RTX 30-series or newer");
 	}
 	ImGui::End();
@@ -394,6 +407,7 @@ void LaunchExperienceRenderer::MarkFirstTimeSetupComplete(uint32_t closingKey)
 		return;
 	menu->GetSettings().FirstTimeSetupCompleted = true;
 	menu->settingToggleKey = false;
+	menu->CancelCustomHotkeyCapture();
 	if (globals::state)
 		globals::state->Save();
 	isFirstTimeSetupShown = true;

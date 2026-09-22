@@ -76,8 +76,8 @@ void TissueDiffusion::DrawSettings()
 					ImGui::Text("%s", T(TKEY("thickness_tooltip"), "Blur radius relative to depth."));
 				}
 
-				updateKernels = updateKernels || ImGui::ColorEdit3(T(TKEY("strength"), "Strength"), (float*)&settings.BaseProfile.Strength);
-				updateKernels = updateKernels || ImGui::ColorEdit3(T(TKEY("falloff"), "Falloff"), (float*)&settings.BaseProfile.Falloff);
+				updateKernels |= ImGui::ColorEdit3(T(TKEY("strength"), "Strength"), (float*)&settings.BaseProfile.Strength);
+				updateKernels |= ImGui::ColorEdit3(T(TKEY("falloff"), "Falloff"), (float*)&settings.BaseProfile.Falloff);
 
 				ImGui::TreePop();
 			}
@@ -93,8 +93,8 @@ void TissueDiffusion::DrawSettings()
 					ImGui::Text("%s", T(TKEY("thickness_tooltip"), "Blur radius relative to depth."));
 				}
 
-				updateKernels = updateKernels || ImGui::ColorEdit3(T(TKEY("strength"), "Strength"), (float*)&settings.HumanProfile.Strength);
-				updateKernels = updateKernels || ImGui::ColorEdit3(T(TKEY("falloff"), "Falloff"), (float*)&settings.HumanProfile.Falloff);
+				updateKernels |= ImGui::ColorEdit3(T(TKEY("strength"), "Strength"), (float*)&settings.HumanProfile.Strength);
+				updateKernels |= ImGui::ColorEdit3(T(TKEY("falloff"), "Falloff"), (float*)&settings.HumanProfile.Falloff);
 
 				ImGui::TreePop();
 			}

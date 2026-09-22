@@ -72,7 +72,7 @@ void LightVolumes::DrawVolumetricLightingSettings(int32_t& quality, TextureSize&
 		T(TKEY("quality_custom"), "Custom")
 	};
 
-	if (ImGui::SliderInt(isInterior ? T(TKEY("interior_quality"), "Interior Quality") : T(TKEY("exterior_quality"), "Exterior Quality"), &quality, 0, static_cast<uint8_t>(Quality::Count) - 1, qualityNames[quality])) {
+	if (ImGui::Combo(isInterior ? T(TKEY("interior_quality"), "Interior Quality") : T(TKEY("exterior_quality"), "Exterior Quality"), &quality, qualityNames, IM_ARRAYSIZE(qualityNames))) {
 		if (inLocationType)
 			SetupVL();
 	}

@@ -908,7 +908,11 @@ void ActorSurfaceEffects::DrawSettings()
 	if (auto tooltip = Util::HoverTooltipWrapper())
 		ImGui::TextWrapped("Scales nearby actor capacity and localized contact detail. It does not change the snow or mud art direction.");
 
-	changed |= ImGui::SliderFloat("Persistence", &settings.Persistence, 0.0f, 1.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp);
+	float persistencePercent = settings.Persistence * 100.0f;
+	if (ImGui::SliderFloat("Persistence", &persistencePercent, 0.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
+		settings.Persistence = persistencePercent * 0.01f;
+		changed = true;
+	}
 	if (auto tooltip = Util::HoverTooltipWrapper())
 		ImGui::TextWrapped("How long snow, mud and melt wetness remain before naturally recovering. Weather still affects the lifecycle.");
 	changed |= ImGui::SliderFloat("Accumulation Strength", &settings.AccumulationStrength, 0.0f, 2.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
