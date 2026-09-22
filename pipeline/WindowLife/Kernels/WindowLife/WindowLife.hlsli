@@ -617,7 +617,21 @@ namespace WindowLife
         float surfaceGuard = HasExternalAuthoredMask()
             ? 1.0f
             : smoothstep(0.075f, 0.68f, PaneNormalEvidence(normalSample));
-        float distanceStablePane = retainedCoverage * surfaceGuard * 0.94f;
+        // The minified fallback is allowed to preserve a pane that has become
+        // only a few texels wide, but it must not resurrect the glow-map halo
+        // over the outer frame.  Sample the full-resolution neighbours before
+        // widening the mask; exact installed masks return above and remain
+        // authoritative.
+        float2 fullResTexel = 1.0f / textureSize;
+        float neighbourFloor = min(
+            min(
+                dot(max(SampleAuthoredPaneTextureLevel(materialUV - float2(fullResTexel.x, 0.0f), 0.0f), 0.0f.xxx), float3(0.2126f, 0.7152f, 0.0722f)),
+                dot(max(SampleAuthoredPaneTextureLevel(materialUV + float2(fullResTexel.x, 0.0f), 0.0f), 0.0f.xxx), float3(0.2126f, 0.7152f, 0.0722f))),
+            min(
+                dot(max(SampleAuthoredPaneTextureLevel(materialUV - float2(0.0f, fullResTexel.y), 0.0f), 0.0f.xxx), float3(0.2126f, 0.7152f, 0.0722f)),
+                dot(max(SampleAuthoredPaneTextureLevel(materialUV + float2(0.0f, fullResTexel.y), 0.0f), 0.0f.xxx), float3(0.2126f, 0.7152f, 0.0722f))));
+        float borderGuard = smoothstep(0.18f, 0.72f, smoothstep(0.003f, 0.055f, neighbourFloor));
+        float distanceStablePane = retainedCoverage * surfaceGuard * borderGuard * 0.94f;
         return saturate(max(precisePane, distanceStablePane * minificationBlend));
     }
 
