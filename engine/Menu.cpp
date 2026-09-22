@@ -187,6 +187,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	RequireShiftToDock,
 	UseResolutionFont,
 	AdvancedMode,
+	LastPublicPage,
 	AdvancedControls,
 	SimpleLightingBalance,
 	DeveloperMode,
@@ -829,10 +830,10 @@ void Menu::DrawSettings()
 	// The authoring shell is an intentional viewport overlay, not a dockable
 	// remembered window. Reapply its geometry on every open so an older full-size
 	// tuner layout cannot overlap or clip the compact reference composition.
-	const auto layoutCond =
-		settings.AdvancedMode || resetLayout
-			? ImGuiCond_Always
-			: ImGuiCond_FirstUseEver;
+	// Both PIXL entry points are authored canvases rather than user-resizable
+	// ImGui windows.  In particular, never let a stale dock/layout record make
+	// the public first-run experience inherit an old fullscreen tuner size.
+	const auto layoutCond = ImGuiCond_Always;
 
 	if (settings.AdvancedMode) {
 		const ImVec2 viewportSize =
@@ -1568,7 +1569,8 @@ void Menu::ProcessInputEventQueue()
 						 if (!LaunchExperienceRenderer::ShouldShowFirstTimeSetup()) {
 							 IsEnabled = !IsEnabled;
 							 if (IsEnabled) {
-								 settings.AdvancedMode = true;
+								 // Reopen the surface the player last used. Forcing the tuner
+								 // here made Page Down skip the public three-page experience.
 								 ImGui::GetIO().ClearInputKeys();  // Prevent toggle key from remaining "held" in ImGui after open.
 							 }
 						 }
@@ -1614,7 +1616,8 @@ void Menu::ProcessInputEventQueue()
 			if (!LaunchExperienceRenderer::ShouldShowFirstTimeSetup()) {
 				IsEnabled = !IsEnabled;
 				if (IsEnabled) {
-					settings.AdvancedMode = true;
+					// Match Page Down: Shift+Enter is an alternate toggle, not a
+					// shortcut that silently switches the user into the tuner.
 					ImGui::GetIO().ClearInputKeys();
 				}
 			}

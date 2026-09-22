@@ -206,10 +206,12 @@ void MaterialLayers::DataLoaded()
 		 settings.EnableTerrain != 0u);
 
 	if (terrainParallaxRequested) {
-		if (auto bLandSpecular = globals::game::iniSettingCollection->GetSetting("bLandSpecular:Landscape"); bLandSpecular) {
-			if (!bLandSpecular->data.b) {
-				logger::info("[PIXL MaterialLayers] Enabling bLandSpecular for terrain parallax/Auto-POM");
-				bLandSpecular->data.b = true;
+		if (auto* iniSettings = globals::game::iniSettingCollection; iniSettings) {
+			if (auto bLandSpecular = iniSettings->GetSetting("bLandSpecular:Landscape"); bLandSpecular) {
+				if (!bLandSpecular->data.b) {
+					logger::info("[PIXL MaterialLayers] Enabling bLandSpecular for terrain parallax/Auto-POM");
+					bLandSpecular->data.b = true;
+				}
 			}
 		}
 	}
@@ -250,9 +252,17 @@ void MaterialLayers::ResolveEffectsDepth(ID3D11ShaderResourceView* depth, ID3D11
 		(tuningSettings.ObjectVirtualDepthStrength <= 0.0f &&
 		 (!tuningSettings.EnableTerrainVirtualDepth || tuningSettings.TerrainVirtualDepthStrength <= 0.0f)))
 		return;
+	auto* device = globals::d3d::device;
+	auto* context = globals::d3d::context;
+	if (!device || !context || !globals::state || !globals::state->sharedDataCB) {
+		static bool loggedMissingDependency = false;
+		if (!loggedMissingDependency) {
+			logger::warn("[MaterialLayers] Effects depth deferred: D3D/shared-frame resources are not ready");
+			loggedMissingDependency = true;
+		}
+		return;
+	}
 	try {
-		auto* device = globals::d3d::device;
-		auto* context = globals::d3d::context;
 		if (!effectsDepthCS)
 			effectsDepthCS.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
 				L"Data\\Shaders\\MaterialLayers\\EffectsDepth.hlsl", {}, "cs_5_0")));
@@ -315,7 +325,8 @@ void MaterialLayers::Prepass()
 		globals::pipeline::hybridGI.queuedResetTemporalHistory = true;
 		lastEffectsDepthSettings = depthSettings;
 	}
-	if (!tuningCB)
+	auto* context = globals::d3d::context;
+	if (!tuningCB || !context)
 		return;
 
 	try {
@@ -325,7 +336,7 @@ void MaterialLayers::Prepass()
 		tuningCB->Update(tuningSettings);
 
 		auto* buffer = tuningCB->CB();
-		globals::d3d::context->PSSetConstantBuffers(9, 1, &buffer);
+		context->PSSetConstantBuffers(9, 1, &buffer);
 	} catch (const std::exception& e) {
 		logger::error("[MaterialLayers] b9 tuning upload/bind failed: {}", e.what());
 		delete tuningCB;

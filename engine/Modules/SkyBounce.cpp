@@ -75,10 +75,17 @@ void SkyBounce::SetupResources()
 {
 	auto renderer = globals::game::renderer;
 	auto device = globals::d3d::device;
+	if (!renderer || !device) {
+		logger::error("[PIXL SkyBounce] Renderer/device unavailable; resources were not created");
+		return;
+	}
+	auto& precipitationOcclusion = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPRECIPITATION_OCCLUSION_MAP];
+	if (!precipitationOcclusion.texture || !precipitationOcclusion.depthSRV || !precipitationOcclusion.views[0]) {
+		logger::error("[PIXL SkyBounce] Precipitation-occlusion targets unavailable; resources were not created");
+		return;
+	}
 
 	{
-		auto& precipitationOcclusion = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPRECIPITATION_OCCLUSION_MAP];
-
 		D3D11_TEXTURE2D_DESC texDesc{};
 		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
 		D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};

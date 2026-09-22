@@ -810,7 +810,11 @@ void MaterialForge::ReloadTextureSetData()
 
 	for (const auto& [material, textureSets] : BSLightingShaderMaterialPBRLandscape::All) {
 		for (uint32_t textureSetIndex = 0; textureSetIndex < BSLightingShaderMaterialPBRLandscape::NumTiles; ++textureSetIndex) {
-			SetupPBRLandscapeTextureParameters(*material, *textureSets[textureSetIndex], textureSetIndex);
+			// A landscape quad can legitimately use fewer than all six texture
+			// layers. Reloading PBR records must not dereference the empty slots.
+			if (auto* textureSetData = textureSets[textureSetIndex]) {
+				SetupPBRLandscapeTextureParameters(*material, *textureSetData, textureSetIndex);
+			}
 			if (textureSetIndex < material->numLandscapeTextures) {
 				const auto descriptor = material->GetPhysicalMaterialDescriptor(
 					textureSetIndex, textureDefaults.defaultTextureBlack.get(), textureDefaults.defaultTextureWhite.get());

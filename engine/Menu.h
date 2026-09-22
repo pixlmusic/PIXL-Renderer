@@ -476,6 +476,7 @@ public:
 		bool RequireShiftToDock = true;                                                     // Require holding Shift to dock windows
 		bool UseResolutionFont = true;                                                      // When true, runtime font size scales with screen resolution; when persisted to theme files, FontSize is zeroed for backward compatibility
 		bool AdvancedMode = false;                                                          // Exposes the complete renderer subsystem navigator
+		uint LastPublicPage = 0;                                                            // Restores the last selected public PIXL page when reopening the menu
 		bool AdvancedControls = false;                                                      // Legacy JSON compatibility; unified tuner always exposes full controls
 		float SimpleLightingBalance = 1.0f;                                                 // Routed Lighting-category balance while AdvancedControls is off
 		bool DeveloperMode = false;                                                         // Enables diagnostics, debug compilation, and engineering tools

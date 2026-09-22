@@ -2132,6 +2132,12 @@ void ImageReconstruction::Upscale()
 	auto state = globals::state;
 	auto context = globals::d3d::context;
 	auto renderer = globals::game::renderer;
+	auto deferred = globals::deferred;
+	if (!state || !context || !renderer || !deferred || !globals::profiler ||
+		!globals::game::graphicsState || !upscalingDataCB ||
+		!reactiveMaskTexture || !transparencyCompositionMaskTexture) {
+		return;
+	}
 
 	// Temporal reconstruction must not reuse history across discontinuous camera,
 	// projection, or render-resolution state. The same signals already protect
@@ -2169,15 +2175,24 @@ void ImageReconstruction::Upscale()
 
 	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
 	auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
+	if (!main.texture || !motionVector.SRV) {
+		return;
+	}
+	auto& temporalAAMask = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kTEMPORAL_AA_MASK];
+	auto& normals = renderer->GetRuntimeData().renderTargets[deferred->forwardRenderTargets[2]];
+	auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+	auto* encodeShader = GetEncodeTexturesCS();
+	if (!temporalAAMask.SRV || !normals.SRV || !depth.depthSRV || !encodeShader)
+		return;
+	if (upscaleMethod == UpscaleMethod::kDLSS && (!motionVectorCopyTexture || !motionVectorCopyTexture->uav))
+		return;
+	if (upscaleMethod == UpscaleMethod::kFSR && (!fsrDepthTexture || !fsrDepthTexture->uav))
+		return;
 
 	{
 		globals::profiler->BeginPass("ImageReconstruction::EncodeTextures");
 		state->BeginPerfEvent("Encode ImageReconstruction Textures");
 		TracyD3D11Zone(globals::state->tracyCtx, "Encode ImageReconstruction Textures");
-
-		auto& temporalAAMask = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kTEMPORAL_AA_MASK];
-		auto& normals = renderer->GetRuntimeData().renderTargets[globals::deferred->forwardRenderTargets[2]];
-		auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 
 		auto renderSize = Util::ConvertToDynamic(float2{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight });
 		uint32_t renderWidth = (uint32_t)renderSize.x;
@@ -2185,7 +2200,7 @@ void ImageReconstruction::Upscale()
 
 		ID3D11ShaderResourceView* views[4] = { temporalAAMask.SRV, normals.SRV, motionVector.SRV, depth.depthSRV };
 		context->CSSetShaderResources(0, ARRAYSIZE(views), views);
-		context->CSSetShader(GetEncodeTexturesCS(), nullptr, 0);
+		context->CSSetShader(encodeShader, nullptr, 0);
 
 		UpscalingDataCB upscalingData;
 		upscalingData.trueSamplingDim = float2((float)renderWidth, (float)renderHeight);

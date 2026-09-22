@@ -95,6 +95,9 @@ SkyVeil::Settings SkyVeil::GetCommonBufferData()
 
 void SkyVeil::CheckResourcesSide(int side)
 {
+	if (side < 0 || side >= 6 || !globals::d3d::context || !cloudShadowLayerRTVs[0][side])
+		return;
+
 	static Util::FrameChecker frame_checker[6];
 	if (!frame_checker[side].IsNewFrame())
 		return;
@@ -156,6 +159,11 @@ void SkyVeil::SkyShaderHacks()
 	if (overrideSky) {
 		auto renderer = globals::game::renderer;
 		auto context = globals::d3d::context;
+		if (!renderer || !context || !texSelfShadowCopy ||
+			!texCloudShadowLayers[kMaxCloudLayers - 1] || !cloudShadowBlendState) {
+			overrideSky = false;
+			return;
+		}
 
 		auto reflections = renderer->GetRendererData().cubemapRenderTargets[RE::RENDER_TARGET_CUBEMAP::kREFLECTIONS];
 
@@ -236,6 +244,9 @@ int SkyVeil::FindCloudLayer(RE::BSRenderPass* Pass)
 void SkyVeil::ModifySky(RE::BSRenderPass* Pass)
 {
 	auto shadowState = globals::game::shadowState;
+	if (!Pass || !shadowState || !globals::d3d::context ||
+		!texCloudShadowLayers[0] || !texCloudShadowLayers[0]->srv)
+		return;
 
 	auto& cubeMapRenderTarget = shadowState->GetRuntimeData().cubeMapRenderTarget;
 
@@ -262,11 +273,12 @@ void SkyVeil::ReflectionsPrepass()
 {
 	Util::FrameChecker frameChecker;
 	if (frameChecker.IsNewFrame()) {
-		if ((globals::game::sky->mode.get() != RE::Sky::Mode::kFull) ||
-			!globals::game::sky->currentClimate)
-			return;
-
+		auto sky = globals::game::sky;
 		auto context = globals::d3d::context;
+		if (!sky || !context || !texCubemapCloudOccCopy ||
+			!texCloudShadowLayers[kMaxCloudLayers - 1] ||
+			(sky->mode.get() != RE::Sky::Mode::kFull) || !sky->currentClimate)
+			return;
 
 		context->CopyResource(texCubemapCloudOccCopy->resource.get(), texCloudShadowLayers[kMaxCloudLayers - 1]->resource.get());
 
@@ -289,10 +301,23 @@ void SkyVeil::SetupResources()
 {
 	auto renderer = globals::game::renderer;
 	auto device = globals::d3d::device;
+	if (!renderer || !device || !globals::d3d::context) {
+		logger::error("[PIXL Sky Veil] Renderer/device/context unavailable; resources were not created");
+		return;
+	}
+	auto reflections = renderer->GetRendererData().cubemapRenderTargets[RE::RENDER_TARGET_CUBEMAP::kREFLECTIONS];
+	if (!reflections.texture || !reflections.SRV) {
+		logger::error("[PIXL Sky Veil] Reflection cubemap unavailable; resources were not created");
+		return;
+	}
+	for (int face = 0; face < 6; ++face) {
+		if (!reflections.cubeSideRTV[face]) {
+			logger::error("[PIXL Sky Veil] Reflection cubemap face {} unavailable; resources were not created", face);
+			return;
+		}
+	}
 
 	{
-		auto reflections = renderer->GetRendererData().cubemapRenderTargets[RE::RENDER_TARGET_CUBEMAP::kREFLECTIONS];
-
 		D3D11_TEXTURE2D_DESC texDesc{};
 		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
 		D3D11_RENDER_TARGET_VIEW_DESC rtvDesc{};

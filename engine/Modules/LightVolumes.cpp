@@ -199,8 +199,13 @@ void LightVolumes::SetupResources()
 
 void LightVolumes::EarlyPrepass()
 {
+	if (!globals::game::graphicsState || !vlDataCB)
+		return;
+
 	int32_t width = static_cast<int32_t>((float)globals::game::graphicsState->screenWidth);
 	int32_t height = static_cast<int32_t>((float)globals::game::graphicsState->screenHeight);
+	if (width <= 0 || height <= 0)
+		return;
 
 	if (width != vlData.screenX || height != vlData.screenY) {
 		blurHCS = nullptr;
@@ -213,7 +218,10 @@ void LightVolumes::EarlyPrepass()
 	vlData.screenYMin1 = height - 1;
 	vlDataCB->Update(vlData);
 
-	const auto interiorCell = RE::TES::GetSingleton()->interiorCell;
+	auto* tes = RE::TES::GetSingleton();
+	if (!tes)
+		return;
+	const auto interiorCell = tes->interiorCell;
 	const bool currentlyInInterior = interiorCell != nullptr;
 	const bool currentlyInMapMenu = globals::state && globals::state->isMapMenuOpen;
 	auto& atmosphere = globals::pipeline::atmosphere;

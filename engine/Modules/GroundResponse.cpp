@@ -2401,24 +2401,12 @@ GroundResistanceSample ResistanceEvaluateActor(
 
 	std::uint32_t GroundQueueRuntimeProjectileImpacts(
 		RE::Projectile* a_projectile,
-		const char* a_source)
+		const char*)
 	{
 		if (!a_projectile)
 			return 0u;
 
 		auto& runtime = a_projectile->GetProjectileRuntimeData();
-		static std::atomic<std::uint32_t> s_processEntryDiagCount{ 0u };
-		const auto entryDiag =
-			s_processEntryDiagCount.fetch_add(1u, std::memory_order_relaxed);
-		if (entryDiag < 48u) {
-				logger::debug(
-					"[GR-PROJECTILE-PROCESS] source={} type={} form={:08X} impactsEmpty={}",
-				a_source ? a_source : "unknown",
-				static_cast<std::uint32_t>(a_projectile->GetFormType()),
-				a_projectile->GetFormID(),
-				runtime.impacts.empty() ? 1 : 0);
-		}
-
 		std::uint32_t queued = 0u;
 		for (auto* impact : runtime.impacts) {
 			if (!impact ||
@@ -2446,19 +2434,6 @@ GroundResistanceSample ResistanceEvaluateActor(
 			++queued;
 		}
 
-		if (queued > 0u) {
-			static std::atomic<std::uint32_t> s_processImpactDiagCount{ 0u };
-			const auto diag =
-				s_processImpactDiagCount.fetch_add(1u, std::memory_order_relaxed);
-			if (diag < 64u) {
-				logger::debug(
-					"[GR-PROJECTILE-HOOK] source={} type={} form={:08X} newImpacts={}",
-					a_source ? a_source : "unknown",
-					static_cast<std::uint32_t>(a_projectile->GetFormType()),
-					a_projectile->GetFormID(),
-					queued);
-			}
-		}
 		return queued;
 	}
 
@@ -3630,17 +3605,8 @@ void GroundResponse::ObserveSeasonContext()
 
 void GroundResponse::QueueCollisions()
 {
-	static uint32_t s_queueDiagCount = 0u;
-	const bool queueDiag = s_queueDiagCount < 16u;
-	if (queueDiag)
-		logger::debug("[GR-DIAG] QueueCollisions enter #{}", s_queueDiagCount);
-
-	if (!settings.EnableGroundResponse && !settings.EnableDeformableGround) {
-		if (queueDiag)
-			logger::debug("[GR-DIAG] QueueCollisions early-out: disabled");
-		++s_queueDiagCount;
+	if (!settings.EnableGroundResponse && !settings.EnableDeformableGround)
 		return;
-	}
 
 	eastl::vector<GroundResponseActorCandidate> actorCandidates{};
 	auto* player = RE::PlayerCharacter::GetSingleton();
@@ -3673,9 +3639,6 @@ void GroundResponse::QueueCollisions()
 		[](const GroundResponseActorCandidate& a, const GroundResponseActorCandidate& b) {
 			return a.sqDistance < b.sqDistance;
 		});
-
-	if (queueDiag)
-		logger::debug("[GR-DIAG] QueueCollisions candidates={}", actorCandidates.size());
 
 	eastl::vector<BoundingBoxPacked> boundingBoxData{};
 	boundingBoxData.reserve(MAX_BOUNDING_BOXES);
@@ -4266,19 +4229,6 @@ void GroundResponse::QueueCollisions()
 								RE::MagicSystem::CastingType::kConcentration &&
 							GroundClassifyMagicItem(currentSpell) !=
 								GroundElementKind::kNone) {
-							static std::atomic<std::uint32_t>
-								s_magicCandidateDiagCount{ 0u };
-							const auto diag =
-								s_magicCandidateDiagCount.fetch_add(
-									1u, std::memory_order_relaxed);
-							if (diag < 48u) {
-						logger::debug(
-							"[GR-MAGIC-CANDIDATE] spell={:08X} caster={:08X} source={} state={} actorCasting=0",
-									currentSpell->GetFormID(),
-									actor->GetFormID(),
-									static_cast<std::uint32_t>(castingSource),
-									static_cast<std::uint32_t>(casterState));
-							}
 						}
 						continue;
 					}
@@ -4292,21 +4242,6 @@ void GroundResponse::QueueCollisions()
 						static_cast<std::uint64_t>(spellFormID);
 					if (!emittedCasterSpells.insert(key).second)
 						continue;
-
-					static std::atomic<std::uint32_t>
-						s_magicActiveDiagCount{ 0u };
-					const auto diag =
-						s_magicActiveDiagCount.fetch_add(
-							1u, std::memory_order_relaxed);
-					if (diag < 48u) {
-					logger::debug(
-						"[GR-MAGIC-CANDIDATE] spell={:08X} caster={:08X} source={} state={} actorCasting={} active=1",
-							spellFormID,
-							actor->GetFormID(),
-							static_cast<std::uint32_t>(castingSource),
-							static_cast<std::uint32_t>(casterState),
-							actorReportsCasting ? 1 : 0);
-					}
 
 					QueueMagicCast(actor.get(), spellFormID, true);
 				}
@@ -4402,16 +4337,6 @@ void GroundResponse::QueueCollisions()
 					*this,
 					probe,
 					true)) {
-				if (interaction.source == GroundInteractionSource::kProjectile) {
-					static std::uint32_t s_projectileRejectDiagCount = 0u;
-					if (s_projectileRejectDiagCount++ < 32u) {
-						logger::debug(
-							"[GR-PROJECTILE-REJECT] spell={:08X} xy=({:.1f},{:.1f}) receiverZ={:.1f}",
-							interaction.sourceFormID,
-							interaction.end.x, interaction.end.y,
-							interaction.receiverZ);
-					}
-				}
 				continue;
 			}
 			if (interaction.elementalSnowOnly && !probe.snow) {
@@ -4428,15 +4353,6 @@ void GroundResponse::QueueCollisions()
 	queuedSurfaceStampBoxes = std::move(surfaceBoxData);
 	queuedSurfaceStamps = std::move(surfaceStampData);
 
-	if (queueDiag) {
-		logger::debug(
-			"[GR-DIAG] QueueCollisions exit boxes={} collisions={} surfaceBoxes={} surfaceStamps={}",
-			queuedBoundingBoxes.size(),
-			queuedCollisions.size(),
-			queuedSurfaceStampBoxes.size(),
-			queuedSurfaceStamps.size());
-	}
-	++s_queueDiagCount;
 }
 
 void GroundResponse::Update()
@@ -4448,11 +4364,7 @@ void GroundResponse::Update()
 	}
 
 	static Util::FrameChecker frameChecker;
-	static uint32_t s_updateDiagCount = 0u;
 	if (frameChecker.IsNewFrame()) {
-		const bool updateDiag = s_updateDiagCount < 16u;
-		if (updateDiag)
-			logger::debug("[GR-DIAG] Update new-frame enter #{} context={}", s_updateDiagCount, static_cast<const void*>(context));
 		PerFrame perFrameData{};
 		perFrameData.BoundingBoxCount = 0;
 
@@ -4469,12 +4381,6 @@ void GroundResponse::Update()
 		const auto eyePosNI = Util::GetEyePosition();
 		auto* player = RE::PlayerCharacter::GetSingleton();
 		const RE::NiPoint3 anchorPosNI = player ? player->GetPosition() : eyePosNI;
-		if (updateDiag)
-			logger::debug(
-				"[GR-DIAG] Update anchor player={} eye=({:.1f},{:.1f},{:.1f}) anchor=({:.1f},{:.1f},{:.1f})",
-				static_cast<const void*>(player),
-				eyePosNI.x, eyePosNI.y, eyePosNI.z,
-				anchorPosNI.x, anchorPosNI.y, anchorPosNI.z);
 		const float2 eyePos{ eyePosNI.x, eyePosNI.y };
 		const float2 anchorPos{ anchorPosNI.x, anchorPosNI.y };
 
@@ -4737,50 +4643,24 @@ void GroundResponse::Update()
 			context->Unmap(surfaceStampBoxes->resource.get(), 0);
 		}
 
-		const size_t uploadedSurfaceStampCount = queuedSurfaceStamps.size();
 		queuedBoundingBoxes.clear();
 		queuedCollisions.clear();
 		queuedSurfaceStampBoxes.clear();
 		queuedSurfaceStamps.clear();
-
-		if (updateDiag)
-			logger::debug(
-				"[GR-DIAG] Update before CB upload boxes={} surfaceBoxes={} surfaceStamps={} reset={} surfaceReset={}",
-				perFrameData.BoundingBoxCount,
-				surfaceFieldData.StampBoxCount,
-				uploadedSurfaceStampCount,
-				clipmapReset ? 1 : 0,
-				surfaceClipmapReset ? 1 : 0);
 
 		currentPerFrame = perFrameData;
 		perFrame->Update(currentPerFrame);
 		if (surfacePerFrame)
 			surfacePerFrame->Update(surfaceFieldData);
 
-		if (updateDiag)
-			logger::debug("[GR-DIAG] Update CB upload complete");
-
 		currentPosOffset = currentPerFrame.PosOffset;
 		currentArrayOrigin = currentPerFrame.ArrayOrigin;
 
-		if (updateDiag)
-			logger::debug(
-				"[GR-DIAG] Update before feature data state={} inWorld={}",
-				static_cast<const void*>(globals::state),
-				globals::state ? (globals::state->inWorld ? 1 : 0) : -1);
-
 		globals::state->UpdateFeatureData(globals::state->inWorld);
-
-		if (updateDiag)
-			logger::debug("[GR-DIAG] Update before legacy collision dispatch");
 		// Grass retains its legacy height field. Snow/mud is updated separately
 		// from absolute XY capsule stamps and therefore never consumes camera Z.
 		UpdateCollisionTexture();
-		if (updateDiag)
-			logger::debug("[GR-DIAG] Update legacy collision dispatch complete; before surface dispatch");
 		UpdateSurfaceDeformationTexture();
-		if (updateDiag)
-			logger::debug("[GR-DIAG] Update surface dispatch complete");
 
 		prevCellID = cellID;
 		prevAnchorPosNI = anchorPosNI;
@@ -4790,9 +4670,6 @@ void GroundResponse::Update()
 
 		prevSurfaceCellID = surfaceCellID;
 		surfaceClipmapInitialized = true;
-		if (updateDiag)
-			logger::debug("[GR-DIAG] Update new-frame exit #{}", s_updateDiagCount);
-		++s_updateDiagCount;
 	}
 
 	ID3D11ShaderResourceView* grassInteractionSRV =
@@ -5261,19 +5138,6 @@ void GroundResponse::QueueProjectileImpact(
 
 	GroundPushPendingInteraction(interaction);
 
-	static std::atomic<std::uint32_t> s_projectileDiagCount{ 0u };
-	const std::uint32_t diagIndex =
-		s_projectileDiagCount.fetch_add(1u, std::memory_order_relaxed);
-	if (diagIndex < 48u) {
-		logger::debug(
-			"[GR-PROJECTILE] queued type={} arrow={} spell={:08X} pos=({:.1f},{:.1f},{:.1f}) radius={:.1f}->{:.1f} strength={:.2f}",
-			static_cast<std::uint32_t>(a_projectile->GetFormType()),
-			arrow ? 1 : 0,
-			interaction.sourceFormID,
-			impact.x, impact.y, impact.z,
-			interaction.startRadius, interaction.endRadius,
-			interaction.strength);
-	}
 }
 
 
@@ -5437,8 +5301,6 @@ void GroundResponse::QueueMagicCast(
 		: (coneStream ? 0.48f : (flameStream ? 0.58f : 0.62f));
 	const float limit =
 		std::clamp(settings.ElementalHeightLimit, 0.0f, ELEMENTAL_HARD_LIMIT);
-	std::uint32_t emittedRuns = 0u;
-
 	for (int rayIndex = -rayHalfCount; rayIndex <= rayHalfCount; ++rayIndex) {
 		const float angularT =
 			rayHalfCount > 0
@@ -5570,7 +5432,6 @@ void GroundResponse::QueueMagicCast(
 				}
 
 				GroundPushPendingInteraction(interaction);
-				++emittedRuns;
 			};
 
 		float runStart = -1.0f;
@@ -5612,20 +5473,6 @@ void GroundResponse::QueueMagicCast(
 			emitReceiverRun(runStart, runLast);
 	}
 
-	if (emittedRuns > 0u) {
-		static std::atomic<std::uint32_t> s_magicDiagCount{ 0u };
-		const std::uint32_t diagIndex =
-			s_magicDiagCount.fetch_add(1u, std::memory_order_relaxed);
-		if (diagIndex < 48u) {
-			logger::debug(
-				"[GR-MAGIC-STREAM] spell={:08X} element={} profile={} runs={} caster={:08X}",
-				a_spellFormID,
-				GroundElementLabel(element),
-				static_cast<std::uint32_t>(streamProfile),
-				emittedRuns,
-				a_caster->GetFormID());
-		}
-	}
 }
 
 
@@ -5821,15 +5668,6 @@ RE::BSEventNotifyControl GroundResponse::SpellCastEventSink::ProcessEvent(
 {
 	if (a_event && a_event->object) {
 		auto& groundResponse = globals::pipeline::groundResponse;
-		static std::atomic<std::uint32_t> s_spellEventDiagCount{ 0u };
-		const auto eventDiag =
-			s_spellEventDiagCount.fetch_add(1u, std::memory_order_relaxed);
-		if (eventDiag < 64u) {
-			logger::debug(
-				"[GR-SPELL-EVENT] caster={:08X} spell={:08X}",
-				a_event->object->GetFormID(),
-				a_event->spell);
-		}
 		// Concentration magic is driven from live MagicCaster state in
 		// QueueCollisions. The event remains authoritative for shouts, and provides
 		// only a narrow dragon/voice-breath bootstrap; QueueMagicCast rejects normal
@@ -6018,15 +5856,8 @@ void GroundResponse::SetupResources()
 		logger::error("[PIXL Ground Response] D3D11 device/context unavailable; deformation resources were not created");
 		return;
 	}
-	logger::debug("[GR-DIAG] SetupResources enter");
-	logger::debug("PIXL GroundResponse v3.0.13AD displaced-snow two-stage ACTIVE");
-	logger::debug("PIXL GroundResponse v3.1 animated-Havok/world-interactions ACTIVE");
-	logger::debug("PIXL GroundResponse v3.0.13AL surface-material-filter ACTIVE");
 	perFrame = new ConstantBuffer(ConstantBufferDesc<PerFrame>());
 	surfacePerFrame = new ConstantBuffer(ConstantBufferDesc<SurfaceFieldData>());
-	logger::debug("[GR-DIAG] SetupResources constant buffers ready perFrame={} surfacePerFrame={}",
-		static_cast<const void*>(perFrame),
-		static_cast<const void*>(surfacePerFrame));
 
 	auto createRWTexture = [](uint width, uint height, const char* debugLabel) -> Texture2D* {
 		D3D11_TEXTURE2D_DESC texDesc = {
@@ -6143,12 +5974,6 @@ void GroundResponse::SetupResources()
 	// createRWTexture initializes t103 to zero, so an initially disabled
 	// elemental system does not need another full-resource clear on frame one.
 	surfaceElementalClearedWhileDisabled = !settings.EnableElementalSnow;
-	logger::debug(
-		"[GR-DIAG] SetupResources textures ready grass={} surface={} displacement={} elemental={}",
-		static_cast<const void*>(collisionTexture),
-		static_cast<const void*>(surfaceDeformationTexture),
-		static_cast<const void*>(surfaceDisplacementTexture),
-		static_cast<const void*>(surfaceElementalTexture));
 
 	// Full-resolution hardware comparison PCF for the displaced hull. This sampler
 	// is bound only around a GroundResponse geometric terrain replay (PS s7).
@@ -6241,7 +6066,6 @@ void GroundResponse::SetupResources()
 		srvDesc.Buffer.NumElements = MAX_SURFACE_STAMPS;
 		surfaceStamps->CreateSRV(srvDesc);
 	}
-	logger::debug("[GR-DIAG] SetupResources exit");
 }
 
 bool GroundResponse::HasShaderDefine(RE::BSShader::Type shaderType)
@@ -6257,37 +6081,16 @@ bool GroundResponse::HasShaderDefine(RE::BSShader::Type shaderType)
 
 void GroundResponse::Hooks::MainUpdate_QueueCollisions::thunk()
 {
-	static uint32_t s_hookDiagCount = 0u;
-	const bool hookDiag = s_hookDiagCount < 16u;
-
-	if (hookDiag)
-		logger::debug("[GR-DIAG] MainUpdate hook enter #{}", s_hookDiagCount);
-
 	func();
-
-	if (hookDiag)
-		logger::debug("[GR-DIAG] MainUpdate original returned; before QueueCollisions");
 
 	auto& seasonIntegration = SeasonIntegration::GetSingleton();
 	seasonIntegration.Poll();
 	globals::pipeline::groundResponse.ObserveSeasonContext();
 	globals::pipeline::groundResponse.QueueCollisions();
 
-	// This marker is deliberately after QueueCollisions has completely returned.
-	// If QueueCollisions logs its internal "exit" but this line never appears,
-	// the fault is during function epilogue/local destruction rather than inside
-	// the logged body.
-	if (hookDiag)
-		logger::debug("[GR-DIAG] MainUpdate QueueCollisions fully returned");
-
 	// Gameplay resistance is evaluated only after the proven deformation queue
 	// has fully returned. It cannot gate or mutate surface stamps/geometry.
 	UpdateGroundMovementResistance();
-
-	++s_hookDiagCount;
-
-	if (hookDiag)
-		logger::debug("[GR-DIAG] MainUpdate hook exit");
 }
 
 #ifndef SKYRIM_CROSS_VR
@@ -6547,15 +6350,11 @@ ID3D11ComputeShader* GroundResponse::GetCollisionUpdateCS()
 ID3D11ComputeShader* GroundResponse::GetSurfaceDeformationUpdateCS()
 {
 	if (!surfaceDeformationUpdateCS) {
-		logger::debug("[GR-DIAG] Surface CS compile begin");
 		surfaceDeformationUpdateCS = static_cast<ID3D11ComputeShader*>(
 			Util::CompileShader(
 				L"Data\\Shaders\\GroundResponse\\SurfaceDeformationUpdateCS.hlsl",
 				{},
 				"cs_5_0"));
-		logger::debug(
-			"[GR-DIAG] Surface CS compile end shader={}",
-			static_cast<const void*>(surfaceDeformationUpdateCS));
 	}
 	return surfaceDeformationUpdateCS;
 }
@@ -7636,30 +7435,21 @@ void GroundResponse::UpdateCollisionTexture()
 
 void GroundResponse::UpdateSurfaceDeformationTexture()
 {
-	static uint32_t s_surfaceDiagCount = 0u;
-	const bool surfaceDiag = s_surfaceDiagCount < 16u;
 	auto* context = globals::d3d::context;
-	if (surfaceDiag)
-		logger::debug(
-			"[GR-DIAG] SurfaceUpdate enter #{} context={} surface={} displacement={} elemental={} cb={} boxes={} stamps={}",
-			s_surfaceDiagCount,
-			static_cast<const void*>(context),
-			static_cast<const void*>(surfaceDeformationTexture),
-			static_cast<const void*>(surfaceDisplacementTexture),
-			static_cast<const void*>(surfaceElementalTexture),
-			static_cast<const void*>(surfacePerFrame),
-			queuedSurfaceStampBoxes.size(),
-			queuedSurfaceStamps.size());
 
 	if (!context || !globals::profiler || !surfaceDeformationTexture ||
 		!surfaceDisplacementTexture ||
 		!surfaceElementalTexture ||
 		!surfacePerFrame) {
-		if (surfaceDiag)
-			logger::debug("[GR-DIAG] SurfaceUpdate early-out missing resource");
-		++s_surfaceDiagCount;
 		return;
 	}
+
+	// Resolve before binding any compute resources.  A shader-cache miss is a
+	// normal recoverable condition during reload; leaving SRVs/UAVs bound here
+	// would otherwise leak a hazard into the following Skyrim pass.
+	auto* surfaceCS = GetSurfaceDeformationUpdateCS();
+	if (!surfaceCS)
+		return;
 
 	// t101/t102/t103 become UAVs for this dispatch. Explicitly unbind the same
 	// resources from terrain stages first to avoid SRV/UAV hazards.
@@ -7704,7 +7494,6 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 			surfaceElementalTexture->uav.get(),
 			clearColor);
 		surfaceElementalClearedWhileDisabled = true;
-		++s_surfaceDiagCount;
 		return;
 	}
 
@@ -7737,17 +7526,7 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 	};
 	context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 
-	if (surfaceDiag)
-		logger::debug("[GR-DIAG] SurfaceUpdate before shader acquisition");
-	auto* surfaceCS = GetSurfaceDeformationUpdateCS();
-	if (surfaceDiag)
-		logger::debug(
-			"[GR-DIAG] SurfaceUpdate shader={} profiler={}",
-			static_cast<const void*>(surfaceCS),
-			static_cast<const void*>(globals::profiler));
 	context->CSSetShader(surfaceCS, nullptr, 0);
-	if (surfaceDiag)
-		logger::debug("[GR-DIAG] SurfaceUpdate before BeginPass");
 	globals::profiler->BeginPass("GroundResponse::SurfaceDeformationUpdate");
 	context->Dispatch(
 		SURFACE_TEXTURE_SIZE / 8,
@@ -7768,9 +7547,6 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 	};
 	context->CSSetUnorderedAccessViews(0, 3, nullUAVs, nullptr);
 
-	if (surfaceDiag)
-		logger::debug("[GR-DIAG] SurfaceUpdate exit #{}", s_surfaceDiagCount);
-	++s_surfaceDiagCount;
 }
 
 #undef I18N_KEY_PREFIX

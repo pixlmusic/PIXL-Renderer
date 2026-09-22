@@ -627,6 +627,10 @@ void WorldProbes::UpdateCubemap()
 void WorldProbes::PostDeferred()
 {
 	auto context = globals::d3d::context;
+	if (!context || !envTextureBC6H || !envTextureBC6H->srv ||
+		(activeReflections && (!envReflectionsTextureBC6H || !envReflectionsTextureBC6H->srv))) {
+		return;
+	}
 
 	ID3D11ShaderResourceView* views[2] = {
 		(activeReflections ? envReflectionsTextureBC6H : envTextureBC6H)->srv.get(),
@@ -646,6 +650,15 @@ void WorldProbes::SetupResources()
 
 	auto renderer = globals::game::renderer;
 	auto device = globals::d3d::device;
+	if (!renderer || !device || !globals::d3d::context) {
+		logger::error("[PIXL World Probes] Renderer/device/context unavailable; resources were not created");
+		return;
+	}
+	auto& cubemap = renderer->GetRendererData().cubemapRenderTargets[RE::RENDER_TARGETS_CUBEMAP::kREFLECTIONS];
+	if (!cubemap.texture || !cubemap.SRV) {
+		logger::error("[PIXL World Probes] Reflection cubemap unavailable; resources were not created");
+		return;
+	}
 
 	{
 		D3D11_SAMPLER_DESC samplerDesc = {};
@@ -659,8 +672,6 @@ void WorldProbes::SetupResources()
 		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, &computeSampler));
 		Util::SetResourceName(computeSampler, "WorldProbes::ComputeSampler");
 	}
-
-	auto& cubemap = renderer->GetRendererData().cubemapRenderTargets[RE::RENDER_TARGETS_CUBEMAP::kREFLECTIONS];
 
 	{
 		D3D11_TEXTURE2D_DESC texDesc;

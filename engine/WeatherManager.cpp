@@ -566,13 +566,19 @@ void WeatherManager::SaveSettingsToWeather(RE::TESWeather* weather, const std::s
 				throw std::runtime_error("flush failed");
 		}
 
-		// std::filesystem::rename does not replace an existing target on Windows, so
-		// remove only after the complete temporary file is safely written.
-		std::filesystem::remove(filePath, ec);
-		ec.clear();
-		std::filesystem::rename(tempPath, filePath, ec);
-		if (ec) {
-			logger::warn("Failed to publish weather settings file ({}): {}", filePath.string(), ec.message());
+		// std::filesystem::rename cannot replace an existing target on Windows.
+		// Removing first was unsafe: a transient replace failure could discard the
+		// user's only authored weather override. MoveFileEx performs the replace as
+		// one operation, leaving the existing file untouched if publication fails.
+		if (!::MoveFileExW(
+				tempPath.c_str(),
+				filePath.c_str(),
+				MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+			const auto error = GetLastError();
+			logger::warn(
+				"Failed to publish weather settings file ({}): Win32 error {}",
+				filePath.string(),
+				error);
 			std::filesystem::remove(tempPath, ec);
 			return;
 		}

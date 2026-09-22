@@ -544,3 +544,25 @@ void ExternalPostProcessing::DrawENBQuickStyles()
 		ImGui::PopID();
 	}
 }
+
+void ExternalPostProcessing::DrawENBQuickStylePalette()
+{
+	InitializeQuickStyles();
+
+	const float gap = ImGui::GetStyle().ItemSpacing.x;
+	const float buttonWidth = std::max(1.0f, (ImGui::GetContentRegionAvail().x - gap) * 0.5f);
+	for (std::size_t i = 0; i < quickStyles.size(); ++i) {
+		ImGui::PushID(static_cast<int>(i));
+		auto& style = quickStyles[i];
+		const bool canApply = style.valid;
+		ImGui::BeginDisabled(!canApply);
+		if (ImGui::Button(style.name.data(), ImVec2(buttonWidth, 0.0f)))
+			ApplyQuickStyle(style);
+		ImGui::EndDisabled();
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+			ImGui::SetTooltip(canApply ? "Apply this PIXL visual style. It is a starting look; every camera setting remains adjustable." : "This style has not been saved yet.");
+		if ((i & 1u) == 0u && i + 1u < quickStyles.size())
+			ImGui::SameLine(0.0f, gap);
+		ImGui::PopID();
+	}
+}

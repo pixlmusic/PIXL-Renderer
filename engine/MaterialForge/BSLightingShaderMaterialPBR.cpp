@@ -238,42 +238,47 @@ void BSLightingShaderMaterialPBR::OnLoadTextureSet(std::uint64_t arg1, RE::BSTex
 {
 	const auto& stateData = globals::game::graphicsState->GetRuntimeData();
 
-	if (diffuseTexture == nullptr || diffuseTexture == stateData.defaultTextureNormalMap) {
+	// Skyrim can reuse a base-material instance before the PBR texture-set hook is
+	// reached (notably for decals and late-bound authored texture sets).  The base
+	// texture load must remain one-shot, but PBR extension slots must still be
+	// resolved for the incoming set or authored displacement silently falls back to
+	// the synthetic compatibility path.
+	const bool loadBaseTextures =
+		diffuseTexture == nullptr || diffuseTexture == stateData.defaultTextureNormalMap;
+	if (loadBaseTextures) {
 		BSLightingShaderMaterialBase::OnLoadTextureSet(arg1, inTextureSet);
+	}
 
-		auto* lock = &unk98;
-		while (_InterlockedCompareExchange(lock, 1, 0)) {
-			Sleep(0);
+	auto* lock = &unk98;
+	while (_InterlockedCompareExchange(lock, 1, 0)) {
+		Sleep(0);
+	}
+	_mm_mfence();
+
+	if (inTextureSet != nullptr) {
+		textureSet = RE::NiPointer(inTextureSet);
+	}
+	if (textureSet != nullptr) {
+		textureSet->SetTexture(RmaosTexture, rmaosTexture);
+		textureSet->SetTexture(EmissiveTexture, emissiveTexture);
+		textureSet->SetTexture(DisplacementTexture, displacementTexture);
+		textureSet->SetTexture(FeaturesTexture0, featuresTexture0);
+		textureSet->SetTexture(FeaturesTexture1, featuresTexture1);
+
+		auto* bgsTextureSet = globals::pipeline::materialForge.currentTextureSet;
+		if (bgsTextureSet == nullptr) {
+			bgsTextureSet = skyrim_cast<RE::BGSTextureSet*>(inTextureSet);
 		}
-		_mm_mfence();
-
-		if (inTextureSet != nullptr) {
-			textureSet = RE::NiPointer(inTextureSet);
-		}
-		if (textureSet != nullptr) {
-			textureSet->SetTexture(RmaosTexture, rmaosTexture);
-			textureSet->SetTexture(EmissiveTexture, emissiveTexture);
-			textureSet->SetTexture(DisplacementTexture, displacementTexture);
-			textureSet->SetTexture(FeaturesTexture0, featuresTexture0);
-			textureSet->SetTexture(FeaturesTexture1, featuresTexture1);
-
-			auto* bgsTextureSet = globals::pipeline::materialForge.currentTextureSet;
-			if (bgsTextureSet == nullptr) {
-				bgsTextureSet = skyrim_cast<RE::BGSTextureSet*>(inTextureSet);
+		if (bgsTextureSet) {
+			if (auto* textureSetData = globals::pipeline::materialForge.GetPBRTextureSetData(bgsTextureSet)) {
+				ApplyTextureSetData(*textureSetData);
+				All[this].textureSetData = textureSetData;
 			}
-			if (bgsTextureSet) {
-				if (auto* textureSetData = globals::pipeline::materialForge.GetPBRTextureSetData(bgsTextureSet)) {
-					ApplyTextureSetData(*textureSetData);
-					All[this].textureSetData = textureSetData;
-				}
-			}
-		}
-
-		if (lock != nullptr) {
-			*lock = 0;
-			_mm_mfence();
 		}
 	}
+
+	*lock = 0;
+	_mm_mfence();
 }
 
 void BSLightingShaderMaterialPBR::ClearTextures()

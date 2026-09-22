@@ -56,6 +56,12 @@ Get-ChildItem -LiteralPath $distributionRoot -File -Recurse | Sort-Object FullNa
 
 Get-ChildItem -LiteralPath (Join-Path $sourceRootPath 'pipeline') -Directory | Sort-Object Name | ForEach-Object {
     $moduleDirectory = $_
+    # A removed experimental module can leave an empty placeholder directory in
+    # a developer tree. It has no descriptor, kernels, or staging contribution,
+    # so it is not part of the assembled shader namespace.
+    if (-not (Get-ChildItem -LiteralPath $moduleDirectory.FullName -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+        return
+    }
     $descriptor = Join-Path $moduleDirectory.FullName 'Module.ini'
     if (-not (Test-Path -LiteralPath $descriptor)) {
         throw "Missing module descriptor: $descriptor"
@@ -165,4 +171,3 @@ if ($ReportDirectory) {
 }
 
 $summary | ConvertTo-Json -Depth 3
-

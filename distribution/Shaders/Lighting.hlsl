@@ -1731,6 +1731,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float3 complexSpecular = 1.0;  // Declare complexSpecular at a higher scope so it's available throughout the shader (NEEDED FOR STOCH. FIX)
 	// Track authored displacement before choosing the synthetic compatibility path.
 	bool authoredParallaxAvailable = false;
+	// Passed to the shared direct-lighting adapter. Complex-material pixels retain
+	// their authored lighting response instead of receiving legacy physical BRDF.
+	bool pixlComplexMaterialForPhysicalLighting = false;
 
 #	if defined(EMAT)
 #		if defined(PARALLAX) && (defined(SKINNED) || !defined(MODELSPACENORMALS))
@@ -1795,6 +1798,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		}
 	}
 #		endif  // ENVMAP
+	// This remains false for ordinary, incomplete and non-EMAT material paths.
+	// The direct-light adapter uses it only for legacy-material lighting.
+	pixlComplexMaterialForPhysicalLighting = complexMaterial;
 
 #		if defined(MATERIAL_FORGE) && !defined(LANDSCAPE) && !defined(LODLANDSCAPE)
 	bool PBRParallax = false;
@@ -1805,7 +1811,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		sampledCoatColor.a *= sampledCoatProperties.a;
 	}
 #			if !defined(FACEGEN)
-	[branch] if (SharedData::materialLayerSettings.EnableParallax && (PBRFlags & PBR::Flags::HasDisplacement) != 0)
+	// Complex-material alpha is the higher-priority authored height contract. If a
+	// texture set also exposes a PBR displacement slot, do not march both fields:
+	// authored PBR is the next fallback, then Auto-POM handles incomplete sets.
+	[branch] if (SharedData::materialLayerSettings.EnableParallax && !authoredParallaxAvailable && (PBRFlags & PBR::Flags::HasDisplacement) != 0)
 	{
 		PBRParallax = true;
 		authoredParallaxAvailable = true;
@@ -4190,13 +4199,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float3 dirLegacyPhysicalDelta;
 	float dirLegacyPhysicalApplied;
 	PhysicalLighting::EvaluateDirect(
-		dirLightContext, material, tbnTr, uvOriginal, uvOriginal_ddx, uvOriginal_ddy, inWorld || inReflection,
-#	if defined(EMAT)
-		complexMaterial,
-#	else
-		false,
-#	endif
-		dirLightOutput,
+		dirLightContext, material, tbnTr, uvOriginal, uvOriginal_ddx, uvOriginal_ddy, inWorld || inReflection, pixlComplexMaterialForPhysicalLighting, dirLightOutput,
 		dirLegacyPhysicalDelta, dirLegacyPhysicalApplied);
 	// Enclosed interiors can retain a non-zero vanilla directional-light colour
 	// even though no sun is visible.  Diffuse remains under Skyrim's authored
@@ -4401,13 +4404,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #				endif
 #			endif
 		PhysicalLighting::EvaluateDirect(
-			pointLightContext, material, tbnTr, uvOriginal, uvOriginal_ddx, uvOriginal_ddy, inWorld || inReflection,
-#		if defined(EMAT)
-			complexMaterial,
-#		else
-			false,
-#		endif
-			pointLightOutput,
+			pointLightContext, material, tbnTr, uvOriginal, uvOriginal_ddx, uvOriginal_ddy, inWorld || inReflection, pixlComplexMaterialForPhysicalLighting, pointLightOutput,
 			pointLegacyPhysicalDelta, pointLegacyPhysicalApplied);
 #			if !defined(MATERIAL_FORGE)
 		legacyPhysicalDelta += pointLegacyPhysicalDelta;
@@ -4625,13 +4622,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #				endif
 #			endif
 		PhysicalLighting::EvaluateDirect(
-			pointLightContext, material, tbnTr, uvOriginal, uvOriginal_ddx, uvOriginal_ddy, inWorld || inReflection,
-#		if defined(EMAT)
-			complexMaterial,
-#		else
-			false,
-#		endif
-			pointLightOutput,
+			pointLightContext, material, tbnTr, uvOriginal, uvOriginal_ddx, uvOriginal_ddy, inWorld || inReflection, pixlComplexMaterialForPhysicalLighting, pointLightOutput,
 			pointLegacyPhysicalDelta, pointLegacyPhysicalApplied);
 #			if !defined(MATERIAL_FORGE)
 		legacyPhysicalDelta += pointLegacyPhysicalDelta;

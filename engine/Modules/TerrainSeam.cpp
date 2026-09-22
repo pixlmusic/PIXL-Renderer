@@ -64,10 +64,19 @@ void TerrainSeam::SetupResources()
 {
 	auto renderer = globals::game::renderer;
 	auto device = globals::d3d::device;
+	if (!renderer || !device || !globals::d3d::context) {
+		logger::error("[PIXL Terrain Seam] Renderer/device/context unavailable; resources were not created");
+		return;
+	}
+	auto& mainDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+	if (!mainDepth.texture || !mainDepth.depthSRV || !mainDepth.views[0] ||
+		!main.texture || !main.SRV || !main.UAV) {
+		logger::error("[PIXL Terrain Seam] Main depth/render targets unavailable; resources were not created");
+		return;
+	}
 
 	{
-		auto& mainDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-
 		D3D11_TEXTURE2D_DESC texDesc;
 		mainDepth.texture->GetDesc(&texDesc);
 		DX::ThrowIfFailed(device->CreateTexture2D(&texDesc, NULL, &terrainDepth.texture));
@@ -85,8 +94,6 @@ void TerrainSeam::SetupResources()
 	}
 
 	{
-		auto main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
-
 		D3D11_TEXTURE2D_DESC texDesc{};
 		main.texture->GetDesc(&texDesc);
 		texDesc.Format = DXGI_FORMAT_R32_FLOAT;
@@ -112,7 +119,6 @@ void TerrainSeam::SetupResources()
 		blendedDepthTexture16->CreateSRV(srvDesc);
 		blendedDepthTexture16->CreateUAV(uavDesc);
 
-		auto& mainDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 		depthSRVBackup = mainDepth.depthSRV;
 
 		auto& zPrepassCopy = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
@@ -138,7 +144,10 @@ void TerrainSeam::PostPostLoad()
 void TerrainSeam::DataLoaded()
 {
 	auto bEnableLandFade = RE::GetINISetting("bEnableLandFade:Display");
-	bEnableLandFade->data.b = false;
+	if (bEnableLandFade)
+		bEnableLandFade->data.b = false;
+	else
+		logger::warn("[PIXL Terrain Seam] bEnableLandFade INI setting was unavailable");
 }
 
 void TerrainSeam::TerrainShaderHacks()

@@ -692,9 +692,12 @@ void CameraSuite::DrawSettings()
 					"Original", "Nordic Neutral", "Saga", "Dramatic", "Hearthfire", "Bleak",
 					"Bleach", "Winter", "Sunset", "Fantasy Green", "Nightfall", "Cinematic"
 				};
-				int selectedLook = static_cast<int>(settings.lookPreset);
+				const int previousLook = std::clamp(static_cast<int>(settings.lookPreset), 0, static_cast<int>(std::size(looks)) - 1);
+				int selectedLook = previousLook;
 				if (ImGui::Combo("Colour Grade", &selectedLook, looks, static_cast<int>(std::size(looks)))) {
 					settings.lookPreset = static_cast<uint>(std::clamp(selectedLook, 0, static_cast<int>(std::size(looks)) - 1));
+					if (selectedLook == 11 && previousLook != 11)
+						settings.lookOpacity = 0.07f;  // Cinematic remains a subtle, user-adjustable starting point.
 					LoadLookTexture();
 					changed = true;
 				}
@@ -1125,6 +1128,20 @@ void CameraSuite::PostPostLoad()
 
 void CameraSuite::SetupResources()
 {
+	if (!globals::d3d::device || !globals::d3d::context || !globals::d3d::swapChain || !globals::game::renderer) {
+		logger::warn("[Camera Suite] Deferred resource setup: renderer or D3D11 state is not ready");
+		return;
+	}
+	const auto renderer = globals::game::renderer;
+	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+	if (!main.texture || !main.SRV || !main.UAV) {
+		logger::warn("[Camera Suite] Deferred resource setup: main render target views are not ready");
+		return;
+	}
+
+	// Keep the last valid set alive while a transient load/resize state has not
+	// exposed the replacement render targets yet.  Destroying first would turn a
+	// recoverable deferred setup into a black frame until the next recreation.
 	if (hdrTexture || outputTexture || uiTexture || hdrDataCB) {
 		DestroyResources();
 	}
@@ -1144,9 +1161,6 @@ void CameraSuite::SetupResources()
 	// Set up swap chain color space BEFORE querying format and creating textures
 	// This ensures outputTexture matches the actual swap chain format for CopyResource
 	UpdateSwapChainColorSpace();
-
-	auto renderer = globals::game::renderer;
-	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
 
 	D3D11_TEXTURE2D_DESC texDesc{};
 	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};

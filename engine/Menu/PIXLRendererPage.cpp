@@ -1024,7 +1024,7 @@ namespace
 
 		static bool showAdvancedReconstruction = false;
 
-		SectionHeading("IMAGE RECONSTRUCTION & DISPLAY");
+		SectionHeading("IMAGE RECONSTRUCTION");
 
 		uint* method =
 			imageReconstruction.streamline.featureDLSS
@@ -1048,6 +1048,23 @@ namespace
 				static_cast<int>(*method),
 				0,
 				methodCount - 1);
+
+		// Keep the active delivery path visible before the detailed controls. This
+		// is deliberately compact: it explains the current state without turning
+		// the user-facing page into the engineering tuner.
+		{
+			PIXLUI::PanelScope reconstructionSummary("##ReconstructionSummary", ImVec2(0, PIXLUI::Ref(50.0f)), true);
+			if (reconstructionSummary && ImGui::BeginTable("##ReconstructionSummaryTable", 2,
+				ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings)) {
+				ImGui::TableNextColumn();
+				ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanBright), "%s", methods[methodValue]);
+				ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "ACTIVE RECONSTRUCTION");
+				ImGui::TableNextColumn();
+				ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextMuted), "RESTART AFTER PATH CHANGE");
+				ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "Current delivery remains stable while you browse.");
+				ImGui::EndTable();
+			}
+		}
 
 		if (CycleControl(
 				"Reconstruction",
@@ -1450,7 +1467,7 @@ namespace
 			"##PIXLCameraLivePreview",
 			ImVec2(
 				0,
-				PIXLUI::Ref(320.0f)),
+				PIXLUI::Ref(292.0f)),
 			PIXLUI::ChromeStyle::Raised,
 			true,
 			ImGuiWindowFlags_NoScrollbar |
@@ -1487,114 +1504,6 @@ namespace
 			PIXLUI::Colors::TextMuted,
 			title);
 
-		const float toggleWidth =
-			PIXLUI::Ref(60.0f);
-		const float toggleHeight =
-			PIXLUI::Ref(26.0f);
-		const float labelGap =
-			PIXLUI::Ref(5.0f);
-		const float groupGap =
-			PIXLUI::Ref(8.0f);
-
-		const char* previewLabel =
-			"PREVIEW";
-		const char* effectsLabel =
-			"FX";
-
-		const float previewLabelWidth =
-			ImGui::CalcTextSize(
-				previewLabel).x;
-		const float effectsLabelWidth =
-			ImGui::CalcTextSize(
-				effectsLabel).x;
-
-		const float controlsWidth =
-			previewLabelWidth +
-			labelGap +
-			toggleWidth +
-			groupGap +
-			effectsLabelWidth +
-			labelGap +
-			toggleWidth;
-
-		float controlX =
-			headerStart.x +
-			headerWidth -
-			controlsWidth -
-			PIXLUI::Ref(6.0f);
-
-		const float controlY =
-			headerStart.y +
-			(headerHeight -
-			 toggleHeight) *
-				0.5f;
-
-		draw->AddText(
-			ImVec2(
-				controlX,
-				headerStart.y +
-					(headerHeight -
-					 ImGui::GetTextLineHeight()) *
-						0.5f),
-			PIXLUI::Colors::TextDim,
-			previewLabel);
-
-		controlX +=
-			previewLabelWidth +
-			labelGap;
-
-		ImGui::SetCursorScreenPos(
-			ImVec2(
-				controlX,
-				controlY));
-
-		PIXLUI::Toggle(
-			"##LiveCameraPreviewEnabled",
-			&livePreviewEnabled);
-
-		if (ImGui::IsItemHovered()) {
-			if (auto _tt =
-					Util::HoverTooltipWrapper()) {
-				ImGui::TextWrapped(
-					"Shows the rendered game from CameraSuite's clean scene buffer. PIXL menu UI is excluded.");
-			}
-		}
-
-		controlX +=
-			toggleWidth +
-			groupGap;
-
-		draw->AddText(
-			ImVec2(
-				controlX,
-				headerStart.y +
-					(headerHeight -
-					 ImGui::GetTextLineHeight()) *
-						0.5f),
-			PIXLUI::Colors::TextDim,
-			effectsLabel);
-
-		controlX +=
-			effectsLabelWidth +
-			labelGap;
-
-		ImGui::SetCursorScreenPos(
-			ImVec2(
-				controlX,
-				controlY));
-
-		PIXLUI::Toggle(
-			"##LiveCameraPreviewEffects",
-			&livePreviewEffects);
-
-		if (ImGui::IsItemHovered()) {
-			if (auto _tt =
-					Util::HoverTooltipWrapper()) {
-				ImGui::TextWrapped(
-					"Preview comparison only. OFF neutralizes PIXL camera finishing in the preview and does not save or alter gameplay settings.");
-			}
-		}
-
 		draw->AddLine(
 			ImVec2(
 				headerStart.x +
@@ -1628,9 +1537,7 @@ namespace
 			ImGui::GetContentRegionAvail();
 		const ImVec2 imageArea(
 			available.x,
-			std::max(
-				PIXLUI::Ref(240.0f),
-				available.y));
+			PIXLUI::Ref(204.0f));
 
 		BackgroundBlur::LivePreviewFrame
 			preview{};
@@ -1733,8 +1640,106 @@ namespace
 			ImGui::Dummy(
 				imageArea);
 		}
+
+		// Keep comparison controls immediately below the image so the preview
+		// reads as a self-contained card rather than competing with its title.
+		const float toggleWidth = PIXLUI::Ref(60.0f);
+		const float toggleHeight = PIXLUI::Ref(24.0f);
+		const float labelGap = PIXLUI::Ref(5.0f);
+		const float groupGap = PIXLUI::Ref(10.0f);
+		const char* previewLabel = "PREVIEW";
+		const char* effectsLabel = "FX";
+		const float controlsWidth =
+			ImGui::CalcTextSize(previewLabel).x + labelGap + toggleWidth +
+			groupGap + ImGui::CalcTextSize(effectsLabel).x + labelGap + toggleWidth;
+		float controlX = headerStart.x + std::max(0.0f, (headerWidth - controlsWidth) * 0.5f);
+		const float controlY = imageStart.y + imageArea.y + PIXLUI::Ref(5.0f);
+
+		draw->AddText(ImVec2(controlX, controlY + (toggleHeight - ImGui::GetTextLineHeight()) * 0.5f), PIXLUI::Colors::TextDim, previewLabel);
+		controlX += ImGui::CalcTextSize(previewLabel).x + labelGap;
+		ImGui::SetCursorScreenPos(ImVec2(controlX, controlY));
+		PIXLUI::Toggle("##LiveCameraPreviewEnabled", &livePreviewEnabled);
+		if (ImGui::IsItemHovered()) {
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("Shows the rendered game from CameraSuite's clean scene buffer. PIXL menu UI is excluded.");
+		}
+
+		controlX += toggleWidth + groupGap;
+		draw->AddText(ImVec2(controlX, controlY + (toggleHeight - ImGui::GetTextLineHeight()) * 0.5f), PIXLUI::Colors::TextDim, effectsLabel);
+		controlX += ImGui::CalcTextSize(effectsLabel).x + labelGap;
+		ImGui::SetCursorScreenPos(ImVec2(controlX, controlY));
+		PIXLUI::Toggle("##LiveCameraPreviewEffects", &livePreviewEffects);
+		if (ImGui::IsItemHovered()) {
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("Preview comparison only. OFF neutralizes PIXL camera finishing in the preview and does not save or alter gameplay settings.");
+		}
 	}
 
+
+	void DrawColourPresetControls()
+	{
+		auto& camera = globals::pipeline::cameraSuite;
+		bool changed = false;
+
+		SectionHeading("COLOUR & STYLE PRESETS");
+		if (ImGui::BeginTable(
+				"##CameraPresetStrip",
+				2,
+				ImGuiTableFlags_SizingStretchSame |
+					ImGuiTableFlags_NoSavedSettings)) {
+			ImGui::TableNextColumn();
+			{
+				PIXLUI::PanelScope colourPanel("##CameraColourPresets", ImVec2(0, PIXLUI::Ref(76.0f)), true);
+				if (colourPanel) {
+					ImGui::TextColored(
+						PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
+						"COLOUR GRADE");
+
+			const char* looks[] = {
+				"Original", "Nordic Neutral", "Saga", "Dramatic", "Hearthfire", "Bleak",
+				"Bleach", "Winter", "Sunset", "Fantasy Green", "Nightfall", "Cinematic"
+			};
+			const int previousLook = std::clamp(static_cast<int>(camera.settings.lookPreset), 0, static_cast<int>(std::size(looks)) - 1);
+			int look = previousLook;
+			if (CycleControl("Colour grade", &look, looks, static_cast<int>(std::size(looks)),
+				"Applies a PIXL-authored LUT after the physical camera. Original is a neutral bypass.")) {
+				camera.settings.lookPreset = static_cast<uint>(look);
+				// Cinematic is intentionally subtle by default. Users can still choose a
+				// stronger blend below after selecting it.
+				if (look == 11 && previousLook != 11)
+					camera.settings.lookOpacity = 0.07f;
+				camera.LoadLookTexture();
+				changed = true;
+			}
+
+			ImGui::BeginDisabled(camera.settings.lookPreset == 0);
+			float lookPercent = std::clamp(camera.settings.lookOpacity * 100.0f, 0.0f, 100.0f);
+			if (SliderControl("LUT strength", &lookPercent, 0.0f, 100.0f, "%.0f%%", false)) {
+				camera.settings.lookOpacity = lookPercent * 0.01f;
+				changed = true;
+			}
+					ImGui::EndDisabled();
+				}
+			}
+
+			ImGui::TableNextColumn();
+			{
+				PIXLUI::PanelScope stylePanel("##CameraQuickStyles", ImVec2(0, PIXLUI::Ref(76.0f)), true);
+				if (stylePanel) {
+					ImGui::TextColored(
+						PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
+						"QUICK STYLES");
+					ExternalPostProcessing::DrawENBQuickStylePalette();
+				}
+			}
+			ImGui::EndTable();
+		}
+
+		if (changed) {
+			globals::state->UpdateFeatureData(globals::state->inWorld);
+			QueueDeferredStateSave();
+		}
+	}
 
 	void DrawFinishingControls()
 	{
@@ -1770,15 +1775,15 @@ namespace
 			ImGui::TableSetupColumn(
 				"Camera",
 				ImGuiTableColumnFlags_WidthStretch,
-				1.05f);
+				1.0f);
 			ImGui::TableSetupColumn(
 				"Preview",
 				ImGuiTableColumnFlags_WidthStretch,
-				0.90f);
+				1.25f);
 			ImGui::TableSetupColumn(
 				"Effects",
 				ImGuiTableColumnFlags_WidthStretch,
-				1.05f);
+				1.0f);
 
 			// -------------------------------------------------------------
 			// LEFT — exposure + tonemap / LUT
@@ -1854,70 +1859,6 @@ namespace
 					0.5f,
 					"%.2f",
 					false);
-
-			SectionHeading(
-				"TONEMAP & LUT");
-
-			const char* looks[] = {
-				"Original",
-				"Nordic Neutral",
-				"Saga",
-				"Dramatic",
-				"Hearthfire",
-				"Bleak",
-				"Bleach",
-				"Winter",
-				"Sunset",
-				"Fantasy Green",
-				"Nightfall",
-				"Cinematic"
-			};
-
-			int look =
-				static_cast<int>(
-					camera.settings
-						.lookPreset);
-
-			if (CycleControl(
-					"Colour grade",
-					&look,
-					looks,
-					static_cast<int>(
-						std::size(
-							looks)))) {
-				camera.settings.lookPreset =
-					static_cast<uint>(
-						look);
-				camera.LoadLookTexture();
-				changed = true;
-			}
-
-			ImGui::BeginDisabled(
-				camera.settings.lookPreset ==
-					0);
-
-			float lookPercent =
-				std::clamp(
-					camera.settings
-						.lookOpacity *
-						100.0f,
-					0.0f,
-					100.0f);
-
-			if (SliderControl(
-					"LUT strength",
-					&lookPercent,
-					0.0f,
-					100.0f,
-					"%.0f%%",
-					false)) {
-				camera.settings.lookOpacity =
-					lookPercent *
-						0.01f;
-				changed = true;
-			}
-
-			ImGui::EndDisabled();
 
 			changed |=
 				SliderControl(
@@ -2002,8 +1943,6 @@ namespace
 				"PreviewDepthColumn");
 
 			DrawLiveCameraPreview();
-			SectionHeading("QUICK VISUAL STYLES");
-			ExternalPostProcessing::DrawENBQuickStyles();
 
 			ImGui::Dummy(
 				ImVec2(
@@ -2409,35 +2348,12 @@ namespace
 	void DrawCameraControls()
 	{
 		DrawPageIntro(
-			"POST-PROCESSING | UPSCALING",
+			"CAMERA | POST-PROCESSING",
 			"Shape the final image, choose a colour grade, connect compatible post-processing tools, and tune reconstruction and frame delivery in one place.");
-		SectionHeading("CREATIVE LOOKS & COMPATIBILITY");
+		DrawColourPresetControls();
+		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(6.0f)));
+		SectionHeading("POST-PROCESSING & COMPATIBILITY");
 		ExternalPostProcessing::DrawSettings();
-		std::string directorUnavailableReason;
-		const bool directorActive =
-			TuningWorkspaceRenderer::IsDirectorPhotoModeActive();
-		const bool directorAvailable = directorActive ||
-			TuningWorkspaceRenderer::IsDirectorPhotoModeAvailable(
-				&directorUnavailableReason);
-
-		SectionHeading("PHOTO MODE");
-		ImGui::TextColored(
-			PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
-			"Home: free camera and photo capture.");
-		ImGui::SameLine();
-		ImGui::BeginDisabled(!directorAvailable);
-		if (PIXLUI::ActionButton(
-				directorActive ? "RETURN TO PHOTO MODE" : "OPEN PHOTO MODE",
-				ImVec2(PIXLUI::Ref(190.0f), PIXLUI::Ref(32.0f)),
-				true)) {
-			TuningWorkspaceRenderer::OpenDirectorPhotoMode();
-		}
-		ImGui::EndDisabled();
-		if (!directorAvailable && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-			if (auto _tt = Util::HoverTooltipWrapper())
-				ImGui::TextWrapped("%s", directorUnavailableReason.c_str());
-		}
-		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(5.0f)));
 		SectionHeading("CAMERA & VISUAL FINISHING");
 		DrawFinishingControls();
 		// Keep reconstruction directly below the compact camera workspace so the
@@ -2645,9 +2561,21 @@ void PIXLRendererPage::RenderNeuralSetupGuide(bool canEnable, bool* quickSetupCo
 
 void PIXLRendererPage::Render()
 {
-	static PublicPage currentPage =
-		PublicPage::Quality;
+	auto& menuSettings = globals::menu->GetSettings();
+	const auto storedPage = std::clamp(
+		static_cast<int>(menuSettings.LastPublicPage),
+		static_cast<int>(PublicPage::Quality),
+		static_cast<int>(PublicPage::Renderer));
+	PublicPage currentPage = static_cast<PublicPage>(storedPage);
 	bool pageChanged = false;
+	auto selectPage = [&](PublicPage page) {
+		if (currentPage == page)
+			return;
+		currentPage = page;
+		menuSettings.LastPublicPage = static_cast<uint>(page);
+		pageChanged = true;
+		QueueDeferredStateSave();
+	};
 
 	const float gap =
 		PIXLUI::Ref(8.0f);
@@ -2655,6 +2583,12 @@ void PIXLRendererPage::Render()
 	if (PIXLUI::ActionButton("QUICK SETUP", ImVec2(PIXLUI::Ref(150.0f), PIXLUI::Ref(30.0f)), false))
 		LaunchExperienceRenderer::OpenQuickSetup();
 	Util::AddTooltip("Reopen the guided setup card to change the quality profile or image reconstruction path. Changes are saved when you continue.");
+	ImGui::SameLine(0.0f, PIXLUI::Ref(8.0f));
+	if (PIXLUI::ActionButton("ADVANCED TUNER", ImVec2(PIXLUI::Ref(165.0f), PIXLUI::Ref(30.0f)), false)) {
+		menuSettings.AdvancedMode = true;
+		globals::state->Save();
+	}
+	Util::AddTooltip("Open the complete PIXL tuner with every module and engineering control.");
 	ImGui::Dummy(ImVec2(0.0f, PIXLUI::Ref(5.0f)));
 
 	const float pageWidth =
@@ -2671,9 +2605,7 @@ void PIXLRendererPage::Render()
 			ImVec2(
 				pageWidth,
 				PIXLUI::Ref(40.0f)))) {
-		currentPage =
-			PublicPage::Quality;
-		pageChanged = true;
+		selectPage(PublicPage::Quality);
 	}
 
 	ImGui::SameLine(
@@ -2687,9 +2619,7 @@ void PIXLRendererPage::Render()
 			ImVec2(
 				pageWidth,
 				PIXLUI::Ref(40.0f)))) {
-		currentPage =
-			PublicPage::Camera;
-		pageChanged = true;
+		selectPage(PublicPage::Camera);
 	}
 
 	ImGui::SameLine(
@@ -2703,9 +2633,7 @@ void PIXLRendererPage::Render()
 			ImVec2(
 				pageWidth,
 				PIXLUI::Ref(40.0f)))) {
-		currentPage =
-			PublicPage::Renderer;
-		pageChanged = true;
+		selectPage(PublicPage::Renderer);
 	}
 
 	if (pageChanged)
