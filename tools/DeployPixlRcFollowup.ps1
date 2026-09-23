@@ -2,6 +2,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$PackageDirectory,
     [Parameter(Mandatory=$true)][string]$GameDirectory,
+    [string[]]$Files = @(),
     [string]$UserConfigPath = '',
     [string]$ExpectedUserConfigHash = ''
 )
@@ -20,6 +21,9 @@ $relativePaths = @(
     'SKSE/Plugins/PIXL/Config/RendererDefaults.json',
     'Shaders/Common/SharedData.hlsli',
     'Shaders/ISSAOComposite.hlsl',
+    'Shaders/ISHDR.hlsl',
+    'Shaders/CameraSuite/PhysicalCameraExposureCS.hlsl',
+    'Shaders/CameraSuite/PhysicalCameraHistogramCS.hlsl',
     'Shaders/Lighting.hlsl',
     'Shaders/Sky.hlsl',
     'Shaders/PIXL/Modules/WindowLife.ini',
@@ -30,6 +34,7 @@ $relativePaths = @(
     'Shaders/WindowLife/OutdoorAtlasNight.png',
     'Shaders/WindowLife/OutdoorAtlasNight_2k.dds'
 )
+if ($Files.Count) { $relativePaths = $Files }
 function Assert-LivePath([string]$path) {
     $full = [IO.Path]::GetFullPath($path)
     if (!$full.StartsWith($data + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "Outside game Data: $path" }

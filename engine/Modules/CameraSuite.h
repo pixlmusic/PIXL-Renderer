@@ -110,6 +110,7 @@ public:
 		// runtime enable. The retired PIXL fields remain serialized below solely so
 		// older UserGraphics files keep loading without a schema break.
 		bool enableSkyrimDepthOfField = true;
+		bool preferCinematicDoF = true;
 		bool enableEnhancedDepthOfField = false;
 		bool dofAutoFocus = true;
 		float dofStrength = 0.24f;
@@ -147,6 +148,8 @@ public:
 	// SharedData::HDRData.w: menu/scene path for ISHDR; HDRSun uses w>0 to scale sun toward kMenuSunNits (see HDRSun.hlsli).
 	static constexpr float kHdrMenuSceneGameplay = 0.f;
 	static constexpr float kHdrMenuScenePauseOrMap = 0.58f;
+	// Photo Mode preserves pause-menu sun treatment but holds native eye adaptation.
+	static constexpr float kHdrMenuScenePhoto = 0.75f;
 	static constexpr float kHdrMenuSceneMainOrLoading = 1.f;
 
 	Settings settings;
@@ -194,6 +197,8 @@ public:
 	void UpdateHDRData() const;
 	/** Applies PIXL's user-facing bloom policy to the current image-space state. */
 	void ApplyPlayerPostProcessing() const;
+	[[nodiscard]] bool IsCinematicDoFLoaded() const { return cinematicDoFLoaded; }
+	[[nodiscard]] bool UsesCinematicDoF() const { return cinematicDoFLoaded && settings.preferCinematicDoF; }
 	/** @brief Suspends PIXL depth-dependent camera effects while Director owns the camera. */
 	void SetPhotoModeDofIsolation(bool enabled);
 	/** @brief Adds a confirmed player-hit elemental optical pulse (0..1). */
@@ -422,6 +427,20 @@ public:
 	HDRDataCB BuildHDRData() const;
 
 	ConstantBuffer* hdrDataCB = nullptr;
+	// Private to PhysicalCameraExposureCS (CS b1); no shared shader ABI change.
+	struct ExposureControlCB
+	{
+		float freezeMetering;
+		float compensationDeltaEV;
+		float padding[2]{};
+	};
+	static_assert(sizeof(ExposureControlCB) == 16);
+	static_assert(offsetof(ExposureControlCB, compensationDeltaEV) == 4);
+	std::unique_ptr<ConstantBuffer> exposureControlCB;
+	float lastExposureCompensationEV = 0.0f;
+	bool exposureHistoryValid = false;
+	bool exposureHoldLogged = false;
+	bool cinematicDoFLoaded = false;
 
 	// Presentation-state integration is updated at most once per rendered frame
 	// even when clean capture and frame-generation paths request extra composites.

@@ -69,7 +69,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
     MinShallowWindowRadius,
     MinFullWindowRadius,
     FullWindowVerticality,
-    DebugWindowDetection);
+    DebugWindowDetection,
+    DebugRoomProjection);
 
 namespace
 {
@@ -264,6 +265,18 @@ void WindowLife::DrawSettings()
 		ImGui::Checkbox(T("feature.window_life.debug_detection", "Show Window Class Overlay"), &settings.DebugWindowDetection);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextWrapped("Blue/amber show glass/shallow tiers. Red means native layout rejected, cyan means native background only, and green means a full occupant-safe native layout. Procedural fallback remains independent of optional exact pane masks.");
+		}
+		if (settings.DebugWindowDetection) {
+			const char* projectionViews[] = {
+				"Class Overlay", "Base Room Coordinates", "Final Room Coordinates",
+				"Framed Room UV", "Room Identity", "Room Basis", "Pane Mask"
+			};
+			settings.DebugRoomProjection = std::clamp(settings.DebugRoomProjection, 0, 6);
+			ImGui::Combo("Room Projection Debug", &settings.DebugRoomProjection,
+				projectionViews, IM_ARRAYSIZE(projectionViews));
+			if (auto _tt = Util::HoverTooltipWrapper()) {
+				ImGui::TextWrapped("Developer diagnostic only. Use this to verify that every pane in a physical window shares the same room coordinates, identity and horizontal basis.");
+			}
 		}
 		if (ImGui::Button(T("feature.window_life.clear_classifier", "Re-scan Window Materials"))) {
 			classificationCache.clear();
@@ -714,8 +727,14 @@ void WindowLife::RefreshFrameBaseData()
         std::clamp(settings.PaneThreshold, 0.0f, 1.0f),
         std::clamp(settings.PaneSoftness, 0.01f, 1.0f)
     };
+    // Runtime1.x is a debug mode, not a rendering parameter. Existing shaders
+    // treat any non-zero value as the historical class overlay, so mode 1 keeps
+    // that behaviour and modes 2..7 expose the room-projection diagnostics.
+    const int debugMode = settings.DebugWindowDetection
+        ? std::clamp(settings.DebugRoomProjection, 0, 6) + 1
+        : 0;
     frameBaseData.Runtime1 = {
-        settings.DebugWindowDetection ? 1.0f : 0.0f,
+        static_cast<float>(debugMode),
         std::clamp(settings.RoomWidth, 48.0f, 320.0f),
         std::clamp(settings.RoomHeight, 72.0f, 360.0f),
         std::clamp(settings.MotionSpeed, 0.1f, 4.0f)

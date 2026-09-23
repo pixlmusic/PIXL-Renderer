@@ -139,6 +139,9 @@ struct WindowLife : RenderModule
         float FullWindowVerticality = 0.62f;
 
         bool DebugWindowDetection = false;
+        // Developer-only projection diagnostics. Zero retains the normal class
+        // overlay; the remaining values visualise the room-coordinate pipeline.
+        int DebugRoomProjection = 0;
     } settings;
 
     struct PerGeometryData

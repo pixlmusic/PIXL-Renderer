@@ -126,6 +126,11 @@ PS_OUTPUT main(PS_INPUT input)
 	downsampledColor.xy =
 		sign(adaptDelta) * clamp(abs(Param.wz * adaptDelta), 0.00390625, abs(adaptDelta)) +
 		adaptValue;
+	// CameraSuite::kHdrMenuScenePhoto (0.75). Holding only PIXL's later meter
+	// still lets Skyrim's earlier eye adaptation change the composed photograph.
+	// Other menu encodings (0 / 0.58 / 1) retain their existing behaviour.
+	if (SharedData::HDRData.w > 0.70f && SharedData::HDRData.w < 0.80f)
+		downsampledColor.xy = adaptValue;
 #		endif
 	psout.Color = float4(downsampledColor, BlurScale.z);
 

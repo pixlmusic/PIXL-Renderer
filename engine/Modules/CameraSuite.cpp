@@ -7,6 +7,7 @@
 #include "I18n/I18n.h"
 #include "LinearLightCore.h"
 #include "Menu.h"
+#include "Menu/TuningWorkspaceRenderer.h"
 #include "RainResponse.h"
 #include "ShaderCache.h"
 #include "SkyBounce.h"
@@ -326,6 +327,7 @@ bool CameraSuite::DetectHDR()
 	X(enableElementalDamageLens) \
 	X(elementalLensStrength) \
 	X(enableSkyrimDepthOfField) \
+	X(preferCinematicDoF) \
 	X(enableEnhancedDepthOfField) \
 	X(dofAutoFocus) \
 	X(dofStrength) \
@@ -843,8 +845,15 @@ void CameraSuite::DrawSettings()
 		}
 
 		if (ImGui::CollapsingHeader("Skyrim Depth of Field", ImGuiTreeNodeFlags_DefaultOpen)) {
+			if (IsCinematicDoFLoaded()) {
+				changed |= ImGui::Checkbox("Let Cinematic DoF own depth of field", &settings.preferCinematicDoF);
+				DrawSettingsTooltip("Prevents duplicate Skyrim blur without changing Cinematic DoF's settings. Turn off if you disable the external effect and want native depth of field again.");
+				ImGui::TextWrapped("Cinematic DoF detected. Focus and outdoor distances are controlled in its SKSE Menu Framework page. Version 0.8.31 has no external live-control API.");
+			}
+			ImGui::BeginDisabled(UsesCinematicDoF());
 			changed |= ImGui::Checkbox("Enable Skyrim Depth of Field", &settings.enableSkyrimDepthOfField);
 			DrawSettingsTooltip("Enables Skyrim's native image-space depth of field in real time. PIXL's experimental replacement is retired for this release, so weather, interiors and authored image spaces remain in control of focus and blur.");
+			ImGui::EndDisabled();
 		}
 
 		if (ImGui::CollapsingHeader("Modern Motion Blur", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -1062,6 +1071,7 @@ void CameraSuite::RestoreDefaultSettings()
 	settings.enableElementalDamageLens = true;
 	settings.elementalLensStrength = 0.45f;
 	settings.enableSkyrimDepthOfField = true;
+	settings.preferCinematicDoF = true;
 	settings.enableEnhancedDepthOfField = false;
 	settings.dofAutoFocus = true;
 	settings.dofStrength = 0.24f;
@@ -1116,6 +1126,9 @@ void CameraSuite::DataLoaded()
 
 void CameraSuite::PostPostLoad()
 {
+	cinematicDoFLoaded = GetModuleHandleW(L"CinematicDoFStandalone.dll") != nullptr;
+	if (cinematicDoFLoaded)
+		logger::info("[Camera Suite] Cinematic DoF Standalone detected; optional native-DoF hand-off enabled. External focus remains provider-owned (0.8.31 has no control API).");
 	// When ImageReconstruction is loaded it installs equivalent hooks for these same addresses in its own
 	// PostPostLoad. Only install here when ImageReconstruction is absent.
 	if (!globals::pipeline::imageReconstruction.loaded) {
@@ -1282,6 +1295,9 @@ void CameraSuite::SetupResources()
 	Util::SetResourceName(lookSampler.get(), "PIXL Camera::LinearClampSampler");
 
 	hdrDataCB = new ConstantBuffer(ConstantBufferDesc<HDRDataCB>(), "HDR::DataCB");
+	exposureControlCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<ExposureControlCB>(), "PIXL Camera::ExposureControl");
+	exposureHistoryValid = false;
+	exposureHoldLogged = false;
 
 	UpdateHDRData();
 
@@ -2204,6 +2220,9 @@ void CameraSuite::DestroyResources()
 		delete hdrDataCB;
 		hdrDataCB = nullptr;
 	}
+	exposureControlCB.reset();
+	exposureHistoryValid = false;
+	exposureHoldLogged = false;
 
 	RestoreLDRRenderTargets();
 }
@@ -2455,13 +2474,32 @@ ID3D11ComputeShader* CameraSuite::GetStormglassFieldCS()
 
 void CameraSuite::UpdatePhysicalCameraExposure(ID3D11ShaderResourceView* sceneSRV)
 {
-	if (!settings.enablePhysicalCamera || !sceneSRV || !cameraExposureTexture || !cameraExposureTexture->uav || !hdrDataCB)
+	if (!settings.enablePhysicalCamera || !sceneSRV || !cameraExposureTexture || !cameraExposureTexture->uav || !hdrDataCB || !exposureControlCB)
 		return;
+
+	// Menu imagery must not become the gameplay meter's history.
+	if (globals::state->IsDisplayReferredModelMenuOpen(globals::game::ui) || globals::state->isMapMenuOpen)
+		return;
+	const bool freezeMetering = TuningWorkspaceRenderer::IsDirectorPhotoModeActive() && exposureHistoryValid;
+	const bool holdingAutoExposure = freezeMetering && settings.cameraAutoExposure;
+	if (holdingAutoExposure != exposureHoldLogged) {
+		exposureHoldLogged = holdingAutoExposure;
+		logger::info("[CameraSuite] Photo/inspection auto exposure {} (compensation {:.2f} EV, local exposure {:.3f}, HDR {}).",
+			holdingAutoExposure ? "HELD: histogram and adaptation dispatch skipped unless compensation changes" : "released: gameplay metering resumed",
+			settings.cameraExposureCompensationEV, settings.cameraLocalExposure, settings.enableHDR);
+	}
+	const float compensationEV = std::clamp(settings.cameraExposureCompensationEV, -4.0f, 4.0f);
+	if (freezeMetering && settings.cameraAutoExposure && compensationEV == lastExposureCompensationEV)
+		return;
+	exposureControlCB->Update(ExposureControlCB{
+		freezeMetering ? 1.0f : 0.0f,
+		exposureHistoryValid ? compensationEV - lastExposureCompensationEV : 0.0f });
 
 	auto* context = globals::d3d::context;
 	auto* cb = hdrDataCB->CB();
+	bool histogramReady = false;
 
-	if (settings.cameraAutoExposure && cameraHistogramTexture && cameraHistogramTexture->uav && cameraHistogramTexture->srv) {
+	if (settings.cameraAutoExposure && !freezeMetering && cameraHistogramTexture && cameraHistogramTexture->uav && cameraHistogramTexture->srv) {
 		const UINT clearHistogram[4] = { 0u, 0u, 0u, 0u };
 		context->ClearUnorderedAccessViewUint(cameraHistogramTexture->uav.get(), clearHistogram);
 
@@ -2494,6 +2532,7 @@ void CameraSuite::UpdatePhysicalCameraExposure(ID3D11ShaderResourceView* sceneSR
 				globals::profiler->BeginPass("CameraSuite::PhysicalCameraHistogram");
 				context->Dispatch((meterWidth + 7u) / 8u, (meterHeight + 7u) / 8u, 1);
 				globals::profiler->EndPass();
+				histogramReady = true;
 			}
 
 			srv = nullptr;
@@ -2504,22 +2543,36 @@ void CameraSuite::UpdatePhysicalCameraExposure(ID3D11ShaderResourceView* sceneSR
 		}
 	}
 
+	// A failed/empty histogram must not reset exposure to a manual/default value.
+	if (settings.cameraAutoExposure && !freezeMetering && !histogramReady) {
+		ID3D11Buffer* nullCB = nullptr;
+		context->CSSetConstantBuffers(0, 1, &nullCB);
+		return;
+	}
 	if (auto* exposureCS = GetPhysicalCameraExposureCS()) {
+		winrt::com_ptr<ID3D11Buffer> previousExposureCB;
+		context->CSGetConstantBuffers(1, 1, previousExposureCB.put());
 		ID3D11ShaderResourceView* histogramSRV = settings.cameraAutoExposure && cameraHistogramTexture ? cameraHistogramTexture->srv.get() : nullptr;
 		ID3D11UnorderedAccessView* exposureUAV = cameraExposureTexture->uav.get();
 		context->CSSetShaderResources(0, 1, &histogramSRV);
 		context->CSSetUnorderedAccessViews(0, 1, &exposureUAV, nullptr);
 		context->CSSetConstantBuffers(0, 1, &cb);
+		auto* exposureCB = exposureControlCB->CB();
+		context->CSSetConstantBuffers(1, 1, &exposureCB);
 		context->CSSetShader(exposureCS, nullptr, 0);
 		globals::profiler->BeginPass("CameraSuite::PhysicalCameraExposure");
 		context->Dispatch(1, 1, 1);
 		globals::profiler->EndPass();
+		lastExposureCompensationEV = compensationEV;
+		exposureHistoryValid = true;
 
 		histogramSRV = nullptr;
 		exposureUAV = nullptr;
 		context->CSSetShaderResources(0, 1, &histogramSRV);
 		context->CSSetUnorderedAccessViews(0, 1, &exposureUAV, nullptr);
 		context->CSSetShader(nullptr, nullptr, 0);
+		auto* restoreExposureCB = previousExposureCB.get();
+		context->CSSetConstantBuffers(1, 1, &restoreExposureCB);
 	}
 
 	ID3D11Buffer* nullCB = nullptr;
@@ -2738,6 +2791,8 @@ float4 CameraSuite::GetSharedDataHDR() const
 	float menuSceneEncoding = kHdrMenuSceneGameplay;
 	if (isMainOrLoading) {
 		menuSceneEncoding = kHdrMenuSceneMainOrLoading;
+	} else if (TuningWorkspaceRenderer::IsDirectorPhotoModeActive() && !state->isMapMenuOpen) {
+		menuSceneEncoding = kHdrMenuScenePhoto;
 	} else if (inMenuOrPause) {
 		menuSceneEncoding = kHdrMenuScenePauseOrMap;
 	}
@@ -3107,7 +3162,7 @@ void CameraSuite::ApplyPlayerPostProcessing() const
 			return false;
 		if (auto* setting = collection->GetSetting("bDoDepthOfField:Imagespace");
 			setting && setting->GetType() == RE::Setting::Type::kBool) {
-			setting->data.b = settings.enableSkyrimDepthOfField;
+			setting->data.b = settings.enableSkyrimDepthOfField && !UsesCinematicDoF();
 			return true;
 		}
 		return false;

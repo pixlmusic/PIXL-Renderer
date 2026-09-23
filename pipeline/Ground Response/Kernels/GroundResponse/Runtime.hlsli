@@ -1,6 +1,8 @@
 #ifndef PIXL_GROUND_RESPONSE_RUNTIME_HLSLI
 #define PIXL_GROUND_RESPONSE_RUNTIME_HLSLI
 
+#include "GroundResponse/GroundResponseSharedConstants.inl"
+
 // PIXL Ground Response 3.0 runtime ABI (b13).
 //
 // The first 48 bytes remain byte-for-byte compatible with legacy
@@ -94,17 +96,48 @@ namespace GroundResponseRuntime
         return max(weights2, 0.0f.xx) * invTotal;
     }
 
-    float GetTerrainSnowCoverage(float4 weights1, float2 weights2)
+    // TerrainSnow transports snow *and* hard/excluded layer information:
+    // GroundResponse.cpp encodes hard layers as negative values. Preserve the
+    // sign before deriving snow coverage; saturating first made hard layers look
+    // like ordinary non-snow mud terrain.
+    void GetTerrainSurfaceCoverage(
+        float4 weights1,
+        float2 weights2,
+        out float snowCoverage,
+        out float hardCoverage,
+        out float softGroundCoverage)
     {
+        snowCoverage = 0.0f;
+        hardCoverage = 0.0f;
+        softGroundCoverage = 0.0f;
         if (!IsRuntimeValid() || GroundRuntimeTerrainSnowValid == 0u)
-            return 0.0f;
+            return;
 
         float4 w1;
         float2 w2 = NormalizeTerrainWeights(weights1, weights2, w1);
-        float coverage =
-            dot(w1, saturate(GroundRuntimeTerrainSnow1to4)) +
-            dot(w2, saturate(GroundRuntimeTerrainSnow5to6.xy));
-        return saturate(coverage);
+        float4 flags1 = GroundRuntimeTerrainSnow1to4;
+        float2 flags2 = GroundRuntimeTerrainSnow5to6.xy;
+        snowCoverage = saturate(
+            dot(w1, saturate(flags1)) +
+            dot(w2, saturate(flags2)));
+        hardCoverage = saturate(
+            dot(w1, step(flags1, -1.0e-4f.xxxx)) +
+            dot(w2, step(flags2, -1.0e-4f.xx)));
+        softGroundCoverage = saturate(1.0f - hardCoverage);
+    }
+
+    float GetTerrainSnowCoverage(float4 weights1, float2 weights2)
+    {
+        float snowCoverage;
+        float hardCoverage;
+        float softGroundCoverage;
+        GetTerrainSurfaceCoverage(
+            weights1,
+            weights2,
+            snowCoverage,
+            hardCoverage,
+            softGroundCoverage);
+        return snowCoverage;
     }
 
     float GetSnowSurfaceMask(float snowCoverage)
@@ -148,8 +181,8 @@ namespace GroundResponseRuntime
                 SharedData::rainResponseSettings.Raining,
                 SharedData::rainResponseSettings.Wetness));
         return smoothstep(
-            max(threshold - 0.22f, 0.0f),
-            min(threshold + 0.18f, 1.0f),
+                max(threshold - PIXL_GR_MUD_WETNESS_LOWER_BAND, 0.0f),
+                min(threshold + PIXL_GR_MUD_WETNESS_UPPER_BAND, 1.0f),
             mudWeatherSignal);
     }
 
@@ -169,10 +202,66 @@ namespace GroundResponseRuntime
             return 0.0f;
 
         const float terrainAboveWater = cameraRelativePosition.z - waterHeight;
-        const float aboveWater = smoothstep(-2.0f, 5.0f, terrainAboveWater);
+        const float aboveWater = smoothstep(
+            -PIXL_GR_SHORELINE_BELOW_WATER_FADE,
+            PIXL_GR_SHORELINE_ABOVE_WATER_FULL,
+            terrainAboveWater);
         const float shorelineBand =
-            1.0f - smoothstep(5.0f, 64.0f, terrainAboveWater);
+            1.0f - smoothstep(
+                PIXL_GR_SHORELINE_ABOVE_WATER_FULL,
+                PIXL_GR_SHORELINE_ABOVE_WATER_FADE,
+                terrainAboveWater);
         return aboveWater * shorelineBand;
+    }
+
+    float GetMudWetnessActivation(float3 cameraRelativePosition)
+    {
+        if (SharedData::deformableGroundSettings.EnableMudDeformation == 0u)
+            return 0.0f;
+        if (SharedData::deformableGroundSettings.MudRequiresWetness == 0u)
+            return 1.0f;
+
+        float threshold = saturate(
+            SharedData::deformableGroundSettings.MudWetnessThreshold);
+        float mudSignal = saturate(max(
+            SharedData::rainResponseSettings.Raining,
+            max(
+                SharedData::rainResponseSettings.Wetness,
+                GetWaterShoreMudActivation(cameraRelativePosition))));
+        return smoothstep(
+            max(threshold - PIXL_GR_MUD_WETNESS_LOWER_BAND, 0.0f),
+            min(threshold + PIXL_GR_MUD_WETNESS_UPPER_BAND, 1.0f),
+            mudSignal);
+    }
+
+    // Canonical terrain material model. It keeps snow, hard, and soft coverage
+    // distinct; snow may blend over rock, while rock itself stays non-deformable.
+    void GetTerrainSurfaceActivations(
+        float4 weights1,
+        float2 weights2,
+        float3 cameraRelativePosition,
+        out float snowCoverage,
+        out float hardCoverage,
+        out float softGroundCoverage,
+        out float snowActivation,
+        out float mudActivation)
+    {
+        GetTerrainSurfaceCoverage(
+            weights1,
+            weights2,
+            snowCoverage,
+            hardCoverage,
+            softGroundCoverage);
+        float snowMask = GetSnowSurfaceMask(snowCoverage);
+        snowActivation =
+            SharedData::deformableGroundSettings.EnableSnowDeformation != 0u
+                ? snowMask * softGroundCoverage
+                : 0.0f;
+        mudActivation =
+            SharedData::deformableGroundSettings.EnableMudDeformation != 0u
+                ? softGroundCoverage * (1.0f - snowMask) *
+                    GetMudWetnessActivation(cameraRelativePosition)
+                : 0.0f;
     }
 
     void GetSurfaceActivations(

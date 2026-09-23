@@ -6160,6 +6160,10 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 
 			PIXLUI::SectionBanner(
 				"PHOTO MODE");
+			if (globals::pipeline::cameraSuite.UsesCinematicDoF()) {
+				PIXLUI::StatusPill("CINEMATIC DOF / EXTERNAL FOCUS", PIXLUI::Colors::CyanBright);
+				ImGui::TextWrapped("Cinematic DoF remains active in Photo Mode when enabled in its own menu. For distant outdoor shots, use its Screen AF or increase Fixed Focus / Far Focus Range. PIXL cannot change 0.8.31's live focus settings.");
+			}
 
 			if (g_directorPhotoMode.active) {
 				PIXLUI::StatusPill(

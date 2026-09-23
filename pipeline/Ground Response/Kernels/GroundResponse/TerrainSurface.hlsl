@@ -13,6 +13,7 @@
 #include "Common/SharedData.hlsli"
 #include "GroundResponse/Runtime.hlsli"
 #include "GroundResponse/DeformableGround.hlsli"
+#include "GroundResponse/GroundResponseSharedConstants.inl"
 
 // PIXL_GR_13AJ_DISPLACED_SNOW_FIELD_V1
 // Existing 13AF/13AD DLL resource. This remains positive-only geometry.
@@ -54,13 +55,13 @@ struct PATCH_CONSTANTS
 //
 // The integer hash is intentionally simple and CPU-portable so movement
 // resistance can later evaluate the exact same depth field on the CPU.
-static const float PIXL_SNOW_FINE_VARIATION = 0.10f;
-static const float PIXL_SNOW_POCKET_STRENGTH = 0.22f;
-static const float PIXL_SNOW_FINE_SCALE = 180.0f;
-static const float PIXL_SNOW_POCKET_SCALE = 620.0f;
-static const float PIXL_SNOW_MOUND_STRENGTH = 0.32f; // PIXL_GR_13AH_DRIFT_VISUAL_PARITY_V1
-static const float PIXL_SNOW_MOUND_SCALE = 300.0f;
-static const float PIXL_SNOW_MOUND_DETAIL_SCALE = 170.0f;
+static const float PIXL_SNOW_FINE_VARIATION = PIXL_GR_SNOW_FINE_VARIATION;
+static const float PIXL_SNOW_POCKET_STRENGTH = PIXL_GR_SNOW_POCKET_STRENGTH;
+static const float PIXL_SNOW_FINE_SCALE = PIXL_GR_SNOW_FINE_SCALE;
+static const float PIXL_SNOW_POCKET_SCALE = PIXL_GR_SNOW_POCKET_SCALE;
+static const float PIXL_SNOW_MOUND_STRENGTH = PIXL_GR_SNOW_MOUND_STRENGTH; // PIXL_GR_13AH_DRIFT_VISUAL_PARITY_V1
+static const float PIXL_SNOW_MOUND_SCALE = PIXL_GR_SNOW_MOUND_SCALE;
+static const float PIXL_SNOW_MOUND_DETAIL_SCALE = PIXL_GR_SNOW_MOUND_DETAIL_SCALE;
 // Near-field baseline plus procedural-detail-driven adaptive tessellation.
 // Flat nearby snow gets a cheaper 12x floor; actual mound/drift regions ramp
 // toward D3D11's 16x hardware tessellation limit.
@@ -88,20 +89,20 @@ static const float PIXL_FAR_VISUAL_TESS = 2.0f;
 static const float PIXL_INTERACTION_LOD_FULL_DISTANCE = 1728.0f;
 static const float PIXL_INTERACTION_LOD_END_DISTANCE = 1984.0f;
 
-static const float PIXL_MOUND_BLUR_RADIUS = 58.0f;
+static const float PIXL_MOUND_BLUR_RADIUS = PIXL_GR_SNOW_MOUND_BLUR_RADIUS;
 
 // Deep drifts are deliberately independent of the user-facing global pristine
 // shell thickness. SnowSurfaceThickness remains the ordinary blanket depth,
 // while rare accumulation zones can rise toward a character's chest/mid-spine.
-static const float PIXL_SNOW_MAX_PRISTINE_HEIGHT = 72.0f; // PIXL_GR_13AH_DRIFT_VISUAL_PARITY_V1
-static const float PIXL_SNOW_DEEP_DRIFT_SCALE = 560.0f;
-static const float PIXL_SNOW_DEEP_DRIFT_DETAIL_SCALE = 290.0f;
-static const float PIXL_SNOW_DEEP_DRIFT_BLUR_RADIUS = 120.0f;
+static const float PIXL_SNOW_MAX_PRISTINE_HEIGHT = PIXL_GR_SNOW_MAX_PRISTINE_HEIGHT; // PIXL_GR_13AH_DRIFT_VISUAL_PARITY_V1
+static const float PIXL_SNOW_DEEP_DRIFT_SCALE = PIXL_GR_SNOW_DEEP_DRIFT_SCALE;
+static const float PIXL_SNOW_DEEP_DRIFT_DETAIL_SCALE = PIXL_GR_SNOW_DEEP_DRIFT_DETAIL_SCALE;
+static const float PIXL_SNOW_DEEP_DRIFT_BLUR_RADIUS = PIXL_GR_SNOW_DEEP_DRIFT_BLUR_RADIUS;
 
-static const float PIXL_MUD_FINE_VARIATION = 0.08f;
-static const float PIXL_MUD_POCKET_STRENGTH = 0.16f;
-static const float PIXL_MUD_FINE_SCALE = 200.0f;
-static const float PIXL_MUD_POCKET_SCALE = 480.0f;
+static const float PIXL_MUD_FINE_VARIATION = PIXL_GR_MUD_FINE_VARIATION;
+static const float PIXL_MUD_POCKET_STRENGTH = PIXL_GR_MUD_POCKET_STRENGTH;
+static const float PIXL_MUD_FINE_SCALE = PIXL_GR_MUD_FINE_SCALE;
+static const float PIXL_MUD_POCKET_SCALE = PIXL_GR_MUD_POCKET_SCALE;
 
 uint GroundDepthHash(int2 p)
 {
@@ -356,9 +357,21 @@ float UnifiedSurfaceMaskAtPoint(TERRAIN_POINT p)
     if (GroundResponseRuntime::GeometrySelfTestEnabled())
         return 1.0f;
 
-    float coverage = TerrainSnowCoverage(p);
-    return
-        GroundResponseRuntime::GetUnifiedSurfaceActivation(coverage) *
+    float snowCoverage;
+    float hardCoverage;
+    float softGroundCoverage;
+    float snowActivation;
+    float mudActivation;
+    GroundResponseRuntime::GetTerrainSurfaceActivations(
+        p.LandBlendWeights1,
+        p.LandBlendWeights2.xy,
+        p.GroundBaseWorldPosition,
+        snowCoverage,
+        hardCoverage,
+        softGroundCoverage,
+        snowActivation,
+        mudActivation);
+    return saturate(snowActivation + mudActivation) *
         SlopeMaskFromNormal(GeometryNormalAtPoint(p));
 }
 
@@ -1264,23 +1277,19 @@ TERRAIN_POINT DSMain(
                 baseGeometryNormal = -baseGeometryNormal;
             float slopeMask = SlopeMaskFromNormal(baseGeometryNormal);
 
+            float hardCoverage = 0.0f;
+            float softGroundCoverage = 0.0f;
             float snowActivation = 0.0f;
             float mudActivation = 0.0f;
-            GroundResponseRuntime::GetSurfaceActivations(
+            GroundResponseRuntime::GetTerrainSurfaceActivations(
+                output.LandBlendWeights1,
+                output.LandBlendWeights2.xy,
+                output.GroundBaseWorldPosition,
                 snowCoverage,
+                hardCoverage,
+                softGroundCoverage,
                 snowActivation,
                 mudActivation);
-
-            // A valid nearby water plane acts like persistent rain at the
-            // shoreline. This is restricted to terrain just above the water
-            // surface, so dry ground in the same cell remains unchanged.
-            const float snowMask =
-                GroundResponseRuntime::GetSnowSurfaceMask(snowCoverage);
-            mudActivation = max(
-                mudActivation,
-                (1.0f - snowMask) *
-                    GroundResponseRuntime::GetWaterShoreMudActivation(
-                        output.GroundBaseWorldPosition));
 
             // Keep the physical shell and packed floor tied to the locally
             // augmented activation. The ordinary helpers intentionally use

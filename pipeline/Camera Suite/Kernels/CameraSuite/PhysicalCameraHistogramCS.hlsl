@@ -26,11 +26,10 @@ void main(uint2 dtid : SV_DispatchThreadID, uint2 gtid : SV_GroupThreadID)
         SceneTex.GetDimensions(width, height);
 
 		// Quality controls real metering workload (8/6/5/4 source-pixel stride).
-		// Ultra retains the shipped 4x4 path. Rotate the sub-pixel choice each
-		// frame to avoid a fixed sampling pattern without a noise texture.
+		// Stable cell centres avoid metering a different set of emissive/window
+		// pixels every frame while the camera and scene are stationary.
 		uint stride = PixlCameraHistogramStride();
-		uint2 jitter = uint2(frameIndex % stride, (frameIndex / stride) % stride);
-		uint2 pixel = dtid * stride + jitter;
+		uint2 pixel = dtid * stride + stride / 2u;
         if (pixel.x < width && pixel.y < height) {
             float3 scene = max(SceneTex.Load(int3(pixel, 0)).rgb, 0.0f);
             float3 linearScene = isSceneLinear > 0.5f ? scene : Color::GammaToLinearSafe(scene);
@@ -47,7 +46,8 @@ void main(uint2 dtid : SV_DispatchThreadID, uint2 gtid : SV_GroupThreadID)
             float2 edgeDistance = abs(screenUV * 2.0f - 1.0f);
             float centerWeight = saturate(1.0f - max(edgeDistance.x, edgeDistance.y));
             uint meterWeight = 1u + (uint)(3.0f * centerWeight * centerWeight + 0.5f);
-            InterlockedAdd(LocalHistogram[bin], meterWeight);
+            if (all(isfinite(linearScene)))
+                InterlockedAdd(LocalHistogram[bin], meterWeight);
         }
     }
 

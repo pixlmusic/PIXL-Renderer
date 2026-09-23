@@ -1731,6 +1731,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float3 complexSpecular = 1.0;  // Declare complexSpecular at a higher scope so it's available throughout the shader (NEEDED FOR STOCH. FIX)
 	// Track authored displacement before choosing the synthetic compatibility path.
 	bool authoredParallaxAvailable = false;
+	// Keep this classification available to the WindowLife composite even for
+	// permutations that do not compile the EMAT material path.  It remains false
+	// unless the authored environment-mask height path explicitly enables it.
+	bool complexMaterialParallax = false;
 	// Passed to the shared direct-lighting adapter. Complex-material pixels retain
 	// their authored lighting response instead of receiving legacy physical BRDF.
 	bool pixlComplexMaterialForPhysicalLighting = false;
@@ -1750,7 +1754,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		endif  // defined(PARALLAX) && (defined(SKINNED) || !defined(MODELSPACENORMALS))
 
 	bool complexMaterial = false;
-	bool complexMaterialParallax = false;
 	// PGPatcher stores the authored height field in environment-mask alpha.
 	// This must be classified from a coarse footprint, not from the current
 	// filtered texel: valid height extrema are commonly exactly 0 or 1.
@@ -2835,39 +2838,19 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		float groundMaximumDepth = 0.0f;
 
 		if (groundSnowClassificationValid) {
-			// Authoritative six-layer path: Skyrim's per-layer textureIsSnow flags are
-			// multiplied by the final terrain blend weights after any PIXL height blend.
-			groundSnowCoverage =
-				GroundResponseRuntime::GetTerrainSnowCoverage(
-					input.LandBlendWeights1,
-					input.LandBlendWeights2.xy);
-			float snowSurfaceMask =
-				GroundResponseRuntime::GetSnowSurfaceMask(groundSnowCoverage);
-
-			if (SharedData::deformableGroundSettings.EnableSnowDeformation != 0)
-				snowActivation = snowSurfaceMask;
-
-			if (SharedData::deformableGroundSettings.EnableMudDeformation != 0) {
-				float mudWetness = 1.0f;
-				if (SharedData::deformableGroundSettings.MudRequiresWetness != 0) {
-					float threshold =
-						saturate(
-							SharedData::deformableGroundSettings.MudWetnessThreshold);
-					float mudWeatherSignal =
-						saturate(max(
-							SharedData::rainResponseSettings.Raining,
-							max(
-								SharedData::rainResponseSettings.Wetness,
-								GroundResponseRuntime::GetWaterShoreMudActivation(input.WorldPosition.xyz))));
-					mudWetness =
-						smoothstep(
-							max(threshold - 0.22f, 0.0f),
-							min(threshold + 0.18f, 1.0f),
-							mudWeatherSignal);
-				}
-				mudActivation =
-					(1.0f - snowSurfaceMask) * mudWetness;
-			}
+			// Canonical six-layer classification preserves CPU-encoded negative
+			// hard layers, so they cannot degrade into mud after snow saturation.
+			float hardCoverage;
+			float softGroundCoverage;
+			GroundResponseRuntime::GetTerrainSurfaceActivations(
+				input.LandBlendWeights1,
+				input.LandBlendWeights2.xy,
+				input.WorldPosition.xyz,
+				groundSnowCoverage,
+				hardCoverage,
+				softGroundCoverage,
+				snowActivation,
+				mudActivation);
 		} else {
 #			if defined(MATERIAL_FORGE)
 			// Material Forge repurposes the vanilla b1 snow registers. Without the
@@ -2898,27 +2881,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			if (SharedData::deformableGroundSettings.EnableSnowDeformation != 0)
 				snowActivation = snowSurfaceMask;
 
-			if (SharedData::deformableGroundSettings.EnableMudDeformation != 0) {
-				float mudWetness = 1.0f;
-				if (SharedData::deformableGroundSettings.MudRequiresWetness != 0) {
-					float threshold =
-						saturate(
-							SharedData::deformableGroundSettings.MudWetnessThreshold);
-					float mudWeatherSignal =
-						saturate(max(
-							SharedData::rainResponseSettings.Raining,
-							max(
-								SharedData::rainResponseSettings.Wetness,
-								GroundResponseRuntime::GetWaterShoreMudActivation(input.WorldPosition.xyz))));
-					mudWetness =
-						smoothstep(
-							max(threshold - 0.22f, 0.0f),
-							min(threshold + 0.18f, 1.0f),
-							mudWeatherSignal);
-				}
+			if (SharedData::deformableGroundSettings.EnableMudDeformation != 0)
 				mudActivation =
-					(1.0f - snowSurfaceMask) * mudWetness;
-			}
+					(1.0f - snowSurfaceMask) *
+					GroundResponseRuntime::GetMudWetnessActivation(input.WorldPosition.xyz);
 #			endif
 		}
 
@@ -3850,6 +3816,20 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			worldNormal.xyz,
 			SharedData::materialForgeSettings.SpecularAAStrength,
 			SharedData::materialForgeSettings.SpecularAAVarianceClamp);
+#	if defined(EMAT_ENVMAP)
+		// Complex material's Y channel is authored smoothness.  Add its
+		// screen-space variance to the same GGX alpha-squared filter so isolated
+		// smooth texels on parallaxed stone/wood cannot resolve as white or black
+		// single-pixel highlights.
+		[branch] if (complexMaterial)
+		{
+			material.Roughness = BRDF::FilterRoughnessByScalarVariance(
+				material.Roughness,
+				1.0f - complexMaterialColor.y,
+				SharedData::materialForgeSettings.SpecularAAStrength,
+				SharedData::materialForgeSettings.SpecularAAVarianceClamp);
+		}
+#	endif
 #	if defined(SKIN) && defined(PIXL_SKIN)
 		material.RoughnessSecondary = BRDF::FilterRoughnessByNormalVariance(
 			material.RoughnessSecondary,
@@ -4127,7 +4107,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			dirDetailedShadow *= MaterialLayers::GetParallaxSoftShadowMultiplier(uv, mipLevel, dirLightDirectionTS, sh0, TexParallaxSampler, SampParallaxSampler, 0, parallaxShadowQuality, screenNoise, displacementParams);
 #		elif defined(EMAT_ENVMAP)
 		[branch] if (complexMaterialParallax)
-			dirDetailedShadow *= MaterialLayers::GetParallaxSoftShadowMultiplier(uv, mipLevel, dirLightDirectionTS, sh0, TexEnvMaskSampler, SampEnvMaskSampler, 3, parallaxShadowQuality, screenNoise, displacementParams);
+			dirDetailedShadow *= max(MaterialLayers::GetParallaxSoftShadowMultiplier(uv, mipLevel, dirLightDirectionTS, sh0, TexEnvMaskSampler, SampEnvMaskSampler, 3, parallaxShadowQuality, screenNoise, displacementParams), 0.45f);
 #		elif defined(MATERIAL_FORGE) && !defined(LODLANDSCAPE) && !defined(FACEGEN)
 		[branch] if (PBRParallax)
 			dirDetailedShadow *= MaterialLayers::GetParallaxSoftShadowMultiplier(uv, mipLevel, dirLightDirectionTS, sh0, TexParallaxSampler, SampParallaxSampler, 0, parallaxShadowQuality, screenNoise, displacementParams);
@@ -4591,7 +4571,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 				parallaxShadow = MaterialLayers::GetParallaxSoftShadowMultiplierTerrain(input, uv, terrainShadowMipLevels, lightDirectionTS, sh0, terrainDirectionalShadowQuality, screenNoise, displacementParams, sharedOffset);
 #				elif defined(EMAT_ENVMAP)
 			[branch] if (complexMaterialParallax)
-				parallaxShadow = MaterialLayers::GetParallaxSoftShadowMultiplier(uv, mipLevel, lightDirectionTS, sh0, TexEnvMaskSampler, SampEnvMaskSampler, 3, parallaxShadowQuality, screenNoise, displacementParams);
+				parallaxShadow = max(MaterialLayers::GetParallaxSoftShadowMultiplier(uv, mipLevel, lightDirectionTS, sh0, TexEnvMaskSampler, SampEnvMaskSampler, 3, parallaxShadowQuality, screenNoise, displacementParams), 0.45f);
 #				elif defined(MATERIAL_FORGE) && !defined(LODLANDSCAPE) && !defined(FACEGEN)
 			[branch] if (PBRParallax)
 				parallaxShadow = MaterialLayers::GetParallaxSoftShadowMultiplier(uv, mipLevel, lightDirectionTS, sh0, TexParallaxSampler, SampParallaxSampler, 0, parallaxShadowQuality, screenNoise, displacementParams);
@@ -4709,7 +4689,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		pixlWindowGlowLuma,
 		uv,
 		viewPosition.z,
-		pixlWindowSurface.weatherWarp);
+		pixlWindowSurface.weatherWarp,
+		complexMaterialParallax);
 
 	// PIXL WL5 authored recessed room back plane. Replace the source window's flat
 	// emissive fill with readable atlas detail while retaining a faint glass tint. The atlas
@@ -4777,6 +4758,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	if (WindowLife::GetRuntime1().x > 0.5f)
 	{
+		uint pixlWindowDebugMode = WindowLife::GetDebugMode();
 		float3 pixlWindowTierColor = pixlWindowLife.tier < 1.5f
 			? float3(0.10f, 0.38f, 1.00f)   // blue: glass only
 			: (pixlWindowLife.tier < 2.5f
@@ -4790,7 +4772,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 					? float3(0.06f, 0.82f, 1.00f) // cyan: room background fit
 					: float3(0.10f, 0.90f, 0.32f))); // green: occupant-safe fit
 		float pixlWindowDebugWeight = saturate(pixlWindowLife.debugMask * 0.58f);
-		diffuseColor = lerp(diffuseColor, pixlWindowDebugColor, pixlWindowDebugWeight);
+		float3 pixlWindowDiagnosticColor = pixlWindowDebugMode >= 2u
+			? pixlWindowLife.debugColor
+			: pixlWindowDebugColor;
+		diffuseColor = lerp(diffuseColor, pixlWindowDiagnosticColor, pixlWindowDebugWeight);
 	}
 #	endif
 #	if !defined(MATERIAL_FORGE)

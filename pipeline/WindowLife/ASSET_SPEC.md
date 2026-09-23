@@ -57,7 +57,14 @@ one combined decal.
 
 An installed `*_mask.dds` pane atlas is bound only to the matching real window material at Lighting PS `t125`; helper/proxy geometry that directly uses a mask texture remains rejected. The mask is sampled in the real material's UV space and is never copied into the PIXL package. This keeps third-party asset provenance separate while allowing exact pane/frame/mullion clipping when the user has supplied compatible masks. `t122` contains PIXL's mip-filtered glass-grime texture, `t123` and `t124` contain PIXL's occupant and curtain atlases, `t126` remains the PIXL room atlas, and `t127` is the 240-byte per-draw structured payload.
 
-The packed atlases use a fixed `4 x 4` grid. Shader UVs are clamped inside the selected cell with a mip-dependent inset so neighbouring rooms, curtains, and occupants never bleed at distance.
+Room and curtain atlases use a fixed `4 x 4` grid. Their shader UVs are clamped inside the selected cell with a mip-dependent inset.
+
+The bundled occupant PNG is a 1254-square concept sheet, normalized to 2048 at
+load time, with four unevenly spaced sprite rows. `OccupantAtlasRow` in
+`WindowLife.hlsli` holds its normalized row/foot anchors; replacing that artwork
+requires updating those coordinates. Do not assume resizing repacks the rows.
+Occupant alpha supplies a dark silhouette; RGB is not treated as emitted light.
+The same room-floor anchor applies to manual and automatic room sizing.
 
 Active v0.6 layer order from glass inward:
 

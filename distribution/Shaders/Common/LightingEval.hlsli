@@ -260,8 +260,12 @@ namespace PhysicalLighting
 		const float NdotL = dot(context.worldNormal, context.lightDir);
 		float3 softLightColor = context.lightColor * context.softShadow;
 #	if !defined(SPARKLE)
+		// Complex materials are converted to physical F0 and roughness in
+		// Lighting.hlsl before reaching this adapter.  Sending those pixels back
+		// through the legacy Blinn-Phong path ignores that conversion, producing
+		// black pinpricks where the environment mask removes diffuse response.
 		const bool physicalEnabled = SharedData::materialForgeSettings.EnableLegacyPhysicalDirectLighting != 0 &&
-			allowEnhancedLighting && !isComplexMaterial;
+			allowEnhancedLighting;
 		const bool comparePhysical = SharedData::materialForgeSettings.LegacyPhysicalDebugMode == 9;
 		DirectLightingOutput physicalOutput = (DirectLightingOutput)0;
 		DirectLightingOutput vanillaOutput = (DirectLightingOutput)0;

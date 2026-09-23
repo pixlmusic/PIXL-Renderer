@@ -1972,10 +1972,16 @@ namespace
 				"PostEffectsColumn");
 
 			SectionHeading("DEPTH OF FIELD");
+			if (camera.IsCinematicDoFLoaded()) {
+				changed |= ToggleControl("Use Cinematic DoF", &camera.settings.preferCinematicDoF,
+					"Hands depth of field to the installed plugin and prevents duplicate native blur. Focus remains in Cinematic DoF's own menu; disable this hand-off to use Skyrim DoF again.");
+			}
+			ImGui::BeginDisabled(camera.UsesCinematicDoF());
 			changed |= ToggleControl(
 				"Skyrim depth of field",
 				&camera.settings.enableSkyrimDepthOfField,
 				"Uses Skyrim's native image-space depth of field. PIXL's experimental full-screen DOF path is disabled for this release.");
+			ImGui::EndDisabled();
 
 			SectionHeading(
 				"OCCLUSION & REFLECTIONS");

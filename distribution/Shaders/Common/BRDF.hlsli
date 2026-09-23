@@ -292,6 +292,27 @@ namespace BRDF
 	}
 
 	/**
+	 * Widens roughness when a filtered material control still contains subpixel
+	 * variation.  Complex-material environment masks encode smoothness in one
+	 * channel; treating isolated smooth texels as a perfectly coherent mirror
+	 * creates one-pixel GGX flashes.  Accumulating variance in alpha-squared
+	 * space matches the normal-variance filter above and preserves broad,
+	 * authored glossy areas.
+	 */
+	float FilterRoughnessByScalarVariance(float roughness, float scalar, float strength, float varianceClamp)
+	{
+		float dScalarDx = ddx(scalar);
+		float dScalarDy = ddy(scalar);
+		float variance = 0.5f * max(strength, 0.0f) *
+			(dScalarDx * dScalarDx + dScalarDy * dScalarDy);
+		variance = min(variance, max(varianceClamp, 0.0f));
+
+		float roughness2 = roughness * roughness;
+		float alpha2 = roughness2 * roughness2;
+		return sqrt(sqrt(saturate(alpha2 + variance)));
+	}
+
+	/**
 	 * Split-sum estimate of the energy lost by single-scatter GGX. For a white
 	 * conductor, A+B is the directional single-scatter albedo; the reciprocal restores
 	 * the missing multiple-scatter energy. F0 keeps the correction negligible for

@@ -12,6 +12,7 @@
 #include "SeasonIntegration.h"
 #include "TerrainField.h"
 #include "WeatherManager.h"
+#include "../../pipeline/Ground Response/Kernels/GroundResponse/GroundResponseSharedConstants.inl"
 
 
 #include "State.h"
@@ -322,6 +323,8 @@ namespace
 		float slopeMask = 0.0f;
 		float wetnessActivation = 0.0f;
 		float snowCoverage = 0.0f;
+		float hardCoverage = 0.0f;
+		float softGroundCoverage = 0.0f;
 		float snowActivation = 0.0f;
 		std::uint32_t materialID = 0u;
 	};
@@ -379,25 +382,25 @@ namespace
 
 	// PIXL_GR_13BI_CPU_WIND_DRIFT_PARITY_V1
 	// These constants MUST mirror the 13BI TerrainSurface.hlsl pristine snow field.
-	static constexpr float RESIST_SNOW_FINE_VARIATION = 0.10f;
-	static constexpr float RESIST_SNOW_POCKET_STRENGTH = 0.22f;
-	static constexpr float RESIST_SNOW_FINE_SCALE = 180.0f;
-	static constexpr float RESIST_SNOW_POCKET_SCALE = 620.0f;
-	static constexpr float RESIST_SNOW_MOUND_STRENGTH = 0.32f;
-	static constexpr float RESIST_SNOW_MOUND_SCALE = 300.0f;
-	static constexpr float RESIST_SNOW_MOUND_DETAIL_SCALE = 170.0f;
-	static constexpr float RESIST_SNOW_MAX_PRISTINE_HEIGHT = 72.0f;
-	static constexpr float RESIST_SNOW_DEEP_DRIFT_SCALE = 560.0f;
-	static constexpr float RESIST_SNOW_DEEP_DRIFT_DETAIL_SCALE = 290.0f;
-	static constexpr float RESIST_SNOW_DEEP_DRIFT_BLUR_RADIUS = 120.0f;
-	static constexpr float RESIST_SNOW_MOUND_BLUR_RADIUS = 58.0f;
-	static constexpr float RESIST_SNOW_WIND_X = 0.8192319f;
-	static constexpr float RESIST_SNOW_WIND_Y = 0.5734623f;
+	static constexpr float RESIST_SNOW_FINE_VARIATION = PIXL_GR_SNOW_FINE_VARIATION;
+	static constexpr float RESIST_SNOW_POCKET_STRENGTH = PIXL_GR_SNOW_POCKET_STRENGTH;
+	static constexpr float RESIST_SNOW_FINE_SCALE = PIXL_GR_SNOW_FINE_SCALE;
+	static constexpr float RESIST_SNOW_POCKET_SCALE = PIXL_GR_SNOW_POCKET_SCALE;
+	static constexpr float RESIST_SNOW_MOUND_STRENGTH = PIXL_GR_SNOW_MOUND_STRENGTH;
+	static constexpr float RESIST_SNOW_MOUND_SCALE = PIXL_GR_SNOW_MOUND_SCALE;
+	static constexpr float RESIST_SNOW_MOUND_DETAIL_SCALE = PIXL_GR_SNOW_MOUND_DETAIL_SCALE;
+	static constexpr float RESIST_SNOW_MAX_PRISTINE_HEIGHT = PIXL_GR_SNOW_MAX_PRISTINE_HEIGHT;
+	static constexpr float RESIST_SNOW_DEEP_DRIFT_SCALE = PIXL_GR_SNOW_DEEP_DRIFT_SCALE;
+	static constexpr float RESIST_SNOW_DEEP_DRIFT_DETAIL_SCALE = PIXL_GR_SNOW_DEEP_DRIFT_DETAIL_SCALE;
+	static constexpr float RESIST_SNOW_DEEP_DRIFT_BLUR_RADIUS = PIXL_GR_SNOW_DEEP_DRIFT_BLUR_RADIUS;
+	static constexpr float RESIST_SNOW_MOUND_BLUR_RADIUS = PIXL_GR_SNOW_MOUND_BLUR_RADIUS;
+	static constexpr float RESIST_SNOW_WIND_X = PIXL_GR_SNOW_WIND_X;
+	static constexpr float RESIST_SNOW_WIND_Y = PIXL_GR_SNOW_WIND_Y;
 
-	static constexpr float RESIST_MUD_FINE_VARIATION = 0.08f;
-	static constexpr float RESIST_MUD_POCKET_STRENGTH = 0.16f;
-	static constexpr float RESIST_MUD_FINE_SCALE = 200.0f;
-	static constexpr float RESIST_MUD_POCKET_SCALE = 480.0f;
+	static constexpr float RESIST_MUD_FINE_VARIATION = PIXL_GR_MUD_FINE_VARIATION;
+	static constexpr float RESIST_MUD_POCKET_STRENGTH = PIXL_GR_MUD_POCKET_STRENGTH;
+	static constexpr float RESIST_MUD_FINE_SCALE = PIXL_GR_MUD_FINE_SCALE;
+	static constexpr float RESIST_MUD_POCKET_SCALE = PIXL_GR_MUD_POCKET_SCALE;
 
 	static constexpr float RESIST_SLOPE_SAMPLE_STEP = 32.0f;
 	static constexpr float RESIST_LAND_Z_TOLERANCE = 128.0f;
@@ -917,71 +920,103 @@ namespace
 			ResistanceSnowTextureFallback(a_landTexture);
 	}
 
+	// Phase 1 surface model. This stays CPU-local: b13 continues carrying the
+	// existing six compact layer flags, while gameplay and rendering now share the
+	// same snow/hard/soft semantics.
+	struct GroundSurfaceProfile
+	{
+		bool deformable = true;
+		float hardness = 0.0f;
+		float snowRetention = 1.0f;
+		float mudPotential = 1.0f;
+		float porosity = 1.0f;
+		float compressionScale = 1.0f;
+		float displacementRetention = 1.0f;
+		bool allowsMarks = true;
+	};
+
+	struct GroundSurfaceContext
+	{
+		float snowCoverage = 0.0f;
+		float hardCoverage = 0.0f;
+		float softGroundCoverage = 0.0f;
+		float mudActivation = 0.0f;
+		float wetness = 0.0f;
+		float waterInfluence = 0.0f;
+		float slope = 0.0f;
+		float snowActivation = 0.0f;
+		GroundSurfaceProfile profile{};
+	};
+
+	bool GroundLandTextureIsHard(const RE::TESLandTexture* a_landTexture);
+
+	GroundSurfaceContext ResistanceLoadedLandVertexSurfaceContext(
+		const RE::TESObjectLAND::LoadedLandData* a_loaded,
+		std::uint32_t a_globalX,
+		std::uint32_t a_globalY)
+	{
+		GroundSurfaceContext result{};
+		if (!a_loaded)
+			return result;
+
+		a_globalX = std::min(a_globalX, 32u);
+		a_globalY = std::min(a_globalY, 32u);
+		const std::uint32_t quadX = a_globalX > 16u ? 1u : 0u;
+		const std::uint32_t quadY = a_globalY > 16u ? 1u : 0u;
+		const std::uint32_t quadI = quadX + quadY * 2u;
+		const std::uint32_t localX = a_globalX - quadX * 16u;
+		const std::uint32_t localY = a_globalY - quadY * 16u;
+		const std::uint32_t vertexI = localY * 17u + localX;
+
+		float layerSum = 0.0f;
+		for (std::uint32_t layerI = 0; layerI < 6u; ++layerI) {
+			const float weight = static_cast<float>(static_cast<std::uint8_t>(
+				a_loaded->percents[quadI][vertexI][layerI])) * (1.0f / 255.0f);
+			layerSum += weight;
+			const auto* texture = a_loaded->quadTextures[quadI][layerI];
+			if (GroundLandTextureIsHard(texture))
+				result.hardCoverage += weight;
+			else if (ResistanceLandTextureIsSnow(texture))
+				result.snowCoverage += weight;
+		}
+
+		const float baseWeight = std::max(1.0f - layerSum, 0.0f);
+		const auto* baseTexture = a_loaded->defQuadTextures[quadI];
+		if (GroundLandTextureIsHard(baseTexture))
+			result.hardCoverage += baseWeight;
+		else if (ResistanceLandTextureIsSnow(baseTexture))
+			result.snowCoverage += baseWeight;
+
+		result.snowCoverage = ResistanceSaturate(result.snowCoverage);
+		result.hardCoverage = ResistanceSaturate(result.hardCoverage);
+		result.softGroundCoverage = ResistanceSaturate(1.0f - result.hardCoverage);
+		result.profile.hardness = result.hardCoverage;
+		result.profile.deformable = result.softGroundCoverage > 1.0e-4f;
+		result.profile.mudPotential = result.softGroundCoverage;
+		result.profile.allowsMarks = result.profile.deformable;
+		return result;
+	}
+
 	float ResistanceLoadedLandVertexSnowCoverage(
 		const RE::TESObjectLAND::LoadedLandData* a_loaded,
 		std::uint32_t a_globalX,
 		std::uint32_t a_globalY)
 	{
-		if (!a_loaded)
-			return 0.0f;
-
-		a_globalX = std::min(a_globalX, 32u);
-		a_globalY = std::min(a_globalY, 32u);
-
-		// Four 17x17 overlapping quadrants:
-		//   0=SW, 1=SE, 2=NW, 3=NE.
-		const std::uint32_t quadX =
-			a_globalX > 16u ? 1u : 0u;
-		const std::uint32_t quadY =
-			a_globalY > 16u ? 1u : 0u;
-		const std::uint32_t quadI =
-			quadX + quadY * 2u;
-
-		const std::uint32_t localX =
-			a_globalX - quadX * 16u;
-		const std::uint32_t localY =
-			a_globalY - quadY * 16u;
-		const std::uint32_t vertexI =
-			localY * 17u + localX;
-
-		float layerSum = 0.0f;
-		float snowWeight = 0.0f;
-
-		for (std::uint32_t layerI = 0; layerI < 6u; ++layerI) {
-			// CommonLib declares this storage int8_t, but Skyrim uses the full
-			// 0..255 byte range. Reinterpret through uint8_t exactly like the
-			// established terrain-shell implementation.
-			const float weight =
-				static_cast<float>(
-					static_cast<std::uint8_t>(
-						a_loaded->percents[quadI][vertexI][layerI])) *
-				(1.0f / 255.0f);
-
-			layerSum += weight;
-
-			if (ResistanceLandTextureIsSnow(
-					a_loaded->quadTextures[quadI][layerI])) {
-				snowWeight += weight;
-			}
-		}
-
-		const float baseWeight =
-			std::max(1.0f - layerSum, 0.0f);
-
-		if (ResistanceLandTextureIsSnow(
-				a_loaded->defQuadTextures[quadI])) {
-			snowWeight += baseWeight;
-		}
-
-		return ResistanceSaturate(snowWeight);
+		return ResistanceLoadedLandVertexSurfaceContext(
+			a_loaded,
+			a_globalX,
+			a_globalY).snowCoverage;
 	}
 
 	bool ResistanceSampleLoadedLandSnowCoverage(
 		RE::Actor* a_actor,
 		const RE::NiPoint3& a_position,
-		float& a_outCoverage)
+		float& a_outCoverage,
+		float* a_outHardCoverage = nullptr)
 	{
 		a_outCoverage = 0.0f;
+		if (a_outHardCoverage)
+			*a_outHardCoverage = 0.0f;
 
 		if (!a_actor)
 			return false;
@@ -1062,7 +1097,19 @@ namespace
 				ResistanceLerp(
 					ResistanceLerp(c00, c10, tx),
 					ResistanceLerp(c01, c11, tx),
+				ty));
+
+		if (a_outHardCoverage) {
+			const auto surface00 = ResistanceLoadedLandVertexSurfaceContext(land->loadedData, x0, y0);
+			const auto surface10 = ResistanceLoadedLandVertexSurfaceContext(land->loadedData, x1, y0);
+			const auto surface01 = ResistanceLoadedLandVertexSurfaceContext(land->loadedData, x0, y1);
+			const auto surface11 = ResistanceLoadedLandVertexSurfaceContext(land->loadedData, x1, y1);
+			*a_outHardCoverage = ResistanceSaturate(
+				ResistanceLerp(
+					ResistanceLerp(surface00.hardCoverage, surface10.hardCoverage, tx),
+					ResistanceLerp(surface01.hardCoverage, surface11.hardCoverage, tx),
 					ty));
+		}
 
 		return true;
 	}
@@ -1112,12 +1159,62 @@ namespace
 		return
 			ResistanceSmoothStep(
 				std::max(
-					threshold - 0.22f,
+					threshold - PIXL_GR_MUD_WETNESS_LOWER_BAND,
 					0.0f),
 				std::min(
-					threshold + 0.18f,
+					threshold + PIXL_GR_MUD_WETNESS_UPPER_BAND,
 					1.0f),
 				weatherSignal);
+	}
+
+	float ResistanceShorelineMudActivation(
+		const RE::TESObjectCELL* a_cell,
+		const RE::NiPoint3& a_position)
+	{
+		// Match the renderer's local 5x5 WaterData rule using the already loaded
+		// actor/probe cell. This never queries cells for every landscape pixel and
+		// does not turn a whole water-bearing cell into mud.
+		if (!a_cell || !a_cell->IsExteriorCell())
+			return 0.0f;
+
+		const float waterHeight = a_cell->GetExteriorWaterHeight();
+		if (!std::isfinite(waterHeight) || waterHeight < -1.0e20f)
+			return 0.0f;
+
+		const float terrainAboveWater = a_position.z - waterHeight;
+		const float aboveWater = ResistanceSmoothStep(
+			-PIXL_GR_SHORELINE_BELOW_WATER_FADE,
+			PIXL_GR_SHORELINE_ABOVE_WATER_FULL,
+			terrainAboveWater);
+		const float shorelineBand = 1.0f - ResistanceSmoothStep(
+			PIXL_GR_SHORELINE_ABOVE_WATER_FULL,
+			PIXL_GR_SHORELINE_ABOVE_WATER_FADE,
+			terrainAboveWater);
+		return ResistanceSaturate(aboveWater * shorelineBand);
+	}
+
+	float ResistanceMudWetnessActivation(
+		const GroundResponse& a_ground,
+		const RE::TESObjectCELL* a_cell,
+		const RE::NiPoint3& a_position)
+	{
+		if (!a_ground.settings.EnableMudDeformation)
+			return 0.0f;
+		if (!a_ground.settings.MudRequiresWetness)
+			return 1.0f;
+
+		const auto rainData =
+			globals::pipeline::rainResponse.GetCommonBufferData();
+		const float threshold = ResistanceSaturate(a_ground.settings.MudWetnessThreshold);
+		const float wetSignal = ResistanceSaturate(std::max(
+			rainData.Raining,
+			std::max(
+				rainData.Wetness,
+				ResistanceShorelineMudActivation(a_cell, a_position))));
+		return ResistanceSmoothStep(
+			std::max(threshold - PIXL_GR_MUD_WETNESS_LOWER_BAND, 0.0f),
+			std::min(threshold + PIXL_GR_MUD_WETNESS_UPPER_BAND, 1.0f),
+			wetSignal);
 	}
 
 	float ResistanceTerrainSlopeMask(
@@ -1551,17 +1648,28 @@ GroundResistanceSample ResistanceEvaluateActor(
 				1.0f);
 
 		float loadedSnowCoverage = 0.0f;
+		float loadedHardCoverage = 0.0f;
 		const bool loadedSnowCoverageValid =
 			ResistanceSampleLoadedLandSnowCoverage(
 				a_actor,
 				actorPosition,
-				loadedSnowCoverage);
+				loadedSnowCoverage,
+				&loadedHardCoverage);
+
+		// A mixed rock/dirt terrain remains partially responsive. A fully hard
+		// sampled blend rejects the same way as the render-side negative flags.
+		const float softGroundCoverage =
+			loadedSnowCoverageValid
+				? ResistanceSaturate(1.0f - loadedHardCoverage)
+				: 1.0f;
+		if (loadedSnowCoverageValid && softGroundCoverage <= 1.0e-4f)
+			return result;
 
 		const float loadedSnowActivation =
 			loadedSnowCoverageValid
 				? ResistanceSnowActivationFromCoverage(
 					loadedSnowCoverage,
-					a_ground)
+					a_ground) * softGroundCoverage
 				: 0.0f;
 
 		GroundSnowClassifier snowClassifier =
@@ -1587,6 +1695,8 @@ GroundResistanceSample ResistanceEvaluateActor(
 
 		result.snowCoverage =
 			loadedSnowCoverage;
+		result.hardCoverage = loadedHardCoverage;
+		result.softGroundCoverage = softGroundCoverage;
 		result.snowActivation =
 			snowActivation;
 
@@ -1678,7 +1788,11 @@ GroundResistanceSample ResistanceEvaluateActor(
 		}
 
 		const float mudActivation =
-			ResistanceMudWetnessActivation(a_ground);
+			ResistanceMudWetnessActivation(
+				a_ground,
+				a_actor->GetParentCell(),
+				actorPosition) *
+			softGroundCoverage;
 		result.wetnessActivation =
 			mudActivation;
 
@@ -2647,9 +2761,12 @@ GroundResistanceSample ResistanceEvaluateActor(
 
 	bool GroundSampleLoadedLandSnowCoverageAt(
 		const RE::NiPoint3& a_position,
-		float& a_outCoverage)
+		float& a_outCoverage,
+		float* a_outHardCoverage = nullptr)
 	{
 		a_outCoverage = 0.0f;
+		if (a_outHardCoverage)
+			*a_outHardCoverage = 0.0f;
 		auto* tes = RE::TES::GetSingleton();
 		if (!tes)
 			return false;
@@ -2692,6 +2809,17 @@ GroundResistanceSample ResistanceEvaluateActor(
 				ResistanceLerp(c00, c10, tx),
 				ResistanceLerp(c01, c11, tx),
 				ty));
+		if (a_outHardCoverage) {
+			const auto surface00 = ResistanceLoadedLandVertexSurfaceContext(land->loadedData, x0, y0);
+			const auto surface10 = ResistanceLoadedLandVertexSurfaceContext(land->loadedData, x1, y0);
+			const auto surface01 = ResistanceLoadedLandVertexSurfaceContext(land->loadedData, x0, y1);
+			const auto surface11 = ResistanceLoadedLandVertexSurfaceContext(land->loadedData, x1, y1);
+			*a_outHardCoverage = ResistanceSaturate(
+				ResistanceLerp(
+					ResistanceLerp(surface00.hardCoverage, surface10.hardCoverage, tx),
+					ResistanceLerp(surface01.hardCoverage, surface11.hardCoverage, tx),
+					ty));
+		}
 		return true;
 	}
 
@@ -2720,6 +2848,7 @@ GroundResistanceSample ResistanceEvaluateActor(
 		auto* landTexture = tes->GetLandTexture(a_position);
 		if (!landTexture || GroundLandTextureIsHard(landTexture))
 			return false;
+		auto* surfaceCell = tes->GetCell(a_position);
 
 		RE::MATERIAL_ID materialID = tes->GetLandMaterialType(a_position);
 		materialID = GroundResolvedLandMaterialID(landTexture, materialID);
@@ -2730,10 +2859,19 @@ GroundResistanceSample ResistanceEvaluateActor(
 			return false;
 
 		float snowCoverage = 0.0f;
+		float hardCoverage = 0.0f;
 		const bool coverageValid =
-			GroundSampleLoadedLandSnowCoverageAt(a_position, snowCoverage);
+			GroundSampleLoadedLandSnowCoverageAt(
+				a_position,
+				snowCoverage,
+				&hardCoverage);
+		const float softGroundCoverage = coverageValid
+			? ResistanceSaturate(1.0f - hardCoverage)
+			: 1.0f;
+		if (coverageValid && softGroundCoverage <= 1.0e-4f)
+			return false;
 		float snowActivation = coverageValid
-			? ResistanceSnowActivationFromCoverage(snowCoverage, a_ground)
+			? ResistanceSnowActivationFromCoverage(snowCoverage, a_ground) * softGroundCoverage
 			: 0.0f;
 		if (snowActivation <= 1.0e-4f &&
 			ResistanceClassifySnow(materialID, landTexture) != GroundSnowClassifier::kNone) {
@@ -2750,7 +2888,10 @@ GroundResistanceSample ResistanceEvaluateActor(
 				a_position, slopeMask, snowActivation, a_ground);
 			snow = pristineDepth > 1.0e-3f;
 		} else if (a_ground.settings.EnableMudDeformation) {
-			mudActivation = ResistanceMudWetnessActivation(a_ground);
+			mudActivation = ResistanceMudWetnessActivation(
+				a_ground,
+				surfaceCell,
+				a_position) * softGroundCoverage;
 			if (mudActivation > 1.0e-4f) {
 				pristineDepth = ResistanceMudPristineDepth(
 					a_position, slopeMask, mudActivation, a_ground);
@@ -6560,11 +6701,13 @@ void GroundResponse::FlushGeometryTelemetry()
 	}
 
 	logger::info(
-		"[GroundResponse Geometry] passes={} classified={} mf={} snowBearing={} wanted={} hsds={} topologyReject={} existingTess={} shaderFail={} boxes={} playerProxy={} fieldReset={} cameraGuard={} debug={} selfTest={} thickness={:.1f} mudThickness={:.2f}",
+		"[GroundResponse Geometry] passes={} classified={} mf={} snowBearing={} hard={} soft={} wanted={} hsds={} topologyReject={} existingTess={} shaderFail={} boxes={} playerProxy={} fieldReset={} cameraGuard={} debug={} selfTest={} abi={} stamps={} thickness={:.1f} mudThickness={:.2f}",
 		geometryTelemetry.TerrainPasses,
 		geometryTelemetry.ClassificationValid,
 		geometryTelemetry.MaterialForgePasses,
 		geometryTelemetry.SnowBearingPasses,
+		geometryTelemetry.HardExcludedPasses,
+		geometryTelemetry.SoftCapablePasses,
 		geometryTelemetry.GeometryWanted,
 		geometryTelemetry.HsDsApplied,
 		geometryTelemetry.TopologyRejected,
@@ -6576,6 +6719,9 @@ void GroundResponse::FlushGeometryTelemetry()
 		geometryTelemetry.CameraRebaseSuppressed,
 		settings.DebugInteractionField ? 1 : 0,
 		settings.GeometrySelfTest ? 1 : 0,
+		(currentPerFrame.RuntimeMagic == GROUND_RUNTIME_MAGIC &&
+			currentPerFrame.RuntimeVersion == GROUND_RUNTIME_VERSION) ? 1 : 0,
+		static_cast<uint>(queuedSurfaceStamps.size()),
 		settings.SnowSurfaceThickness,
 		std::clamp(
 			std::max(
@@ -6816,6 +6962,16 @@ void GroundResponse::PrepareTerrainPass(RE::BSRenderPass* a_pass)
 		*std::max_element(snowFlags.begin(), snowFlags.end());
 	if (strongestSnowLayer > 1e-4f)
 		geometryTelemetry.SnowBearingPasses++;
+	if (std::any_of(snowFlags.begin(), snowFlags.end(), [](float value) {
+		return value < -1.0e-4f;
+	})) {
+		geometryTelemetry.HardExcludedPasses++;
+	}
+	if (std::any_of(snowFlags.begin(), snowFlags.end(), [](float value) {
+		return value >= 0.0f;
+	})) {
+		geometryTelemetry.SoftCapablePasses++;
+	}
 	const auto eye = Util::GetEyePosition();
 	const float distanceToBound =
 		std::max(

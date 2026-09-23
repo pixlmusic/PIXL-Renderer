@@ -16,12 +16,13 @@ if (-not $fxc) {
 if (-not $fxc) { throw 'fxc.exe was not found. Install the Windows SDK or add its bin directory to PATH.' }
 $output = Join-Path $PSScriptRoot '..\build\windowlife-shader-tests'
 New-Item -ItemType Directory -Force -Path $output | Out-Null
-$cases = @(@(), @('DO_ALPHA_TEST'), @('ENVMAP'), @('GLOWMAP'), @('PBR'), @('SKINNED'))
+$cases = @(@(), @('DO_ALPHA_TEST'), @('ENVMAP'), @('GLOWMAP'), @('MATERIAL_FORGE'), @('SKINNED'),
+    @('EMAT', 'ENVMAP'), @('MODELSPACENORMALS'), @('DEFERRED', 'EMAT', 'ENVMAP'))
 for ($i = 0; $i -lt $cases.Count; ++$i) {
-    $args = @('/nologo','/Ges','/O3','/T','ps_5_0','/E','main','/I',$ShaderRoot)
+    $args = @('/nologo','/WX','/Ges','/O3','/T','ps_5_0','/E','main','/I',$ShaderRoot)
     foreach ($define in (@('WINPC','DX11','PSHADER','PIXL_WINDOW_LIFE') + $cases[$i])) { $args += @('/D',$define) }
     $args += @('/Fo',(Join-Path $output "$i.cso"),(Join-Path $ShaderRoot 'Lighting.hlsl'))
     & $fxc @args
     if ($LASTEXITCODE -ne 0) { throw "WindowLife permutation $i failed" }
 }
-Write-Host 'PASS: six WindowLife pixel shader permutations.'
+Write-Host "PASS: $($cases.Count) WindowLife pixel shader permutations (warnings-as-errors)."

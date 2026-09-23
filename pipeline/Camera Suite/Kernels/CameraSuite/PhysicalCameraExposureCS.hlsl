@@ -3,10 +3,26 @@
 Texture2D<uint> Histogram : register(t0);
 RWTexture2D<float> Exposure : register(u0);
 
+// Private dispatch data, matching CameraSuite::ExposureControlCB (16 bytes).
+cbuffer ExposureControl : register(b1)
+{
+    float freezeMetering;
+    float compensationDeltaEV;
+    float2 exposureControlPadding;
+};
+
 [numthreads(1, 1, 1)]
 void main(uint3 dtid : SV_DispatchThreadID)
 {
-    float previous = max(Exposure[uint2(0, 0)], 1e-5f);
+    float previous = Exposure[uint2(0, 0)];
+    previous = isfinite(previous) && previous > 0.0f ? previous : 1.0f;
+    // Compensation is an intentional user adjustment, not scene adaptation.
+    if (cameraAutoExposure > 0.5f)
+        previous = exp2(clamp(log2(previous) + compensationDeltaEV, cameraMinExposureEV, cameraMaxExposureEV));
+    if (freezeMetering > 0.5f && cameraAutoExposure > 0.5f) {
+        Exposure[uint2(0, 0)] = previous;
+        return;
+    }
     float target = exp2(cameraExposureCompensationEV);
 
     if (physicalCameraEnabled > 0.5f && cameraAutoExposure > 0.5f) {
@@ -14,6 +30,11 @@ void main(uint3 dtid : SV_DispatchThreadID)
         [unroll]
         for (uint i = 0u; i < 256u; ++i)
             total += Histogram.Load(int3(i, 0, 0));
+
+        if (total == 0u) {
+            Exposure[uint2(0, 0)] = previous;
+            return;
+        }
 
 		if (total > 0u) {
             uint lowCut = (uint)((float)total * saturate(cameraLowPercentile));
@@ -23,7 +44,8 @@ void main(uint3 dtid : SV_DispatchThreadID)
             uint cumulative = 0u;
             float weightedLog = 0.0f;
 			uint accepted = 0u;
-			uint highlightCut = (uint)((float)total * 0.995f);
+			// Ignore isolated emissives/specular peaks; broad highlights still meter.
+			uint highlightCut = max(1u, (uint)((float)total * 0.98f));
 			float highlightLum = 0.0f;
 
             [loop]
@@ -38,13 +60,13 @@ void main(uint3 dtid : SV_DispatchThreadID)
                 uint useEnd = min(end, highCut);
                 uint useCount = useEnd > useBegin ? useEnd - useBegin : 0u;
 				if (useCount > 0u) {
-                    float t = ((float)i + 0.5f) / 256.0f;
+                    float t = (float)i / 255.0f;
                     float logLum = lerp(PIXL_HISTOGRAM_LOG_MIN, PIXL_HISTOGRAM_LOG_MAX, t);
                     weightedLog += logLum * (float)useCount;
 					accepted += useCount;
 				}
 				if (highlightLum <= 0.0f && end >= highlightCut) {
-					float t = ((float)i + 0.5f) / 256.0f;
+					float t = (float)i / 255.0f;
 					highlightLum = exp2(lerp(PIXL_HISTOGRAM_LOG_MIN, PIXL_HISTOGRAM_LOG_MAX, t));
 				}
 				cumulative = end;
@@ -58,15 +80,14 @@ void main(uint3 dtid : SV_DispatchThreadID)
 				target = (0.18f / max(avgLum, 1e-5f)) * exp2(cameraExposureCompensationEV);
 			}
 
-			// Protect the upper scene percentile immediately. Trimmed average
-			// metering alone can legitimately ignore a bright doorway, flame bank or
-			// snow field and briefly drive it into a massive display blowout.
-			// This cap preserves photographic adaptation while reserving highlight
-			// headroom proportional to the user's protection control.
+			// Reserve highlight headroom before tone mapping.  A 1.5-stop bound keeps
+			// bright interiors and snow from lifting the whole frame, while avoiding
+			// the unbounded exposure collapse used by the original implementation.
 			if (highlightLum > 0.0f) {
 				float protectedLevel = lerp(5.0f, 1.65f, saturate(cameraHighlightProtection));
-				float safeExposure = protectedLevel / max(highlightLum, 1e-5f);
-				target = min(target, lerp(target, safeExposure, saturate(cameraHighlightProtection)));
+				float safeExposure = protectedLevel / max(highlightLum, 1e-5f) * exp2(cameraExposureCompensationEV);
+				float reductionEV = clamp(log2(max(target, 1e-6f) / max(safeExposure, 1e-6f)), 0.0f, 1.5f);
+				target *= exp2(-reductionEV * saturate(cameraHighlightProtection));
 			}
 		}
     }
@@ -96,15 +117,14 @@ void main(uint3 dtid : SV_DispatchThreadID)
         tau /= speedup;
     }
 
-    float dt = clamp(deltaTime, 1.0f / 240.0f, 0.1f);
+    float dt = clamp(deltaTime, 0.0f, 0.1f);
     float blend = 1.0f - exp(-dt / tau);
-	float adapted = max(lerp(previous, target, saturate(blend)), 1e-5f);
-	// Exposure may brighten gradually, but a newly visible highlight is allowed
-	// to pull exposure down immediately enough to avoid a white flash.
-	if (target < adapted) {
-		float immediateProtection = saturate(cameraHighlightProtection) * 0.82f;
-		adapted = lerp(adapted, max(target, adapted * 0.25f), immediateProtection);
-	}
-	Exposure[uint2(0, 0)] = adapted;
+    float previousEV = log2(previous);
+    float errorEV = targetEV - previousEV;
+    // A soft 0.02-stop deadband rejects histogram-bin chatter without a snap.
+    errorEV = sign(errorEV) * max(abs(errorEV) - 0.02f, 0.0f);
+    // Stops/sec, not a per-frame multiplier. Brightening responds promptly;
+    // darkening cannot produce the old frame-rate-dependent plunges.
+    float stepEV = clamp(errorEV * blend, -4.0f * dt, 6.0f * dt);
+    Exposure[uint2(0, 0)] = exp2(clamp(previousEV + stepEV, cameraMinExposureEV, cameraMaxExposureEV));
 }
-

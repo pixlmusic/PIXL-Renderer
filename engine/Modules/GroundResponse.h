@@ -356,6 +356,8 @@ public:
 		uint ClassificationValid = 0;
 		uint MaterialForgePasses = 0;
 		uint SnowBearingPasses = 0;
+		uint HardExcludedPasses = 0;
+		uint SoftCapablePasses = 0;
 		uint GeometryWanted = 0;
 		uint TopologyRejected = 0;
 		uint ExistingTessellation = 0;
