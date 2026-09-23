@@ -58,6 +58,10 @@ public:
 		float SnowMaximumDepth = 18.0f;
 		float SnowSurfaceThickness = 10.0f;
 		bool EnableWeatherSnowAccumulation = true;
+		// Keeps the slow environmental mass/moisture state active. Existing weather
+		// snow settings retain their meaning; this only lets new snow conceal old
+		// compaction progressively instead of preserving every historic track.
+		bool EnableEnvironmentalSurfaceState = true;
 		float WeatherSnowMaximumRaise = 14.0f;
 		float WeatherSnowAccumulationRate = 0.060f;
 		float WeatherSnowMeltRate = 0.035f;
@@ -297,13 +301,29 @@ public:
 		float2 SurfaceOriginAbsolute;
 		DirectX::XMUINT2 SurfaceArrayOrigin;
 
-		// Slowly varying weather layer. Current/previous values keep terrain
-		// motion vectors coherent while a storm accumulates or clear weather
-		// settles the blanket back to the configured base thickness.
+		// Slowly varying weather mass. Current/previous values keep terrain motion
+		// vectors coherent while a storm accumulates or clear weather settles the
+		// blanket back to the configured base thickness.
 		float WeatherSnowRaise;
 		float PreviousWeatherSnowRaise;
 		float WeatherSnowIntensity;
 		uint WeatherSnowEnabled;
+
+		// Phase 5 environmental surface state. This is deliberately a compact
+		// global/environmental tail: t101 keeps fast local compaction, while these
+		// values describe slow snow-cover, moisture, and conservative thermal state.
+		float WeatherSnowTrackCover;
+		float PreviousWeatherSnowTrackCover;
+		float SurfaceMoisture;
+		float SurfaceThermalState;
+
+		// WeatherManager currently exposes wind magnitude but no robust world-space
+		// direction. The shader keeps its established prevailing direction stable
+		// and uses this only to bias *new* deposition subtly.
+		float WeatherWindIntensity;
+		float EnvironmentExterior;
+		float padEnvironment0;
+		float padEnvironment1;
 	};
 	STATIC_ASSERT_ALIGNAS_16(PerFrame);
 	static_assert(offsetof(PerFrame, TerrainSnow1to4) == 48, "GroundResponse compute ABI must keep the first 48 bytes unchanged.");
@@ -315,12 +335,18 @@ public:
 	static_assert(offsetof(PerFrame, SurfaceOriginAbsolute) == 144, "GroundResponse b13 surface origin ABI mismatch.");
 	static_assert(offsetof(PerFrame, SurfaceArrayOrigin) == 152, "GroundResponse b13 surface array origin ABI mismatch.");
 	static_assert(offsetof(PerFrame, WeatherSnowRaise) == 160, "GroundResponse b13 weather-snow ABI mismatch.");
-	static_assert(sizeof(PerFrame) == 176, "GroundResponse::PerFrame must match GroundResponse/Runtime.hlsli.");
+	static_assert(offsetof(PerFrame, WeatherSnowTrackCover) == 176, "GroundResponse b13 environmental-state ABI mismatch.");
+	static_assert(offsetof(PerFrame, WeatherWindIntensity) == 192, "GroundResponse b13 environment ABI mismatch.");
+	static_assert(sizeof(PerFrame) == 208, "GroundResponse::PerFrame must match GroundResponse/Runtime.hlsli.");
 
 	Settings settings;
 	float weatherSnowRaiseState = 0.0f;
 	float previousWeatherSnowRaiseState = 0.0f;
 	float weatherSnowIntensityState = 0.0f;
+	float weatherSnowTrackCoverState = 0.0f;
+	float previousWeatherSnowTrackCoverState = 0.0f;
+	float surfaceMoistureState = 0.0f;
+	float surfaceThermalState = 0.0f;
 	float2 currentPosOffset{};
 	DirectX::XMUINT2 currentArrayOrigin{};
 	GroundData GetGroundData() const;

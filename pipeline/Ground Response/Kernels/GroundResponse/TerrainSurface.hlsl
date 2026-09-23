@@ -194,6 +194,25 @@ float2 GroundSnowWindSpace(float2 absoluteXY)
         dot(absoluteXY, wind) * 0.44f,
         dot(absoluteXY, crossWind) * 1.30f);
 }
+
+// The procedural prevailing-wind field stays absolute-world-space and never
+// rotates with Skyrim weather. Live WeatherManager wind changes only how much
+// new snow favours its existing lee/windward pattern, preventing drift popping.
+float GroundNewSnowDepositionExposure(float3 geometryNormal, float2 absoluteXY)
+{
+    if (SharedData::InInterior || GroundRuntimeEnvironmentExterior <= 0.0f)
+        return 0.0f;
+
+    float slopeExposure = smoothstep(0.20f, 0.92f, saturate(geometryNormal.z));
+    float2 windXY = GroundSnowWindSpace(absoluteXY);
+    float leeNoise = GroundDepthValueNoise(
+        windXY + float2(173.0f, -89.0f),
+        420.0f);
+    float leeBias = lerp(0.90f, 1.10f, leeNoise);
+    float liveWindBias = lerp(1.0f, leeBias, saturate(GroundRuntimeWeatherWindIntensity) * 0.35f);
+    return saturate((0.46f + 0.54f * slopeExposure) * liveWindBias);
+}
+
 float GroundSnowLocalMoundSignal(float2 absoluteXY)
 {
     float2 windXY = GroundSnowWindSpace(absoluteXY);
@@ -1554,6 +1573,20 @@ TERRAIN_POINT DSMain(
                 surface.previousFreshness *= previousInteractionWeight;
             }
 
+            // New snow is mass above the historical t101 compaction. It fills
+            // the visible depression progressively while retaining the track
+            // history for gradual recovery after the weather layer later melts.
+            // Mud has zero snowActivation, so this never masks mud ruts.
+            float currentTrackCover =
+                saturate(GroundRuntimeWeatherSnowTrackCover * snowActivation);
+            float previousTrackCover =
+                saturate(GroundRuntimePreviousWeatherSnowTrackCover * snowActivation);
+            surface.current *= 1.0f - currentTrackCover * 0.94f;
+            surface.freshness *= 1.0f - currentTrackCover;
+            surface.previous *= 1.0f - previousTrackCover * 0.94f;
+            surface.previousFreshness *= 1.0f - previousTrackCover;
+            currentHeightGradient *= 1.0f - currentTrackCover * 0.94f;
+
             // The pristine landscape replay is the raised shell. Compaction
             // now removes a proportional fraction of each point's local physical
             // capacity, so the whole contacted region approaches the packed/base
@@ -1708,13 +1741,17 @@ TERRAIN_POINT DSMain(
             // slow accumulation and clear-weather settling.
             if (GroundRuntimeWeatherSnowEnabled != 0u)
             {
+                float depositionExposure =
+                    GroundNewSnowDepositionExposure(
+                        baseGeometryNormal,
+                        absoluteXY);
                 float currentWeatherLayer =
                     max(GroundRuntimeWeatherSnowRaise, 0.0f) *
-                    snowActivation * slopeMask * distanceMask *
+                    snowActivation * slopeMask * depositionExposure * distanceMask *
                     (1.0f - saturate(surface.current * compressionFraction));
                 float previousWeatherLayer =
                     max(GroundRuntimePreviousWeatherSnowRaise, 0.0f) *
-                    snowActivation * slopeMask * previousDistanceMask *
+                    snowActivation * slopeMask * depositionExposure * previousDistanceMask *
                     (1.0f - saturate(surface.previous * compressionFraction));
                 currentRaise += currentWeatherLayer;
                 previousRaise += previousWeatherLayer;

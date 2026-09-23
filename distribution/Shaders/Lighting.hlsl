@@ -3057,6 +3057,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		float mudWetness =
 			saturate(
 				SharedData::rainResponseSettings.Wetness);
+		float mudEnvironmentalMoisture =
+			GroundResponseRuntime::IsRuntimeValid()
+				? saturate(GroundRuntimeSurfaceMoisture)
+				: 0.0f;
 
 		float mudBasin =
 			PixlGroundMudBasin(
@@ -3088,8 +3092,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		// a shallow film alive, but increasingly only in the deepest basin core.
 		float mudReservoir =
 			saturate(
-				mudRain +
-				mudWetness *
+				max(mudRain, max(mudWetness, mudEnvironmentalMoisture)) *
 					(0.28f + 0.72f * mudDrainageClock));
 
 		float mudBasinFill =

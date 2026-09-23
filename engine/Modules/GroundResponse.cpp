@@ -104,11 +104,14 @@ static constexpr float MAX_CAMERA_REBASE_DELTA = 512.0f;
 static constexpr float PLAYER_GROUND_PROXY_RADIUS = 14.0f;
 static constexpr float PLAYER_GROUND_PROXY_CENTER_Z = 7.0f;
 static constexpr uint GROUND_RUNTIME_MAGIC = 0x47523330u;      // "GR30"
-static constexpr uint GROUND_RUNTIME_VERSION = 0x00030100u;
+// Phase 5 extends the terrain-only b13 tail by one 16-byte environmental-state
+// block. Cached 176-byte shaders fail closed through Runtime.hlsli's version
+// check instead of interpreting a stale layout as terrain data.
+static constexpr uint GROUND_RUNTIME_VERSION = 0x00030200u;
 static constexpr uint TERRAIN_DEBUG_OVERLAY = 1u << 0;
 static constexpr uint TERRAIN_DEBUG_GEOMETRY_SELF_TEST = 1u << 1;
-// Runtime debug bits remain stable; v3.3 appends one float4 weather-snow
-// register after the formerly 160-byte b13 payload.
+// Runtime debug bits remain stable; Phase 5 appends its state tail after the
+// established b13 payload.
 static constexpr uint TERRAIN_DEBUG_RAW_DIRECTIONAL_SHADOW = 1u << 2;
 static constexpr uint TERRAIN_DEBUG_FOCUS_DIRECTIONAL_SHADOW = 1u << 3;
 static constexpr uint TERRAIN_DEBUG_LEGACY_SURFACE = 1u << 4;
@@ -118,6 +121,19 @@ static float ResolveGroundSnowIntensity()
 {
 	const auto& weather = WeatherManager::GetSingleton()->GetContext();
 	return std::clamp(weather.snowIntensity, 0.0f, 1.0f);
+}
+
+// Slow environmental state deliberately has no texture/readback dependency.
+// t101 owns local, fast compaction; this conservative exponential response owns
+// weather-scale snow mass, moisture, and the only available warmth proxy.
+static float ApproachGroundEnvironment(float a_current, float a_target, float a_rate, float a_deltaTime)
+{
+	if (!std::isfinite(a_current) || !std::isfinite(a_target) ||
+		!std::isfinite(a_rate) || !std::isfinite(a_deltaTime)) {
+		return 0.0f;
+	}
+	const float blend = 1.0f - std::exp(-std::max(a_rate, 0.0f) * std::max(a_deltaTime, 0.0f));
+	return std::clamp(std::lerp(a_current, a_target, blend), 0.0f, 1.0f);
 }
 
 // TerrainSeam intentionally enables alpha blending for its deferred terrain replay.
@@ -353,6 +369,11 @@ namespace
 		float carryWeightRefreshTimer = 0.0f;
 		float carryWeightRefreshAmount = 0.0f;
 		float lastRefreshedSpeedDelta = 0.0f;
+		// CPU-only approximation of the actor's own recently compressed footing.
+		// It avoids a GPU readback while allowing packed snow to resist less than
+		// untouched powder, and fresh snowfall to erase that distinction.
+		RE::NiPoint3 lastSurfacePosition{};
+		float packedSnowMemory = 0.0f;
 	};
 
 	static GroundMovementResistanceSettings g_groundResistanceSettings{};
@@ -1164,7 +1185,9 @@ namespace
 			ResistanceSaturate(
 				std::max(
 					rainData.Raining,
-					rainData.Wetness));
+					std::max(
+						rainData.Wetness,
+						a_ground.surfaceMoistureState)));
 
 		return
 			ResistanceSmoothStep(
@@ -1220,7 +1243,9 @@ namespace
 			rainData.Raining,
 			std::max(
 				rainData.Wetness,
-				ResistanceShorelineMudActivation(a_cell, a_position))));
+				std::max(
+					a_ground.surfaceMoistureState,
+					ResistanceShorelineMudActivation(a_cell, a_position)))));
 		return ResistanceSmoothStep(
 			std::max(threshold - PIXL_GR_MUD_WETNESS_LOWER_BAND, 0.0f),
 			std::min(threshold + PIXL_GR_MUD_WETNESS_UPPER_BAND, 1.0f),
@@ -1894,6 +1919,8 @@ GroundResistanceSample ResistanceEvaluateActor(
 				existing->carryWeightRefreshTimer = 0.0f;
 				existing->carryWeightRefreshAmount = 0.0f;
 				existing->lastRefreshedSpeedDelta = 0.0f;
+				existing->packedSnowMemory = 0.0f;
+				existing->lastSurfacePosition = {};
 			}
 			existing->handle =
 				a_actor->GetHandle();
@@ -2247,10 +2274,41 @@ GroundResistanceSample ResistanceEvaluateActor(
 				track.lastSeenGeneration =
 					g_groundResistanceGeneration;
 
-				const GroundResistanceSample sample =
+				GroundResistanceSample sample =
 					ResistanceEvaluateActor(
 						a_actor,
 						ground);
+
+				if (sample.surface == GroundResistanceSurface::kSnow) {
+					const RE::NiPoint3 currentPosition = a_actor->GetPosition();
+					const float dx = currentPosition.x - track.lastSurfacePosition.x;
+					const float dy = currentPosition.y - track.lastSurfacePosition.y;
+					float moved = std::sqrt(std::max(dx * dx + dy * dy, 0.0f));
+					if (moved > SURFACE_TELEPORT_DISTANCE)
+						moved = 0.0f;
+					const float packingTarget = moved > 1.0f ? 0.72f : 0.42f;
+					track.packedSnowMemory = ApproachGroundEnvironment(
+						track.packedSnowMemory,
+						packingTarget,
+						1.8f,
+						elapsed);
+					const float uncoveredPacking =
+						track.packedSnowMemory *
+						(1.0f - std::clamp(ground.weatherSnowTrackCoverState, 0.0f, 1.0f));
+					// Keep this small: it represents packed/crusted footing under this
+					// actor, while pristine depth remains the dominant resistance term.
+					sample.targetSpeedScale = std::lerp(
+						sample.targetSpeedScale,
+						1.0f,
+						std::clamp(uncoveredPacking * 0.18f, 0.0f, 1.0f));
+					track.lastSurfacePosition = currentPosition;
+				} else {
+					track.packedSnowMemory = ApproachGroundEnvironment(
+						track.packedSnowMemory,
+						0.0f,
+						0.50f,
+						elapsed);
+				}
 
 				ResistanceApplyTrack(
 					a_actor,
@@ -3431,6 +3489,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	SnowMaximumDepth,
 	SnowSurfaceThickness,
 	EnableWeatherSnowAccumulation,
+	EnableEnvironmentalSurfaceState,
 	WeatherSnowMaximumRaise,
 	WeatherSnowAccumulationRate,
 	WeatherSnowMeltRate,
@@ -3515,6 +3574,9 @@ void GroundResponse::DrawSettings()
 		changed |= ImGui::Checkbox("Weather Snow Accumulation", &settings.EnableWeatherSnowAccumulation);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Snowfall slowly raises only terrain layers Skyrim marks as snow. Clear weather settles the added layer back to the configured undisturbed base; the same depth is mirrored into movement resistance.");
+		changed |= ImGui::Checkbox("Weather Surface State", &settings.EnableEnvironmentalSurfaceState);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Lets new snow gradually cover old tracks and keeps a slow rain/melt moisture state for mud. It uses existing weather signals and does not add a full-resolution simulation.");
 		ImGui::BeginDisabled(!settings.EnableWeatherSnowAccumulation);
 		changed |= ImGui::SliderFloat("Storm Snow Raise", &settings.WeatherSnowMaximumRaise, 0.0f, 24.0f, "%.1f units", ImGuiSliderFlags_AlwaysClamp);
 		changed |= ImGui::SliderFloat("Snowfall Accumulation", &settings.WeatherSnowAccumulationRate, 0.0f, 0.25f, "%.3f units/s", ImGuiSliderFlags_AlwaysClamp);
@@ -4669,9 +4731,49 @@ void GroundResponse::Update()
 		perFrameData.TimeDelta = frameDelta * !globals::game::ui->GameIsPaused();
 
 		previousWeatherSnowRaiseState = weatherSnowRaiseState;
+		previousWeatherSnowTrackCoverState = weatherSnowTrackCoverState;
+		const auto& weatherContext = WeatherManager::GetSingleton()->GetContext();
+		const auto rainData = globals::pipeline::rainResponse.GetCommonBufferData();
+		const float exteriorEnvironment = weatherContext.exterior ? 1.0f : 0.0f;
 		weatherSnowIntensityState = settings.EnableWeatherSnowAccumulation
-			? ResolveGroundSnowIntensity()
+			? ResolveGroundSnowIntensity() * exteriorEnvironment
 			: 0.0f;
+
+		if (settings.EnableEnvironmentalSurfaceState) {
+			// WeatherManager intentionally exposes semantic weather rather than a
+			// fabricated temperature. Treat sunshine/clear non-snow weather as a
+			// conservative warmth proxy; it only adjusts slow melt/refreeze rates.
+			const float thermalTarget = exteriorEnvironment * std::clamp(
+				weatherContext.sunVisibility * (1.0f - weatherContext.snowIntensity) * 0.78f +
+				weatherContext.rainIntensity * 0.22f,
+				0.0f,
+				1.0f);
+			surfaceThermalState = ApproachGroundEnvironment(
+				surfaceThermalState,
+				thermalTarget,
+				thermalTarget > surfaceThermalState ? 0.045f : 0.018f,
+				perFrameData.TimeDelta);
+
+			// Rain and persistent weather wetness recharge soil. Melt contributes a
+			// modest amount below after mass is resolved; cold/snow conditions slowly
+			// drain the reservoir as refrozen crust rather than holding wet mud forever.
+			const float moistureTarget = exteriorEnvironment * std::clamp(
+				std::max(
+					std::max(rainData.Raining, rainData.Wetness),
+					weatherContext.persistentWetness * 0.82f),
+				0.0f,
+				1.0f);
+			surfaceMoistureState = ApproachGroundEnvironment(
+				surfaceMoistureState,
+				moistureTarget,
+				moistureTarget > surfaceMoistureState ? 0.34f :
+					(surfaceThermalState < 0.22f ? 0.075f : 0.022f),
+				perFrameData.TimeDelta);
+		} else {
+			surfaceMoistureState = 0.0f;
+			surfaceThermalState = 0.0f;
+		}
+
 		if (settings.EnableWeatherSnowAccumulation) {
 			const float maximumRaise =
 				std::clamp(settings.WeatherSnowMaximumRaise, 0.0f, 24.0f);
@@ -4681,14 +4783,45 @@ void GroundResponse::Update()
 					std::clamp(settings.WeatherSnowAccumulationRate, 0.0f, 0.25f) *
 					weatherSnowIntensityState;
 			} else {
+				// Preserve WeatherSnowMeltRate as the user-facing base rate. The
+				// semantic warmth proxy only nudges it, avoiding fictional precision.
+				const float thermalMeltScale = settings.EnableEnvironmentalSurfaceState
+					? std::lerp(0.55f, 1.30f, surfaceThermalState)
+					: 1.0f;
 				weatherSnowRaiseState -=
 					perFrameData.TimeDelta *
-					std::clamp(settings.WeatherSnowMeltRate, 0.0f, 0.25f);
+					std::clamp(settings.WeatherSnowMeltRate, 0.0f, 0.25f) *
+					thermalMeltScale;
 			}
 			weatherSnowRaiseState =
 				std::clamp(weatherSnowRaiseState, 0.0f, maximumRaise);
 		} else {
 			weatherSnowRaiseState = 0.0f;
+		}
+		if (settings.EnableEnvironmentalSurfaceState &&
+			weatherSnowIntensityState <= 1.0e-4f &&
+			previousWeatherSnowRaiseState > weatherSnowRaiseState) {
+			// Recent melt leaves a short, bounded moisture contribution. It is
+			// intentionally global/slow and never reads terrain data back from GPU.
+			const float meltContribution = std::clamp(
+				(previousWeatherSnowRaiseState - weatherSnowRaiseState) * 0.035f,
+				0.0f,
+				0.18f);
+			surfaceMoistureState = std::clamp(
+				surfaceMoistureState + meltContribution,
+				0.0f,
+				1.0f);
+		}
+		if (settings.EnableEnvironmentalSurfaceState) {
+			const float coverDepth = std::max(
+				std::clamp(settings.SnowSurfaceThickness, 2.0f, 24.0f) * 0.65f,
+				2.0f);
+			weatherSnowTrackCoverState = std::clamp(
+				weatherSnowRaiseState / coverDepth,
+				0.0f,
+				1.0f);
+		} else {
+			weatherSnowTrackCoverState = 0.0f;
 		}
 
 		float cameraHeightDelta =
@@ -4798,6 +4931,12 @@ void GroundResponse::Update()
 		perFrameData.WeatherSnowIntensity = weatherSnowIntensityState;
 		perFrameData.WeatherSnowEnabled =
 			settings.EnableWeatherSnowAccumulation ? 1u : 0u;
+		perFrameData.WeatherSnowTrackCover = weatherSnowTrackCoverState;
+		perFrameData.PreviousWeatherSnowTrackCover = previousWeatherSnowTrackCoverState;
+		perFrameData.SurfaceMoisture = surfaceMoistureState;
+		perFrameData.SurfaceThermalState = surfaceThermalState;
+		perFrameData.WeatherWindIntensity = std::clamp(weatherContext.windIntensity, 0.0f, 1.0f);
+		perFrameData.EnvironmentExterior = exteriorEnvironment;
 
 		SurfaceFieldData surfaceFieldData{};
 		surfaceFieldData.OriginAbsolute = surfaceOriginAbsolute;
@@ -5178,6 +5317,10 @@ void GroundResponse::RestoreDefaultSettings()
 	weatherSnowRaiseState = 0.0f;
 	previousWeatherSnowRaiseState = 0.0f;
 	weatherSnowIntensityState = 0.0f;
+	weatherSnowTrackCoverState = 0.0f;
+	previousWeatherSnowTrackCoverState = 0.0f;
+	surfaceMoistureState = 0.0f;
+	surfaceThermalState = 0.0f;
 	g_groundResistanceSettings = {};
 	g_alwaysCompressForms.clear();
 	g_neverDeformForms.clear();

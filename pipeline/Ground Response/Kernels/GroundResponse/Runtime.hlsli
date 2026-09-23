@@ -54,16 +54,27 @@ cbuffer GroundResponseRuntimeCB : register(b13)
     float GroundRuntimePreviousWeatherSnowRaise;
     float GroundRuntimeWeatherSnowIntensity;
     uint GroundRuntimeWeatherSnowEnabled;
+
+    float GroundRuntimeWeatherSnowTrackCover;
+    float GroundRuntimePreviousWeatherSnowTrackCover;
+    float GroundRuntimeSurfaceMoisture;
+    float GroundRuntimeSurfaceThermalState;
+
+    float GroundRuntimeWeatherWindIntensity;
+    float GroundRuntimeEnvironmentExterior;
+    float GroundRuntimeEnvironmentPad0;
+    float GroundRuntimeEnvironmentPad1;
 };
 
 namespace GroundResponseRuntime
 {
     static const uint RuntimeMagic = 0x47523330u;   // "GR30"
-    static const uint RuntimeVersion = 0x00030100u;
+    static const uint RuntimeVersion = 0x00030200u;
     static const uint DebugOverlayBit = 1u << 0;
     static const uint GeometrySelfTestBit = 1u << 1;
     // Phase 3 developer comparison switch. It deliberately reuses an existing
-    // debug word so the public b13 runtime ABI remains 176 bytes.
+    // debug word. Phase 5 deliberately appends its versioned environment tail
+    // after the existing terrain runtime fields rather than repurposing this.
     static const uint LegacyTerrainSurfaceBit = 1u << 4;
     static const uint GroundMarksDebugBit = 1u << 5;
 
@@ -195,7 +206,9 @@ namespace GroundResponseRuntime
         float mudWeatherSignal =
             saturate(max(
                 SharedData::rainResponseSettings.Raining,
-                SharedData::rainResponseSettings.Wetness));
+                max(
+                    SharedData::rainResponseSettings.Wetness,
+                    GroundRuntimeSurfaceMoisture)));
         return smoothstep(
                 max(threshold - PIXL_GR_MUD_WETNESS_LOWER_BAND, 0.0f),
                 min(threshold + PIXL_GR_MUD_WETNESS_UPPER_BAND, 1.0f),
@@ -243,7 +256,9 @@ namespace GroundResponseRuntime
             SharedData::rainResponseSettings.Raining,
             max(
                 SharedData::rainResponseSettings.Wetness,
-                GetWaterShoreMudActivation(cameraRelativePosition))));
+                max(
+                    GroundRuntimeSurfaceMoisture,
+                    GetWaterShoreMudActivation(cameraRelativePosition)))));
         return smoothstep(
             max(threshold - PIXL_GR_MUD_WETNESS_LOWER_BAND, 0.0f),
             min(threshold + PIXL_GR_MUD_WETNESS_UPPER_BAND, 1.0f),
