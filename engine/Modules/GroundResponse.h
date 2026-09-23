@@ -5,6 +5,8 @@
 #include <atomic>
 #include <mutex>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 struct GroundResponse : RenderModule
@@ -93,6 +95,13 @@ public:
 		bool ForceLegacyTerrainSurface = false;
 		bool EnableGroundMarks = true;
 		bool DebugGroundMarks = false;
+		// Session-only history is a bounded CPU stamp journal.  It restores recent
+		// interactions when their logical world tile returns to the local GPU
+		// clipmap; it deliberately performs no GPU readback and is never serialized
+		// into a save until Skyrim-side serialization has a versioned owner.
+		bool EnableSessionSurfaceHistory = true;
+		float SessionSurfaceHistorySeconds = 180.0f;
+		uint SessionSurfaceHistoryTileBudget = 192u;
 		// Persistent field recovery in world units per second. New tracks are held
 		// unchanged for TrackHoldSeconds before this recovery begins.
 		float TrackRecoveryRate = 0.25f;
@@ -117,6 +126,14 @@ public:
 		float ElementalRecoveryRate = 0.018f;
 		std::vector<std::string> AlwaysCompressForms{};
 		std::vector<std::string> NeverDeformForms{};
+		// Structured compatibility categories.  Existing AlwaysCompressForms and
+		// NeverDeformForms remain supported as SoftGround and NoDeformation aliases.
+		std::vector<std::string> HardForms{};
+		std::vector<std::string> SoftGroundForms{};
+		std::vector<std::string> SnowReceiverForms{};
+		std::vector<std::string> MudReceiverForms{};
+		std::vector<std::string> NoMarksForms{};
+		std::vector<std::string> SnowBlockerForms{};
 	};
 
 	struct alignas(16) GroundData
@@ -392,6 +409,50 @@ public:
 	};
 	eastl::vector<SurfaceActiveRegion> surfaceActiveRegions;
 	eastl::vector<SurfaceActiveRegion> groundMarkActiveRegions;
+
+	struct SessionSurfaceHistoryKey
+	{
+		std::uint32_t Worldspace = 0u;
+		std::int32_t TileX = 0;
+		std::int32_t TileY = 0;
+		std::uint32_t SeasonGeneration = 0u;
+		bool operator==(const SessionSurfaceHistoryKey& a_rhs) const = default;
+	};
+	struct SessionSurfaceHistoryKeyHash
+	{
+		size_t operator()(const SessionSurfaceHistoryKey& a_key) const noexcept
+		{
+			std::uint64_t value =
+				(static_cast<std::uint64_t>(a_key.Worldspace) << 32u) ^
+				static_cast<std::uint32_t>(a_key.TileX);
+			value ^= (static_cast<std::uint64_t>(static_cast<std::uint32_t>(a_key.TileY)) << 17u);
+			value ^= static_cast<std::uint64_t>(a_key.SeasonGeneration) * 0x9E3779B185EBCA87ull;
+			return static_cast<size_t>(value ^ (value >> 32u));
+		}
+	};
+	struct SessionSurfaceHistoryStamp
+	{
+		SurfaceStampPacked Stamp{};
+		float RecordedSeconds = 0.0f;
+	};
+	struct SessionSurfaceHistoryTile
+	{
+		std::vector<SessionSurfaceHistoryStamp> Stamps{};
+		float LastTouchedSeconds = 0.0f;
+	};
+	std::unordered_map<SessionSurfaceHistoryKey, SessionSurfaceHistoryTile, SessionSurfaceHistoryKeyHash> sessionSurfaceHistory;
+	float sessionSurfaceHistorySeconds = 0.0f;
+	std::uint32_t sessionSurfaceHistoryWorldspace = 0u;
+	bool sessionSurfaceHistoryRegionValid = false;
+	bool pendingSessionSurfaceHistoryReset = false;
+	uint sessionSurfaceHistoryRestoredStamps = 0u;
+	uint sessionSurfaceHistoryEvictedTiles = 0u;
+	void CacheSessionSurfaceHistory();
+	void RestoreSessionSurfaceHistory(
+		const float2& a_currentOrigin,
+		const float2& a_previousOrigin,
+		bool a_previousRegionValid);
+	void InvalidateSessionSurfaceHistory(std::string_view a_reason, bool a_discardStoredHistory);
 	uint surfaceFullFieldFallbackCount = 0u;
 	bool surfaceTileBuildFailed = false;
 	uint surfaceClipmapSlabTiles = 0u;

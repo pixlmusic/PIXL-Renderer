@@ -68,8 +68,8 @@ cbuffer GroundResponseRuntimeCB : register(b13)
 
 namespace GroundResponseRuntime
 {
-    static const uint RuntimeMagic = 0x47523330u;   // "GR30"
-    static const uint RuntimeVersion = 0x00030200u;
+    static const uint RuntimeMagic = PIXL_GR_RUNTIME_MAGIC;   // "GR30"
+    static const uint RuntimeVersion = PIXL_GR_RUNTIME_VERSION;
     static const uint DebugOverlayBit = 1u << 0;
     static const uint GeometrySelfTestBit = 1u << 1;
     // Phase 3 developer comparison switch. It deliberately reuses an existing

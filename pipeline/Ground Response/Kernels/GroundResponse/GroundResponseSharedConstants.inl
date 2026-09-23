@@ -1,5 +1,14 @@
 // Shared CPU/HLSL Ground Response constants. Keep this preprocessor-only so the
 // gameplay resistance path and TerrainSurface shader cannot quietly diverge.
+// Runtime identifiers and logical-field dimensions also live here.  They are
+// consumed by C++ and HLSL, so a cached incompatible terrain shader fails closed
+// instead of interpreting a stale b13 payload or a differently sized clipmap.
+#define PIXL_GR_RUNTIME_MAGIC 0x47523330u
+#define PIXL_GR_RUNTIME_VERSION 0x00030200u
+#define PIXL_GR_SESSION_HISTORY_FORMAT_VERSION 1u
+#define PIXL_GR_SURFACE_TEXTURE_SIZE 1024u
+#define PIXL_GR_SURFACE_WORLD_SIZE 4096.0f
+#define PIXL_GR_SURFACE_TILE_SIZE 32u
 #define PIXL_GR_SNOW_FINE_VARIATION 0.10f
 #define PIXL_GR_SNOW_POCKET_STRENGTH 0.22f
 #define PIXL_GR_SNOW_FINE_SCALE 180.0f

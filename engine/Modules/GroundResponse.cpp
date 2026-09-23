@@ -63,11 +63,11 @@ static constexpr uint INTERACTION_TEXTURE_SIZE = 512u;
 
 // Dedicated snow/mud surface field. It stores normalized compaction only; no
 // camera-relative height ever enters this texture.
-static constexpr float SURFACE_WORLD_SIZE = 4096.0f;
+static constexpr float SURFACE_WORLD_SIZE = PIXL_GR_SURFACE_WORLD_SIZE;
 // Keep the established 4-unit field size. The terrain shader and runtime cache
 // share this ABI; higher resolution requires a coordinated cache/version change.
-static constexpr uint SURFACE_TEXTURE_SIZE = 1024u;
-static constexpr uint SURFACE_TILE_SIZE = 32u;
+static constexpr uint SURFACE_TEXTURE_SIZE = PIXL_GR_SURFACE_TEXTURE_SIZE;
+static constexpr uint SURFACE_TILE_SIZE = PIXL_GR_SURFACE_TILE_SIZE;
 static constexpr uint SURFACE_TILE_COUNT = SURFACE_TEXTURE_SIZE / SURFACE_TILE_SIZE;
 static constexpr uint SURFACE_TILE_GROUPS = SURFACE_TILE_SIZE / 8u;
 static constexpr uint SURFACE_TILE_TOTAL = SURFACE_TILE_COUNT * SURFACE_TILE_COUNT;
@@ -103,11 +103,11 @@ static constexpr float MAX_CAMERA_REBASE_DELTA = 512.0f;
 // height path; their fallback stamp is written separately in absolute world XY.
 static constexpr float PLAYER_GROUND_PROXY_RADIUS = 14.0f;
 static constexpr float PLAYER_GROUND_PROXY_CENTER_Z = 7.0f;
-static constexpr uint GROUND_RUNTIME_MAGIC = 0x47523330u;      // "GR30"
+static constexpr uint GROUND_RUNTIME_MAGIC = PIXL_GR_RUNTIME_MAGIC;      // "GR30"
 // Phase 5 extends the terrain-only b13 tail by one 16-byte environmental-state
 // block. Cached 176-byte shaders fail closed through Runtime.hlsli's version
 // check instead of interpreting a stale layout as terrain data.
-static constexpr uint GROUND_RUNTIME_VERSION = 0x00030200u;
+static constexpr uint GROUND_RUNTIME_VERSION = PIXL_GR_RUNTIME_VERSION;
 static constexpr uint TERRAIN_DEBUG_OVERLAY = 1u << 0;
 static constexpr uint TERRAIN_DEBUG_GEOMETRY_SELF_TEST = 1u << 1;
 // Runtime debug bits remain stable; Phase 5 appends its state tail after the
@@ -2523,6 +2523,12 @@ GroundResistanceSample ResistanceEvaluateActor(
 	static std::unordered_map<RE::FormID, GroundShoutSpellInfo> g_shoutSpellCache;
 	static std::unordered_set<RE::FormID> g_alwaysCompressForms;
 	static std::unordered_set<RE::FormID> g_neverDeformForms;
+	enum class GroundCompatibilityProfile : std::uint8_t
+	{
+		Default, Hard, SoftGround, SnowReceiver, MudReceiver,
+		NoDeformation, NoMarks, SnowBlocker
+	};
+	static std::unordered_map<RE::FormID, GroundCompatibilityProfile> g_groundCompatibilityProfiles;
 
 	// PIXL_GR_13BH_PROJECTILE_PROCESS_FALLBACK_V1
 	// Some Skyrim projectile classes do not reliably reach a concrete-class
@@ -3119,6 +3125,25 @@ GroundResistanceSample ResistanceEvaluateActor(
 		return false;
 	}
 
+	GroundCompatibilityProfile GroundResolveCompatibilityProfile(
+		const RE::TESObjectREFR* a_ref)
+	{
+		if (!a_ref)
+			return GroundCompatibilityProfile::Default;
+		auto lookup = [](const RE::TESForm* a_form) {
+			if (!a_form)
+				return GroundCompatibilityProfile::Default;
+			const auto it = g_groundCompatibilityProfiles.find(a_form->GetFormID());
+			return it != g_groundCompatibilityProfiles.end()
+				? it->second
+				: GroundCompatibilityProfile::Default;
+		};
+		const auto direct = lookup(a_ref);
+		return direct != GroundCompatibilityProfile::Default
+			? direct
+			: lookup(a_ref->GetBaseObject());
+	}
+
 	bool GroundEditorIDContains(
 		const RE::TESObjectREFR* a_ref,
 		std::string_view a_token)
@@ -3183,22 +3208,41 @@ GroundResistanceSample ResistanceEvaluateActor(
 	{
 		g_alwaysCompressForms.clear();
 		g_neverDeformForms.clear();
+		g_groundCompatibilityProfiles.clear();
+		auto resolveProfile = [&](const std::vector<std::string>& a_tokens,
+			GroundCompatibilityProfile a_profile, std::string_view a_name) {
+			for (const auto& token : a_tokens) {
+				if (auto id = GroundResolveConfiguredForm(token))
+					g_groundCompatibilityProfiles[*id] = a_profile;
+				else
+					logger::warn("[GroundResponse] Could not resolve {} entry '{}'", a_name, token);
+			}
+		};
 		for (const auto& token : a_ground.settings.AlwaysCompressForms) {
-			if (auto id = GroundResolveConfiguredForm(token))
+			if (auto id = GroundResolveConfiguredForm(token)) {
 				g_alwaysCompressForms.insert(*id);
-			else
+				g_groundCompatibilityProfiles[*id] = GroundCompatibilityProfile::SoftGround;
+			} else
 				logger::warn("[GroundResponse] Could not resolve AlwaysCompressForms entry '{}'", token);
 		}
 		for (const auto& token : a_ground.settings.NeverDeformForms) {
-			if (auto id = GroundResolveConfiguredForm(token))
+			if (auto id = GroundResolveConfiguredForm(token)) {
 				g_neverDeformForms.insert(*id);
-			else
+				g_groundCompatibilityProfiles[*id] = GroundCompatibilityProfile::NoDeformation;
+			} else
 				logger::warn("[GroundResponse] Could not resolve NeverDeformForms entry '{}'", token);
 		}
+		resolveProfile(a_ground.settings.HardForms, GroundCompatibilityProfile::Hard, "HardForms");
+		resolveProfile(a_ground.settings.SoftGroundForms, GroundCompatibilityProfile::SoftGround, "SoftGroundForms");
+		resolveProfile(a_ground.settings.SnowReceiverForms, GroundCompatibilityProfile::SnowReceiver, "SnowReceiverForms");
+		resolveProfile(a_ground.settings.MudReceiverForms, GroundCompatibilityProfile::MudReceiver, "MudReceiverForms");
+		resolveProfile(a_ground.settings.NoMarksForms, GroundCompatibilityProfile::NoMarks, "NoMarksForms");
+		resolveProfile(a_ground.settings.SnowBlockerForms, GroundCompatibilityProfile::SnowBlocker, "SnowBlockerForms");
 		logger::info(
-			"[GroundResponse] compatibility overrides: alwaysCompress={} neverDeform={}",
+			"[GroundResponse] compatibility overrides: alwaysCompress={} neverDeform={} profiles={}",
 			g_alwaysCompressForms.size(),
-			g_neverDeformForms.size());
+			g_neverDeformForms.size(),
+			g_groundCompatibilityProfiles.size());
 	}
 
 	void GroundRebuildShoutSpellCache()
@@ -3329,12 +3373,25 @@ GroundResistanceSample ResistanceEvaluateActor(
 				if (ref->As<RE::Actor>() || ref->AsProjectile())
 					return RE::BSContainer::ForEachResult::kContinue;
 
+				const GroundCompatibilityProfile profile =
+					GroundResolveCompatibilityProfile(ref);
 				const bool alwaysCompress =
 					GroundReferenceMatchesSet(ref, g_alwaysCompressForms) ||
-					GroundEditorIDContains(ref, "pixl_groundcompressionmarker");
+					GroundEditorIDContains(ref, "pixl_groundcompressionmarker") ||
+					profile == GroundCompatibilityProfile::SoftGround ||
+					profile == GroundCompatibilityProfile::SnowReceiver ||
+					profile == GroundCompatibilityProfile::MudReceiver;
 				const bool neverDeform =
 					GroundReferenceMatchesSet(ref, g_neverDeformForms) ||
-					GroundEditorIDContains(ref, "pixl_groundnodeform");
+					GroundEditorIDContains(ref, "pixl_groundnodeform") ||
+					profile == GroundCompatibilityProfile::Hard ||
+					profile == GroundCompatibilityProfile::NoDeformation ||
+					// Phase 4 marks are derived exclusively from accepted physical
+					// object stamps. Until mesh-local marks have their own receiver
+					// stream, rejecting this contact is the only safe way to honour a
+					// no-mark override without painting the terrain below the object.
+					profile == GroundCompatibilityProfile::NoMarks ||
+					profile == GroundCompatibilityProfile::SnowBlocker;
 				if (neverDeform || (!alwaysCompress && !ref->CanBeMoved()))
 					return RE::BSContainer::ForEachResult::kContinue;
 
@@ -3796,10 +3853,17 @@ void GroundResponse::DrawSettings()
 			changed |= ImGui::Checkbox("Debug Surface Tiles", &settings.DebugSurfaceTiles);
 			changed |= ImGui::Checkbox("Enable Ground Surface Marks", &settings.EnableGroundMarks);
 			changed |= ImGui::Checkbox("Debug Ground Surface Marks", &settings.DebugGroundMarks);
+			changed |= ImGui::Checkbox("Remember Recent Ground Response", &settings.EnableSessionSurfaceHistory);
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("Keeps a bounded session-only journal of recent tracks and restores it when you return to a nearby world tile. It does not read GPU data back or write to save files.");
+			ImGui::BeginDisabled(!settings.EnableSessionSurfaceHistory);
+			changed |= ImGui::SliderFloat("History Duration", &settings.SessionSurfaceHistorySeconds, 15.0f, 900.0f, "%.0f s", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::EndDisabled();
 			changed |= ImGui::Checkbox("Force Legacy Terrain Surface", &settings.ForceLegacyTerrainSurface);
 			if (auto _tt = Util::HoverTooltipWrapper())
 				ImGui::TextWrapped("Phase 3 comparison fallback. Reconstructs deformation in the Domain Shader instead of consuming the derived dirty-tile field.");
 			ImGui::Text("Surface tiles: %u dispatches, %u stamp references, max %u/tile, full fallbacks %u", static_cast<uint>(queuedSurfaceTileDispatches.size()), surfaceTileStampReferences, surfaceMaximumStampsPerTile, surfaceFullFieldFallbackCount);
+			ImGui::Text("Session history: %zu tiles, %u restored stamps, %u evictions", sessionSurfaceHistory.size(), sessionSurfaceHistoryRestoredStamps, sessionSurfaceHistoryEvictedTiles);
 		}
 		ImGui::EndDisabled();
 		ImGui::TreePop();
@@ -3824,6 +3888,7 @@ void GroundResponse::ObserveSeasonContext()
 	}
 
 	pendingSeasonHistoryGeneration.store(context.generation, std::memory_order_release);
+	InvalidateSessionSurfaceHistory("season generation changed", true);
 	globals::pipeline::terrainField.InvalidateSeasonalMaterialCache(context.generation);
 	logger::info(
 		"[PIXL][GroundResponse] Invalidated season-dependent classifications and queued surface-history reset for {} (generation {}).",
@@ -4651,6 +4716,175 @@ void GroundResponse::QueueCollisions()
 
 }
 
+void GroundResponse::InvalidateSessionSurfaceHistory(
+	std::string_view a_reason,
+	bool a_discardStoredHistory)
+{
+	// The GPU field is deliberately a local toroidal clipmap.  On an incompatible
+	// world/season change its contents must never be reinterpreted as the newly
+	// exposed terrain.  Stored CPU history is independently versioned by season
+	// and can be retained across worldspace travel, but a material generation
+	// change invalidates it completely.
+	sessionSurfaceHistoryRegionValid = false;
+	pendingSessionSurfaceHistoryReset = true;
+	surfaceActiveRegions.clear();
+	groundMarkActiveRegions.clear();
+	if (a_discardStoredHistory)
+		sessionSurfaceHistory.clear();
+	logger::info(
+		"[PIXL][GroundResponse] Session surface history invalidated: {} (storedTiles={}).",
+		a_reason,
+		sessionSurfaceHistory.size());
+}
+
+void GroundResponse::CacheSessionSurfaceHistory()
+{
+	if (!settings.EnableSessionSurfaceHistory)
+		return;
+
+	auto* tes = RE::TES::GetSingleton();
+	auto* worldspace = tes ? tes->GetRuntimeData2().worldSpace : nullptr;
+	const std::uint32_t worldspaceID = worldspace ? worldspace->GetFormID() : 0u;
+	if (worldspaceID == 0u)
+		return;
+
+	if (sessionSurfaceHistoryWorldspace != 0u &&
+		sessionSurfaceHistoryWorldspace != worldspaceID) {
+		InvalidateSessionSurfaceHistory("worldspace changed", false);
+	}
+	sessionSurfaceHistoryWorldspace = worldspaceID;
+	if (queuedSurfaceStamps.empty())
+		return;
+
+	const float lifetime = std::clamp(
+		settings.SessionSurfaceHistorySeconds,
+		15.0f,
+		900.0f);
+	const float tileWorldSize =
+		SURFACE_WORLD_SIZE / static_cast<float>(SURFACE_TILE_COUNT);
+	const std::uint32_t seasonGeneration = observedSeasonGeneration;
+
+	for (const auto& stamp : queuedSurfaceStamps) {
+		if (stamp.Strength < 0.04f && std::abs(stamp.ElementalDelta) < 0.05f)
+			continue;
+		const SessionSurfaceHistoryKey key{
+			worldspaceID,
+			static_cast<std::int32_t>(std::floor(stamp.CurrentPosition.x / tileWorldSize)),
+			static_cast<std::int32_t>(std::floor(stamp.CurrentPosition.y / tileWorldSize)),
+			seasonGeneration };
+		auto& tile = sessionSurfaceHistory[key];
+		tile.LastTouchedSeconds = sessionSurfaceHistorySeconds;
+		// Continuous body contacts can produce a stamp every frame.  Coalesce a
+		// nearby recent contact so the journal preserves a trail without becoming a
+		// world-sized actor-motion recording.
+		if (!tile.Stamps.empty()) {
+			auto& previous = tile.Stamps.back();
+			const float dx = previous.Stamp.CurrentPosition.x - stamp.CurrentPosition.x;
+			const float dy = previous.Stamp.CurrentPosition.y - stamp.CurrentPosition.y;
+			if (sessionSurfaceHistorySeconds - previous.RecordedSeconds < 0.35f &&
+				dx * dx + dy * dy < 64.0f &&
+				previous.Stamp.Flags == stamp.Flags) {
+				previous = { stamp, sessionSurfaceHistorySeconds };
+				continue;
+			}
+		}
+		if (tile.Stamps.size() >= 24u)
+			tile.Stamps.erase(tile.Stamps.begin());
+		tile.Stamps.push_back({ stamp, sessionSurfaceHistorySeconds });
+	}
+
+	for (auto it = sessionSurfaceHistory.begin(); it != sessionSurfaceHistory.end();) {
+		auto& stamps = it->second.Stamps;
+		stamps.erase(
+			std::remove_if(stamps.begin(), stamps.end(), [&](const auto& entry) {
+				return sessionSurfaceHistorySeconds - entry.RecordedSeconds > lifetime;
+			}),
+			stamps.end());
+		if (stamps.empty())
+			it = sessionSurfaceHistory.erase(it);
+		else
+			++it;
+	}
+
+	const size_t budget = std::clamp<size_t>(
+		settings.SessionSurfaceHistoryTileBudget,
+		16u,
+		512u);
+	while (sessionSurfaceHistory.size() > budget) {
+		auto oldest = std::min_element(
+			sessionSurfaceHistory.begin(), sessionSurfaceHistory.end(),
+			[](const auto& a_left, const auto& a_right) {
+				return a_left.second.LastTouchedSeconds < a_right.second.LastTouchedSeconds;
+			});
+		if (oldest == sessionSurfaceHistory.end())
+			break;
+		sessionSurfaceHistory.erase(oldest);
+		++sessionSurfaceHistoryEvictedTiles;
+	}
+}
+
+void GroundResponse::RestoreSessionSurfaceHistory(
+	const float2& a_currentOrigin,
+	const float2& a_previousOrigin,
+	bool a_previousRegionValid)
+{
+	sessionSurfaceHistoryRestoredStamps = 0u;
+	if (!settings.EnableSessionSurfaceHistory || sessionSurfaceHistory.empty() ||
+		sessionSurfaceHistoryWorldspace == 0u)
+		return;
+
+	const float halfExtent = SURFACE_WORLD_SIZE * 0.5f;
+	const float lifetime = std::clamp(settings.SessionSurfaceHistorySeconds, 15.0f, 900.0f);
+	const bool restoreWholeRegion = !a_previousRegionValid || !sessionSurfaceHistoryRegionValid;
+	auto overlaps = [](const float2& a_min, const float2& a_max,
+		const float2& b_center, float b_halfExtent) {
+		return a_max.x >= b_center.x - b_halfExtent &&
+			a_min.x <= b_center.x + b_halfExtent &&
+			a_max.y >= b_center.y - b_halfExtent &&
+			a_min.y <= b_center.y + b_halfExtent;
+	};
+
+	for (const auto& [key, tile] : sessionSurfaceHistory) {
+		if (key.Worldspace != sessionSurfaceHistoryWorldspace ||
+			key.SeasonGeneration != observedSeasonGeneration)
+			continue;
+		for (const auto& entry : tile.Stamps) {
+			if (queuedSurfaceStamps.size() >= MAX_SURFACE_STAMPS ||
+				queuedSurfaceStampBoxes.size() >= MAX_SURFACE_STAMP_BOXES)
+				return;
+			const float age = sessionSurfaceHistorySeconds - entry.RecordedSeconds;
+			const float retained = std::clamp(1.0f - age / lifetime, 0.0f, 1.0f);
+			if (retained <= 0.02f)
+				continue;
+			const auto& original = entry.Stamp;
+			const float extent = std::max(original.Radius, original.PreviousRadius) * 2.85f + 4.0f;
+			const float2 stampMin{
+				std::min(original.CurrentPosition.x, original.PreviousPosition.x) - extent,
+				std::min(original.CurrentPosition.y, original.PreviousPosition.y) - extent };
+			const float2 stampMax{
+				std::max(original.CurrentPosition.x, original.PreviousPosition.x) + extent,
+				std::max(original.CurrentPosition.y, original.PreviousPosition.y) + extent };
+			if (!overlaps(stampMin, stampMax, a_currentOrigin, halfExtent) ||
+				(!restoreWholeRegion && overlaps(stampMin, stampMax, a_previousOrigin, halfExtent)))
+				continue;
+
+			SurfaceStampPacked restored = original;
+			restored.Strength *= retained;
+			restored.ElementalDelta *= retained;
+			restored.Smoothing *= retained;
+			SurfaceStampBoxPacked box{};
+			box.IndexStart = static_cast<uint>(queuedSurfaceStamps.size());
+			box.IndexEnd = box.IndexStart + 1u;
+			box.MinExtent = stampMin;
+			box.MaxExtent = stampMax;
+			queuedSurfaceStamps.push_back(restored);
+			queuedSurfaceStampBoxes.push_back(box);
+			++sessionSurfaceHistoryRestoredStamps;
+		}
+	}
+	sessionSurfaceHistoryRegionValid = true;
+}
+
 void GroundResponse::Update()
 {
 	auto context = globals::d3d::context;
@@ -4965,6 +5199,22 @@ void GroundResponse::Update()
 		surfaceFieldData.ElementalRecoveryRate =
 			std::clamp(settings.ElementalRecoveryRate, 0.0f, 2.0f);
 		surfaceFieldData.ElementalEnabled = settings.EnableElementalSnow ? 1u : 0u;
+
+		// This never reads the GPU field back.  Recent meaningful CPU stamps are
+		// retained in a bounded session journal and replayed only into logical tiles
+		// newly exposed by the local 4096-unit clipmap.
+		sessionSurfaceHistorySeconds += perFrameData.TimeDelta;
+		CacheSessionSurfaceHistory();
+		const float2 previousSurfaceOrigin =
+			prevSurfaceCellID * surfaceCellSize;
+		RestoreSessionSurfaceHistory(
+			surfaceOriginAbsolute,
+			previousSurfaceOrigin,
+			surfaceClipmapInitialized && !surfaceClipmapReset);
+		surfaceFieldData.StampBoxCount =
+			std::min(
+				(uint)queuedSurfaceStampBoxes.size(),
+				MAX_SURFACE_STAMP_BOXES);
 		BuildSurfaceTileWork(surfaceFieldData);
 		surfaceFieldData.TileDispatchCount =
 			static_cast<uint>(queuedSurfaceTileDispatches.size());
@@ -5137,6 +5387,18 @@ void GroundResponse::EarlyPrepass()
 void GroundResponse::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	// The nlohmann member macro has a deliberately finite argument ceiling. Keep
+	// Phase 6 additions explicit so old configs migrate cleanly without relying on
+	// a wider third-party serialization macro.
+	settings.EnableSessionSurfaceHistory = o_json.value("EnableSessionSurfaceHistory", true);
+	settings.SessionSurfaceHistorySeconds = o_json.value("SessionSurfaceHistorySeconds", 180.0f);
+	settings.SessionSurfaceHistoryTileBudget = o_json.value("SessionSurfaceHistoryTileBudget", 192u);
+	settings.HardForms = o_json.value("HardForms", std::vector<std::string>{});
+	settings.SoftGroundForms = o_json.value("SoftGroundForms", std::vector<std::string>{});
+	settings.SnowReceiverForms = o_json.value("SnowReceiverForms", std::vector<std::string>{});
+	settings.MudReceiverForms = o_json.value("MudReceiverForms", std::vector<std::string>{});
+	settings.NoMarksForms = o_json.value("NoMarksForms", std::vector<std::string>{});
+	settings.SnowBlockerForms = o_json.value("SnowBlockerForms", std::vector<std::string>{});
 	settings.WeatherSnowMaximumRaise =
 		std::clamp(settings.WeatherSnowMaximumRaise, 0.0f, 24.0f);
 	settings.WeatherSnowAccumulationRate =
@@ -5259,6 +5521,8 @@ void GroundResponse::LoadSettings(json& o_json)
 	settings.FrostAddUnits = std::clamp(settings.FrostAddUnits, 0.0f, 24.0f);
 	settings.ElementalHeightLimit = std::clamp(settings.ElementalHeightLimit, 0.0f, 32.0f);
 	settings.ElementalRecoveryRate = std::clamp(settings.ElementalRecoveryRate, 0.0f, 0.25f);
+	settings.SessionSurfaceHistorySeconds = std::clamp(settings.SessionSurfaceHistorySeconds, 15.0f, 900.0f);
+	settings.SessionSurfaceHistoryTileBudget = std::clamp<uint>(settings.SessionSurfaceHistoryTileBudget, 16u, 512u);
 
 	g_groundResistanceSettings.SnowResistanceStrength = std::clamp(g_groundResistanceSettings.SnowResistanceStrength, 0.0f, 1.0f);
 	g_groundResistanceSettings.FluffySnowResistanceStrength = std::clamp(g_groundResistanceSettings.FluffySnowResistanceStrength, 0.0f, 0.60f);
@@ -5282,6 +5546,15 @@ void GroundResponse::LoadSettings(json& o_json)
 void GroundResponse::SaveSettings(json& o_json)
 {
 	o_json = settings;
+	o_json["EnableSessionSurfaceHistory"] = settings.EnableSessionSurfaceHistory;
+	o_json["SessionSurfaceHistorySeconds"] = settings.SessionSurfaceHistorySeconds;
+	o_json["SessionSurfaceHistoryTileBudget"] = settings.SessionSurfaceHistoryTileBudget;
+	o_json["HardForms"] = settings.HardForms;
+	o_json["SoftGroundForms"] = settings.SoftGroundForms;
+	o_json["SnowReceiverForms"] = settings.SnowReceiverForms;
+	o_json["MudReceiverForms"] = settings.MudReceiverForms;
+	o_json["NoMarksForms"] = settings.NoMarksForms;
+	o_json["SnowBlockerForms"] = settings.SnowBlockerForms;
 	o_json["EnableMovementResistance"] =
 		g_groundResistanceSettings.EnableMovementResistance;
 	o_json["EnablePlayerMovementResistance"] =
@@ -5321,9 +5594,17 @@ void GroundResponse::RestoreDefaultSettings()
 	previousWeatherSnowTrackCoverState = 0.0f;
 	surfaceMoistureState = 0.0f;
 	surfaceThermalState = 0.0f;
+	sessionSurfaceHistory.clear();
+	sessionSurfaceHistorySeconds = 0.0f;
+	sessionSurfaceHistoryWorldspace = 0u;
+	sessionSurfaceHistoryRegionValid = false;
+	pendingSessionSurfaceHistoryReset = true;
+	sessionSurfaceHistoryRestoredStamps = 0u;
+	sessionSurfaceHistoryEvictedTiles = 0u;
 	g_groundResistanceSettings = {};
 	g_alwaysCompressForms.clear();
 	g_neverDeformForms.clear();
+	g_groundCompatibilityProfiles.clear();
 	ResistanceRestoreAll();
 }
 
@@ -8298,8 +8579,9 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 
 	const std::uint32_t pendingSeasonGeneration =
 		pendingSeasonHistoryGeneration.load(std::memory_order_acquire);
-	if (pendingSeasonGeneration != 0 &&
-		pendingSeasonGeneration != appliedSeasonHistoryGeneration) {
+	const bool seasonReset = pendingSeasonGeneration != 0 &&
+		pendingSeasonGeneration != appliedSeasonHistoryGeneration;
+	if (seasonReset || pendingSessionSurfaceHistoryReset) {
 		const float clearSeasonHistory[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 		context->ClearUnorderedAccessViewFloat(
 			surfaceDeformationTexture->uav.get(),
@@ -8315,11 +8597,11 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 		context->ClearUnorderedAccessViewFloat(surfaceDerivedGradientTexture->uav.get(), clearSeasonHistory);
 		context->ClearUnorderedAccessViewFloat(groundMarkTexture->uav.get(), clearSeasonHistory);
 		surfaceDerivedDataValid = false;
-		appliedSeasonHistoryGeneration = pendingSeasonGeneration;
+		if (seasonReset)
+			appliedSeasonHistoryGeneration = pendingSeasonGeneration;
+		pendingSessionSurfaceHistoryReset = false;
 		surfaceElementalClearedWhileDisabled = true;
-		logger::info(
-			"[PIXL][GroundResponse] Cleared incompatible snow/mud deformation history for season generation {}.",
-			pendingSeasonGeneration);
+		logger::info("[PIXL][GroundResponse] Cleared incompatible snow/mud deformation history (seasonGeneration={}).", pendingSeasonGeneration);
 	}
 
 	if (!settings.EnableDeformableGround ||

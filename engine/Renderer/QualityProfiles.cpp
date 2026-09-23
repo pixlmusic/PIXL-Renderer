@@ -243,8 +243,14 @@ namespace PIXLRenderer::QualityProfiles
 			// behaves, only how finely its generated surface is subdivided.
 			constexpr std::array<float, 4> tessellationNear{ 4.0f, 7.0f, 10.0f, 14.0f };
 			constexpr std::array<float, 4> tessellationFar{ 1.5f, 2.0f, 2.5f, 3.0f };
+			constexpr std::array<std::uint32_t, 4> historyTiles{ 48u, 96u, 192u, 256u };
 			ground.GeometryTessellationNear = tessellationNear[quality];
 			ground.GeometryTessellationFar = tessellationFar[quality];
+			// Ground Response keeps interaction coverage at every tier.  The preset
+			// only changes geometric density and the bounded session-history budget;
+			// it never disables snow, mud, marks, or environmental state behind the
+			// user's back.
+			ground.SessionSurfaceHistoryTileBudget = historyTiles[quality];
 			globals::pipeline::terrainDetail.settings.enableLODTerrainTilingFix = 1;
 		}
 
@@ -367,10 +373,12 @@ namespace PIXLRenderer::QualityProfiles
 			const auto& terrain = globals::pipeline::terrainDetail.settings;
 			constexpr std::array<float, 4> tessellationNear{ 4.0f, 7.0f, 10.0f, 14.0f };
 			constexpr std::array<float, 4> tessellationFar{ 1.5f, 2.0f, 2.5f, 3.0f };
+			constexpr std::array<std::uint32_t, 4> historyTiles{ 48u, 96u, 192u, 256u };
 
 			for (int quality = Low; quality <= Ultra; ++quality) {
 				if (NearlyEqual(ground.GeometryTessellationNear, tessellationNear[quality]) &&
 				    NearlyEqual(ground.GeometryTessellationFar, tessellationFar[quality]) &&
+				    ground.SessionSurfaceHistoryTileBudget == historyTiles[quality] &&
 				    terrain.enableLODTerrainTilingFix == 1) {
 					return quality;
 				}
