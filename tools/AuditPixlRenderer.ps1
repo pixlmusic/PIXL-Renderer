@@ -267,7 +267,11 @@ foreach ($relativePath in @(
     "README.md",
     "docs\MOD_COMPATIBILITY.md", # Compatibility guidance must identify conflicting renderers.
     "docs\LEGAL_LICENSE_AUDIT_20260918.md", # Provenance audit records historical upstream attribution.
-    "distribution\PIXL-RENDERER-README.md" # Installation compatibility warnings name other renderers.
+    "distribution\PIXL-RENDERER-README.md", # Installation compatibility warnings name other renderers.
+    "tools\Discord\InitializePixlDiscordPosts.ps1", # Public support template names a renderer for conflict reports.
+    "tools\Discord\PolishPixlDiscordCommunity.ps1", # Public compatibility wording names supported conflict cases.
+    "tools\Discord\PolishPixlDiscordGuides.ps1", # Public credits and compatibility wording retain accurate names.
+    "docs\assets\discord\RULES_SCREENING.md" # Public community rules retain accurate third-party credit.
 )) {
     $null = $identityAllowPaths.Add((Join-Path $repo $relativePath))
 }

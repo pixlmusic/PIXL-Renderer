@@ -87,6 +87,8 @@ public:
 		// Phase 3 safety valve. The derived interaction field is the normal path;
 		// this retains the proven Domain Shader reconstruction for comparison.
 		bool ForceLegacyTerrainSurface = false;
+		bool EnableGroundMarks = true;
+		bool DebugGroundMarks = false;
 		// Persistent field recovery in world units per second. New tracks are held
 		// unchanged for TrackHoldSeconds before this recovery begins.
 		float TrackRecoveryRate = 0.25f;
@@ -209,11 +211,46 @@ public:
 		uint pad1 = 0u;
 	};
 	STATIC_ASSERT_ALIGNAS_16(SurfaceTileDispatchPacked);
+
+	// GroundMarkPacked::Type keeps the interaction semantic in its low four bits
+	// and a compact projection shape in bits 4-5. This leaves the physical stamp
+	// ABI intact while allowing future producers to select a shape explicitly.
+	enum GroundMarkType : uint
+	{
+		kGroundMarkFootprint = 0u,
+		kGroundMarkBlood = 1u,
+		kGroundMarkScorch = 2u,
+		kGroundMarkFrost = 3u,
+		kGroundMarkImpact = 4u,
+		kGroundMarkTypeMask = 0x0Fu,
+		kGroundMarkShapeCircle = 0x00u,
+		kGroundMarkShapeEllipse = 0x10u,
+		kGroundMarkShapeCapsule = 0x20u,
+		kGroundMarkShapeBox = 0x30u,
+		kGroundMarkShapeMask = 0x30u
+	};
+
+	// Phase 4 visual-only mark stream. This deliberately stays separate from the
+	// 48-byte physical SurfaceStampPacked ABI used by t101/t102/t103.
+	struct GroundMarkPacked
+	{
+		float2 CurrentPosition{};
+		float2 PreviousPosition{};
+		float2 HalfExtent{ 1.0f, 1.0f };
+		float Orientation = 0.0f;
+		float Strength = 0.0f;
+		uint Type = kGroundMarkFootprint | kGroundMarkShapeEllipse;
+		uint Receiver = 0u; // 0 terrain; mesh receivers are intentionally future work.
+		float ReceiverZ = 0.0f;
+		float AgeFade = 1.0f;
+	};
+	STATIC_ASSERT_ALIGNAS_16(GroundMarkPacked);
 	static_assert(sizeof(SurfaceStampBoxPacked) == 32, "GroundResponse::SurfaceStampBoxPacked ABI mismatch.");
 	static_assert(sizeof(SurfaceStampPacked) == 48, "GroundResponse::SurfaceStampPacked ABI mismatch.");
 	static_assert(sizeof(SurfaceFieldData) == 64, "GroundResponse::SurfaceFieldData ABI mismatch.");
 	static_assert(sizeof(SurfaceTileHeaderPacked) == 16, "GroundResponse::SurfaceTileHeaderPacked ABI mismatch.");
 	static_assert(sizeof(SurfaceTileDispatchPacked) == 16, "GroundResponse::SurfaceTileDispatchPacked ABI mismatch.");
+	static_assert(sizeof(GroundMarkPacked) == 48, "GroundResponse::GroundMarkPacked ABI mismatch.");
 
 	struct PerFrame
 	{
@@ -295,6 +332,7 @@ public:
 
 	ConstantBuffer* perFrame = nullptr;
 	ConstantBuffer* surfacePerFrame = nullptr;
+	ConstantBuffer* groundMarkPerFrame = nullptr;
 
 	eastl::unique_ptr<Buffer> collisionBoundingBoxes = nullptr;
 	eastl::unique_ptr<Buffer> collisionInstances = nullptr;
@@ -303,6 +341,10 @@ public:
 	eastl::unique_ptr<Buffer> surfaceTileHeaders = nullptr;
 	eastl::unique_ptr<Buffer> surfaceTileStampIndices = nullptr;
 	eastl::unique_ptr<Buffer> surfaceTileDispatches = nullptr;
+	eastl::unique_ptr<Buffer> groundMarks = nullptr;
+	eastl::unique_ptr<Buffer> groundMarkTileHeaders = nullptr;
+	eastl::unique_ptr<Buffer> groundMarkTileIndices = nullptr;
+	eastl::unique_ptr<Buffer> groundMarkTileDispatches = nullptr;
 
 	eastl::vector<BoundingBoxPacked> queuedBoundingBoxes;
 	eastl::vector<float4> queuedCollisions;
@@ -311,6 +353,10 @@ public:
 	eastl::vector<SurfaceTileHeaderPacked> queuedSurfaceTileHeaders;
 	eastl::vector<uint> queuedSurfaceTileStampIndices;
 	eastl::vector<SurfaceTileDispatchPacked> queuedSurfaceTileDispatches;
+	eastl::vector<GroundMarkPacked> queuedGroundMarks;
+	eastl::vector<SurfaceTileHeaderPacked> queuedGroundMarkTileHeaders;
+	eastl::vector<uint> queuedGroundMarkTileIndices;
+	eastl::vector<SurfaceTileDispatchPacked> queuedGroundMarkTileDispatches;
 
 	struct SurfaceActiveRegion
 	{
@@ -319,12 +365,16 @@ public:
 		float RemainingSeconds = 0.0f;
 	};
 	eastl::vector<SurfaceActiveRegion> surfaceActiveRegions;
+	eastl::vector<SurfaceActiveRegion> groundMarkActiveRegions;
 	uint surfaceFullFieldFallbackCount = 0u;
 	bool surfaceTileBuildFailed = false;
 	uint surfaceClipmapSlabTiles = 0u;
 	uint surfaceTileStampReferences = 0u;
 	uint surfaceMaximumStampsPerTile = 0u;
+	bool groundMarkTileBuildFailed = false;
 	void BuildSurfaceTileWork(const SurfaceFieldData& a_data);
+	void BuildGroundMarkTileWork(const SurfaceFieldData& a_data);
+	void UpdateGroundMarkField();
 
 	/** @brief Releases cached GroundResponse compute/tessellation shaders. */
 	virtual void ClearShaderCache() override;
@@ -339,6 +389,8 @@ public:
 	/** Builds compact filtered deformation data for the terrain Domain Shader. */
 	ID3D11ComputeShader* GetSurfaceDerivedUpdateCS();
 	ID3D11ComputeShader* surfaceDerivedUpdateCS = nullptr;
+	ID3D11ComputeShader* GetGroundMarkUpdateCS();
+	ID3D11ComputeShader* groundMarkUpdateCS = nullptr;
 
 	/** Compiles the pass-through terrain tessellation stages used for the unified geometric snow/mud surface. */
 	ID3D11HullShader* GetTerrainSurfaceHS(bool a_counterClockwise);
@@ -356,6 +408,7 @@ public:
 	Texture2D* surfaceDerivedResponseTexture = nullptr;
 	Texture2D* surfaceDerivedSlumpTexture = nullptr;
 	Texture2D* surfaceDerivedGradientTexture = nullptr;
+	Texture2D* groundMarkTexture = nullptr; // PS t111, visual marks only
 	struct BloodStainPacked
 	{
 		float4 PositionRadiusStrengthSeed{};

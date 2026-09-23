@@ -65,6 +65,7 @@ namespace GroundResponseRuntime
     // Phase 3 developer comparison switch. It deliberately reuses an existing
     // debug word so the public b13 runtime ABI remains 176 bytes.
     static const uint LegacyTerrainSurfaceBit = 1u << 4;
+    static const uint GroundMarksDebugBit = 1u << 5;
 
     bool IsRuntimeValid()
     {
@@ -133,6 +134,12 @@ namespace GroundResponseRuntime
     {
         return IsRuntimeValid() &&
                (GroundRuntimeTerrainDebug & LegacyTerrainSurfaceBit) != 0u;
+    }
+
+    bool GroundMarksDebugEnabled()
+    {
+        return IsRuntimeValid() &&
+               (GroundRuntimeTerrainDebug & GroundMarksDebugBit) != 0u;
     }
 
     float GetTerrainSnowCoverage(float4 weights1, float2 weights2)

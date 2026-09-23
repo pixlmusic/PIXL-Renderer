@@ -619,6 +619,9 @@ Texture2D<float4> TexLandNormal6Sampler : register(t12);
 // gradient, so cached/source distributions remain gracefully compatible when
 // the asset has not been staged yet.
 Texture2D<float4> TexGroundSnowMicroSampler : register(t110);
+// Phase 4 visual mark clipmap. CPU only binds this for terrain; null is a
+// valid empty field during startup/reload.
+Texture2D<float4> TexGroundMarkField : register(t111);
 #		endif
 
 Texture2D<float4> TexLandTHDisp0Sampler : register(t92);
@@ -1508,6 +1511,27 @@ float2 PixlGroundMicroVector(float2 absoluteXY)
         1.0f;
 
     return float2(x, y);
+}
+
+float4 PixlGroundMarkSample(float2 absoluteXY)
+{
+    float2 local = absoluteXY - GroundRuntimeSurfaceOriginAbsolute;
+    const float worldSize = 4096.0f;
+    const float cellSize = 4.0f;
+    if (any(abs(local) >= (worldSize * 0.5f - cellSize).xx))
+        return 0.0f.xxxx;
+    float2 p = clamp(
+        (local / worldSize + 0.5f) * 1024.0f - 0.5f,
+        0.0f.xx, 1022.9999f.xx);
+    int2 base = min((int2)floor(p), int2(1022, 1022));
+    float2 f = frac(p);
+    int2 origin = int2(GroundRuntimeSurfaceArrayOrigin);
+    int2 mask = int2(1023, 1023);
+    float4 a = TexGroundMarkField.Load(int3((base + origin) & mask, 0));
+    float4 x = TexGroundMarkField.Load(int3((base + int2(1, 0) + origin) & mask, 0));
+    float4 y = TexGroundMarkField.Load(int3((base + int2(0, 1) + origin) & mask, 0));
+    float4 z = TexGroundMarkField.Load(int3((base + int2(1, 1) + origin) & mask, 0));
+    return lerp(lerp(a, x, f.x), lerp(y, z, f.x), f.y);
 }
 #endif
 
@@ -2826,6 +2850,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float groundMudMicroDetail = 0.5f;
 	float groundMudWaterAccumulation = 0.0f;
 	float groundSnowBackscatterWeight = 0.0f;
+	float groundMarkFootprint = 0.0f;
+	float groundMarkBlood = 0.0f;
+	float groundMarkElement = 0.0f;
 	bool groundSnowClassificationValid = false;
 	bool groundPixelUsesGeometricSurface = false;
 #	if defined(GROUND_RESPONSE) && defined(LANDSCAPE)
@@ -2935,6 +2962,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		groundAbsoluteXY =
 			groundReceiverPosition.xy +
 			FrameBuffer::CameraPosAdjust.xy;
+		float4 groundMark = PixlGroundMarkSample(groundAbsoluteXY);
+		groundMarkFootprint = saturate(groundMark.x * groundMaterialActivation);
+		groundMarkBlood = saturate(groundMark.y * groundMaterialActivation);
+		groundMarkElement = clamp(groundMark.z, -1.0f, 1.0f) * groundMaterialActivation;
 
 		float groundMicroDistanceFade =
 			1.0f -
@@ -2966,7 +2997,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 				groundMaterialActivation *
 				localSnowWeight *
 				groundMicroDistanceFade *
-				(1.0f - groundDeformationAmount * 0.52f));
+				(1.0f - groundDeformationAmount * 0.52f) *
+				// The visual mark only removes fluffy microsurface inside the
+				// already-physical footprint. It never substitutes for t101 depth.
+				(1.0f - groundMarkFootprint * 0.58f));
 		[branch] if (snowMicroSurfaceWeight > 1e-4f) {
 			const float snowTextureWorldPeriod = 640.0f;
 			const float snowTextureTexel = 1.0f / 512.0f;
@@ -3574,6 +3608,31 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 				material.Metallic,
 				0.0f,
 				saturate(groundDeformationAmount * mudWeight));
+	}
+
+	[branch] if (groundMarkFootprint > 1.0e-4f ||
+		groundMarkBlood > 1.0e-4f || abs(groundMarkElement) > 1.0e-4f)
+	{
+		// Marks are deliberately material-only. t101 remains responsible for
+		// broad displacement; this layer adds tread/blood/elemental detail over
+		// the already raised receiver without fake parallax or a decal list.
+		float snowWeight = saturate(groundSnowMix);
+		float mudWeight = 1.0f - snowWeight;
+		float tread = groundMarkFootprint;
+		material.BaseColor *= 1.0f - tread * lerp(0.055f, 0.105f, mudWeight);
+		material.Roughness = saturate(material.Roughness + tread * lerp(0.035f, -0.025f, mudWeight));
+
+		float blood = groundMarkBlood;
+		float3 bloodTint = lerp(float3(0.22f, 0.035f, 0.020f), float3(0.11f, 0.018f, 0.010f), mudWeight);
+		material.BaseColor = lerp(material.BaseColor, material.BaseColor * bloodTint, blood * 0.72f);
+		material.Roughness = lerp(material.Roughness, lerp(0.64f, 0.34f, mudWeight), blood * 0.32f);
+
+		float scorch = saturate(-groundMarkElement);
+		float frost = saturate(groundMarkElement);
+		material.BaseColor *= 1.0f - scorch * 0.28f;
+		material.Roughness = lerp(material.Roughness, 0.82f, scorch * 0.40f);
+		material.BaseColor = lerp(material.BaseColor, material.BaseColor * 1.08f.xxx, frost * 0.22f);
+		material.Roughness = lerp(material.Roughness, 0.74f, frost * 0.28f);
 	}
 #	endif
 
@@ -5464,9 +5523,19 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 
 #	if defined(GROUND_RESPONSE) && defined(LANDSCAPE)
-	// v2.1 diagnostics fail closed. A stale/wrong b13 can no longer paint terrain
-	// brown/cyan because the overlay requires the exact runtime magic/version and
-	// the dedicated TerrainDebug bit. The real terrain textures remain visible.
+// v2.1 diagnostics fail closed. A stale/wrong b13 can no longer paint terrain
+// brown/cyan because the overlay requires the exact runtime magic/version and
+// the dedicated TerrainDebug bit. The real terrain textures remain visible.
+	[branch] if (GroundResponseRuntime::GroundMarksDebugEnabled())
+	{
+		float3 markDebug =
+			groundMarkBlood.xxx * float3(0.95f, 0.02f, 0.03f) +
+			groundMarkFootprint.xxx * float3(0.10f, 0.82f, 1.0f) +
+			saturate(-groundMarkElement).xxx * float3(0.08f, 0.06f, 0.03f) +
+			saturate(groundMarkElement).xxx * float3(0.45f, 0.80f, 1.0f);
+		float markWeight = saturate(max(groundMarkFootprint, max(groundMarkBlood, abs(groundMarkElement))));
+		psout.Diffuse.xyz = lerp(psout.Diffuse.xyz, markDebug, markWeight * 0.72f);
+	}
 	[branch] if (GroundResponseRuntime::DebugOverlayEnabled())
 	{
 		float3 groundDebugColor;

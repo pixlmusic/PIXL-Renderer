@@ -77,6 +77,7 @@ static constexpr float SURFACE_ACTIVE_RECOVERY_SECONDS = 96.0f;
 static constexpr uint MAX_SURFACE_STAMP_BOXES = 64u;
 static constexpr uint MAX_SURFACE_STAMPS_PER_BOX = 24u;
 static constexpr uint MAX_SURFACE_STAMPS = MAX_SURFACE_STAMP_BOXES * MAX_SURFACE_STAMPS_PER_BOX;
+static constexpr uint MAX_GROUND_MARKS = 192u;
 static constexpr float SURFACE_MIN_SOURCE_RADIUS = 1.5f;
 static constexpr float SURFACE_MAX_SOURCE_RADIUS = 42.0f;
 static constexpr float SURFACE_GROUND_BAND = 24.0f;
@@ -111,6 +112,7 @@ static constexpr uint TERRAIN_DEBUG_GEOMETRY_SELF_TEST = 1u << 1;
 static constexpr uint TERRAIN_DEBUG_RAW_DIRECTIONAL_SHADOW = 1u << 2;
 static constexpr uint TERRAIN_DEBUG_FOCUS_DIRECTIONAL_SHADOW = 1u << 3;
 static constexpr uint TERRAIN_DEBUG_LEGACY_SURFACE = 1u << 4;
+static constexpr uint TERRAIN_DEBUG_GROUND_MARKS = 1u << 5;
 
 static float ResolveGroundSnowIntensity()
 {
@@ -3453,6 +3455,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	ForceFullSurfaceSimulation,
 	DebugSurfaceTiles,
 	ForceLegacyTerrainSurface,
+	EnableGroundMarks,
+	DebugGroundMarks,
 	TrackRecoveryRate,
 	TrackHoldSeconds,
 	EnableAnimatedBodyContacts,
@@ -3728,6 +3732,8 @@ void GroundResponse::DrawSettings()
 			if (auto _tt = Util::HoverTooltipWrapper())
 				ImGui::TextWrapped("Phase 2 comparison fallback. Uses the established 1024x1024 full-field compute path instead of tiled dispatches.");
 			changed |= ImGui::Checkbox("Debug Surface Tiles", &settings.DebugSurfaceTiles);
+			changed |= ImGui::Checkbox("Enable Ground Surface Marks", &settings.EnableGroundMarks);
+			changed |= ImGui::Checkbox("Debug Ground Surface Marks", &settings.DebugGroundMarks);
 			changed |= ImGui::Checkbox("Force Legacy Terrain Surface", &settings.ForceLegacyTerrainSurface);
 			if (auto _tt = Util::HoverTooltipWrapper())
 				ImGui::TextWrapped("Phase 3 comparison fallback. Reconstructs deformation in the Domain Shader instead of consuming the derived dirty-tile field.");
@@ -4508,10 +4514,78 @@ void GroundResponse::QueueCollisions()
 			break;
 	}
 
+	// Phase 4 visual marks are derived from accepted physical stamps, never the
+	// other way around. This preserves t101 as broad deformation and guarantees
+	// that a rejected bridge/rock receiver cannot leave a terrain footprint.
+	eastl::vector<GroundMarkPacked> groundMarkData;
+	groundMarkData.reserve(MAX_GROUND_MARKS);
+	for (const auto& stamp : surfaceStampData) {
+		if (groundMarkData.size() >= MAX_GROUND_MARKS)
+			break;
+		const float2 motion{
+			stamp.CurrentPosition.x - stamp.PreviousPosition.x,
+			stamp.CurrentPosition.y - stamp.PreviousPosition.y };
+		const float motionLength = GroundLength2D(motion);
+		const float radius = std::max(stamp.Radius, stamp.PreviousRadius);
+		GroundMarkPacked mark{};
+		mark.CurrentPosition = stamp.CurrentPosition;
+		mark.PreviousPosition = stamp.PreviousPosition;
+		// A narrow oval is a better safe default than a circular decal. Moving
+		// contacts naturally become capsules along their actual sweep direction.
+		mark.HalfExtent = {
+			std::max(radius * 0.58f, 2.0f),
+			std::max(radius * 1.08f, 3.0f) };
+		mark.Orientation = motionLength > 0.5f ? std::atan2(motion.y, motion.x) : 0.0f;
+		mark.Strength = std::clamp(stamp.Strength, 0.0f, 1.0f);
+		const uint interactionType = stamp.ElementalDelta < -1.0e-3f
+			? kGroundMarkScorch
+			: (stamp.ElementalDelta > 1.0e-3f ? kGroundMarkFrost : kGroundMarkFootprint);
+		mark.Type = interactionType |
+			(motionLength > 0.5f ? kGroundMarkShapeCapsule : kGroundMarkShapeEllipse);
+		mark.Receiver = 0u;
+		mark.AgeFade = 1.0f;
+		groundMarkData.push_back(mark);
+	}
+	// Blood is re-projected while alive, but only after the same terrain/raised
+	// blocker check used by projectile/magic stamps. This rejects terrain below
+	// bridges and unsupported hard-object hits without retaining raw pointers.
+	{
+		std::scoped_lock lock(bloodStainMutex);
+		for (const auto& blood : bloodStains) {
+			if (groundMarkData.size() >= MAX_GROUND_MARKS)
+				break;
+			GroundSurfaceProbe probe{};
+			if (!GroundReceiverAcceptsContact(
+					float2{ blood.PositionRadiusStrengthSeed.x, blood.PositionRadiusStrengthSeed.y },
+					blood.DirectionSpread.z,
+					*this,
+					probe,
+					true)) {
+				continue;
+			}
+			GroundMarkPacked mark{};
+			mark.CurrentPosition = mark.PreviousPosition = {
+				blood.PositionRadiusStrengthSeed.x, blood.PositionRadiusStrengthSeed.y };
+			mark.HalfExtent = {
+				std::max(blood.PositionRadiusStrengthSeed.z, 2.0f),
+				std::max(blood.PositionRadiusStrengthSeed.z * 0.72f, 2.0f) };
+			mark.Orientation = std::atan2(blood.DirectionSpread.y, blood.DirectionSpread.x);
+			mark.Strength = std::clamp(
+				blood.PositionRadiusStrengthSeed.w * blood.AgeFade.y,
+				0.0f, 1.0f);
+			mark.Type = kGroundMarkBlood | kGroundMarkShapeEllipse;
+			mark.Receiver = 0u;
+			mark.ReceiverZ = probe.surfaceTop;
+			mark.AgeFade = std::clamp(blood.AgeFade.y, 0.0f, 1.0f);
+			groundMarkData.push_back(mark);
+		}
+	}
+
 	queuedBoundingBoxes = std::move(boundingBoxData);
 	queuedCollisions = std::move(collisionsData);
 	queuedSurfaceStampBoxes = std::move(surfaceBoxData);
 	queuedSurfaceStamps = std::move(surfaceStampData);
+	queuedGroundMarks = std::move(groundMarkData);
 
 }
 
@@ -4639,7 +4713,8 @@ void GroundResponse::Update()
 		perFrameData.TerrainDebug =
 			(settings.DebugInteractionField ? TERRAIN_DEBUG_OVERLAY : 0u) |
 			(settings.GeometrySelfTest ? TERRAIN_DEBUG_GEOMETRY_SELF_TEST : 0u) |
-			(settings.ForceLegacyTerrainSurface ? TERRAIN_DEBUG_LEGACY_SURFACE : 0u);
+			(settings.ForceLegacyTerrainSurface ? TERRAIN_DEBUG_LEGACY_SURFACE : 0u) |
+			(settings.DebugGroundMarks ? TERRAIN_DEBUG_GROUND_MARKS : 0u);
 		perFrameData.SnowSurfaceThickness = std::clamp(settings.SnowSurfaceThickness, 2.0f, 24.0f);
 		// PIXL_GR_13Y_THREE_STAGE_LOD_CPP_V1
 		// Keep the proven b13 layout unchanged; reinterpret existing near/far
@@ -4756,6 +4831,12 @@ void GroundResponse::Update()
 			static_cast<uint>(queuedSurfaceTileDispatches.size());
 		surfaceFieldData.TileMode =
 			surfaceTileBuildFailed ? 0u : 1u;
+		SurfaceFieldData markFieldData = surfaceFieldData;
+		markFieldData.StampBoxCount =
+			static_cast<uint>(std::min(queuedGroundMarks.size(), static_cast<size_t>(MAX_GROUND_MARKS)));
+		BuildGroundMarkTileWork(markFieldData);
+		markFieldData.TileDispatchCount = static_cast<uint>(queuedGroundMarkTileDispatches.size());
+		markFieldData.TileMode = groundMarkTileBuildFailed ? 0u : 1u;
 
 		// Legacy grass collision shapes are camera-relative at dispatch time.
 		for (auto& collision : queuedCollisions) {
@@ -4822,16 +4903,29 @@ void GroundResponse::Update()
 		uploadSurfaceTileBuffer(surfaceTileHeaders.get(), queuedSurfaceTileHeaders, SURFACE_TILE_TOTAL);
 		uploadSurfaceTileBuffer(surfaceTileStampIndices.get(), queuedSurfaceTileStampIndices, MAX_SURFACE_TILE_STAMP_REFERENCES);
 		uploadSurfaceTileBuffer(surfaceTileDispatches.get(), queuedSurfaceTileDispatches, SURFACE_TILE_TOTAL);
+		if (groundMarks && !queuedGroundMarks.empty()) {
+			D3D11_MAPPED_SUBRESOURCE mapped{};
+			DX::ThrowIfFailed(context->Map(groundMarks->resource.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
+			const size_t count = std::min(queuedGroundMarks.size(), static_cast<size_t>(MAX_GROUND_MARKS));
+			memcpy_s(mapped.pData, sizeof(GroundMarkPacked) * MAX_GROUND_MARKS, queuedGroundMarks.data(), count * sizeof(GroundMarkPacked));
+			context->Unmap(groundMarks->resource.get(), 0);
+		}
+		uploadSurfaceTileBuffer(groundMarkTileHeaders.get(), queuedGroundMarkTileHeaders, SURFACE_TILE_TOTAL);
+		uploadSurfaceTileBuffer(groundMarkTileIndices.get(), queuedGroundMarkTileIndices, MAX_SURFACE_TILE_STAMP_REFERENCES);
+		uploadSurfaceTileBuffer(groundMarkTileDispatches.get(), queuedGroundMarkTileDispatches, SURFACE_TILE_TOTAL);
 
 		queuedBoundingBoxes.clear();
 		queuedCollisions.clear();
 		queuedSurfaceStampBoxes.clear();
 		queuedSurfaceStamps.clear();
+		queuedGroundMarks.clear();
 
 		currentPerFrame = perFrameData;
 		perFrame->Update(currentPerFrame);
 		if (surfacePerFrame)
 			surfacePerFrame->Update(surfaceFieldData);
+		if (groundMarkPerFrame)
+			groundMarkPerFrame->Update(markFieldData);
 
 		currentPosOffset = currentPerFrame.PosOffset;
 		currentArrayOrigin = currentPerFrame.ArrayOrigin;
@@ -4841,6 +4935,7 @@ void GroundResponse::Update()
 		// from absolute XY capsule stamps and therefore never consumes camera Z.
 		UpdateCollisionTexture();
 		UpdateSurfaceDeformationTexture();
+		UpdateGroundMarkField();
 
 		prevCellID = cellID;
 		prevAnchorPosNI = anchorPosNI;
@@ -5134,7 +5229,9 @@ void GroundResponse::QueueBloodStainDirectional(
 			1.0f,
 			static_cast<float>((seed + static_cast<std::uint32_t>(index) * 747796405u) & 0xFFFFu) / 65535.0f,
 			0.0f};
-		stain.DirectionSpread = { direction.x, direction.y, 0.0f, 0.0f };
+		// Preserve receiver height for the Phase 4 terrain receiver gate. The
+		// legacy t104 consumer ignores z, so this stays backward-compatible.
+		stain.DirectionSpread = { direction.x, direction.y, a_position.z, 0.0f };
 	};
 	makeStain(0u, {}, radius, strength);
 	if (directionLength > 1.0e-3f) {
@@ -6038,6 +6135,7 @@ void GroundResponse::SetupResources()
 	}
 	perFrame = new ConstantBuffer(ConstantBufferDesc<PerFrame>());
 	surfacePerFrame = new ConstantBuffer(ConstantBufferDesc<SurfaceFieldData>());
+	groundMarkPerFrame = new ConstantBuffer(ConstantBufferDesc<SurfaceFieldData>());
 
 	auto createRWTexture = [](uint width, uint height, const char* debugLabel, DXGI_FORMAT format = DXGI_FORMAT_R16G16B16A16_FLOAT) -> Texture2D* {
 		D3D11_TEXTURE2D_DESC texDesc = {
@@ -6121,6 +6219,11 @@ void GroundResponse::SetupResources()
 			SURFACE_TEXTURE_SIZE,
 			SURFACE_TEXTURE_SIZE,
 			"surface derived gradient");
+	groundMarkTexture =
+		createRWTexture(
+			SURFACE_TEXTURE_SIZE,
+			SURFACE_TEXTURE_SIZE,
+			"ground visual marks");
 
 	// Ground-facing blood decals use a small dynamic structured buffer instead
 	// of moving Skyrim's decal geometry. The tessellated hull samples these
@@ -6293,6 +6396,18 @@ void GroundResponse::SetupResources()
 	surfaceTileDispatches = createSurfaceTileBuffer(
 		sizeof(SurfaceTileDispatchPacked), SURFACE_TILE_TOTAL,
 		"GroundResponse::SurfaceTileDispatches");
+	groundMarks = createSurfaceTileBuffer(
+		sizeof(GroundMarkPacked), MAX_GROUND_MARKS,
+		"GroundResponse::GroundMarks");
+	groundMarkTileHeaders = createSurfaceTileBuffer(
+		sizeof(SurfaceTileHeaderPacked), SURFACE_TILE_TOTAL,
+		"GroundResponse::GroundMarkTileHeaders");
+	groundMarkTileIndices = createSurfaceTileBuffer(
+		sizeof(uint), MAX_SURFACE_TILE_STAMP_REFERENCES,
+		"GroundResponse::GroundMarkTileIndices");
+	groundMarkTileDispatches = createSurfaceTileBuffer(
+		sizeof(SurfaceTileDispatchPacked), SURFACE_TILE_TOTAL,
+		"GroundResponse::GroundMarkTileDispatches");
 }
 
 bool GroundResponse::HasShaderDefine(RE::BSShader::Type shaderType)
@@ -6542,6 +6657,9 @@ void GroundResponse::ClearShaderCache()
 	if (surfaceDerivedUpdateCS)
 		surfaceDerivedUpdateCS->Release();
 	surfaceDerivedUpdateCS = nullptr;
+	if (groundMarkUpdateCS)
+		groundMarkUpdateCS->Release();
+	groundMarkUpdateCS = nullptr;
 
 	if (terrainSurfaceHSCW)
 		terrainSurfaceHSCW->Release();
@@ -7160,6 +7278,9 @@ void GroundResponse::TerrainPassShaderHacks()
 	context->PSSetShaderResources(101, 1, &surfaceSRV);
 	ID3D11ShaderResourceView* snowMicroSRV = snowMicroTextureSRV.get();
 	context->PSSetShaderResources(110, 1, &snowMicroSRV);
+	ID3D11ShaderResourceView* groundMarkSRV =
+		settings.EnableGroundMarks && groundMarkTexture ? groundMarkTexture->srv.get() : nullptr;
+	context->PSSetShaderResources(111, 1, &groundMarkSRV);
 
 	if (!terrainGeometryWanted || terrainOverrideApplied)
 		return;
@@ -7635,7 +7756,8 @@ void GroundResponse::BindDefaultRuntimeData()
 	currentPerFrame.TerrainDebug =
 		(settings.DebugInteractionField ? TERRAIN_DEBUG_OVERLAY : 0u) |
 		(settings.GeometrySelfTest ? TERRAIN_DEBUG_GEOMETRY_SELF_TEST : 0u) |
-		(settings.ForceLegacyTerrainSurface ? TERRAIN_DEBUG_LEGACY_SURFACE : 0u);
+		(settings.ForceLegacyTerrainSurface ? TERRAIN_DEBUG_LEGACY_SURFACE : 0u) |
+		(settings.DebugGroundMarks ? TERRAIN_DEBUG_GROUND_MARKS : 0u);
 	currentPerFrame.RuntimeMagic = GROUND_RUNTIME_MAGIC;
 	currentPerFrame.RuntimeVersion = GROUND_RUNTIME_VERSION;
 	perFrame->Update(currentPerFrame);
@@ -7660,6 +7782,9 @@ void GroundResponse::BindDefaultRuntimeData()
 	context->PSSetShaderResources(101, 1, &surfaceSRV);
 	ID3D11ShaderResourceView* snowMicroSRV = snowMicroTextureSRV.get();
 	context->PSSetShaderResources(110, 1, &snowMicroSRV);
+	ID3D11ShaderResourceView* groundMarkSRV =
+		settings.EnableGroundMarks && groundMarkTexture ? groundMarkTexture->srv.get() : nullptr;
+	context->PSSetShaderResources(111, 1, &groundMarkSRV);
 }
 
 void GroundResponse::UpdateCollisionTexture()
@@ -7904,6 +8029,75 @@ void GroundResponse::BuildSurfaceTileWork(const SurfaceFieldData& a_data)
 	surfaceTileStampReferences = static_cast<uint>(queuedSurfaceTileStampIndices.size());
 }
 
+void GroundResponse::BuildGroundMarkTileWork(const SurfaceFieldData& a_data)
+{
+	groundMarkTileBuildFailed = false;
+	queuedGroundMarkTileHeaders.assign(SURFACE_TILE_TOTAL, {});
+	queuedGroundMarkTileIndices.clear();
+	queuedGroundMarkTileDispatches.clear();
+	if (!groundMarks || !groundMarkTileHeaders || !groundMarkTileIndices ||
+		!groundMarkTileDispatches || settings.ForceFullSurfaceSimulation) {
+		groundMarkTileBuildFailed = true;
+		return;
+	}
+
+	std::array<bool, SURFACE_TILE_TOTAL> dirty{};
+	const float tileWorldSize = SURFACE_WORLD_SIZE / static_cast<float>(SURFACE_TILE_COUNT);
+	const float2 fieldMin = a_data.OriginAbsolute - float2{ SURFACE_WORLD_SIZE * 0.5f, SURFACE_WORLD_SIZE * 0.5f };
+	auto markBounds = [&](const float2& a_min, const float2& a_max) {
+		const int minX = std::clamp(static_cast<int>(std::floor((a_min.x - fieldMin.x) / tileWorldSize)), 0, static_cast<int>(SURFACE_TILE_COUNT - 1u));
+		const int minY = std::clamp(static_cast<int>(std::floor((a_min.y - fieldMin.y) / tileWorldSize)), 0, static_cast<int>(SURFACE_TILE_COUNT - 1u));
+		const int maxX = std::clamp(static_cast<int>(std::floor((a_max.x - fieldMin.x) / tileWorldSize)), 0, static_cast<int>(SURFACE_TILE_COUNT - 1u));
+		const int maxY = std::clamp(static_cast<int>(std::floor((a_max.y - fieldMin.y) / tileWorldSize)), 0, static_cast<int>(SURFACE_TILE_COUNT - 1u));
+		for (int y = minY; y <= maxY; ++y)
+			for (int x = minX; x <= maxX; ++x)
+				dirty[static_cast<size_t>(y) * SURFACE_TILE_COUNT + static_cast<size_t>(x)] = true;
+	};
+
+	for (auto& region : groundMarkActiveRegions)
+		region.RemainingSeconds -= std::max(a_data.TimeDelta, 0.0f);
+	groundMarkActiveRegions.erase(
+		std::remove_if(groundMarkActiveRegions.begin(), groundMarkActiveRegions.end(),
+			[](const auto& region) { return region.RemainingSeconds <= 0.0f; }),
+		groundMarkActiveRegions.end());
+
+	for (const auto& mark : queuedGroundMarks) {
+		const float radius = std::max(mark.HalfExtent.x, mark.HalfExtent.y) + 3.0f;
+		const float2 lo{ std::min(mark.CurrentPosition.x, mark.PreviousPosition.x) - radius, std::min(mark.CurrentPosition.y, mark.PreviousPosition.y) - radius };
+		const float2 hi{ std::max(mark.CurrentPosition.x, mark.PreviousPosition.x) + radius, std::max(mark.CurrentPosition.y, mark.PreviousPosition.y) + radius };
+		markBounds(lo, hi);
+		if (groundMarkActiveRegions.size() < MAX_SURFACE_ACTIVE_REGIONS)
+			groundMarkActiveRegions.push_back({ lo, hi,
+				(mark.Type & kGroundMarkTypeMask) == kGroundMarkBlood ? 48.0f : 18.0f });
+	}
+	for (const auto& region : groundMarkActiveRegions)
+		markBounds(region.MinExtent, region.MaxExtent);
+
+	for (uint tileY = 0u; tileY < SURFACE_TILE_COUNT; ++tileY) {
+		for (uint tileX = 0u; tileX < SURFACE_TILE_COUNT; ++tileX) {
+			const uint tileIndex = tileY * SURFACE_TILE_COUNT + tileX;
+			if (!dirty[tileIndex]) continue;
+			auto& header = queuedGroundMarkTileHeaders[tileIndex];
+			header.Offset = static_cast<uint>(queuedGroundMarkTileIndices.size());
+			for (uint markIndex = 0u; markIndex < queuedGroundMarks.size(); ++markIndex) {
+				const auto& mark = queuedGroundMarks[markIndex];
+				const float radius = std::max(mark.HalfExtent.x, mark.HalfExtent.y) + 3.0f;
+				const float minX = std::min(mark.CurrentPosition.x, mark.PreviousPosition.x) - radius;
+				const float minY = std::min(mark.CurrentPosition.y, mark.PreviousPosition.y) - radius;
+				const float maxX = std::max(mark.CurrentPosition.x, mark.PreviousPosition.x) + radius;
+				const float maxY = std::max(mark.CurrentPosition.y, mark.PreviousPosition.y) + radius;
+				const float tileMinX = fieldMin.x + tileX * tileWorldSize, tileMinY = fieldMin.y + tileY * tileWorldSize;
+				if (maxX < tileMinX || minX > tileMinX + tileWorldSize || maxY < tileMinY || minY > tileMinY + tileWorldSize)
+					continue;
+				if (queuedGroundMarkTileIndices.size() >= MAX_SURFACE_TILE_STAMP_REFERENCES) { groundMarkTileBuildFailed = true; return; }
+				queuedGroundMarkTileIndices.push_back(markIndex);
+				++header.Count;
+			}
+			queuedGroundMarkTileDispatches.push_back({ { tileX, tileY }, 0u, 0u });
+		}
+	}
+}
+
 ID3D11ComputeShader* GroundResponse::GetSurfaceDerivedUpdateCS()
 {
 	if (!surfaceDerivedUpdateCS) {
@@ -7916,6 +8110,18 @@ ID3D11ComputeShader* GroundResponse::GetSurfaceDerivedUpdateCS()
 	return surfaceDerivedUpdateCS;
 }
 
+ID3D11ComputeShader* GroundResponse::GetGroundMarkUpdateCS()
+{
+	if (!groundMarkUpdateCS) {
+		groundMarkUpdateCS = static_cast<ID3D11ComputeShader*>(
+			Util::CompileShader(
+				L"Data\\Shaders\\GroundResponse\\GroundMarkUpdateCS.hlsl",
+				{},
+				"cs_5_0"));
+	}
+	return groundMarkUpdateCS;
+}
+
 void GroundResponse::UpdateSurfaceDeformationTexture()
 {
 	auto* context = globals::d3d::context;
@@ -7926,6 +8132,7 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 		!surfaceDerivedResponseTexture ||
 		!surfaceDerivedSlumpTexture ||
 		!surfaceDerivedGradientTexture ||
+		!groundMarkTexture ||
 		!surfacePerFrame) {
 		return;
 	}
@@ -7963,6 +8170,7 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 		context->ClearUnorderedAccessViewFloat(surfaceDerivedResponseTexture->uav.get(), clearSeasonHistory);
 		context->ClearUnorderedAccessViewFloat(surfaceDerivedSlumpTexture->uav.get(), clearSeasonHistory);
 		context->ClearUnorderedAccessViewFloat(surfaceDerivedGradientTexture->uav.get(), clearSeasonHistory);
+		context->ClearUnorderedAccessViewFloat(groundMarkTexture->uav.get(), clearSeasonHistory);
 		surfaceDerivedDataValid = false;
 		appliedSeasonHistoryGeneration = pendingSeasonGeneration;
 		surfaceElementalClearedWhileDisabled = true;
@@ -7986,6 +8194,7 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 		context->ClearUnorderedAccessViewFloat(surfaceDerivedResponseTexture->uav.get(), clearColor);
 		context->ClearUnorderedAccessViewFloat(surfaceDerivedSlumpTexture->uav.get(), clearColor);
 		context->ClearUnorderedAccessViewFloat(surfaceDerivedGradientTexture->uav.get(), clearColor);
+		context->ClearUnorderedAccessViewFloat(groundMarkTexture->uav.get(), clearColor);
 		surfaceDerivedDataValid = false;
 		surfaceElementalClearedWhileDisabled = true;
 		return;
@@ -8095,6 +8304,51 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 	context->CSSetUnorderedAccessViews(0, 3, nullUAVs, nullptr);
 	surfaceDerivedDataValid = true;
 
+}
+
+void GroundResponse::UpdateGroundMarkField()
+{
+	auto* context = globals::d3d::context;
+	if (!context || !globals::profiler || !groundMarkTexture || !groundMarkPerFrame || !groundMarks ||
+		!groundMarkTileHeaders || !groundMarkTileIndices || !groundMarkTileDispatches)
+		return;
+	if (!settings.EnableGroundMarks) {
+		const float clear[4] = { 0, 0, 0, 0 };
+		context->ClearUnorderedAccessViewFloat(groundMarkTexture->uav.get(), clear);
+		return;
+	}
+	if (!groundMarkTileBuildFailed && queuedGroundMarkTileDispatches.empty())
+		return;
+	auto* markCS = GetGroundMarkUpdateCS();
+	if (!markCS)
+		return;
+
+	// t111 is sampled by the terrain PS; release it before using the texture as
+	// a UAV. The mark field never aliases t101/t102/t103.
+	ID3D11ShaderResourceView* nullPS = nullptr;
+	context->PSSetShaderResources(111, 1, &nullPS);
+	ID3D11Buffer* cb = groundMarkPerFrame->CB();
+	context->CSSetConstantBuffers(0, 1, &cb);
+	ID3D11ShaderResourceView* srvs[] = {
+		groundMarks->srv.get(), groundMarkTileHeaders->srv.get(),
+		groundMarkTileIndices->srv.get(), groundMarkTileDispatches->srv.get() };
+	context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
+	ID3D11UnorderedAccessView* uav = groundMarkTexture->uav.get();
+	context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+	context->CSSetShader(markCS, nullptr, 0);
+	globals::profiler->BeginPass("GroundResponse::GroundMarkUpdate");
+	if (groundMarkTileBuildFailed)
+		context->Dispatch(SURFACE_TEXTURE_SIZE / 8, SURFACE_TEXTURE_SIZE / 8, 1);
+	else
+		context->Dispatch(static_cast<UINT>(queuedGroundMarkTileDispatches.size()) * SURFACE_TILE_GROUPS, SURFACE_TILE_GROUPS, 1);
+	globals::profiler->EndPass();
+	context->CSSetShader(nullptr, nullptr, 0);
+	ID3D11Buffer* nullCB = nullptr;
+	context->CSSetConstantBuffers(0, 1, &nullCB);
+	ID3D11ShaderResourceView* nullSRVs[4] = { nullptr, nullptr, nullptr, nullptr };
+	context->CSSetShaderResources(0, ARRAYSIZE(nullSRVs), nullSRVs);
+	ID3D11UnorderedAccessView* nullUAV = nullptr;
+	context->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
 }
 
 #undef I18N_KEY_PREFIX

@@ -32,7 +32,7 @@
 
 namespace
 {
-	// Capture names are intentionally independent of Skyrim/Community Shaders
+	// Capture names are intentionally independent of Skyrim and legacy renderer
 	// naming.  Keep the counter process-local, then skip any existing files so
 	// repeated launches never overwrite an earlier PIXL photograph.
 	std::atomic_uint32_t g_nextPixlCaptureIndex{ 1u };
