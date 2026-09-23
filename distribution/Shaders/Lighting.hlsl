@@ -5073,9 +5073,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #	endif
 
-#	if defined(EMAT_ENVMAP)
+#	if defined(EMAT_ENVMAP) && !defined(MATERIAL_FORGE)
+	// Material Forge already consumes the Complex Material specular colour as
+	// physical F0 before direct and indirect GGX are evaluated.  Multiplying the
+	// completed lobe here applied that coloured F0 twice, turning dark authored
+	// conductors into black pinpricks.  The legacy path still needs this final
+	// environment-mask tint because it does not use the physical F0 adapter.
 	specularColor *= complexSpecular;
-#	endif  // defined (EMAT) && defined(ENVMAP)
+#	endif  // defined (EMAT) && defined(ENVMAP) && !defined(MATERIAL_FORGE)
 
 #	if defined(LOD_LAND_BLEND) && defined(MATERIAL_FORGE)
 	{
