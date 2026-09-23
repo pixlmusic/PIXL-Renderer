@@ -84,6 +84,9 @@ public:
 		// full 1024² update without changing deformation semantics.
 		bool ForceFullSurfaceSimulation = false;
 		bool DebugSurfaceTiles = false;
+		// Phase 3 safety valve. The derived interaction field is the normal path;
+		// this retains the proven Domain Shader reconstruction for comparison.
+		bool ForceLegacyTerrainSurface = false;
 		// Persistent field recovery in world units per second. New tracks are held
 		// unchanged for TrackHoldSeconds before this recovery begins.
 		float TrackRecoveryRate = 0.25f;
@@ -333,6 +336,9 @@ public:
 	/** @brief Returns the normalized persistent surface-deformation update compute shader. */
 	ID3D11ComputeShader* GetSurfaceDeformationUpdateCS();
 	ID3D11ComputeShader* surfaceDeformationUpdateCS = nullptr;
+	/** Builds compact filtered deformation data for the terrain Domain Shader. */
+	ID3D11ComputeShader* GetSurfaceDerivedUpdateCS();
+	ID3D11ComputeShader* surfaceDerivedUpdateCS = nullptr;
 
 	/** Compiles the pass-through terrain tessellation stages used for the unified geometric snow/mud surface. */
 	ID3D11HullShader* GetTerrainSurfaceHS(bool a_counterClockwise);
@@ -345,6 +351,11 @@ public:
 	Texture2D* surfaceDeformationTexture = nullptr;
 	Texture2D* surfaceDisplacementTexture = nullptr;  // t102 displaced snow
 	Texture2D* surfaceElementalTexture = nullptr;     // t103 signed frost/fire height + heat smoothing
+	// DS t105-t107. These are stage-local bindings; PS t105-t107 retain their
+	// established directional-shadow contract.
+	Texture2D* surfaceDerivedResponseTexture = nullptr;
+	Texture2D* surfaceDerivedSlumpTexture = nullptr;
+	Texture2D* surfaceDerivedGradientTexture = nullptr;
 	struct BloodStainPacked
 	{
 		float4 PositionRadiusStrengthSeed{};
@@ -397,6 +408,9 @@ public:
 	// disabled. The first disabled update clears stale mass/heat once; re-enabling
 	// arms the one-shot clear for the next disable transition.
 	bool surfaceElementalClearedWhileDisabled = false;
+	// Only bind t105-t107 after a successful derived dispatch. A shader cache
+	// miss must fall back to the legacy DS rather than show cleared terrain.
+	bool surfaceDerivedDataValid = false;
 
 	struct GeometryTelemetry
 	{
@@ -436,6 +450,9 @@ public:
 	ID3D11ShaderResourceView* savedTerrainDSSRV102 = nullptr;
 	ID3D11ShaderResourceView* savedTerrainDSSRV103 = nullptr;
 	ID3D11ShaderResourceView* savedTerrainDSSRV104 = nullptr;
+	ID3D11ShaderResourceView* savedTerrainDSSRV105 = nullptr;
+	ID3D11ShaderResourceView* savedTerrainDSSRV106 = nullptr;
+	ID3D11ShaderResourceView* savedTerrainDSSRV107 = nullptr;
 	ID3D11ShaderResourceView* savedTerrainPSSRV104 = nullptr;
 	ID3D11ShaderResourceView* savedTerrainPSSRV105 = nullptr;
 	ID3D11ShaderResourceView* savedTerrainPSSRV106 = nullptr;

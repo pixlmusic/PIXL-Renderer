@@ -24,6 +24,12 @@ Texture2D<float4> GroundDisplacedSnowField : register(t102);
 // z=previous height, w=previous heat smoothing.
 Texture2D<float4> GroundElementalSnowField : register(t103);
 
+// Phase 3 dirty-tile derived data. These are DS-only slots; the Lighting PS
+// keeps t105-t107 for its existing directional-shadow resources.
+Texture2D<float4> GroundDerivedResponseField : register(t105);
+Texture2D<float4> GroundDerivedSlumpField : register(t106);
+Texture2D<float4> GroundDerivedGradientField : register(t107);
+
 struct TERRAIN_POINT
 {
     float4 Position : SV_POSITION0;
@@ -76,7 +82,9 @@ static const float PIXL_SNOW_MOUND_DETAIL_SCALE = PIXL_GR_SNOW_MOUND_DETAIL_SCAL
 // suddenly appear only after the player is already close to them.
 static const float PIXL_ADAPTIVE_BASE_NEAR_DISTANCE = 480.0f;
 static const float PIXL_ADAPTIVE_BASE_BLEND_END = 840.0f;
-static const float PIXL_ADAPTIVE_BASE_TESS = 12.0f;
+// A flat nearby patch no longer reserves 12x tessellation. Projected edge size
+// and actual drift/track demand raise it only where geometry can be seen.
+static const float PIXL_ADAPTIVE_BASE_TESS = 3.0f;
 static const float PIXL_ADAPTIVE_DETAIL_FULL_DISTANCE = 720.0f;
 static const float PIXL_ADAPTIVE_DETAIL_BLEND_END = 1520.0f;
 static const float PIXL_ADAPTIVE_DETAIL_MIN_TESS = 13.0f;
@@ -455,6 +463,25 @@ float4 GroundElementSampleAbsolute(float2 absoluteXY)
             lerp(s00, s10, f.x),
             lerp(s01, s11, f.x),
             f.y);
+}
+
+float4 GroundDerivedSampleAbsolute(Texture2D<float4> field, float2 absoluteXY)
+{
+    float2 localPosition = absoluteXY - GroundRuntimeSurfaceOriginAbsolute;
+    const float safeHalfExtent = PIXL_ELEMENT_FIELD_WORLD_SIZE * 0.5f - PIXL_ELEMENT_FIELD_CELL_SIZE;
+    if (any(abs(localPosition) >= safeHalfExtent.xx))
+        return 0.0f.xxxx;
+    float2 texelPosition = clamp(
+        (localPosition / PIXL_ELEMENT_FIELD_WORLD_SIZE + 0.5f) * float(PIXL_ELEMENT_FIELD_SIZE) - 0.5f,
+        0.0f.xx,
+        (float(PIXL_ELEMENT_FIELD_SIZE) - 1.0001f).xx);
+    int2 baseTexel = min((int2)floor(texelPosition), int2(PIXL_ELEMENT_FIELD_SIZE - 2, PIXL_ELEMENT_FIELD_SIZE - 2));
+    float2 f = saturate(texelPosition - float2(baseTexel));
+    float4 s00 = field.Load(int3(GroundElementWrapTexel(baseTexel), 0));
+    float4 s10 = field.Load(int3(GroundElementWrapTexel(baseTexel + int2(1, 0)), 0));
+    float4 s01 = field.Load(int3(GroundElementWrapTexel(baseTexel + int2(0, 1)), 0));
+    float4 s11 = field.Load(int3(GroundElementWrapTexel(baseTexel + int2(1, 1)), 0));
+    return lerp(lerp(s00, s10, f.x), lerp(s01, s11, f.x), f.y);
 }
 
 float4 GroundFilteredCompactionField(float2 absoluteXY, float2 heat)
@@ -980,7 +1007,8 @@ GroundBulkSlump GetGroundBulkSlump(
 
 float PatchTessellation(
     float distanceToCamera,
-    float detailDemand)
+    float detailDemand,
+    float edgeWorldLength)
 {
     if (GroundResponseRuntime::GeometrySelfTestEnabled())
         return 16.0f;
@@ -1033,8 +1061,14 @@ float PatchTessellation(
             mediumToFar);
     regularTess = clamp(regularTess, 1.0f, 16.0f);
 
-    // A modest near-player floor keeps footprints from becoming faceted even
-    // on flat snow, but no longer forces 14x over every nearby patch.
+    // Screen-space approximation: an edge only earns close tessellation when
+    // it subtends useful projected length. This is intentionally quantized
+    // below, keeping shared factors stable as the camera moves.
+    float projectedEdgeDemand = saturate(
+        edgeWorldLength / max(distanceSafe, 1.0f) * 14.0f);
+
+    // A low geometric baseline covers ordinary nearby terrain. Flat patches
+    // stay inexpensive; visible track/drift curvature raises demand below.
     float baseNearWeight =
         1.0f -
         smoothstep(
@@ -1045,7 +1079,7 @@ float PatchTessellation(
         lerp(
             regularTess,
             max(regularTess, PIXL_ADAPTIVE_BASE_TESS),
-            baseNearWeight);
+            baseNearWeight * projectedEdgeDemand);
 
     // Procedural mound/drift regions earn additional tessellation. Close high-
     // detail edges can reach 16x; the boost fades with distance and disappears
@@ -1073,7 +1107,9 @@ float PatchTessellation(
             max(tess, detailTess),
             adaptiveWeight);
 
-    return clamp(tess, 1.0f, 16.0f);
+    // Half-step factors retain fractional-odd crack safety while avoiding
+    // small frame-to-frame factor changes that manifest as shimmer.
+    return clamp(floor(tess * 2.0f + 0.5f) * 0.5f, 1.0f, 16.0f);
 }
 
 PATCH_CONSTANTS PatchConstants(
@@ -1149,15 +1185,15 @@ PATCH_CONSTANTS PatchConstants(
 
     output.Edge[0] =
         edgeMask0 > 1e-4f && d0 < renderDistance
-            ? PatchTessellation(d0, detail0)
+            ? PatchTessellation(d0, detail0, length(p1 - p2))
             : 1.0f;
     output.Edge[1] =
         edgeMask1 > 1e-4f && d1 < renderDistance
-            ? PatchTessellation(d1, detail1)
+            ? PatchTessellation(d1, detail1, length(p2 - p0))
             : 1.0f;
     output.Edge[2] =
         edgeMask2 > 1e-4f && d2 < renderDistance
-            ? PatchTessellation(d2, detail2)
+            ? PatchTessellation(d2, detail2, length(p0 - p1))
             : 1.0f;
     output.Inside = max(output.Edge[0], max(output.Edge[1], output.Edge[2]));
     return output;
@@ -1264,6 +1300,10 @@ TERRAIN_POINT DSMain(
 
         float currentRaise = 0.0f;
         float previousRaise = 0.0f;
+        // Derived gradients describe the same normalized compression signal as
+        // the cached field. The exact local snow/mud capacity scales them below
+        // before the final TBN is rebuilt.
+        float2 currentHeightGradient = 0.0f.xx;
 
         if (GroundResponseRuntime::GeometrySelfTestEnabled()) {
             // Deliberately absurd diagnostic displacement. It bypasses snow, mud,
@@ -1490,10 +1530,23 @@ TERRAIN_POINT DSMain(
             surface.previousFreshness = 0.0f;
 
             if (max(interactionWeight, previousInteractionWeight) > 1.0e-4f) {
-                surface =
-                    GetGroundVerticalSurfaceCompression(
+                if (GroundResponseRuntime::LegacyTerrainSurfaceEnabled()) {
+                    surface = GetGroundVerticalSurfaceCompression(
                         output.GroundBaseWorldPosition,
                         elementalSnow.yw);
+                } else {
+                    float4 derivedResponse = GroundDerivedSampleAbsolute(
+                        GroundDerivedResponseField,
+                        absoluteXY);
+                    surface.current = GroundVerticalCompressionProfile(derivedResponse.x);
+                    surface.previous = GroundVerticalCompressionProfile(derivedResponse.y);
+                    surface.freshness = saturate(derivedResponse.z);
+                    surface.previousFreshness = saturate(derivedResponse.w);
+                    float4 derivedGradient = GroundDerivedSampleAbsolute(
+                        GroundDerivedGradientField,
+                        absoluteXY);
+                    currentHeightGradient = derivedGradient.xy * maximumCompression;
+                }
 
                 surface.current *= interactionWeight;
                 surface.freshness *= interactionWeight;
@@ -1531,10 +1584,23 @@ TERRAIN_POINT DSMain(
             if (bulkWeight > 1.0e-4f &&
                 max(interactionWeight, previousInteractionWeight) > 1.0e-4f)
             {
-                GroundBulkSlump slump =
-                    GetGroundBulkSlump(
-                        absoluteXY,
-                        bulkWeight);
+                GroundBulkSlump slump;
+                if (GroundResponseRuntime::LegacyTerrainSurfaceEnabled()) {
+                    slump = GetGroundBulkSlump(absoluteXY, bulkWeight);
+                } else {
+                    float4 derivedSlump = GroundDerivedSampleAbsolute(
+                        GroundDerivedSlumpField,
+                        absoluteXY);
+                    // Derived berm values already include the progressive
+                    // settling-height envelope. Leave progress at zero so the
+                    // existing capacity math applies it exactly once.
+                    slump.currentPile = saturate(derivedSlump.x);
+                    slump.previousPile = saturate(derivedSlump.y);
+                    slump.currentProgress = 0.0f;
+                    slump.previousProgress = 0.0f;
+                    slump.currentWallCollapse = saturate(derivedSlump.z) * bulkWeight;
+                    slump.previousWallCollapse = saturate(derivedSlump.w) * bulkWeight;
+                }
 
                 // A. BULK WALL DROP / OUTWARD TOE
                 // This temporarily lowers unsupported snow immediately outside
@@ -1657,6 +1723,40 @@ TERRAIN_POINT DSMain(
 
         output.WorldPosition.z += currentRaise;
         output.PreviousWorldPosition.z += previousRaise;
+
+        // The cached field supplies the macro height derivative, while the
+        // material pass still owns the exact snow/mud capacity. Rebuild the
+        // geometric basis instead of leaving normal maps lit as though the
+        // raised shell were flat. This preserves authored tangent-space detail
+        // and gives footprint walls and compressed slopes a matching normal.
+        if (!GroundResponseRuntime::LegacyTerrainSurfaceEnabled() &&
+            dot(currentHeightGradient, currentHeightGradient) > 1.0e-10f)
+        {
+            float3 geometryNormal = GeometryNormalAtPoint(output);
+            if (geometryNormal.z < 0.0f)
+                geometryNormal = -geometryNormal;
+            float3 displacedNormal =
+                geometryNormal +
+                float3(-currentHeightGradient.x, -currentHeightGradient.y, 0.0f);
+            float normalLengthSq = dot(displacedNormal, displacedNormal);
+            if (normalLengthSq > 1.0e-8f)
+            {
+                displacedNormal *= rsqrt(normalLengthSq);
+                float3 tangent = float3(output.TBN0.x, output.TBN1.x, output.TBN2.x);
+                float3 bitangent = float3(output.TBN0.y, output.TBN1.y, output.TBN2.y);
+                float handedness = dot(cross(tangent, bitangent), geometryNormal) < 0.0f ? -1.0f : 1.0f;
+                tangent -= displacedNormal * dot(tangent, displacedNormal);
+                float tangentLengthSq = dot(tangent, tangent);
+                if (tangentLengthSq > 1.0e-8f)
+                {
+                    tangent *= rsqrt(tangentLengthSq);
+                    bitangent = normalize(cross(displacedNormal, tangent)) * handedness;
+                    output.TBN0 = float3(tangent.x, bitangent.x, displacedNormal.x);
+                    output.TBN1 = float3(tangent.y, bitangent.y, displacedNormal.y);
+                    output.TBN2 = float3(tangent.z, bitangent.z, displacedNormal.z);
+                }
+            }
+        }
 
         // b12 c8 is the same ViewProj used by Lighting VS. Re-project the camera-relative
         // displaced world position so raster depth, G-buffer and motion vectors agree.

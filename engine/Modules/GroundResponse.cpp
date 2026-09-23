@@ -110,6 +110,7 @@ static constexpr uint TERRAIN_DEBUG_GEOMETRY_SELF_TEST = 1u << 1;
 // register after the formerly 160-byte b13 payload.
 static constexpr uint TERRAIN_DEBUG_RAW_DIRECTIONAL_SHADOW = 1u << 2;
 static constexpr uint TERRAIN_DEBUG_FOCUS_DIRECTIONAL_SHADOW = 1u << 3;
+static constexpr uint TERRAIN_DEBUG_LEGACY_SURFACE = 1u << 4;
 
 static float ResolveGroundSnowIntensity()
 {
@@ -3451,6 +3452,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GeometrySelfTest,
 	ForceFullSurfaceSimulation,
 	DebugSurfaceTiles,
+	ForceLegacyTerrainSurface,
 	TrackRecoveryRate,
 	TrackHoldSeconds,
 	EnableAnimatedBodyContacts,
@@ -3726,6 +3728,9 @@ void GroundResponse::DrawSettings()
 			if (auto _tt = Util::HoverTooltipWrapper())
 				ImGui::TextWrapped("Phase 2 comparison fallback. Uses the established 1024x1024 full-field compute path instead of tiled dispatches.");
 			changed |= ImGui::Checkbox("Debug Surface Tiles", &settings.DebugSurfaceTiles);
+			changed |= ImGui::Checkbox("Force Legacy Terrain Surface", &settings.ForceLegacyTerrainSurface);
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("Phase 3 comparison fallback. Reconstructs deformation in the Domain Shader instead of consuming the derived dirty-tile field.");
 			ImGui::Text("Surface tiles: %u dispatches, %u stamp references, max %u/tile, full fallbacks %u", static_cast<uint>(queuedSurfaceTileDispatches.size()), surfaceTileStampReferences, surfaceMaximumStampsPerTile, surfaceFullFieldFallbackCount);
 		}
 		ImGui::EndDisabled();
@@ -4633,7 +4638,8 @@ void GroundResponse::Update()
 		perFrameData.TerrainMaterialForge = 0u;
 		perFrameData.TerrainDebug =
 			(settings.DebugInteractionField ? TERRAIN_DEBUG_OVERLAY : 0u) |
-			(settings.GeometrySelfTest ? TERRAIN_DEBUG_GEOMETRY_SELF_TEST : 0u);
+			(settings.GeometrySelfTest ? TERRAIN_DEBUG_GEOMETRY_SELF_TEST : 0u) |
+			(settings.ForceLegacyTerrainSurface ? TERRAIN_DEBUG_LEGACY_SURFACE : 0u);
 		perFrameData.SnowSurfaceThickness = std::clamp(settings.SnowSurfaceThickness, 2.0f, 24.0f);
 		// PIXL_GR_13Y_THREE_STAGE_LOD_CPP_V1
 		// Keep the proven b13 layout unchanged; reinterpret existing near/far
@@ -6033,13 +6039,13 @@ void GroundResponse::SetupResources()
 	perFrame = new ConstantBuffer(ConstantBufferDesc<PerFrame>());
 	surfacePerFrame = new ConstantBuffer(ConstantBufferDesc<SurfaceFieldData>());
 
-	auto createRWTexture = [](uint width, uint height, const char* debugLabel) -> Texture2D* {
+	auto createRWTexture = [](uint width, uint height, const char* debugLabel, DXGI_FORMAT format = DXGI_FORMAT_R16G16B16A16_FLOAT) -> Texture2D* {
 		D3D11_TEXTURE2D_DESC texDesc = {
 			.Width = width,
 			.Height = height,
 			.MipLevels = 1,
 			.ArraySize = 1,
-			.Format = DXGI_FORMAT_R16G16B16A16_FLOAT,
+			.Format = format,
 			.SampleDesc = { .Count = 1 },
 			.Usage = D3D11_USAGE_DEFAULT,
 			.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS
@@ -6096,6 +6102,25 @@ void GroundResponse::SetupResources()
 			SURFACE_TEXTURE_SIZE,
 			SURFACE_TEXTURE_SIZE,
 			"surface elemental snow");
+	// Phase 3 derived terrain data. These textures are populated only for the
+	// same dirty/active tiles as the persistent surface fields, then consumed by
+	// the Domain Shader at t105-t107. Keep them separate from the base history so
+	// disabling the derived path can immediately use the legacy reconstruction.
+	surfaceDerivedResponseTexture =
+		createRWTexture(
+			SURFACE_TEXTURE_SIZE,
+			SURFACE_TEXTURE_SIZE,
+			"surface derived response");
+	surfaceDerivedSlumpTexture =
+		createRWTexture(
+			SURFACE_TEXTURE_SIZE,
+			SURFACE_TEXTURE_SIZE,
+			"surface derived slump");
+	surfaceDerivedGradientTexture =
+		createRWTexture(
+			SURFACE_TEXTURE_SIZE,
+			SURFACE_TEXTURE_SIZE,
+			"surface derived gradient");
 
 	// Ground-facing blood decals use a small dynamic structured buffer instead
 	// of moving Skyrim's decal geometry. The tessellated hull samples these
@@ -6514,6 +6539,9 @@ void GroundResponse::ClearShaderCache()
 	if (surfaceDeformationUpdateCS)
 		surfaceDeformationUpdateCS->Release();
 	surfaceDeformationUpdateCS = nullptr;
+	if (surfaceDerivedUpdateCS)
+		surfaceDerivedUpdateCS->Release();
+	surfaceDerivedUpdateCS = nullptr;
 
 	if (terrainSurfaceHSCW)
 		terrainSurfaceHSCW->Release();
@@ -6827,6 +6855,9 @@ void GroundResponse::Reset()
 		savedTerrainDSSRV102 = nullptr;
 		savedTerrainDSSRV103 = nullptr;
 		savedTerrainDSSRV104 = nullptr;
+		savedTerrainDSSRV105 = nullptr;
+		savedTerrainDSSRV106 = nullptr;
+		savedTerrainDSSRV107 = nullptr;
 		savedTerrainPSSRV104 = nullptr;
 		savedTerrainPSSRV105 = nullptr;
 		savedTerrainPSSRV106 = nullptr;
@@ -6993,6 +7024,8 @@ void GroundResponse::PrepareTerrainPass(RE::BSRenderPass* a_pass)
 	activeTerrainRuntime.TerrainDebug &=
 		~(TERRAIN_DEBUG_RAW_DIRECTIONAL_SHADOW |
 			TERRAIN_DEBUG_FOCUS_DIRECTIONAL_SHADOW);
+	if (!surfaceDerivedDataValid)
+		activeTerrainRuntime.TerrainDebug |= TERRAIN_DEBUG_LEGACY_SURFACE;
 	if (directionalShadowAtlasCaptured &&
 		globals::state &&
 		globals::state->HasDirectionalShadows()) {
@@ -7210,6 +7243,9 @@ void GroundResponse::TerrainPassShaderHacks()
 	context->DSGetShaderResources(102, 1, &savedTerrainDSSRV102);
 	context->DSGetShaderResources(103, 1, &savedTerrainDSSRV103);
 	context->DSGetShaderResources(104, 1, &savedTerrainDSSRV104);
+	context->DSGetShaderResources(105, 1, &savedTerrainDSSRV105);
+	context->DSGetShaderResources(106, 1, &savedTerrainDSSRV106);
+	context->DSGetShaderResources(107, 1, &savedTerrainDSSRV107);
 	context->PSGetShaderResources(104, 1, &savedTerrainPSSRV104);
 	context->PSGetShaderResources(105, 1, &savedTerrainPSSRV105);
 	context->PSGetShaderResources(106, 1, &savedTerrainPSSRV106);
@@ -7237,6 +7273,18 @@ void GroundResponse::TerrainPassShaderHacks()
 	ID3D11ShaderResourceView* bloodStainSRV =
 		bloodStainBuffer ? bloodStainBuffer->srv.get() : nullptr;
 	context->DSSetShaderResources(104, 1, &bloodStainSRV);
+	ID3D11ShaderResourceView* derivedResponseSRV =
+		!settings.ForceLegacyTerrainSurface && surfaceDerivedDataValid && surfaceDerivedResponseTexture
+			? surfaceDerivedResponseTexture->srv.get() : nullptr;
+	ID3D11ShaderResourceView* derivedSlumpSRV =
+		!settings.ForceLegacyTerrainSurface && surfaceDerivedDataValid && surfaceDerivedSlumpTexture
+			? surfaceDerivedSlumpTexture->srv.get() : nullptr;
+	ID3D11ShaderResourceView* derivedGradientSRV =
+		!settings.ForceLegacyTerrainSurface && surfaceDerivedDataValid && surfaceDerivedGradientTexture
+			? surfaceDerivedGradientTexture->srv.get() : nullptr;
+	context->DSSetShaderResources(105, 1, &derivedResponseSRV);
+	context->DSSetShaderResources(106, 1, &derivedSlumpSRV);
+	context->DSSetShaderResources(107, 1, &derivedGradientSRV);
 
 	ID3D11ShaderResourceView* rawShadowAtlasSRV =
 		directionalShadowAtlasCaptured
@@ -7461,6 +7509,9 @@ void GroundResponse::FinishTerrainPass()
 		context->DSSetShaderResources(102, 1, &savedTerrainDSSRV102);
 		context->DSSetShaderResources(103, 1, &savedTerrainDSSRV103);
 		context->DSSetShaderResources(104, 1, &savedTerrainDSSRV104);
+		context->DSSetShaderResources(105, 1, &savedTerrainDSSRV105);
+		context->DSSetShaderResources(106, 1, &savedTerrainDSSRV106);
+		context->DSSetShaderResources(107, 1, &savedTerrainDSSRV107);
 		context->PSSetShaderResources(104, 1, &savedTerrainPSSRV104);
 		context->PSSetShaderResources(105, 1, &savedTerrainPSSRV105);
 		context->PSSetShaderResources(106, 1, &savedTerrainPSSRV106);
@@ -7515,6 +7566,18 @@ void GroundResponse::FinishTerrainPass()
 	if (savedTerrainDSSRV104) {
 		savedTerrainDSSRV104->Release();
 		savedTerrainDSSRV104 = nullptr;
+	}
+	if (savedTerrainDSSRV105) {
+		savedTerrainDSSRV105->Release();
+		savedTerrainDSSRV105 = nullptr;
+	}
+	if (savedTerrainDSSRV106) {
+		savedTerrainDSSRV106->Release();
+		savedTerrainDSSRV106 = nullptr;
+	}
+	if (savedTerrainDSSRV107) {
+		savedTerrainDSSRV107->Release();
+		savedTerrainDSSRV107 = nullptr;
 	}
 	if (savedTerrainPSSRV104) {
 		savedTerrainPSSRV104->Release();
@@ -7571,7 +7634,8 @@ void GroundResponse::BindDefaultRuntimeData()
 	currentPerFrame.TerrainMaterialForge = 0u;
 	currentPerFrame.TerrainDebug =
 		(settings.DebugInteractionField ? TERRAIN_DEBUG_OVERLAY : 0u) |
-		(settings.GeometrySelfTest ? TERRAIN_DEBUG_GEOMETRY_SELF_TEST : 0u);
+		(settings.GeometrySelfTest ? TERRAIN_DEBUG_GEOMETRY_SELF_TEST : 0u) |
+		(settings.ForceLegacyTerrainSurface ? TERRAIN_DEBUG_LEGACY_SURFACE : 0u);
 	currentPerFrame.RuntimeMagic = GROUND_RUNTIME_MAGIC;
 	currentPerFrame.RuntimeVersion = GROUND_RUNTIME_VERSION;
 	perFrame->Update(currentPerFrame);
@@ -7840,6 +7904,18 @@ void GroundResponse::BuildSurfaceTileWork(const SurfaceFieldData& a_data)
 	surfaceTileStampReferences = static_cast<uint>(queuedSurfaceTileStampIndices.size());
 }
 
+ID3D11ComputeShader* GroundResponse::GetSurfaceDerivedUpdateCS()
+{
+	if (!surfaceDerivedUpdateCS) {
+		surfaceDerivedUpdateCS = static_cast<ID3D11ComputeShader*>(
+			Util::CompileShader(
+				L"Data\\Shaders\\GroundResponse\\SurfaceDerivedUpdateCS.hlsl",
+				{},
+				"cs_5_0"));
+	}
+	return surfaceDerivedUpdateCS;
+}
+
 void GroundResponse::UpdateSurfaceDeformationTexture()
 {
 	auto* context = globals::d3d::context;
@@ -7847,6 +7923,9 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 	if (!context || !globals::profiler || !surfaceDeformationTexture ||
 		!surfaceDisplacementTexture ||
 		!surfaceElementalTexture ||
+		!surfaceDerivedResponseTexture ||
+		!surfaceDerivedSlumpTexture ||
+		!surfaceDerivedGradientTexture ||
 		!surfacePerFrame) {
 		return;
 	}
@@ -7862,10 +7941,10 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 	// resources from terrain stages first to avoid SRV/UAV hazards.
 	ID3D11ShaderResourceView* nullSurfacePS = nullptr;
 	context->PSSetShaderResources(101, 1, &nullSurfacePS);
-	ID3D11ShaderResourceView* nullSurfaceDSSRVs[3] = {
-		nullptr, nullptr, nullptr
+	ID3D11ShaderResourceView* nullSurfaceDSSRVs[7] = {
+		nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr
 	};
-	context->DSSetShaderResources(101, 3, nullSurfaceDSSRVs);
+	context->DSSetShaderResources(101, 7, nullSurfaceDSSRVs);
 
 	const std::uint32_t pendingSeasonGeneration =
 		pendingSeasonHistoryGeneration.load(std::memory_order_acquire);
@@ -7881,6 +7960,10 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 		context->ClearUnorderedAccessViewFloat(
 			surfaceElementalTexture->uav.get(),
 			clearSeasonHistory);
+		context->ClearUnorderedAccessViewFloat(surfaceDerivedResponseTexture->uav.get(), clearSeasonHistory);
+		context->ClearUnorderedAccessViewFloat(surfaceDerivedSlumpTexture->uav.get(), clearSeasonHistory);
+		context->ClearUnorderedAccessViewFloat(surfaceDerivedGradientTexture->uav.get(), clearSeasonHistory);
+		surfaceDerivedDataValid = false;
 		appliedSeasonHistoryGeneration = pendingSeasonGeneration;
 		surfaceElementalClearedWhileDisabled = true;
 		logger::info(
@@ -7900,6 +7983,10 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 		context->ClearUnorderedAccessViewFloat(
 			surfaceElementalTexture->uav.get(),
 			clearColor);
+		context->ClearUnorderedAccessViewFloat(surfaceDerivedResponseTexture->uav.get(), clearColor);
+		context->ClearUnorderedAccessViewFloat(surfaceDerivedSlumpTexture->uav.get(), clearColor);
+		context->ClearUnorderedAccessViewFloat(surfaceDerivedGradientTexture->uav.get(), clearColor);
+		surfaceDerivedDataValid = false;
 		surfaceElementalClearedWhileDisabled = true;
 		return;
 	}
@@ -7969,6 +8056,44 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 		nullptr, nullptr, nullptr
 	};
 	context->CSSetUnorderedAccessViews(0, 3, nullUAVs, nullptr);
+
+	// The base surface update is complete. Reconstruct expensive filtered
+	// compaction/slump data once per dirty tile for the terrain DS. If shader
+	// compilation fails, keep the legacy DS path live rather than exposing stale
+	// derived data.
+	auto* derivedCS = GetSurfaceDerivedUpdateCS();
+	if (!derivedCS) {
+		surfaceDerivedDataValid = false;
+		return;
+	}
+	ID3D11ShaderResourceView* derivedInputs[] = {
+		surfaceDeformationTexture->srv.get(),
+		surfaceDisplacementTexture->srv.get(),
+		surfaceElementalTexture->srv.get(),
+		surfaceTileDispatches ? surfaceTileDispatches->srv.get() : nullptr
+	};
+	context->CSSetConstantBuffers(0, 1, &surfaceCB);
+	context->CSSetShaderResources(0, ARRAYSIZE(derivedInputs), derivedInputs);
+	ID3D11UnorderedAccessView* derivedUAVs[] = {
+		surfaceDerivedResponseTexture->uav.get(),
+		surfaceDerivedSlumpTexture->uav.get(),
+		surfaceDerivedGradientTexture->uav.get()
+	};
+	context->CSSetUnorderedAccessViews(0, ARRAYSIZE(derivedUAVs), derivedUAVs, nullptr);
+	context->CSSetShader(derivedCS, nullptr, 0);
+	globals::profiler->BeginPass("GroundResponse::SurfaceDerivedUpdate");
+	if (surfaceTileBuildFailed) {
+		context->Dispatch(SURFACE_TEXTURE_SIZE / 8, SURFACE_TEXTURE_SIZE / 8, 1);
+	} else {
+		context->Dispatch(static_cast<UINT>(queuedSurfaceTileDispatches.size()) * SURFACE_TILE_GROUPS, SURFACE_TILE_GROUPS, 1);
+	}
+	globals::profiler->EndPass();
+	context->CSSetShader(nullptr, nullptr, 0);
+	context->CSSetConstantBuffers(0, 1, &nullBuffer);
+	ID3D11ShaderResourceView* nullDerivedSRVs[4] = { nullptr, nullptr, nullptr, nullptr };
+	context->CSSetShaderResources(0, ARRAYSIZE(nullDerivedSRVs), nullDerivedSRVs);
+	context->CSSetUnorderedAccessViews(0, 3, nullUAVs, nullptr);
+	surfaceDerivedDataValid = true;
 
 }
 
