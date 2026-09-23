@@ -67,6 +67,13 @@ static constexpr float SURFACE_WORLD_SIZE = 4096.0f;
 // Keep the established 4-unit field size. The terrain shader and runtime cache
 // share this ABI; higher resolution requires a coordinated cache/version change.
 static constexpr uint SURFACE_TEXTURE_SIZE = 1024u;
+static constexpr uint SURFACE_TILE_SIZE = 32u;
+static constexpr uint SURFACE_TILE_COUNT = SURFACE_TEXTURE_SIZE / SURFACE_TILE_SIZE;
+static constexpr uint SURFACE_TILE_GROUPS = SURFACE_TILE_SIZE / 8u;
+static constexpr uint SURFACE_TILE_TOTAL = SURFACE_TILE_COUNT * SURFACE_TILE_COUNT;
+static constexpr uint MAX_SURFACE_TILE_STAMP_REFERENCES = 8192u;
+static constexpr uint MAX_SURFACE_ACTIVE_REGIONS = 256u;
+static constexpr float SURFACE_ACTIVE_RECOVERY_SECONDS = 96.0f;
 static constexpr uint MAX_SURFACE_STAMP_BOXES = 64u;
 static constexpr uint MAX_SURFACE_STAMPS_PER_BOX = 24u;
 static constexpr uint MAX_SURFACE_STAMPS = MAX_SURFACE_STAMP_BOXES * MAX_SURFACE_STAMPS_PER_BOX;
@@ -3442,6 +3449,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GroundResponseStrength,
 	DebugInteractionField,
 	GeometrySelfTest,
+	ForceFullSurfaceSimulation,
+	DebugSurfaceTiles,
 	TrackRecoveryRate,
 	TrackHoldSeconds,
 	EnableAnimatedBodyContacts,
@@ -3713,6 +3722,11 @@ void GroundResponse::DrawSettings()
 			changed |= ImGui::Checkbox("Geometry Self-Test (+64 units)", &settings.GeometrySelfTest);
 			if (auto _tt = Util::HoverTooltipWrapper())
 				ImGui::TextWrapped("Diagnostic only. Forces every eligible nearby terrain patch through 16x tessellation and raises the generated surface by 64 units. If the surface does not visibly jump upward, the HS/DS stages are not controlling the draw. Turn this off for normal play.");
+			changed |= ImGui::Checkbox("Force Full Surface Simulation", &settings.ForceFullSurfaceSimulation);
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("Phase 2 comparison fallback. Uses the established 1024x1024 full-field compute path instead of tiled dispatches.");
+			changed |= ImGui::Checkbox("Debug Surface Tiles", &settings.DebugSurfaceTiles);
+			ImGui::Text("Surface tiles: %u dispatches, %u stamp references, max %u/tile, full fallbacks %u", static_cast<uint>(queuedSurfaceTileDispatches.size()), surfaceTileStampReferences, surfaceMaximumStampsPerTile, surfaceFullFieldFallbackCount);
 		}
 		ImGui::EndDisabled();
 		ImGui::TreePop();
@@ -4730,6 +4744,12 @@ void GroundResponse::Update()
 			std::clamp(settings.GroundResponseStrength, 0.0f, 3.0f);
 		surfaceFieldData.ElementalRecoveryRate =
 			std::clamp(settings.ElementalRecoveryRate, 0.0f, 2.0f);
+		surfaceFieldData.ElementalEnabled = settings.EnableElementalSnow ? 1u : 0u;
+		BuildSurfaceTileWork(surfaceFieldData);
+		surfaceFieldData.TileDispatchCount =
+			static_cast<uint>(queuedSurfaceTileDispatches.size());
+		surfaceFieldData.TileMode =
+			surfaceTileBuildFailed ? 0u : 1u;
 
 		// Legacy grass collision shapes are camera-relative at dispatch time.
 		for (auto& collision : queuedCollisions) {
@@ -4783,6 +4803,19 @@ void GroundResponse::Update()
 				bytes);
 			context->Unmap(surfaceStampBoxes->resource.get(), 0);
 		}
+
+		auto uploadSurfaceTileBuffer = [&](Buffer* a_buffer, const auto& a_values, size_t a_capacity) {
+			if (!a_buffer || a_values.empty())
+				return;
+			D3D11_MAPPED_SUBRESOURCE mapped{};
+			DX::ThrowIfFailed(context->Map(a_buffer->resource.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
+			const size_t count = std::min(a_values.size(), a_capacity);
+			memcpy_s(mapped.pData, a_capacity * sizeof(a_values[0]), a_values.data(), count * sizeof(a_values[0]));
+			context->Unmap(a_buffer->resource.get(), 0);
+		};
+		uploadSurfaceTileBuffer(surfaceTileHeaders.get(), queuedSurfaceTileHeaders, SURFACE_TILE_TOTAL);
+		uploadSurfaceTileBuffer(surfaceTileStampIndices.get(), queuedSurfaceTileStampIndices, MAX_SURFACE_TILE_STAMP_REFERENCES);
+		uploadSurfaceTileBuffer(surfaceTileDispatches.get(), queuedSurfaceTileDispatches, SURFACE_TILE_TOTAL);
 
 		queuedBoundingBoxes.clear();
 		queuedCollisions.clear();
@@ -6207,6 +6240,34 @@ void GroundResponse::SetupResources()
 		srvDesc.Buffer.NumElements = MAX_SURFACE_STAMPS;
 		surfaceStamps->CreateSRV(srvDesc);
 	}
+
+	// Phase 2 tile work lists. These are CPU-written structured SRVs; failure to
+	// create any one of them leaves the legacy full-field compute route available.
+	auto createSurfaceTileBuffer = [](uint a_stride, uint a_count, const char* a_name) {
+		D3D11_BUFFER_DESC desc{};
+		desc.Usage = D3D11_USAGE_DYNAMIC;
+		desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+		desc.StructureByteStride = a_stride;
+		desc.ByteWidth = a_stride * a_count;
+		auto buffer = eastl::make_unique<Buffer>(desc, nullptr, a_name);
+		D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+		view.Format = DXGI_FORMAT_UNKNOWN;
+		view.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+		view.Buffer.NumElements = a_count;
+		buffer->CreateSRV(view);
+		return buffer;
+	};
+	surfaceTileHeaders = createSurfaceTileBuffer(
+		sizeof(SurfaceTileHeaderPacked), SURFACE_TILE_TOTAL,
+		"GroundResponse::SurfaceTileHeaders");
+	surfaceTileStampIndices = createSurfaceTileBuffer(
+		sizeof(uint), MAX_SURFACE_TILE_STAMP_REFERENCES,
+		"GroundResponse::SurfaceTileStampIndices");
+	surfaceTileDispatches = createSurfaceTileBuffer(
+		sizeof(SurfaceTileDispatchPacked), SURFACE_TILE_TOTAL,
+		"GroundResponse::SurfaceTileDispatches");
 }
 
 bool GroundResponse::HasShaderDefine(RE::BSShader::Type shaderType)
@@ -6694,14 +6755,14 @@ static ID3D11DepthStencilState* GroundShellGetAuthoritativeDepthState(
 
 void GroundResponse::FlushGeometryTelemetry()
 {
-	if ((!settings.DebugInteractionField && !settings.GeometrySelfTest) ||
+	if ((!settings.DebugInteractionField && !settings.GeometrySelfTest && !settings.DebugSurfaceTiles) ||
 		geometryTelemetry.TerrainPasses == 0u) {
 		geometryTelemetry = {};
 		return;
 	}
 
 	logger::info(
-		"[GroundResponse Geometry] passes={} classified={} mf={} snowBearing={} hard={} soft={} wanted={} hsds={} topologyReject={} existingTess={} shaderFail={} boxes={} playerProxy={} fieldReset={} cameraGuard={} debug={} selfTest={} abi={} stamps={} thickness={:.1f} mudThickness={:.2f}",
+		"[GroundResponse Geometry] passes={} classified={} mf={} snowBearing={} hard={} soft={} wanted={} hsds={} topologyReject={} existingTess={} shaderFail={} boxes={} playerProxy={} fieldReset={} cameraGuard={} debug={} selfTest={} abi={} stamps={} tiles={} refs={} maxRefs={} slabTiles={} fullFallbacks={} thickness={:.1f} mudThickness={:.2f}",
 		geometryTelemetry.TerrainPasses,
 		geometryTelemetry.ClassificationValid,
 		geometryTelemetry.MaterialForgePasses,
@@ -6722,6 +6783,11 @@ void GroundResponse::FlushGeometryTelemetry()
 		(currentPerFrame.RuntimeMagic == GROUND_RUNTIME_MAGIC &&
 			currentPerFrame.RuntimeVersion == GROUND_RUNTIME_VERSION) ? 1 : 0,
 		static_cast<uint>(queuedSurfaceStamps.size()),
+		static_cast<uint>(queuedSurfaceTileDispatches.size()),
+		surfaceTileStampReferences,
+		surfaceMaximumStampsPerTile,
+		surfaceClipmapSlabTiles,
+		surfaceFullFieldFallbackCount,
 		settings.SnowSurfaceThickness,
 		std::clamp(
 			std::max(
@@ -7589,6 +7655,191 @@ void GroundResponse::UpdateCollisionTexture()
 	context->CSSetUnorderedAccessViews(0, 1, null_uavs, nullptr);
 }
 
+void GroundResponse::BuildSurfaceTileWork(const SurfaceFieldData& a_data)
+{
+	surfaceTileBuildFailed = false;
+	queuedSurfaceTileHeaders.assign(SURFACE_TILE_TOTAL, {});
+	queuedSurfaceTileStampIndices.clear();
+	queuedSurfaceTileDispatches.clear();
+	surfaceTileStampReferences = 0u;
+	surfaceMaximumStampsPerTile = 0u;
+	surfaceClipmapSlabTiles = 0u;
+
+	const bool resourcesReady =
+		surfaceTileHeaders && surfaceTileStampIndices && surfaceTileDispatches;
+	if (settings.ForceFullSurfaceSimulation || !resourcesReady) {
+		++surfaceFullFieldFallbackCount;
+		surfaceTileBuildFailed = true;
+		return;
+	}
+
+	std::array<bool, SURFACE_TILE_TOTAL> dirty{};
+	const float tileWorldSize =
+		SURFACE_WORLD_SIZE / static_cast<float>(SURFACE_TILE_COUNT);
+	const float2 fieldMin =
+		a_data.OriginAbsolute - float2{ SURFACE_WORLD_SIZE * 0.5f, SURFACE_WORLD_SIZE * 0.5f };
+
+	auto markBounds = [&](const float2& a_min, const float2& a_max) {
+		const int minX = std::clamp(
+			static_cast<int>(std::floor((a_min.x - fieldMin.x) / tileWorldSize)),
+			0, static_cast<int>(SURFACE_TILE_COUNT - 1u));
+		const int minY = std::clamp(
+			static_cast<int>(std::floor((a_min.y - fieldMin.y) / tileWorldSize)),
+			0, static_cast<int>(SURFACE_TILE_COUNT - 1u));
+		const int maxX = std::clamp(
+			static_cast<int>(std::floor((a_max.x - fieldMin.x) / tileWorldSize)),
+			0, static_cast<int>(SURFACE_TILE_COUNT - 1u));
+		const int maxY = std::clamp(
+			static_cast<int>(std::floor((a_max.y - fieldMin.y) / tileWorldSize)),
+			0, static_cast<int>(SURFACE_TILE_COUNT - 1u));
+		for (int y = minY; y <= maxY; ++y)
+			for (int x = minX; x <= maxX; ++x)
+				dirty[static_cast<size_t>(y) * SURFACE_TILE_COUNT + static_cast<size_t>(x)] = true;
+	};
+
+	// Exposed toroidal slabs have no valid history and must be initialized even
+	// when no new stamp lands there. Mark only their tile rows/columns unless a
+	// full reset explicitly invalidates the entire field.
+	const auto markSlab = [&](int a_delta, bool a_xAxis) {
+		if (a_delta == 0)
+			return;
+		if (std::abs(a_delta) >= static_cast<int>(SURFACE_TEXTURE_SIZE)) {
+			dirty.fill(true);
+			surfaceClipmapSlabTiles = SURFACE_TILE_TOTAL;
+			return;
+		}
+		const uint slabTiles = static_cast<uint>(
+			(std::abs(a_delta) + static_cast<int>(SURFACE_TILE_SIZE) - 1) /
+			static_cast<int>(SURFACE_TILE_SIZE));
+		for (uint outer = 0; outer < SURFACE_TILE_COUNT; ++outer) {
+			for (uint inner = 0; inner < slabTiles; ++inner) {
+				const uint coordinate = a_delta > 0
+					? inner
+					: SURFACE_TILE_COUNT - 1u - inner;
+				const uint index = a_xAxis
+					? outer * SURFACE_TILE_COUNT + coordinate
+					: coordinate * SURFACE_TILE_COUNT + outer;
+				if (!dirty[index]) {
+					dirty[index] = true;
+					++surfaceClipmapSlabTiles;
+				}
+			}
+		}
+	};
+	markSlab(a_data.ValidMargin.x, true);
+	markSlab(a_data.ValidMargin.y, false);
+
+	const float dt = std::clamp(a_data.TimeDelta, 0.0f, MAX_GROUND_FRAME_DELTA);
+	for (auto& region : surfaceActiveRegions)
+		region.RemainingSeconds -= dt;
+	surfaceActiveRegions.erase(
+		std::remove_if(surfaceActiveRegions.begin(), surfaceActiveRegions.end(),
+			[](const SurfaceActiveRegion& a_region) {
+				return a_region.RemainingSeconds <= 0.0f;
+			}),
+		surfaceActiveRegions.end());
+
+	for (const auto& region : surfaceActiveRegions)
+		markBounds(region.MinExtent, region.MaxExtent);
+
+	for (const auto& stamp : queuedSurfaceStamps) {
+		const float extent =
+			std::max(stamp.Radius, stamp.PreviousRadius) * 2.85f + 4.0f;
+		SurfaceActiveRegion region{};
+		region.MinExtent = {
+			std::min(stamp.CurrentPosition.x, stamp.PreviousPosition.x) - extent,
+			std::min(stamp.CurrentPosition.y, stamp.PreviousPosition.y) - extent
+		};
+		region.MaxExtent = {
+			std::max(stamp.CurrentPosition.x, stamp.PreviousPosition.x) + extent,
+			std::max(stamp.CurrentPosition.y, stamp.PreviousPosition.y) + extent
+		};
+		const float elementalLifetime =
+			std::abs(stamp.ElementalDelta) > 1.0e-4f &&
+			settings.ElementalRecoveryRate > 1.0e-4f
+				? std::clamp(
+					std::abs(stamp.ElementalDelta) /
+						settings.ElementalRecoveryRate + 2.5f,
+					SURFACE_ACTIVE_RECOVERY_SECONDS,
+					1800.0f)
+				: SURFACE_ACTIVE_RECOVERY_SECONDS;
+		region.RemainingSeconds = elementalLifetime;
+		bool merged = false;
+		for (auto& active : surfaceActiveRegions) {
+			const bool overlaps =
+				region.MinExtent.x <= active.MaxExtent.x &&
+				region.MaxExtent.x >= active.MinExtent.x &&
+				region.MinExtent.y <= active.MaxExtent.y &&
+				region.MaxExtent.y >= active.MinExtent.y;
+			if (!overlaps)
+				continue;
+			active.MinExtent.x = std::min(active.MinExtent.x, region.MinExtent.x);
+			active.MinExtent.y = std::min(active.MinExtent.y, region.MinExtent.y);
+			active.MaxExtent.x = std::max(active.MaxExtent.x, region.MaxExtent.x);
+			active.MaxExtent.y = std::max(active.MaxExtent.y, region.MaxExtent.y);
+			active.RemainingSeconds = std::max(active.RemainingSeconds, elementalLifetime);
+			merged = true;
+			break;
+		}
+		if (merged) {
+			markBounds(region.MinExtent, region.MaxExtent);
+			continue;
+		}
+		if (surfaceActiveRegions.size() >= MAX_SURFACE_ACTIVE_REGIONS) {
+			++surfaceFullFieldFallbackCount;
+			surfaceTileBuildFailed = true;
+			queuedSurfaceTileDispatches.clear();
+			return;
+		}
+		surfaceActiveRegions.push_back(region);
+		markBounds(region.MinExtent, region.MaxExtent);
+	}
+
+	for (uint tileY = 0; tileY < SURFACE_TILE_COUNT; ++tileY) {
+		for (uint tileX = 0; tileX < SURFACE_TILE_COUNT; ++tileX) {
+			const uint tileIndex = tileY * SURFACE_TILE_COUNT + tileX;
+			if (!dirty[tileIndex])
+				continue;
+			const float2 tileMin = fieldMin + float2{
+				static_cast<float>(tileX) * tileWorldSize,
+				static_cast<float>(tileY) * tileWorldSize
+			};
+			const float2 tileMax = tileMin + float2{ tileWorldSize, tileWorldSize };
+			auto& header = queuedSurfaceTileHeaders[tileIndex];
+			header.Offset = static_cast<uint>(queuedSurfaceTileStampIndices.size());
+			for (uint stampIndex = 0u;
+				stampIndex < queuedSurfaceStamps.size() && stampIndex < MAX_SURFACE_STAMPS;
+				++stampIndex) {
+				const auto& stamp = queuedSurfaceStamps[stampIndex];
+				const float extent = std::max(stamp.Radius, stamp.PreviousRadius) * 2.85f + 4.0f;
+				const float2 stampMin = {
+					std::min(stamp.CurrentPosition.x, stamp.PreviousPosition.x) - extent,
+					std::min(stamp.CurrentPosition.y, stamp.PreviousPosition.y) - extent
+				};
+				const float2 stampMax = {
+					std::max(stamp.CurrentPosition.x, stamp.PreviousPosition.x) + extent,
+					std::max(stamp.CurrentPosition.y, stamp.PreviousPosition.y) + extent
+				};
+				if (stampMax.x < tileMin.x || stampMin.x > tileMax.x ||
+					stampMax.y < tileMin.y || stampMin.y > tileMax.y)
+					continue;
+				if (queuedSurfaceTileStampIndices.size() >= MAX_SURFACE_TILE_STAMP_REFERENCES) {
+					++surfaceFullFieldFallbackCount;
+					surfaceTileBuildFailed = true;
+					queuedSurfaceTileDispatches.clear();
+					queuedSurfaceTileStampIndices.clear();
+					return;
+				}
+				queuedSurfaceTileStampIndices.push_back(stampIndex);
+				++header.Count;
+			}
+			surfaceMaximumStampsPerTile = std::max(surfaceMaximumStampsPerTile, header.Count);
+			queuedSurfaceTileDispatches.push_back({ { tileX, tileY }, 0u, 0u });
+		}
+	}
+	surfaceTileStampReferences = static_cast<uint>(queuedSurfaceTileStampIndices.size());
+}
+
 void GroundResponse::UpdateSurfaceDeformationTexture()
 {
 	auto* context = globals::d3d::context;
@@ -7666,28 +7917,44 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 		surfaceElementalClearedWhileDisabled = false;
 	}
 
+	// No stamps, recovery regions, or newly exposed slabs: leave all three
+	// persistent fields untouched. This is the stationary-world near-zero-cost
+	// case; the full-field fallback remains available below.
+	if (!surfaceTileBuildFailed && queuedSurfaceTileDispatches.empty())
+		return;
+
 	ID3D11Buffer* surfaceCB = surfacePerFrame->CB();
 	context->CSSetConstantBuffers(0, 1, &surfaceCB);
 
 	ID3D11ShaderResourceView* srvs[] = {
 		surfaceStampBoxes ? surfaceStampBoxes->srv.get() : nullptr,
-		surfaceStamps ? surfaceStamps->srv.get() : nullptr
+		surfaceStamps ? surfaceStamps->srv.get() : nullptr,
+		surfaceTileHeaders ? surfaceTileHeaders->srv.get() : nullptr,
+		surfaceTileStampIndices ? surfaceTileStampIndices->srv.get() : nullptr,
+		surfaceTileDispatches ? surfaceTileDispatches->srv.get() : nullptr
 	};
 	context->CSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
 
 	ID3D11UnorderedAccessView* uavs[] = {
 		surfaceDeformationTexture->uav.get(),
 		surfaceDisplacementTexture->uav.get(),
-		surfaceElementalTexture->uav.get()
+		settings.EnableElementalSnow ? surfaceElementalTexture->uav.get() : nullptr
 	};
 	context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 
 	context->CSSetShader(surfaceCS, nullptr, 0);
 	globals::profiler->BeginPass("GroundResponse::SurfaceDeformationUpdate");
-	context->Dispatch(
-		SURFACE_TEXTURE_SIZE / 8,
-		SURFACE_TEXTURE_SIZE / 8,
-		1);
+	if (surfaceTileBuildFailed) {
+		context->Dispatch(
+			SURFACE_TEXTURE_SIZE / 8,
+			SURFACE_TEXTURE_SIZE / 8,
+			1);
+	} else {
+		context->Dispatch(
+			static_cast<UINT>(queuedSurfaceTileDispatches.size()) * SURFACE_TILE_GROUPS,
+			SURFACE_TILE_GROUPS,
+			1);
+	}
 	globals::profiler->EndPass();
 
 	context->CSSetShader(nullptr, nullptr, 0);
@@ -7695,7 +7962,7 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 	ID3D11Buffer* nullBuffer = nullptr;
 	context->CSSetConstantBuffers(0, 1, &nullBuffer);
 
-	ID3D11ShaderResourceView* nullSRVs[2] = { nullptr, nullptr };
+	ID3D11ShaderResourceView* nullSRVs[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
 	context->CSSetShaderResources(0, ARRAYSIZE(nullSRVs), nullSRVs);
 
 	ID3D11UnorderedAccessView* nullUAVs[3] = {

@@ -39,6 +39,10 @@ cbuffer SurfaceFieldCB : register(b0)
 	float SurfaceRecoveryRate;
 	float SurfaceStampStrength;
 	float SurfaceElementalRecoveryRate;
+	uint SurfaceTileDispatchCount;
+	uint SurfaceTileMode;
+	uint SurfaceElementalEnabled;
+	uint SurfaceTilePadding;
 }
 
 struct SurfaceStampBoxPacked
@@ -66,6 +70,26 @@ struct SurfaceStampPacked
 
 StructuredBuffer<SurfaceStampBoxPacked> StampBoxes : register(t0);
 StructuredBuffer<SurfaceStampPacked> Stamps : register(t1);
+
+// CPU-built Phase 2 work metadata. TileHeaders/TileStampIndices are retained
+// alongside the legacy boxes so TileMode=0 remains a byte-for-byte safe full
+// field fallback while the tiled path is live.
+struct SurfaceTileHeaderPacked
+{
+    uint Offset;
+    uint Count;
+    uint pad0;
+    uint pad1;
+};
+struct SurfaceTileDispatchPacked
+{
+    uint2 LogicalTile;
+    uint pad0;
+    uint pad1;
+};
+StructuredBuffer<SurfaceTileHeaderPacked> TileHeaders : register(t2);
+StructuredBuffer<uint> TileStampIndices : register(t3);
+StructuredBuffer<SurfaceTileDispatchPacked> TileDispatches : register(t4);
 RWTexture2D<float4> SurfaceField : register(u0);
 RWTexture2D<float4> SurfaceDisplacementField : register(u1);
 // x=current signed snow height delta (world units), y=current heat smoothing,
@@ -78,6 +102,8 @@ static const uint TEXTURE_SIZE = 1024u;
 static const uint TEXTURE_MASK = TEXTURE_SIZE - 1u;
 static const float WORLD_SIZE = 4096.0f;
 static const float CELL_SIZE = WORLD_SIZE / float(TEXTURE_SIZE);
+static const uint TILE_SIZE = 32u;
+static const uint TILE_GROUPS = TILE_SIZE / 8u;
 
 // Conservative first-pass physical tuning. These are shader-local on purpose:
 // 13AD does not alter the proven 48-byte surface CB or the established 160-byte
@@ -131,18 +157,37 @@ void main(
 	uint3 groupThreadId : SV_GroupThreadID,
 	uint groupIndex : SV_GroupIndex)
 {
+	uint2 outputCell = dispatchThreadId.xy;
+	uint2 logicalCell;
+	uint tileHeaderCount = 0u;
+	if (SurfaceTileMode != 0u)
+	{
+		const uint tileDispatchIndex = groupId.x / TILE_GROUPS;
+		if (tileDispatchIndex >= SurfaceTileDispatchCount || groupId.y >= TILE_GROUPS)
+			return;
+		SurfaceTileDispatchPacked tile = TileDispatches[tileDispatchIndex];
+		tileHeaderCount = TileHeaders[
+			tile.LogicalTile.y * (TEXTURE_SIZE / TILE_SIZE) +
+			tile.LogicalTile.x].Count;
+		logicalCell =
+			tile.LogicalTile * TILE_SIZE +
+			uint2(groupId.x % TILE_GROUPS, groupId.y) * 8u +
+			groupThreadId.xy;
+		outputCell =
+			(logicalCell + SurfaceArrayOrigin) &
+			uint2(TEXTURE_MASK, TEXTURE_MASK);
+	}
+	else
+	{
+		// Inverse toroidal mapping: this physical texel resolves to one logical cell.
+		int2 relativeCell = int2(dispatchThreadId.xy) - int2(SurfaceArrayOrigin);
+		logicalCell = uint2(relativeCell) & uint2(TEXTURE_MASK, TEXTURE_MASK);
+	}
+
 	if (groupIndex < SurfaceStampBoxCount)
 		SharedStampBoxes[groupIndex] = StampBoxes[groupIndex];
 
 	GroupMemoryBarrierWithGroupSync();
-
-	// Inverse toroidal mapping: this physical texel resolves to one logical cell.
-	int2 relativeCell =
-		int2(dispatchThreadId.xy) -
-		int2(SurfaceArrayOrigin);
-	uint2 logicalCell =
-		uint2(relativeCell) &
-		uint2(TEXTURE_MASK, TEXTURE_MASK);
 
 	float2 worldPos =
 		SurfaceOriginAbsolute +
@@ -178,11 +223,9 @@ void main(
 	if (historyValid)
 	{
 		float4 history =
-			saturate(SurfaceField[dispatchThreadId.xy]);
+			saturate(SurfaceField[outputCell]);
 		float4 displacementHistory =
-			saturate(SurfaceDisplacementField[dispatchThreadId.xy]);
-		float4 elementalHistory =
-			SurfaceElementalField[dispatchThreadId.xy];
+			saturate(SurfaceDisplacementField[outputCell]);
 
 		compaction = history.x;
 		freshness = history.y;
@@ -194,25 +237,20 @@ void main(
 		previousDisplacedSnow = displacedSnow;
 		previousSettling = settling;
 
-		elementalHeight =
-			clamp(
-				elementalHistory.x,
-				-ELEMENTAL_HEIGHT_HARD_LIMIT,
-				 ELEMENTAL_HEIGHT_HARD_LIMIT);
-		heatSmoothing = saturate(elementalHistory.y);
-		previousElementalHeight = elementalHeight;
-		previousHeatSmoothing = heatSmoothing;
-
-		// Elemental snow changes are persistent but weather/time slowly restores
-		// the authored baseline. Heat smoothing is intentionally short-lived.
-		float elementalRecovery =
-			max(SurfaceElementalRecoveryRate, 0.0f) * dt;
-		if (elementalHeight > 0.0f)
-			elementalHeight = max(elementalHeight - elementalRecovery, 0.0f);
-		else if (elementalHeight < 0.0f)
-			elementalHeight = min(elementalHeight + elementalRecovery, 0.0f);
-		heatSmoothing =
-			max(heatSmoothing - dt * HEAT_SMOOTHING_DECAY_RATE, 0.0f);
+		if (SurfaceElementalEnabled != 0u)
+		{
+			float4 elementalHistory = SurfaceElementalField[outputCell];
+			elementalHeight = clamp(elementalHistory.x, -ELEMENTAL_HEIGHT_HARD_LIMIT, ELEMENTAL_HEIGHT_HARD_LIMIT);
+			heatSmoothing = saturate(elementalHistory.y);
+			previousElementalHeight = elementalHeight;
+			previousHeatSmoothing = heatSmoothing;
+			float elementalRecovery = max(SurfaceElementalRecoveryRate, 0.0f) * dt;
+			if (elementalHeight > 0.0f)
+				elementalHeight = max(elementalHeight - elementalRecovery, 0.0f);
+			else if (elementalHeight < 0.0f)
+				elementalHeight = min(elementalHeight + elementalRecovery, 0.0f);
+			heatSmoothing = max(heatSmoothing - dt * HEAT_SMOOTHING_DECAY_RATE, 0.0f);
+		}
 
 		float holdSeconds =
 			max(SurfaceTrackHoldSeconds, 0.0f);
@@ -229,18 +267,35 @@ void main(
 
 	bool interactionThisFrame = false;
 
-	[loop] for (uint i = 0u; i < SurfaceStampBoxCount; ++i)
+	// Tiled dispatches consume only their compact CPU-generated stamp index list.
+	// Legacy mode retains the exact box-culling loop for the developer fallback.
+	SurfaceTileHeaderPacked tileHeader;
+	if (SurfaceTileMode != 0u)
+		tileHeader = TileHeaders[
+			logicalCell.y / TILE_SIZE * (TEXTURE_SIZE / TILE_SIZE) +
+			logicalCell.x / TILE_SIZE];
+	const uint stampSourceCount =
+		SurfaceTileMode != 0u ? tileHeaderCount : SurfaceStampBoxCount;
+	[loop] for (uint i = 0u; i < stampSourceCount; ++i)
 	{
-		SurfaceStampBoxPacked box =
-			SharedStampBoxes[i];
+		uint stampStart;
+		uint stampEnd;
+		if (SurfaceTileMode != 0u)
+		{
+			stampStart = TileStampIndices[tileHeader.Offset + i];
+			stampEnd = stampStart + 1u;
+		}
+		else
+		{
+			SurfaceStampBoxPacked box = SharedStampBoxes[i];
+			if (!all(worldPos >= box.MinExtent && worldPos <= box.MaxExtent))
+				continue;
+			stampStart = box.IndexStart;
+			stampEnd = box.IndexEnd;
+		}
 
-		if (!all(
-			worldPos >= box.MinExtent &&
-			worldPos <= box.MaxExtent))
-			continue;
-
-		[loop] for (uint j = box.IndexStart;
-			j < box.IndexEnd;
+		[loop] for (uint j = stampStart;
+			j < stampEnd;
 			++j)
 		{
 			SurfaceStampPacked stamp = Stamps[j];
@@ -408,7 +463,7 @@ void main(
 			// target simply because the engine reports several impacts.
 			float elementalMask =
 				saturate(falloff * longitudinalFalloff);
-			if (elementalMask > 1e-5f)
+			if (SurfaceElementalEnabled != 0u && elementalMask > 1e-5f)
 			{
 				float elementalTarget =
 					clamp(
@@ -504,24 +559,27 @@ void main(
 		}
 	}
 
-	SurfaceField[dispatchThreadId.xy] =
+	SurfaceField[outputCell] =
 		float4(
 			saturate(compaction),
 			saturate(freshness),
 			saturate(previousCompaction),
 			saturate(previousFreshness));
 
-	SurfaceDisplacementField[dispatchThreadId.xy] =
+	SurfaceDisplacementField[outputCell] =
 		float4(
 			saturate(displacedSnow),
 			saturate(settling),
 			saturate(previousDisplacedSnow),
 			saturate(previousSettling));
 
-	SurfaceElementalField[dispatchThreadId.xy] =
-		float4(
-			clamp(elementalHeight, -ELEMENTAL_HEIGHT_HARD_LIMIT, ELEMENTAL_HEIGHT_HARD_LIMIT),
-			saturate(heatSmoothing),
-			clamp(previousElementalHeight, -ELEMENTAL_HEIGHT_HARD_LIMIT, ELEMENTAL_HEIGHT_HARD_LIMIT),
-			saturate(previousHeatSmoothing));
+	if (SurfaceElementalEnabled != 0u)
+	{
+		SurfaceElementalField[outputCell] =
+			float4(
+				clamp(elementalHeight, -ELEMENTAL_HEIGHT_HARD_LIMIT, ELEMENTAL_HEIGHT_HARD_LIMIT),
+				saturate(heatSmoothing),
+				clamp(previousElementalHeight, -ELEMENTAL_HEIGHT_HARD_LIMIT, ELEMENTAL_HEIGHT_HARD_LIMIT),
+				saturate(previousHeatSmoothing));
+	}
 }

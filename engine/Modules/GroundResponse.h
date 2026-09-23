@@ -79,6 +79,11 @@ public:
 		float GroundResponseStrength = 1.0f;
 		bool DebugInteractionField = false;
 		bool GeometrySelfTest = false;
+		// Developer safety valve for Phase 2 tile scheduling. Kept serialized so a
+		// problematic driver/mod combination can immediately return to the proven
+		// full 1024² update without changing deformation semantics.
+		bool ForceFullSurfaceSimulation = false;
+		bool DebugSurfaceTiles = false;
 		// Persistent field recovery in world units per second. New tracks are held
 		// unchanged for TrackHoldSeconds before this recovery begins.
 		float TrackRecoveryRate = 0.25f;
@@ -178,11 +183,34 @@ public:
 		float RecoveryRate = 0.0f;   // normalized compaction units / second
 		float StampStrength = 1.0f;
 		float ElementalRecoveryRate = 0.0f;
+		uint TileDispatchCount = 0u;
+		uint TileMode = 0u; // 0 = legacy full field, 1 = compact tiled dispatch
+		uint ElementalEnabled = 0u;
+		uint pad1 = 0u;
 	};
 	STATIC_ASSERT_ALIGNAS_16(SurfaceFieldData);
+
+	struct SurfaceTileHeaderPacked
+	{
+		uint Offset = 0u;
+		uint Count = 0u;
+		uint pad0 = 0u;
+		uint pad1 = 0u;
+	};
+	STATIC_ASSERT_ALIGNAS_16(SurfaceTileHeaderPacked);
+
+	struct SurfaceTileDispatchPacked
+	{
+		DirectX::XMUINT2 LogicalTile{};
+		uint pad0 = 0u;
+		uint pad1 = 0u;
+	};
+	STATIC_ASSERT_ALIGNAS_16(SurfaceTileDispatchPacked);
 	static_assert(sizeof(SurfaceStampBoxPacked) == 32, "GroundResponse::SurfaceStampBoxPacked ABI mismatch.");
 	static_assert(sizeof(SurfaceStampPacked) == 48, "GroundResponse::SurfaceStampPacked ABI mismatch.");
-	static_assert(sizeof(SurfaceFieldData) == 48, "GroundResponse::SurfaceFieldData ABI mismatch.");
+	static_assert(sizeof(SurfaceFieldData) == 64, "GroundResponse::SurfaceFieldData ABI mismatch.");
+	static_assert(sizeof(SurfaceTileHeaderPacked) == 16, "GroundResponse::SurfaceTileHeaderPacked ABI mismatch.");
+	static_assert(sizeof(SurfaceTileDispatchPacked) == 16, "GroundResponse::SurfaceTileDispatchPacked ABI mismatch.");
 
 	struct PerFrame
 	{
@@ -269,11 +297,31 @@ public:
 	eastl::unique_ptr<Buffer> collisionInstances = nullptr;
 	eastl::unique_ptr<Buffer> surfaceStampBoxes = nullptr;
 	eastl::unique_ptr<Buffer> surfaceStamps = nullptr;
+	eastl::unique_ptr<Buffer> surfaceTileHeaders = nullptr;
+	eastl::unique_ptr<Buffer> surfaceTileStampIndices = nullptr;
+	eastl::unique_ptr<Buffer> surfaceTileDispatches = nullptr;
 
 	eastl::vector<BoundingBoxPacked> queuedBoundingBoxes;
 	eastl::vector<float4> queuedCollisions;
 	eastl::vector<SurfaceStampBoxPacked> queuedSurfaceStampBoxes;
 	eastl::vector<SurfaceStampPacked> queuedSurfaceStamps;
+	eastl::vector<SurfaceTileHeaderPacked> queuedSurfaceTileHeaders;
+	eastl::vector<uint> queuedSurfaceTileStampIndices;
+	eastl::vector<SurfaceTileDispatchPacked> queuedSurfaceTileDispatches;
+
+	struct SurfaceActiveRegion
+	{
+		float2 MinExtent{};
+		float2 MaxExtent{};
+		float RemainingSeconds = 0.0f;
+	};
+	eastl::vector<SurfaceActiveRegion> surfaceActiveRegions;
+	uint surfaceFullFieldFallbackCount = 0u;
+	bool surfaceTileBuildFailed = false;
+	uint surfaceClipmapSlabTiles = 0u;
+	uint surfaceTileStampReferences = 0u;
+	uint surfaceMaximumStampsPerTile = 0u;
+	void BuildSurfaceTileWork(const SurfaceFieldData& a_data);
 
 	/** @brief Releases cached GroundResponse compute/tessellation shaders. */
 	virtual void ClearShaderCache() override;
