@@ -6,6 +6,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$trackedPipelineFiles = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+@(& git -C $repo ls-files -- pipeline) | ForEach-Object {
+    $null = $trackedPipelineFiles.Add($_.Replace('/', '\'))
+}
+if ($LASTEXITCODE -ne 0) { throw "Unable to enumerate tracked pipeline files for package audit." }
 if ([string]::IsNullOrWhiteSpace($BuildDirectory)) {
     $BuildDirectory = Join-Path $repo "build\PIXL-12C\Release"
 }
@@ -180,6 +185,11 @@ Get-ChildItem -LiteralPath (Join-Path $repo "pipeline") -Directory | ForEach-Obj
     if (Test-Path -LiteralPath $kernelRoot -PathType Container) {
         $kernelPrefix = $kernelRoot.TrimEnd('\') + '\'
         Get-ChildItem -LiteralPath $kernelRoot -Recurse -File | ForEach-Object {
+            # StagePixlRendererStandalone deliberately ships tracked pipeline
+            # files only. Match that rule here so a user-supplied local NR DLL
+            # cannot make a valid public package fail the source/package audit.
+            $repositoryRelative = $_.FullName.Substring($repo.TrimEnd('\').Length + 1).Replace('/', '\')
+            if (-not $trackedPipelineFiles.Contains($repositoryRelative)) { return }
             $relative = $_.FullName.Substring($kernelPrefix.Length)
             $null = $availableRuntimeAssets.Add($relative)
             if (-not $retired) {
