@@ -103,10 +103,44 @@ cbuffer cb8 : register(b8)
 	float4 cb8[240];
 }
 
+// Wind state that is invariant between the current and previous displacement
+// evaluations of a grass vertex. Calculating it once avoids repeating the world
+// transform, direction normalization and spatial hash while retaining the exact
+// timer-dependent field needed for motion vectors.
+struct GrassWindContext
+{
+	float2 WindDirection;
+	float2 CrossWind;
+	float2 AbsoluteAnchor;
+	float InstanceSeed;
+};
+
+GrassWindContext BuildGrassWindContext(VS_INPUT input)
+{
+	GrassWindContext context;
+	context.WindDirection = FoliageWind::SafeDirection(
+		WindVector.xy, float2(0.8192319f, 0.5734624f));
+	context.CrossWind = float2(-context.WindDirection.y, context.WindDirection.x);
+
+	// InstanceData1 is in the grass model's coordinate system. Transform the
+	// anchor before restoring Skyrim's camera-relative world origin so gusts do
+	// not follow the camera or slide on rotated grass batches.
+	float3 absoluteAnchorWS =
+		mul(World, float4(input.InstanceData1.xyz, 1.0f)).xyz +
+		FrameBuffer::CameraPosAdjust.xyz;
+	context.AbsoluteAnchor = absoluteAnchorWS.xy;
+	context.InstanceSeed = FoliageWind::Hash12(floor(context.AbsoluteAnchor * 0.015625f));
+	return context;
+}
+
 // Calculate wind displacement for a grass vertex. Skyrim's authored wind stays
 // authoritative; PIXL adds one broad gust and a restrained tip response. Current
 // and previous timers use the identical field for coherent TAA/motion vectors.
-float3 CalculateWindDisplacement(VS_INPUT input, float windTimer)
+float3 CalculateWindDisplacement(
+	VS_INPUT input,
+	float windTimer,
+	GrassWindContext enhancedContext,
+	bool enhancedWind)
 {
 	float windAngle =
 		0.4f * ((input.InstanceData1.x + input.InstanceData1.y) * -0.0078125f + windTimer);
@@ -124,28 +158,16 @@ float3 CalculateWindDisplacement(VS_INPUT input, float windTimer)
 
 	float3 legacyDisplacement = float3(WindVector.xy, 0.0f) * windPower;
 	float3 result = legacyDisplacement;
-	if (SharedData::foliageDynamicsSettings.EnableEnhancedWind != 0)
+	if (enhancedWind)
 	{
-		float2 windDirection = FoliageWind::SafeDirection(
-			WindVector.xy, float2(0.8192319f, 0.5734624f));
-		float2 crossWind = float2(-windDirection.y, windDirection.x);
-
-		// InstanceData1 is in the grass model's coordinate system. Transform the
-		// anchor before restoring Skyrim's camera-relative world origin so gusts do
-		// not follow the camera or slide on rotated grass batches.
-		float3 absoluteAnchorWS =
-			mul(World, float4(input.InstanceData1.xyz, 1.0f)).xyz +
-			FrameBuffer::CameraPosAdjust.xyz;
-		float2 absoluteAnchor = absoluteAnchorWS.xy;
-		float instanceSeed = FoliageWind::Hash12(floor(absoluteAnchor * 0.015625f));
 		FoliageWind::GrassGustField windField = FoliageWind::SampleGrassGust(
-			absoluteAnchor,
+			enhancedContext.AbsoluteAnchor,
 			windTimer,
-			windDirection,
+			enhancedContext.WindDirection,
 			SharedData::foliageDynamicsSettings.WindSpatialScale,
 			SharedData::foliageDynamicsSettings.GustSpeed,
 			SharedData::foliageDynamicsSettings.FlutterSpeed,
-			instanceSeed);
+			enhancedContext.InstanceSeed);
 
 		// Vertex alpha is Skyrim's authored bend weight: keep roots still and let
 		// tips carry the small cross-wind/flutter component.
@@ -159,11 +181,11 @@ float3 CalculateWindDisplacement(VS_INPUT input, float windTimer)
 		float legacyEnvelope = 1.0f +
 			(windField.Gust - 0.35f) * (0.24f * gustAmount);
 		float3 structural = legacyDisplacement * legacyEnvelope;
-		float3 gustBend = float3(windDirection, 0.0f) *
+		float3 gustBend = float3(enhancedContext.WindDirection, 0.0f) *
 			(weatherEnergy * stemResponse * windField.Gust * 0.105f * gustAmount);
-		float3 crossBend = float3(crossWind, 0.0f) *
+		float3 crossBend = float3(enhancedContext.CrossWind, 0.0f) *
 			(weatherEnergy * stemResponse * windField.Crosswind * 0.026f * gustAmount);
-		float3 tipFlutter = float3(crossWind, 0.0f) *
+		float3 tipFlutter = float3(enhancedContext.CrossWind, 0.0f) *
 			(weatherEnergy * tipResponse * windField.Flutter * 0.038f * flutterAmount);
 
 		// Zero is exact vanilla. The added displacement is bounded separately from
@@ -180,6 +202,23 @@ float3 CalculateWindDisplacement(VS_INPUT input, float windTimer)
 	}
 
 	return result;
+}
+
+void CalculateWindDisplacementPair(
+	VS_INPUT input,
+	out float3 currentDisplacement,
+	out float3 previousDisplacement)
+{
+	const bool enhancedWind =
+		SharedData::foliageDynamicsSettings.EnableEnhancedWind != 0;
+	GrassWindContext context = (GrassWindContext)0;
+	if (enhancedWind)
+		context = BuildGrassWindContext(input);
+
+	currentDisplacement = CalculateWindDisplacement(
+		input, WindTimer, context, enhancedWind);
+	previousDisplacement = CalculateWindDisplacement(
+		input, PreviousWindTimer, context, enhancedWind);
 }
 
 #	ifdef FOLIAGE_DYNAMICS
@@ -218,8 +257,8 @@ VS_OUTPUT main(VS_INPUT input)
 
 	float4 msPosition = GetMSPosition(input, world3x3);
 
-	float3 windDisplacement = CalculateWindDisplacement(input, WindTimer);
-	float3 previousWindDisplacement = CalculateWindDisplacement(input, PreviousWindTimer);
+	float3 windDisplacement, previousWindDisplacement;
+	CalculateWindDisplacementPair(input, windDisplacement, previousWindDisplacement);
 
 #		ifdef GROUND_RESPONSE
 	float3 displacement, previousDisplacement;
@@ -274,8 +313,8 @@ VS_OUTPUT main(VS_INPUT input)
 
 	float4 msPosition = GetMSPosition(input);
 
-	float3 windDisplacement = CalculateWindDisplacement(input, WindTimer);
-	float3 previousWindDisplacement = CalculateWindDisplacement(input, PreviousWindTimer);
+	float3 windDisplacement, previousWindDisplacement;
+	CalculateWindDisplacementPair(input, windDisplacement, previousWindDisplacement);
 
 #		ifdef GROUND_RESPONSE
 	float3 displacement, previousDisplacement;
