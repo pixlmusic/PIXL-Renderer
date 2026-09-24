@@ -41,6 +41,7 @@ $shaderCount = @(Get-ChildItem -LiteralPath (Join-Path $core 'Shaders') -File -R
 [ordered]@{
     product = 'PIXL Renderer'
     version = $Version
+    releaseReadiness = 'live-test-candidate'
     buildConfiguration = 'Release'
     commit = $commit
     sourceWorkingTreeDirty = $dirty
@@ -52,6 +53,7 @@ $shaderCount = @(Get-ChildItem -LiteralPath (Join-Path $core 'Shaders') -File -R
     shippedShaderFiles = $shaderCount
     coreManifestPayloads = @($packageManifest.files).Count
     artifacts = $artifacts
+    exhaustiveSourceReviewRequired = $true
     manualTestsRequired = $true
 } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $release 'RELEASE_MANIFEST.json') -Encoding UTF8
 $checksums | Set-Content -LiteralPath (Join-Path $release 'SHA256SUMS.txt') -Encoding ASCII
