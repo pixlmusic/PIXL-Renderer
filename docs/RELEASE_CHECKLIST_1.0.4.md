@@ -19,7 +19,7 @@ Status values: PASS, FAIL, MANUAL TEST REQUIRED, IN PROGRESS.
 | Configuration migration | MANUAL TEST REQUIRED | Existing keys retained; default and five preset JSON files parse, but a 1.0.3a user profile still needs live load. |
 | Debug features off by default | PASS (static) | Default JSON has zero for `DebugView`, `LegacyPhysicalDebugMode`, and `TerrainHeightDebugMode`; inspect live UI too. |
 | Core ZIP | PASS | 341 archive entries; 340 manifest payloads verified, version 1.0.4. |
-| Source ZIP | PASS | 1,015 entries; current commit and working-tree snapshot, required files present, generated/private files excluded. |
+| Source ZIP | PASS | 1,016 entries; current commit and working-tree snapshot, required files present, generated/private files excluded. |
 | FOMOD ZIP | PASS | 364 archive entries; XML schema, optional SurfaceTides bridge and notices validated. |
 | SurfaceTides source companion | PASS | Matching 1.0.2 modified source archive built and hash verified. |
 | Main-game deployment | PASS | All 340 live payloads hash-match Core. DLL 1.0.4.0 hash `6436832FFA5AD9BAECDCD6DD9AA86A27E6CDD2A6D61787419C62A994A911FD13`. Backup recorded under `build/deployment-backups`. |
