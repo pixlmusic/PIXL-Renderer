@@ -25,6 +25,11 @@ namespace SIE
 	// shared by shader families which do not enable the changed module's define.
 	static constexpr const char* kPipelineCacheLayout = "PIXL.StageShard.v1";
 	static constexpr const char* kSharedShaderABI = "PIXL.SharedBuffers.20260902.1";
+	// Global Lighting/PBR/glint shader semantics changed across the 1.0.4
+	// candidate. They reach shader families beyond one module's define, so a
+	// dedicated revision invalidates old compiled stages without mislabeling an
+	// unchanged CPU/HLSL buffer ABI as a new layout.
+	static constexpr const char* kPipelineShaderRevision = "PIXL.Shaders.20260925.1";
 
 	// Custom include handler to track all includes during shader compilation
 	class TrackingIncludeHandler : public ID3DInclude
@@ -2552,6 +2557,12 @@ namespace SIE
 				shaderABI ? shaderABI : "(missing)");
 			baseCacheValid = false;
 		}
+		if (auto shaderRevision = ini.GetValue("Cache", "ShaderRevision");
+			!shaderRevision || strcmp(shaderRevision, kPipelineShaderRevision) != 0) {
+			logger::info("Disk cache outdated: shared shader revision changed (current: {}, cached: {})",
+				kPipelineShaderRevision, shaderRevision ? shaderRevision : "(missing)");
+			baseCacheValid = false;
+		}
 
 		// Validate every module independently. A module version/load-state change no
 		// longer destroys unrelated pipeline families: remove only the shader types
@@ -2735,6 +2746,7 @@ namespace SIE
 		std::filesystem::create_directories(L"Data/PIXL/PipelineLibrary");
 		ini.SetValue("Cache", "Layout", kPipelineCacheLayout);
 		ini.SetValue("Cache", "ShaderABI", kSharedShaderABI);
+		ini.SetValue("Cache", "ShaderRevision", kPipelineShaderRevision);
 		ini.SaveFile(L"Data\\PIXL\\PipelineLibrary\\Library.ini");
 		logger::info("Saved PIXL pipeline library metadata (plugin version: {})", Plugin::VERSION.string());
 	}

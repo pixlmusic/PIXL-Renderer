@@ -1,10 +1,10 @@
-# PIXL Renderer 1.0.3a installer notice
+# PIXL Renderer 1.0.4 installer notice
 
 Neural Rendering is optional and its runtime DLL is not bundled. Select Neural
 Rendering in Quick Setup for the illustrated manual-install guide, or open NR
 Setup Guide in the renderer's Neural Rendering panel. Follow the packaged README,
 check the file, save settings and fully restart Skyrim. Ordinary rendering does
-not need NR. This silent 1.0.3a refresh preserves existing user settings.
+not need NR. Existing user settings remain in place during the update.
 
 PIXL Renderer is an owner-directed graphics project developed through hands-on
 testing, experimentation and substantial AI assistance. AI tools assisted with

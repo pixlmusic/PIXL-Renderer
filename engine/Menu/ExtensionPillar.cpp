@@ -6,6 +6,8 @@
 
 #include <imgui_internal.h>
 
+#include <Windows.h>
+
 namespace PIXLUI::Extensions
 {
 	namespace
@@ -13,6 +15,20 @@ namespace PIXLUI::Extensions
 		bool open = false;
 		Handle selected = 0;
 		bool initialized = false;
+
+		void DrawSurfaceTidesIcon()
+		{
+			const auto origin = ImGui::GetCursorScreenPos();
+			const float unit = Ref(1.0f);
+			ImGui::Dummy(ImVec2(Ref(18.0f), ImGui::GetTextLineHeight()));
+			auto* draw = ImGui::GetWindowDrawList();
+			const auto color = Colors::CyanSoft;
+			for (float y : { 4.0f, 9.0f })
+				draw->AddBezierCubic(ImVec2(origin.x, origin.y + y * unit),
+					ImVec2(origin.x + 5.0f * unit, origin.y + (y - 4.0f) * unit),
+					ImVec2(origin.x + 9.0f * unit, origin.y + (y + 4.0f) * unit),
+					ImVec2(origin.x + 17.0f * unit, origin.y + y * unit), color, Ref(1.5f));
+		}
 
 		template <class Callback>
 		bool Invoke(Entry& entry, Callback&& callback)
@@ -38,6 +54,19 @@ namespace PIXLUI::Extensions
 					ExternalPostProcessing::DrawENBQuickStyles();
 				},
 				{}, "S" });
+			// SurfaceTides owns its compatibility handshake. PIXL can identify the
+			// loaded SKSE module, but cannot infer whether its water draws are active.
+			(void)GetRegistry().Register({ "pixl.surfacetides", "SurfaceTides", "Compatibility", 10,
+				[] {
+					ImGui::TextWrapped("SurfaceTides 1.0.2 can provide tessellated water geometry while PIXL keeps water shading. Install the matching PIXL bridge through the optional installer choice.");
+					ImGui::Spacing();
+					ImGui::TextWrapped("The loaded DLL alone does not prove the water-draw handshake succeeded. Check SurfaceTides.log for the PIXL coexistence result.");
+				},
+				[] {
+					if (!GetModuleHandleW(L"SurfaceTides.dll"))
+						return Availability{ false, "SurfaceTides is not loaded. PIXL water remains available.", Status::NotInstalled };
+					return Availability{ true, "Loaded; water-draw compatibility must be confirmed in SurfaceTides.log.", Status::Detected };
+				}, "" });
 		}
 	}
 
@@ -87,7 +116,10 @@ namespace PIXLUI::Extensions
 						ImGui::SeparatorText(entry->panel.category.c_str());
 					}
 					ImGui::PushID(entry->panel.identifier.c_str());
-					if (!entry->panel.icon.empty()) {
+					if (entry->panel.identifier == "pixl.surfacetides") {
+						DrawSurfaceTidesIcon();
+						ImGui::SameLine();
+					} else if (!entry->panel.icon.empty()) {
 						ImGui::TextColored(ToVec4(Colors::CyanSoft), "%s", entry->panel.icon.c_str());
 						ImGui::SameLine();
 					}
@@ -106,10 +138,30 @@ namespace PIXLUI::Extensions
 						Availability status;
 						if (active->panel.availability)
 							Invoke(*active, [&] { status = active->panel.availability(); });
+						if (!active->faulted) {
+							const char* label = "AVAILABLE";
+							ImU32 tone = Colors::CyanSoft;
+							switch (status.status) {
+							case Status::Detected: label = "DETECTED"; tone = Colors::Warning; break;
+							case Status::NotInstalled: label = "NOT INSTALLED"; tone = Colors::TextDim; break;
+							case Status::Unsupported: label = "UNSUPPORTED"; tone = Colors::Warning; break;
+							case Status::Error: label = "ERROR"; tone = Colors::Warning; break;
+							default: break;
+							}
+							if (!status.available && status.status == Status::Available) {
+								label = "UNAVAILABLE";
+								tone = Colors::TextDim;
+							}
+							ImGui::TextColored(ToVec4(tone), "%s", label);
+							if (!status.reason.empty())
+								ImGui::TextWrapped("%s", status.reason.c_str());
+							ImGui::Separator();
+						}
 						if (active->faulted) {
 							ImGui::TextWrapped("This extension was stopped after an error. Other PIXL controls remain available. See PIXLRenderer.log.");
 						} else if (!status.available) {
-							ImGui::TextWrapped("Unavailable: %s", status.reason.empty() ? "Requirements are not met." : status.reason.c_str());
+							if (status.reason.empty())
+								ImGui::TextWrapped("Requirements are not met.");
 						} else {
 							EngineeringStyleScope style;
 							Invoke(*active, [&] { active->panel.draw(); });

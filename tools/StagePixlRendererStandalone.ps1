@@ -19,6 +19,17 @@ if (-not [string]::IsNullOrWhiteSpace($NeuralRuntimePath)) {
     throw 'NR runtimes are manual-install only and cannot be bundled. Omit -NeuralRuntimePath.'
 }
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$shaderCacheSource = Get-Content -LiteralPath (Join-Path $sourceRoot 'engine\ShaderCache.cpp') -Raw
+function Get-ShaderCacheConstant([string]$name) {
+    $match = [regex]::Match($shaderCacheSource, 'static constexpr const char\*\s+' + [regex]::Escape($name) + '\s*=\s*"([^"]+)"')
+    if (!$match.Success) { throw "Missing shader cache constant in ShaderCache.cpp: $name" }
+    return $match.Groups[1].Value
+}
+$expectedCache = @{
+    Layout = Get-ShaderCacheConstant 'kPipelineCacheLayout'
+    ShaderABI = Get-ShaderCacheConstant 'kSharedShaderABI'
+    ShaderRevision = Get-ShaderCacheConstant 'kPipelineShaderRevision'
+}
 $sourceCommit = (& git -C $sourceRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $sourceCommit) { throw "Unable to resolve package source commit." }
 $sourceChanges = @(& git -C $sourceRoot status --porcelain --untracked-files=normal)
@@ -37,8 +48,8 @@ $sourceWorkingTreeDirty = [bool]@($sourceChanges | Where-Object {
     -not ($reproducibleDependencyPatch -and $_ -eq ' m extern/FidelityFX-SDK')
 })
 $allowedRoot = [IO.Path]::GetFullPath($(if ($AllowedOutputRoot) { $AllowedOutputRoot } else { Join-Path $sourceRoot "dist" }))
-if (-not $OutputDirectory) { $OutputDirectory = Join-Path $allowedRoot "PIXL-Renderer-1.0.3-Clean-Cache" }
-if (-not $ArchivePath) { $ArchivePath = Join-Path $allowedRoot "PIXL-Renderer-1.0.3-Clean-Cache.zip" }
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $allowedRoot "PIXL-Renderer-1.0.4-Core" }
+if (-not $ArchivePath) { $ArchivePath = Join-Path $allowedRoot "PIXL-Renderer-1.0.4-Core.zip" }
 if (-not $BuildDirectory) { $BuildDirectory = Join-Path $sourceRoot "build\PIXL-12C\Release" }
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 $archive = if ($ArchivePath) { [IO.Path]::GetFullPath($ArchivePath) } else { "" }
@@ -239,6 +250,11 @@ if ($includePipelineLibrary) {
     if ([string]::IsNullOrWhiteSpace($cacheSections['Cache']['PluginVersion'])) {
         throw 'Pipeline cache metadata has no product-version provenance.'
     }
+    foreach ($key in $expectedCache.Keys) {
+        if ($cacheSections['Cache'][$key] -cne $expectedCache[$key]) {
+            throw "Stale/incompatible pipeline cache $key (expected $($expectedCache[$key]))."
+        }
+    }
     foreach ($descriptor in Get-ChildItem -LiteralPath $moduleCatalog -Filter '*.ini' -File) {
         $moduleText = Get-Content -LiteralPath $descriptor.FullName -Raw
         $id = [regex]::Match($moduleText, '(?m)^\s*Id\s*=\s*([^\r\n]+)').Groups[1].Value.Trim()
@@ -325,8 +341,8 @@ $manifestFiles = Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object
 }
 [ordered]@{
     product = "PIXL Renderer"
-    title = "PIXL Renderer v1.0.3"
-    version = "1.0.3"
+    title = "PIXL Renderer v1.0.4"
+    version = "1.0.4"
     requirements = @([ordered]@{
         id = "EngineFixes"
         path = "SKSE/Plugins/EngineFixes.dll"
@@ -343,8 +359,9 @@ $manifestFiles = Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object
     exclusiveRenderer = $true
     cacheMode = if ($includePipelineLibrary) { "preloaded" } else { "compile-on-device" }
     preloadedPipelineStages = $pipelineCount
-    shaderCompilePattern = "PIXL.StageShard.v1"
-    shaderABI = "PIXL.SharedBuffers.20260902.1"
+    shaderCompilePattern = $expectedCache.Layout
+    shaderABI = $expectedCache.ShaderABI
+    shaderRevision = $expectedCache.ShaderRevision
     generatedUtc = [DateTime]::UtcNow.ToString("o")
     files = $manifestFiles
 } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $output "PIXL-RENDERER.manifest.json") -Encoding utf8

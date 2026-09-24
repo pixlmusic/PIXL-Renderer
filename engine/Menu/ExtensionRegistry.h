@@ -11,10 +11,19 @@
 namespace PIXLUI::Extensions
 {
 	using Handle = std::uint64_t;
+	enum class Status : std::uint8_t
+	{
+		Available,
+		Detected,
+		NotInstalled,
+		Unsupported,
+		Error
+	};
 	struct Availability
 	{
 		bool available = true;
 		std::string reason;
+		Status status = Status::Available;
 	};
 
 	// Internal C++ API, not a cross-DLL ABI. All calls belong to the UI thread.

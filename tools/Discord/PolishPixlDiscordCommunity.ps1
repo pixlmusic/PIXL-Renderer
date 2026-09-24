@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$SecretPath = (Join-Path $env:LOCALAPPDATA 'PIXLRenderer\discord-bot-token.dpapi'), [string]$ImageDirectory = 'C:\Users\PIXL STUDIO PC\Desktop\install images')
+param([string]$SecretPath = (Join-Path $env:LOCALAPPDATA 'PIXLRenderer\discord-bot-token.dpapi'), [string]$ImageDirectory = (Join-Path $env:USERPROFILE 'Desktop\install images'))
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Net.Http
