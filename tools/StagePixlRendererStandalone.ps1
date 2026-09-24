@@ -229,8 +229,12 @@ if ($includePipelineLibrary) {
     $libraryIni = Join-Path $pipelineRoot "Library.ini"
     if (-not (Test-Path -LiteralPath $libraryIni)) { throw "Missing validated PIXL pipeline metadata: $libraryIni" }
     $metadata = Get-Content -LiteralPath $libraryIni -Raw
-    if ($metadata -notmatch 'Layout\s*=\s*PIXL\.StageShard\.v1') { throw "Pipeline library is not PIXL.StageShard.v1" }
-    if ($metadata -notmatch 'ShaderABI\s*=\s*PIXL\.SharedBuffers\.20260902\.1') { throw "Pipeline library was built for an incompatible PIXL shared-shader ABI" }
+    foreach ($cacheKey in @('Layout', 'ShaderABI', 'ShaderRevision')) {
+        $match = [regex]::Match($metadata, '(?im)^\s*' + [regex]::Escape($cacheKey) + '\s*=\s*([^\r\n;#]+)')
+        if (!$match.Success -or !$match.Groups[1].Value.Trim().Equals($expectedCache[$cacheKey], [StringComparison]::Ordinal)) {
+            throw "Pipeline library has an incompatible $cacheKey (expected $($expectedCache[$cacheKey]))"
+        }
+    }
     $pipelineCount = (Get-ChildItem -LiteralPath $pipelineRoot -File -Recurse -Filter "*.pixlbin").Count
     if ($pipelineCount -lt 3000) { throw "Pipeline library is incomplete ($pipelineCount stages; expected at least 3000)" }
     # Public caches contain compiled stages and identity metadata, never mod-manager
