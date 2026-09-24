@@ -14,6 +14,7 @@ The canonical source is this repository. The baseline `PIXL-12C` Release build p
 - Built the matching modified SurfaceTides 1.0.2 source companion beside the FOMOD to keep the optional bridge's source and notices available.
 - Removed one machine-specific path default from a development-only Discord maintenance script.
 - Corrected stale WindowLife diagnostics/comments that still described the old 240-byte per-draw field; the current CPU/HLSL payload is 256 bytes.
+- Stopped Video path playback when an active Director session switches to Photo Mode. The authored path and scrub position remain available when returning to Video; live camera restoration still requires game testing.
 - Reused the existing release staging, manifest verification, deployment, source-export, and FOMOD tools.
 
 ## Architecture decisions

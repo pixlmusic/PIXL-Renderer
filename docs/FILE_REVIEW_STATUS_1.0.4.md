@@ -13,6 +13,7 @@ The `engine`, `pipeline`, and `distribution` roots currently contain 107 `.cpp`,
 - The package audit validates module registration, stage-source overlays, literal shader includes, required assets, and staged source hashes. It does not establish numerical or resource-binding correctness at runtime.
 - This pass traced `ShaderCache.cpp` to the staging script and found that preloaded packages checked layout and shared ABI but omitted the new shader revision. Staging now checks all three against the runtime constants; the older installed library without `ShaderRevision` was rejected in a packaging test.
 - WindowLife's 256-byte CPU/HLSL per-draw payload was checked against its static assertion and sixteen `float4` fields; stale 240-byte diagnostic text was corrected. Live binding remains untested.
+- A targeted Director lifecycle trace found that Video-to-Photo mode switching left the Video path in `Playing` state. The switch now stops playback while retaining the path and scrub position; the changed C++ built successfully, but the transition still needs live camera/input testing.
 
 ## Open release gate
 

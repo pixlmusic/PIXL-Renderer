@@ -14,7 +14,7 @@ Status values: PASS, FAIL, MANUAL TEST REQUIRED, IN PROGRESS.
 | CPU/HLSL structure parity | MANUAL TEST REQUIRED | No new shared ABI in this pass; pre-existing WindowLife/material edits passed selected FXC suites, not live binding. |
 | Resource/register runtime audit | MANUAL TEST REQUIRED | D3D debug layer and live draw inspection. |
 | Photo Mode lifecycle | MANUAL TEST REQUIRED | Enter, capture, abnormal exit, restoration. |
-| Video Mode lifecycle | MANUAL TEST REQUIRED | POIs, playback, capture abort, camera restoration. |
+| Video Mode lifecycle | MANUAL TEST REQUIRED | Video-to-Photo now stops preview playback; verify POIs, both mode switches, playback, capture abort and camera restoration in Skyrim. |
 | SurfaceTides absent/present | MANUAL TEST REQUIRED | Verify V1 handshake log on river/lake draw. |
 | Configuration migration | MANUAL TEST REQUIRED | Existing keys retained; default and five preset JSON files parse, but a 1.0.3a user profile still needs live load. |
 | Debug features off by default | PASS (static) | Default JSON has zero for `DebugView`, `LegacyPhysicalDebugMode`, and `TerrainHeightDebugMode`; inspect live UI too. |
@@ -22,6 +22,6 @@ Status values: PASS, FAIL, MANUAL TEST REQUIRED, IN PROGRESS.
 | Source ZIP | PASS | 1,016 entries; current commit and working-tree snapshot, required files present, generated/private files excluded. |
 | FOMOD ZIP | PASS | 364 archive entries; XML schema, optional SurfaceTides bridge and notices validated. |
 | SurfaceTides source companion | PASS | Matching 1.0.2 modified source archive built and hash verified. |
-| Main-game deployment | PASS | All 340 live payloads hash-match Core. DLL 1.0.4.0 hash `6436832FFA5AD9BAECDCD6DD9AA86A27E6CDD2A6D61787419C62A994A911FD13`. Backup recorded under `build/deployment-backups`. |
-| Steam-game deployment | PASS | Prior Steam-game authorization was retained; all 340 payloads hash-match the same Core and DLL. Separate rollback backup recorded. |
+| Main-game deployment | PASS | Restaged DLL 1.0.4.0 hash `1BE4BA3DACE96DD57F1B64F3BE5EFE42803CAF1F69AC758EEF507B320149764A` deployed with rollback backup; all 340 payloads hash-match the manifest. |
+| Steam-game deployment | PASS | The same restaged DLL was deployed with a separate rollback backup; all 340 payloads hash-match the manifest. |
 | In-game first/third person, cells, fast travel, weather | MANUAL TEST REQUIRED | Requires owner live session. |
