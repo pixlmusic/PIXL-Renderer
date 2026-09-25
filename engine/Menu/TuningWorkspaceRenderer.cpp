@@ -179,9 +179,8 @@ namespace
 		bool playerAlphaSnapshotValid = false;
 		float originalPlayerAlpha = 1.0f;
 
-		// Director capture temporarily hides Skyrim's HUD (not just PIXL's ImGui
-		// viewfinder). Preserve the incoming state exactly so dialogue, scripted
-		// scenes and HUD-hiding mods are never overridden after the photo is saved.
+		// Director hides Skyrim's HUD for its entire camera lease. Keep the incoming
+		// visibility for restoration after normal or abnormal session exit.
 		bool gameHudVisibilitySnapshotValid = false;
 		bool gameHudWasVisible = true;
 	};
@@ -1143,7 +1142,7 @@ namespace
 		g_tunerHudWasVisible = true;
 	}
 
-	void HideGameHudForDirectorCapture()
+	void HideGameHudForDirectorSession()
 	{
 		auto* ui = RE::UI::GetSingleton();
 		if (!ui)
@@ -1154,21 +1153,30 @@ namespace
 			return;
 
 		if (!g_directorPhotoMode.gameHudVisibilitySnapshotValid) {
-			g_directorPhotoMode.gameHudWasVisible = hud->uiMovie->GetVisible();
+			// Director can be entered from the advanced tuner, which already hid
+			// Skyrim's HUD. Preserve the visibility from before that tuner lease.
+			g_directorPhotoMode.gameHudWasVisible = g_tunerHudVisibilitySnapshotValid
+				? g_tunerHudWasVisible : hud->uiMovie->GetVisible();
 			g_directorPhotoMode.gameHudVisibilitySnapshotValid = true;
 		}
 		hud->uiMovie->SetVisible(false);
 	}
 
-	void RestoreGameHudAfterDirectorCapture()
+	void RestoreGameHudAfterDirectorSession()
 	{
 		if (!g_directorPhotoMode.gameHudVisibilitySnapshotValid)
 			return;
 
-		if (auto* ui = RE::UI::GetSingleton()) {
-			if (auto hud = ui->GetMenu<RE::HUDMenu>(); hud && hud->uiMovie)
-				hud->uiMovie->SetVisible(g_directorPhotoMode.gameHudWasVisible);
-		}
+		// The tuner also owns HUD visibility while its advanced surface is open.
+		// Restore the Director snapshot only after that owner releases the HUD.
+		if (globals::menu && globals::menu->IsEnabled &&
+			globals::menu->GetSettings().AdvancedMode)
+			return;
+		auto* ui = RE::UI::GetSingleton();
+		auto hud = ui ? ui->GetMenu<RE::HUDMenu>() : nullptr;
+		if (!hud || !hud->uiMovie)
+			return;  // Retry after loading/menu transitions recreate the HUD.
+		hud->uiMovie->SetVisible(g_directorPhotoMode.gameHudWasVisible);
 
 		g_directorPhotoMode.gameHudVisibilitySnapshotValid = false;
 		g_directorPhotoMode.gameHudWasVisible = true;
@@ -1569,6 +1577,9 @@ namespace
 
 		if (g_directorPhotoMode.active)
 			return true;
+		// A previous exit may have deferred HUD restoration while Skyrim rebuilt
+		// its UI. Resolve it before taking a new visibility snapshot.
+		RestoreGameHudAfterDirectorSession();
 
 		auto* calendar =
 			RE::Calendar::GetSingleton();
@@ -1639,8 +1650,6 @@ namespace
 		g_directorPhotoMode.captureDelayFrames = 0;
 		g_directorPhotoMode.captureHideFrames = 0;
 		g_directorPhotoMode.capturePoseValid = false;
-		g_directorPhotoMode.gameHudVisibilitySnapshotValid = false;
-		g_directorPhotoMode.gameHudWasVisible = true;
 		g_directorCaptureLocked.store(false, std::memory_order_release);
 		g_directorCaptureDispatched.store(false, std::memory_order_release);
 
@@ -1721,7 +1730,7 @@ namespace
 		if (g_directorExitTaskComplete.exchange(
 				false,
 				std::memory_order_acq_rel)) {
-			RestoreGameHudAfterDirectorCapture();
+			RestoreGameHudAfterDirectorSession();
 
 			auto& cameraSuite =
 				globals::pipeline::cameraSuite;
@@ -2412,10 +2421,9 @@ namespace
 			g_directorCaptureLocked.load(std::memory_order_acquire))
 			return;
 
-		// The presented framebuffer contains Skyrim's HUD. Hide it before the
-		// clean-frame delay so the crosshair and HUD widgets are absent from every
-		// temporal sample, then restore the exact incoming visibility after save.
-		HideGameHudForDirectorCapture();
+		// Reassert session HUD ownership before the clean-frame delay. The HUD
+		// remains hidden after Photo Finish until Director itself exits.
+		HideGameHudForDirectorSession();
 
 		if (auto* camera = RE::PlayerCamera::GetSingleton();
 			camera && camera->IsInFreeCameraMode()) {
@@ -3501,58 +3509,7 @@ namespace
 		const ImVec2& displaySize,
 		float scale)
 	{
-		const ImVec2 center(
-			displaySize.x * 0.5f,
-			displaySize.y * 0.5f);
-
-		const float radius =
-			30.0f * scale;
-
 		const ImU32 focusColor = PIXLUI::Colors::TextMuted;
-
-		draw->AddCircle(
-			center,
-			radius,
-			focusColor,
-			40,
-			1.4f * scale);
-
-		draw->AddCircle(
-			center,
-			10.0f * scale,
-			PIXLUI::ScaleAlpha(
-				focusColor,
-				0.75f),
-			28,
-			1.0f * scale);
-
-		const float outer =
-			radius +
-			9.0f * scale;
-		const float inner =
-			radius -
-			7.0f * scale;
-
-		draw->AddLine(
-			ImVec2(center.x, center.y - outer),
-			ImVec2(center.x, center.y - inner),
-			focusColor,
-			1.2f * scale);
-		draw->AddLine(
-			ImVec2(center.x, center.y + inner),
-			ImVec2(center.x, center.y + outer),
-			focusColor,
-			1.2f * scale);
-		draw->AddLine(
-			ImVec2(center.x - outer, center.y),
-			ImVec2(center.x - inner, center.y),
-			focusColor,
-			1.2f * scale);
-		draw->AddLine(
-			ImVec2(center.x + inner, center.y),
-			ImVec2(center.x + outer, center.y),
-			focusColor,
-			1.2f * scale);
 
 		const auto lens = GetDirectorQuickReadout(DirectorQuickOption::CameraLens);
 		const std::string label = std::format(
@@ -3564,12 +3521,11 @@ namespace
 			ImGui::CalcTextSize(
 				label.c_str());
 
+		// Keep the session readout at the edge. The center of the scene remains
+		// clear of both Skyrim's HUD and PIXL's former framing reticle.
 		const ImVec2 textPos(
-			center.x -
-				textSize.x * 0.5f,
-			center.y +
-				radius +
-				16.0f * scale);
+			std::max(10.0f * scale, displaySize.x - textSize.x - 24.0f * scale),
+			24.0f * scale);
 
 		draw->AddRectFilled(
 			ImVec2(
@@ -3591,35 +3547,6 @@ namespace
 			textPos,
 			focusColor,
 			label.c_str());
-	}
-
-	void DrawDirectorVideoViewfinder(ImDrawList* draw, const ImVec2& displaySize, float scale)
-	{
-		const ImVec2 center(displaySize.x * 0.5f, displaySize.y * 0.5f);
-		const float reach = 26.0f * scale;
-		const float gap = 10.0f * scale;
-		const ImU32 color = PIXLUI::Colors::CyanSoft;
-		const float stroke = std::max(1.0f, 1.3f * scale);
-		// A camera gate and centre diamond distinguish moving-shot direction from
-		// Photo Mode's concentric focus rings without covering the subject.
-		draw->AddLine(ImVec2(center.x - reach, center.y), ImVec2(center.x - gap, center.y), color, stroke);
-		draw->AddLine(ImVec2(center.x + gap, center.y), ImVec2(center.x + reach, center.y), color, stroke);
-		draw->AddLine(ImVec2(center.x, center.y - reach), ImVec2(center.x, center.y - gap), color, stroke);
-		draw->AddLine(ImVec2(center.x, center.y + gap), ImVec2(center.x, center.y + reach), color, stroke);
-		draw->AddQuad(ImVec2(center.x, center.y - 5.0f * scale),
-			ImVec2(center.x + 5.0f * scale, center.y),
-			ImVec2(center.x, center.y + 5.0f * scale),
-			ImVec2(center.x - 5.0f * scale, center.y), color, stroke);
-		const char* state = g_directorVideo.playback == DirectorVideoPlaybackState::Playing
-			? "PLAYING" : "FRAMING";
-		const std::string label = std::format("VIDEO MODE  {}  |  LENS {:.0f} DEG",
-			state, GetDirectorWorldFov());
-		const ImVec2 size = ImGui::CalcTextSize(label.c_str());
-		const ImVec2 position(center.x - size.x * 0.5f, center.y + reach + 14.0f * scale);
-		draw->AddRectFilled(ImVec2(position.x - 7.0f * scale, position.y - 3.0f * scale),
-			ImVec2(position.x + size.x + 7.0f * scale, position.y + size.y + 3.0f * scale),
-			IM_COL32(5, 8, 10, 175), 2.0f * scale);
-		draw->AddText(position, color, label.c_str());
 	}
 
 	void DrawDirectorQuickPanel(
@@ -4030,7 +3957,6 @@ namespace
 
 		DrawDirectorCompositionGuide(draw, displaySize, scale,
 			g_directorVideo.compositionGuide);
-		DrawDirectorVideoViewfinder(draw, displaySize, scale);
 		DrawDirectorWorldPathOverlay(draw, displaySize, scale);
 		const float cinemaAmount = PIXLUI::Animate01("##DirectorVideoCinemaBars", g_directorVideo.cinemaBars, 8.0f);
 		const float cinemaHeight = displaySize.y * 0.075f * cinemaAmount;
@@ -4082,8 +4008,8 @@ namespace
 		}
 		draw->AddCircleFilled(ImVec2(playhead, railY), 4.0f * scale, PIXLUI::Colors::CyanBright, 10);
 		const char* controls = g_directorVideo.editorVisible
-			? "SHIFT+ENTER CAPTURE POI    SPACE PLAY / PAUSE    INSERT HIDE EDITOR    CTRL+HOME EXIT"
-			: "SHIFT+ENTER CAPTURE POI    SPACE PLAY / PAUSE    INSERT OPEN EDITOR    CTRL+HOME EXIT";
+			? "SHIFT+ENTER POI    SPACE PLAY / PAUSE    DEL CLEAN VIEW    INSERT HIDE EDITOR    CTRL+HOME EXIT"
+			: "SHIFT+ENTER POI    SPACE PLAY / PAUSE    DEL CLEAN VIEW    INSERT OPEN EDITOR    CTRL+HOME EXIT";
 		PIXLUI::DrawClippedOverlayText(draw, ImVec2(min.x + 14.0f * scale, min.y + 70.0f * scale),
 			PIXLUI::Colors::CyanSoft, controls, width - 28.0f * scale);
 	}
@@ -4186,7 +4112,6 @@ namespace
 			g_directorCaptureDispatched.load(std::memory_order_acquire)) {
 			auto* capture = GetDirectorCapture();
 			if (!capture || !capture->IsPhotoFinishBusy()) {
-				RestoreGameHudAfterDirectorCapture();
 				g_directorPhotoMode.capturePoseValid = false;
 				g_directorPhotoMode.captureHideFrames = 0;
 				g_directorCaptureDispatched.store(false, std::memory_order_release);
@@ -4241,7 +4166,7 @@ namespace
 					displaySize,
 					Util::GetUIScale());
 			}
-			if (g_directorVideo.editorVisible)
+			if (g_directorPhotoMode.hudVisible && g_directorVideo.editorVisible)
 				DrawDirectorVideoEditorPanel();
 			return;
 		}
@@ -5180,7 +5105,7 @@ bool TuningWorkspaceRenderer::IsDirectorVideoModeActive()
 
 bool TuningWorkspaceRenderer::IsDirectorVideoEditorVisible()
 {
-	return IsDirectorVideoMode() && g_directorVideo.editorVisible &&
+	return IsDirectorVideoMode() && g_directorPhotoMode.hudVisible && g_directorVideo.editorVisible &&
 		!g_directorExitRequested.load(std::memory_order_acquire) &&
 		globals::menu && !globals::menu->IsEnabled;
 }
@@ -5328,6 +5253,11 @@ void TuningWorkspaceRenderer::UpdateTunerInspection()
 		g_directorEntryPending.store(false, std::memory_order_release);
 		if (result < 0)
 			ExitDirectorPhotoMode();
+	}
+	if (g_directorPhotoMode.active) {
+		HideGameHudForDirectorSession();
+	} else if (!g_directorExitRequested.load(std::memory_order_acquire)) {
+		RestoreGameHudAfterDirectorSession();
 	}
 	if (g_tunerOwnsInspection) {
 		if (!globals::menu || !globals::menu->IsEnabled || !globals::menu->GetSettings().AdvancedMode)
@@ -5518,7 +5448,7 @@ bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
 			CaptureDirectorVideoPointFromCamera();
 			return true;
 		}
-		if (virtualKey == VK_INSERT) {
+		if (virtualKey == VK_INSERT && g_directorPhotoMode.hudVisible) {
 			g_directorVideo.editorVisible = !g_directorVideo.editorVisible;
 			return true;
 		}
@@ -7451,8 +7381,8 @@ namespace
 		if (display.x <= 0.0f || display.y <= 0.0f)
 			return;
 		const float scale = Util::GetUIScale();
-		const float margin = 22.0f * scale;
-		const float top = std::max(42.0f * scale, display.y * 0.075f + 12.0f * scale);
+		const float margin = 12.0f * scale;
+		const float top = (g_directorVideo.cinemaBars ? display.y * 0.075f : 0.0f) + 8.0f * scale;
 		const float width = std::min(490.0f * scale, display.x - margin * 2.0f);
 		const float height = std::min(620.0f * scale, display.y - top - 126.0f * scale);
 		if (width < 300.0f * scale || height < 250.0f * scale)
@@ -7478,7 +7408,7 @@ namespace
 			ImGui::SameLine();
 			ImGui::TextDisabled("%zu POI%s", g_directorVideo.path.points.size(),
 				g_directorVideo.path.points.size() == 1 ? "" : "S");
-			ImGui::TextDisabled("Click to edit. Hold Shift to fly; release it to use the cursor.");
+			ImGui::TextDisabled("Mouse edits the panel. Hold Shift to fly; Delete hides all UI.");
 
 			if (PIXLUI::ActionButton("CAPTURE POI", ImVec2(PIXLUI::Ref(128.0f), PIXLUI::Ref(30.0f)), true))
 				CaptureDirectorVideoPointFromCamera();
