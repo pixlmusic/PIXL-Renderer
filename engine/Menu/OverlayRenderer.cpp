@@ -207,7 +207,9 @@ void OverlayRenderer::RenderOverlay(
 		}
 	} else {
 		PIXLUI::Extensions::ClosePillar();
-		ImGui::GetIO().MouseDrawCursor = menu.IsProfilerInteractive();
+		ImGui::GetIO().MouseDrawCursor = menu.IsProfilerInteractive() ||
+			(TuningWorkspaceRenderer::IsDirectorVideoEditorVisible() &&
+			 !TuningWorkspaceRenderer::IsDirectorInspectionMoving());
 	}
 
 	TuningWorkspaceRenderer::RenderDirectorPhotoModeOverlay();

@@ -210,6 +210,8 @@ namespace
 		bool loop = false;
 		bool showWorldPath = true;
 		bool cinemaBars = true;
+		// A compact Director overlay can be hidden without releasing free camera.
+		bool editorVisible = true;
 		int compositionGuide = 0;
 		// Native free camera can run the world for live flythrough previews. The
 		// established Photo default remains frozen and is never changed here.
@@ -1530,6 +1532,7 @@ namespace
 	void ExitDirectorPhotoMode();
 	bool ProcessDirectorPhotoModeExit();
 	PixelCapture* GetDirectorCapture();
+	void DrawDirectorVideoEditorPanel();
 
 	bool EnterDirectorPhotoMode()
 	{
@@ -1739,6 +1742,7 @@ namespace
 
 			g_directorPhotoMode.active = false;
 			g_directorMode = DirectorMode::Photo;
+			g_directorVideo.editorVisible = true;
 			g_directorVideo.playback = DirectorVideoPlaybackState::Stopped;
 			g_directorVideo.playbackTime = 0.0f;
 			g_tunerInspectionMoving = false;
@@ -4077,7 +4081,9 @@ namespace
 				selected ? 2.0f * scale : 1.0f * scale);
 		}
 		draw->AddCircleFilled(ImVec2(playhead, railY), 4.0f * scale, PIXLUI::Colors::CyanBright, 10);
-		const char* controls = "ENTER CAPTURE POINT    SPACE PLAY / PAUSE    BACKSPACE START    SHIFT+ENTER EDIT & SCRUB    CTRL+HOME EXIT";
+		const char* controls = g_directorVideo.editorVisible
+			? "SHIFT+ENTER CAPTURE POI    SPACE PLAY / PAUSE    INSERT HIDE EDITOR    CTRL+HOME EXIT"
+			: "SHIFT+ENTER CAPTURE POI    SPACE PLAY / PAUSE    INSERT OPEN EDITOR    CTRL+HOME EXIT";
 		PIXLUI::DrawClippedOverlayText(draw, ImVec2(min.x + 14.0f * scale, min.y + 70.0f * scale),
 			PIXLUI::Colors::CyanSoft, controls, width - 28.0f * scale);
 	}
@@ -4224,18 +4230,19 @@ namespace
 			return;
 
 		if (IsDirectorVideoMode()) {
-			// Video preview has no Photo Finish transaction. It receives the same
-			// ownership, validity and free-camera safety checks above, then draws a
-			// deliberately small non-recording HUD.
+			// The viewfinder and interactive editor share one guarded camera lease.
+			// A full tuner surface temporarily replaces both for advanced settings.
 			if (globals::menu && globals::menu->IsEnabled)
 				return;
-			if (!g_directorPhotoMode.hudVisible)
-				return;
-			const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
-			DrawDirectorVideoModeOverlay(
-				ImGui::GetForegroundDrawList(),
-				displaySize,
-				Util::GetUIScale());
+			if (g_directorPhotoMode.hudVisible) {
+				const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+				DrawDirectorVideoModeOverlay(
+					ImGui::GetBackgroundDrawList(),
+					displaySize,
+					Util::GetUIScale());
+			}
+			if (g_directorVideo.editorVisible)
+				DrawDirectorVideoEditorPanel();
 			return;
 		}
 
@@ -5171,6 +5178,13 @@ bool TuningWorkspaceRenderer::IsDirectorVideoModeActive()
 	return IsDirectorVideoMode();
 }
 
+bool TuningWorkspaceRenderer::IsDirectorVideoEditorVisible()
+{
+	return IsDirectorVideoMode() && g_directorVideo.editorVisible &&
+		!g_directorExitRequested.load(std::memory_order_acquire) &&
+		globals::menu && !globals::menu->IsEnabled;
+}
+
 bool TuningWorkspaceRenderer::IsDirectorVideoPlaybackActive()
 {
 	return IsDirectorVideoMode() && g_directorVideo.playback == DirectorVideoPlaybackState::Playing;
@@ -5188,6 +5202,8 @@ TuningWorkspaceRenderer::TunerInteractionMode TuningWorkspaceRenderer::GetTunerI
 	if (!tunerOpen && !g_directorPhotoMode.active)
 		return TunerInteractionMode::Closed;
 	if (!g_directorPhotoMode.active)
+		return TunerInteractionMode::LiveUI;
+	if (IsDirectorVideoMode() && tunerOpen && !g_tunerInspectionMoving)
 		return TunerInteractionMode::LiveUI;
 	return g_tunerInspectionMoving
 		? TunerInteractionMode::InspectMoving
@@ -5239,18 +5255,13 @@ bool TuningWorkspaceRenderer::OpenDirectorPhotoMode()
 
 bool TuningWorkspaceRenderer::OpenDirectorVideoMode()
 {
-	// Video is an editor as well as a viewfinder. The route canvas, point list,
-	// timeline and speed controls live in PixelCapture's PIXL workspace, so a
-	// successful entry must expose that workspace and give its mouse a cursor.
+	// Video owns a compact PIXL editor over the live viewfinder. The full
+	// PixelCapture workspace remains available through its Advanced action.
 	const auto openEditor = [] {
+		g_directorVideo.editorVisible = true;
+		g_directorPhotoMode.hudVisible = true;
 		if (auto* menu = globals::menu) {
-			menu->GetSettings().AdvancedMode = true;
-			menu->SelectFeatureMenu("PixelCapture");
-			menu->IsEnabled = true;
-			OpenTunerPanel();
-			// Video owns the free-camera lease independently of the tuner's
-			// Shift-to-inspect transaction. Hiding its editor must leave the
-			// viewfinder and route preview alive until explicit Video exit.
+			menu->IsEnabled = false;
 			g_tunerOwnsInspection = false;
 			g_tunerInspectionMoving = false;
 			g_tunerShiftHeld = false;
@@ -5321,9 +5332,11 @@ void TuningWorkspaceRenderer::UpdateTunerInspection()
 	if (g_tunerOwnsInspection) {
 		if (!globals::menu || !globals::menu->IsEnabled || !globals::menu->GetSettings().AdvancedMode)
 			CloseTunerInspection();
+	}
+	if (g_tunerOwnsInspection || IsDirectorVideoMode()) {
 		// Recover from a release lost during focus changes without creating a
 		// second input stream. This can only stop navigation, never start it.
-		if (!(GetAsyncKeyState(VK_LSHIFT) & 0x8000)) {
+		if (!(GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
 			g_tunerShiftHeld = false;
 			g_tunerInspectionMoving = false;
 		}
@@ -5359,7 +5372,7 @@ bool TuningWorkspaceRenderer::HandleTunerKeyboardInput(
 	std::uint32_t virtualKey,
 	bool pressed)
 {
-	if (!globals::menu || !globals::menu->IsEnabled)
+	if (!globals::menu || (!globals::menu->IsEnabled && !IsDirectorVideoMode()))
 		return false;
 
 	// Editing and dialogs own their keyboard input, including Shift and Escape.
@@ -5383,7 +5396,7 @@ bool TuningWorkspaceRenderer::HandleTunerKeyboardInput(
 
 	if (g_directorExitRequested.load(std::memory_order_acquire))
 		return true;
-	if (!globals::menu->GetSettings().AdvancedMode)
+	if (!globals::menu->GetSettings().AdvancedMode && !IsDirectorVideoMode())
 		return false;
 
 	// Allow the configured toggle through on both transitions while flying.
@@ -5414,9 +5427,10 @@ bool TuningWorkspaceRenderer::HandleTunerKeyboardInput(
 
 	if (g_directorPhotoMode.active) {
 		// While flying, native TFC receives the filtered event stream from Hooks.
-		// Keep all keyboard events out of ImGui until Shift is released.
+		// Keep movement keys out of ImGui until Shift is released. Director
+		// actions such as Shift+Enter still need to reach their own handler.
 		if (g_tunerInspectionMoving)
-			return true;
+			return navigationKey;
 
 		// Locked inspection is deliberately re-entrant: Shift + navigation starts
 		// a new movement transaction without closing or reopening the tuner.
@@ -5501,13 +5515,11 @@ bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
 		// VIDEO is a sibling workspace. Do not let PHOTO-only capture/effect
 		// shortcuts arm a still transaction while a path is being authored.
 		if (virtualKey == VK_RETURN) {
-			// The hidden Video viewfinder shares Enter with quick POI capture.
-			// Shift+Enter must restore the mouse-driven route editor instead of
-			// silently adding a point and leaving the cursor unavailable.
-			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) && globals::menu)
-				TuningWorkspaceRenderer::OpenDirectorVideoMode();
-			else
-				CaptureDirectorVideoPointFromCamera();
+			CaptureDirectorVideoPointFromCamera();
+			return true;
+		}
+		if (virtualKey == VK_INSERT) {
+			g_directorVideo.editorVisible = !g_directorVideo.editorVisible;
 			return true;
 		}
 		if (virtualKey == VK_SPACE && g_directorVideo.path.IsValid()) {
@@ -5526,7 +5538,7 @@ bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
 			g_directorPhotoMode.hudVisible = !g_directorPhotoMode.hudVisible;
 			return true;
 		}
-		if (virtualKey == VK_END || virtualKey == VK_INSERT)
+		if (virtualKey == VK_END)
 			return true;
 		return false;
 	}
@@ -7431,6 +7443,170 @@ namespace
 		}
 		ImGui::TextDisabled("Plan: %s  |  cyan = spline  |  amber = enabled look target  |  bright dot = playhead",
 			useXZ ? "X / height" : "X / Y");
+	}
+
+	void DrawDirectorVideoEditorPanel()
+	{
+		const ImVec2 display = ImGui::GetIO().DisplaySize;
+		if (display.x <= 0.0f || display.y <= 0.0f)
+			return;
+		const float scale = Util::GetUIScale();
+		const float margin = 22.0f * scale;
+		const float top = std::max(42.0f * scale, display.y * 0.075f + 12.0f * scale);
+		const float width = std::min(490.0f * scale, display.x - margin * 2.0f);
+		const float height = std::min(620.0f * scale, display.y - top - 126.0f * scale);
+		if (width < 300.0f * scale || height < 250.0f * scale)
+			return;
+
+		ImGui::SetNextWindowPos(ImVec2(margin, top), ImGuiCond_Always);
+		ImGui::SetNextWindowSize(ImVec2(width, height), ImGuiCond_Always);
+		ImGui::PushStyleColor(ImGuiCol_WindowBg, PIXLUI::ToVec4(PIXLUI::Colors::Window));
+		ImGui::PushStyleColor(ImGuiCol_Border, PIXLUI::ToVec4(PIXLUI::Colors::BorderSoft));
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(PIXLUI::Ref(14.0f), PIXLUI::Ref(12.0f)));
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, PIXLUI::Ref(5.0f));
+		const bool moving = TuningWorkspaceRenderer::IsDirectorInspectionMoving();
+		const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
+			ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
+			(moving ? ImGuiWindowFlags_NoInputs : 0);
+		if (ImGui::Begin("##PIXLVideoDirectorEditor", nullptr, flags)) {
+			const ImVec2 min = ImGui::GetWindowPos();
+			ImGui::GetWindowDrawList()->AddLine(
+				ImVec2(min.x + PIXLUI::Ref(2.0f), min.y + PIXLUI::Ref(1.0f)),
+				ImVec2(min.x + PIXLUI::Ref(84.0f), min.y + PIXLUI::Ref(1.0f)),
+				PIXLUI::Colors::CyanBright, PIXLUI::Ref(1.5f));
+			ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanBright), "PIXL / VIDEO DIRECTOR");
+			ImGui::SameLine();
+			ImGui::TextDisabled("%zu POI%s", g_directorVideo.path.points.size(),
+				g_directorVideo.path.points.size() == 1 ? "" : "S");
+			ImGui::TextDisabled("Click to edit. Hold Shift to fly; release it to use the cursor.");
+
+			if (PIXLUI::ActionButton("CAPTURE POI", ImVec2(PIXLUI::Ref(128.0f), PIXLUI::Ref(30.0f)), true))
+				CaptureDirectorVideoPointFromCamera();
+			ImGui::SameLine();
+			const bool playable = g_directorVideo.path.IsValid();
+			ImGui::BeginDisabled(!playable);
+			const bool playing = g_directorVideo.playback == DirectorVideoPlaybackState::Playing;
+			if (PIXLUI::ActionButton(playing ? "PAUSE" : "PLAY", ImVec2(PIXLUI::Ref(76.0f), PIXLUI::Ref(30.0f)), false)) {
+				if (playing)
+					g_directorVideo.playback = DirectorVideoPlaybackState::Paused;
+				else
+					StartDirectorVideoPlayback();
+			}
+			ImGui::EndDisabled();
+			ImGui::SameLine();
+			if (PIXLUI::ActionButton("HIDE", ImVec2(PIXLUI::Ref(70.0f), PIXLUI::Ref(30.0f)), false))
+				g_directorVideo.editorVisible = false;
+			ImGui::SameLine();
+			if (PIXLUI::ActionButton("EXIT", ImVec2(PIXLUI::Ref(66.0f), PIXLUI::Ref(30.0f)), false))
+				ExitDirectorPhotoMode();
+
+			PIXLUI::SectionBanner("SHOT TIMELINE");
+			if (playable) {
+				float scrubTime = g_directorVideo.playbackTime;
+				std::size_t clickedPoint = g_directorVideo.path.points.size();
+				if (PIXLUI::TimelineScrubber("VideoPanelTimeline", scrubTime,
+					g_directorVideo.path.GetDuration(), g_directorVideo.timelineMarkers.data(),
+					g_directorVideo.timelineMarkers.size(), g_directorVideo.selectedPoint,
+					g_directorVideo.playback == DirectorVideoPlaybackState::Playing, &clickedPoint)) {
+					g_directorVideo.playback = DirectorVideoPlaybackState::Paused;
+					if (clickedPoint < g_directorVideo.path.points.size()) {
+						g_directorVideo.selectedPoint = clickedPoint;
+						MoveDirectorCameraToPoint(clickedPoint);
+					} else {
+						ApplyDirectorVideoTimeline(scrubTime);
+					}
+				}
+			} else {
+				ImGui::TextDisabled("Capture two camera positions to generate the spline and timeline.");
+			}
+
+			PIXLUI::SectionBanner("CAMERA POINTS");
+			if (ImGui::BeginChild("##VideoPanelPoints", ImVec2(0.0f, PIXLUI::Ref(100.0f)),
+				ImGuiChildFlags_Borders)) {
+				for (std::size_t index = 0; index < g_directorVideo.path.points.size(); ++index) {
+					ImGui::PushID(static_cast<int>(index));
+					char label[80]{};
+					std::snprintf(label, sizeof(label), "POI %02zu  /  %.0f units/s", index + 1,
+						g_directorVideo.path.points[index].speed);
+					if (ImGui::Selectable(label, index == g_directorVideo.selectedPoint)) {
+						g_directorVideo.selectedPoint = index;
+						MoveDirectorCameraToPoint(index);
+					}
+					ImGui::PopID();
+				}
+			}
+			ImGui::EndChild();
+			if (g_directorVideo.selectedPoint < g_directorVideo.path.points.size()) {
+				ImGui::PushID("VideoPanelSelectedPoint");
+				auto& point = g_directorVideo.path.points[g_directorVideo.selectedPoint];
+				ImGui::SetNextItemWidth(-1.0f);
+				if (ImGui::SliderFloat("Speed at selected POI", &point.speed, 8.0f, 1600.0f,
+					"%.0f units/s", ImGuiSliderFlags_AlwaysClamp))
+					RebuildDirectorVideoPath();
+				if (PIXLUI::ActionButton("SAVE CAMERA TO POI", ImVec2(PIXLUI::Ref(185.0f), PIXLUI::Ref(30.0f)), false))
+					SaveDirectorVideoCameraToSelectedPoint();
+				ImGui::SameLine();
+				if (PIXLUI::ActionButton("DELETE POI", ImVec2(PIXLUI::Ref(120.0f), PIXLUI::Ref(30.0f)), false)) {
+					g_directorVideo.playback = DirectorVideoPlaybackState::Paused;
+					g_directorVideo.path.points.erase(g_directorVideo.path.points.begin() +
+						static_cast<std::ptrdiff_t>(g_directorVideo.selectedPoint));
+					RebuildDirectorVideoPath();
+				}
+				ImGui::PopID();
+			}
+
+			ImGui::Separator();
+			ImGui::Checkbox("Cinema bars", &g_directorVideo.cinemaBars);
+			ImGui::SameLine();
+			ImGui::Checkbox("World route", &g_directorVideo.showWorldPath);
+			ImGui::SetNextItemWidth(-1.0f);
+			ImGui::SliderFloat("Preview rate", &g_directorVideo.previewRate, 0.10f, 4.0f,
+				"%.2fx", ImGuiSliderFlags_AlwaysClamp);
+			if (ImGui::CollapsingHeader("SAVE / LOAD / ADVANCED")) {
+				if (!g_directorVideo.nameBufferInitialized) {
+					std::snprintf(g_directorVideo.nameBuffer.data(), g_directorVideo.nameBuffer.size(),
+						"%s", g_directorVideo.path.name.c_str());
+					g_directorVideo.nameBufferInitialized = true;
+				}
+				if (ImGui::InputText("Path name", g_directorVideo.nameBuffer.data(), g_directorVideo.nameBuffer.size()))
+					g_directorVideo.path.name = g_directorVideo.nameBuffer.data();
+				if (PIXLUI::ActionButton("SAVE PATH", ImVec2(PIXLUI::Ref(115.0f), PIXLUI::Ref(30.0f)), false))
+					SaveDirectorVideoPath();
+				ImGui::SameLine();
+				if (PIXLUI::ActionButton("CLEAR PATH", ImVec2(PIXLUI::Ref(115.0f), PIXLUI::Ref(30.0f)), false))
+					ImGui::OpenPopup("Clear Video path?##Panel");
+				if (ImGui::BeginPopupModal("Clear Video path?##Panel", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+					ImGui::TextUnformatted("Delete the working spline? Saved paths remain available.");
+					if (PIXLUI::ActionButton("CLEAR WORKING PATH", ImVec2(PIXLUI::Ref(184.0f), PIXLUI::Ref(30.0f)), true)) {
+						ClearDirectorVideoWorkingPath("user cleared Video panel route");
+						ImGui::CloseCurrentPopup();
+					}
+					ImGui::SameLine();
+					if (PIXLUI::ActionButton("CANCEL", ImVec2(PIXLUI::Ref(84.0f), PIXLUI::Ref(30.0f)), false))
+						ImGui::CloseCurrentPopup();
+					ImGui::EndPopup();
+				}
+				if (!g_directorVideo.savedPaths.empty() && ImGui::BeginCombo("Load saved path", "Select a path")) {
+					for (const auto& path : g_directorVideo.savedPaths) {
+						const std::string label = path.stem().string();
+						if (ImGui::Selectable(label.c_str()))
+							LoadDirectorVideoPath(path);
+					}
+					ImGui::EndCombo();
+				}
+				if (PIXLUI::ActionButton("ADVANCED DIRECTOR", ImVec2(PIXLUI::Ref(180.0f), PIXLUI::Ref(30.0f)), false)) {
+					if (auto* menu = globals::menu) {
+						menu->GetSettings().AdvancedMode = true;
+						menu->SelectFeatureMenu("PixelCapture");
+						menu->IsEnabled = true;
+						OpenTunerPanel();
+					}
+				}
+			}
+		}
+		ImGui::End();
+		ImGui::PopStyleVar(2);
+		ImGui::PopStyleColor(2);
 	}
 
 	void DrawDirectorVideoWorkspace()

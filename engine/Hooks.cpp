@@ -669,7 +669,7 @@ struct BSInputDeviceManager_PollInputDevices
 				// Playback owns the free-camera transform. Never feed native mouse
 				// motion into the same camera pass, including while the editor is hidden.
 				const bool videoPlayback = TuningWorkspaceRenderer::IsDirectorVideoPlaybackActive();
-				const bool videoMoveHeld = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+				const bool videoMoveHeld = TuningWorkspaceRenderer::IsDirectorInspectionMoving();
 				if (videoPlayback ||
 					(TuningWorkspaceRenderer::IsDirectorVideoModeActive() && !videoMoveHeld)) {
 					constexpr RE::InputEvent* const dummy[]{ nullptr };

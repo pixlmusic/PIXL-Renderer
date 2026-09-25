@@ -78,6 +78,7 @@ public:
 	// PIXL Director live photo-mode controls / HUD.
 	[[nodiscard]] static bool IsDirectorPhotoModeActive();
 	[[nodiscard]] static bool IsDirectorVideoModeActive();
+	[[nodiscard]] static bool IsDirectorVideoEditorVisible();
 	[[nodiscard]] static bool IsDirectorVideoPlaybackActive();
 	[[nodiscard]] static bool IsDirectorCameraTransitionPending();
 	/** Current PIXL tuner ownership state. The tuner remains open while inspecting. */

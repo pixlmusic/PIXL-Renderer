@@ -1360,7 +1360,8 @@ void Menu::DrawSettings()
 	// the existing input hook restores Skyrim's incoming state without enabling
 	// controls that another menu or scripted state had intentionally disabled.
 	if (wasEnabledAtFrameStart && !IsEnabled &&
-		TuningWorkspaceRenderer::IsDirectorPhotoModeActive()) {
+		TuningWorkspaceRenderer::IsDirectorPhotoModeActive() &&
+		!TuningWorkspaceRenderer::IsDirectorVideoModeActive()) {
 		TuningWorkspaceRenderer::CloseTunerInspection();
 	}
 }
@@ -1614,14 +1615,25 @@ void Menu::ProcessInputEventQueue()
 			if (TuningWorkspaceRenderer::
 					IsDirectorPhotoModeActive() &&
 				!IsEnabled) {
-				if (event.IsDown()) {
-					TuningWorkspaceRenderer::
-						HandleDirectorKeyboardInput(
-							key);
+				const bool videoEditor = TuningWorkspaceRenderer::IsDirectorVideoEditorVisible();
+				if (event.IsDown() && (!videoEditor || (!io.WantTextInput && !popupOpen)) &&
+					TuningWorkspaceRenderer::HandleDirectorKeyboardInput(key))
+					continue;
+				if (videoEditor) {
+					// The standalone Video panel owns keyboard navigation and text.
+					// Bypass global hotkeys while leaving native camera input filtered
+					// by the existing Director hook.
+					const bool pressed = event.IsPressed() && (GetAsyncKeyState(key) & Constants::KEY_PRESSED_MASK);
+					io.AddKeyEvent(Util::Input::VirtualKeyToImGuiKey(key), pressed);
+					if (key == VK_LCONTROL || key == VK_RCONTROL)
+						io.AddKeyEvent(ImGuiMod_Ctrl, pressed);
+					else if (key == VK_LSHIFT || key == VK_RSHIFT)
+						io.AddKeyEvent(ImGuiMod_Shift, pressed);
+					else if (key == VK_LMENU || key == VK_RMENU)
+						io.AddKeyEvent(ImGuiMod_Alt, pressed);
 				}
-
-				// Director is modal. Do not run normal PIXL hotkeys or ImGui key
-				// routing here. Hooks.cpp separately forwards only camera controls.
+				// Director remains modal. When its compact editor is hidden,
+				// keys belong only to Director shortcuts and native free camera.
 				continue;
 			}
 

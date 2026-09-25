@@ -6,7 +6,7 @@ The accepted 1.0.4 UI/renderer baseline is preserved at commit `f42345ff` on `ba
 
 ## Video Mode
 
-The route editor, timeline, point inspector, point deletion and per-point speed controls already existed in the `PixelCapture` page. `OpenDirectorVideoMode()` hid the menu on entry, and that page was restricted to Developer/Lab navigation. This made those controls and the cursor unavailable in normal Video Mode. Entry now selects the native PIXL PixelCapture workspace, opens its panel and leaves the mouse with ImGui until Shift is held for native free-camera motion. Timeline-adjacent Save Camera, Delete POI and selected-point Speed controls make the main edit actions visible without scrolling to the detailed point inspector. The existing list and plan view still move the camera to a selected point. In the hidden viewfinder, Shift+Enter now reopens the editor; plain Enter still captures a POI. Video takes ownership from any prior tuner-inspection transaction so hiding its editor does not accidentally exit the free camera.
+The route editor, timeline, point inspector, point deletion and per-point speed controls already existed in the `PixelCapture` page. The first attempt to expose them opened the whole tuner on Video entry. That suppressed the Video viewfinder, bars and full-width timeline, and closing the tuner requested Director exit. The Steam runtime log showed Video entry followed immediately by a Director exit request, with no captured POIs. Video now opens its own PIXL panel over the viewfinder, separate from the tuner. The original crosshair, cinema bars, world route and full-width timeline remain visible. The panel has a clickable timeline and POI list, Capture, Play, selected-point Speed, Save Camera and Delete controls. Shift-held motion releases the mouse to native free camera; releasing Shift returns it to the panel. Shift+Enter captures the current camera position; Insert hides or restores the panel without ending the camera session. The full PixelCapture workspace remains available through Advanced Director.
 
 The short-turn path problem was traced to sparse arc-length sampling on short curved segments and full authored speed through sharp corners. Rebuild now samples a minimum of 16 arc intervals per segment and computes a bounded effective corner speed based on adjacent point spacing and bend angle. Saved authored speeds and the path JSON schema are unchanged. This is a source-level correction; perceptual motion still needs live testing.
 
@@ -23,12 +23,12 @@ WindowLife installs a Lighting draw hook but does not issue any `Draw` or `Dispa
 - Release DLL build: passed after code changes; integrated PIXL audit passed for 37 shipping modules.
 - Director deterministic path self-test: passed, including a short 90-degree-turn case.
 - WindowLife shader test: nine pixel shader permutations passed with warnings treated as errors.
-- In-game Video controls, WindowLife appearance and draw-call attribution: **manual test required**.
+- In-game Video controls, WindowLife appearance and draw-call attribution: **manual test required**. The earlier tuner-based Video entry was broken in the Steam build; verify the separate panel deployment before treating Video as fixed.
 
 ## Focused live checks
 
-1. In the Steam game, open Video Mode with `Ctrl+Home`. Confirm the cursor and Director editor appear; click a timeline tick and a plan-view POI. The free camera should move to the chosen POI.
-2. Hold Shift to reframe, release it, select a POI, change Speed, click Save Camera, then Delete POI. Verify the route and timeline update and the mouse controls the editor when Shift is released.
+1. In the Steam game, open Video Mode with `Ctrl+Home`. Confirm the separate Video panel, cursor, Video crosshair, cinema bars and full-width timeline appear together, and stay visible. Capture two POIs with Enter or the panel button; click a timeline tick and a POI row. The free camera should move to the chosen POI.
+2. Hold Shift to reframe, capture with Shift+Enter, then release Shift, select a POI, change Speed, click Save Camera, then Delete POI. Verify the route and timeline update and the mouse controls the editor when Shift is released. Hide and reopen the panel with Insert; the viewfinder and route must persist.
 3. Preview a route with two nearby 90-degree turns and compare with a long straight. Check for continuous motion and no mouse-driven camera drift during Play.
 4. Compare the same exterior authored window at dusk and night: room floor near the sill, occupants lower, emission brighter, and Silhouette Softness visibly affecting people without softening the frame.
 5. Capture before/after draw and GPU timing data in the same scene with WindowLife enabled and disabled. Check actual draw calls separately from WindowLife pixel time and CPU submission cost.
