@@ -363,7 +363,10 @@ void MaterialForge::DrawSettings()
 			"Physical vs Vanilla Delta (4x)",
 			"Emissive",
 			"Raw Authored Metalness",
-			"Effective Metalness (Authored + Inferred)"
+			"Effective Metalness (Authored + Inferred)",
+			"TEST: Final GGX Roughness = 0.50",
+			"TEST: Final GGX Roughness Floor = 0.15",
+			"TEST: Final Roughness Below 0.05 (Magenta)"
 		};
 		int debugMode = static_cast<int>(settings.LegacyPhysicalDebugMode);
 		if (ImGui::Combo(T(TKEY("legacy_physical_debug_mode"), "Physical Material Debug"), &debugMode,
@@ -383,6 +386,12 @@ void MaterialForge::DrawSettings()
 			ImGui::TextDisabled("Roughness: black smooth | white rough");
 		} else if (settings.LegacyPhysicalDebugMode == 5) {
 			ImGui::TextDisabled("F0: square-root display preserves low dielectric reflectance without clipping");
+		} else if (settings.LegacyPhysicalDebugMode == 13) {
+			ImGui::TextDisabled("Temporarily replaces the final legacy/Complex Material GGX roughness input with 0.50. The frame remains normally shaded.");
+		} else if (settings.LegacyPhysicalDebugMode == 14) {
+			ImGui::TextDisabled("Temporarily raises only final legacy/Complex Material GGX roughness values below 0.15. The frame remains normally shaded.");
+		} else if (settings.LegacyPhysicalDebugMode == 15) {
+			ImGui::TextDisabled("Magenta identifies pixels whose final material roughness is below 0.05; all other pixels retain their normal shading.");
 		}
 		if (settings.LegacyPhysicalDebugMode != 0) {
 			ImGui::TextDisabled("Lighting geometry only; particles, flames, sky, and UI may remain visible");
@@ -1062,9 +1071,12 @@ struct BSLightingShaderProperty_LoadBinary
 				}
 				if (property->flags.any(kSoftLighting)) {
 					pbrMaterial->pbrFlags.set(PBRFlags::Fuzz);
-				} else if (property->flags.any(kFitSlope)) {
-					pbrMaterial->glintParameters.enabled = true;
 				}
+				// kFitSlope is ordinary Skyrim material metadata.  It is broadly set on
+				// architectural and landscape meshes, so treating it as an opt-in for
+				// stochastic microfacet glints turns stable PBR highlights into a field
+				// of square sparkle samples.  Glints remain an explicit Material Forge
+				// texture-set or material-object authoring choice.
 			}
 
 			// It was a bad idea originally to use kMenuScreen flag to enable PBR since it's actually used for world map
@@ -1163,6 +1175,12 @@ struct BSLightingShaderProperty_GetRenderPasses
 				if (isPbr) {
 					lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::MaterialForge);
 					lightingFlags &= ~static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Specular);
+					// AnisoLighting is repurposed as the GLINT shader permutation for PBR.
+					// Skyrim's source material can carry the legacy bit for unrelated
+					// reasons, so clear it before adding it back for an explicit PIXL
+					// Glint trait.  Leaving it set compiled stochastic glint code for
+					// ordinary Material Forge surfaces with no glint payload.
+					lightingFlags &= ~static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::AnisoLighting);
 					if (property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape)) {
 						auto* material = static_cast<BSLightingShaderMaterialPBRLandscape*>(property->material);
 						if (material->HasGlint()) {

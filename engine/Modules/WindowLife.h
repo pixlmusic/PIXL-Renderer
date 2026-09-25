@@ -92,6 +92,14 @@ struct WindowLife : RenderModule
         // Magnifies authored room art inside an automatically reconstructed
         // aperture without changing the physical window bounds or room identity.
         float InteriorScale = 1.35f;
+        // Additional atlas mip bias for authored rooms behind physical glass.
+        // Kept separate from silhouette filtering so room art can soften without
+        // weakening panes, mullions or occupant masks.
+        float InteriorSoftness = 0.08f;
+        // Exterior room volume uses the existing atlas and retains the accepted
+        // flat projector as a compatibility fallback.
+        float RoomVolumeStrength = 0.75f;
+        float WindowRecess = 6.0f;
         // Texture-mod-safe geometry fitting owns only the room coordinate system.
         // Optional exact masks may clip the final glass pixels but never resize,
         // retile, seed or otherwise move the recessed interior.
@@ -158,7 +166,8 @@ struct WindowLife : RenderModule
         float4 Glass0{};
         // c5: x dirt, y distortion, z normal retention, w suppress Auto-POM
         float4 Glass1{};
-        // c6: x material tier [1..3], y named glass token, z pane-source flags (1 game glow), w explicit window token
+        // c6: x material tier [1..3], y glass evidence (2 diffuse, 1 other slot), z pane-source flags,
+        //     w explicit window evidence (2 diffuse name, 1 paired glow, 0 other)
         float4 Class0{};
         // c7: x min shallow radius, y min full radius, z full-window verticality, w architectural glass enabled
         float4 Eligibility0{};
@@ -181,8 +190,12 @@ struct WindowLife : RenderModule
 		// c14: x directional reveal, y per-room variation,
 		//      z close cutout feather, w outdoor atlas selected (interior view)
 		float4 Fidelity1{};
+        // c15: x authored-room softness, y room-box blend,
+        //      z glass-to-room recess (Skyrim units), w reserved.
+        // Spare lanes preserve the 256-byte per-draw SRV ABI.
+        float4 Presentation1{};
     };
-	static_assert(sizeof(PerGeometryData) == 240, "WindowLife per-draw payload must be exactly 240 bytes.");
+	static_assert(sizeof(PerGeometryData) == 256, "WindowLife per-draw payload must be exactly 256 bytes.");
     static_assert(sizeof(PerGeometryData) % 16 == 0, "WindowLife constant-buffer payload must remain 16-byte sized.");
 
     virtual void DrawSettings() override;
@@ -201,7 +214,9 @@ private:
         bool hasGlowTexture = false;
         bool hasAuthoredMask = false;
         bool explicitWindow = false;
+        bool diffuseNamedWindow = false;
         bool namedGlass = false;
+        bool diffuseNamedGlass = false;
         int materialTier = 0;  // 1 glass only, 2 shallow interior, 3 full candidate
         int roomFamily = 0;    // 0 Nordic, 1 noble, 2 Riften, 3 Windhelm, 4 Dwemer, 5 trade
         int score = 0;
@@ -214,7 +229,7 @@ private:
     const Classification& GetClassification(const RE::BSLightingShaderMaterialBase* a_material);
     void RefreshFrameBaseData();
     void UpdateAndBindActive(const Classification& a_classification, const RE::BSGeometry* a_geometry);
-    void UploadData(ID3D11Buffer* a_buffer, const PerGeometryData& a_data) const;
+    bool UploadData(ID3D11Buffer* a_buffer, const PerGeometryData& a_data) const;
     void BindNeutral() const;
     void BindActive(const Classification& a_classification) const;
     ID3D11ShaderResourceView* GetAuthoredMaskSRV(const Classification& a_classification) const;
@@ -246,6 +261,8 @@ private:
     PerGeometryData currentActiveData{};
     bool activeDataValid = false;
     std::uint32_t activeDataFrame = ~0u;
+    mutable bool uploadFailureLogged = false;
+    bool invalidGeometryLogged = false;
 
     std::unordered_map<std::string, winrt::com_ptr<ID3D11ShaderResourceView>> authoredMaskSRVs;
     std::unordered_map<std::uintptr_t, Classification> classificationCache;
@@ -262,7 +279,7 @@ private:
         {
             stl::write_vfunc<0x6, BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
             logger::info(
-                "[WindowLife] Installed BSLightingShader geometry hook on PS t{} filtered grime + t{} occupant atlas + t{} curtain atlas + t{} optional exact glass mask + t{} room atlas + t{} 240-byte structured SRV.",
+                "[WindowLife] Installed BSLightingShader geometry hook on PS t{} filtered grime + t{} occupant atlas + t{} curtain atlas + t{} optional exact glass mask + t{} room atlas + t{} 256-byte structured SRV.",
                 kGlassGrimeSRVSlot,
                 kOccupantAtlasSRVSlot,
                 kCurtainAtlasSRVSlot,

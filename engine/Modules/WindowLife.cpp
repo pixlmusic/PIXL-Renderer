@@ -41,6 +41,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	InteriorContrast,
 	InteriorEmission,
     InteriorScale,
+    InteriorSoftness,
+    RoomVolumeStrength,
+    WindowRecess,
     AutomaticRoomSizing,
     UseExactGlassMasks,
     EnableInteriorPassers,
@@ -217,6 +220,14 @@ void WindowLife::DrawSettings()
 		ImGui::SliderFloat(T("feature.window_life.interior_contrast", "Interior Contrast"), &settings.InteriorContrast, 0.50f, 2.0f, "%.2f");
 		ImGui::SliderFloat("Exterior View: Room Emission", &settings.InteriorEmission, 0.0f, 3.0f, "%.2fx");
 		ImGui::SliderFloat(T("feature.window_life.interior_scale", "Interior Scale"), &settings.InteriorScale, 1.0f, 2.50f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SliderFloat("Authored Room Softness", &settings.InteriorSoftness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        if (auto _tt = Util::HoverTooltipWrapper()) {
+            ImGui::TextWrapped("Adds a controlled optical softness to the authored room artwork behind the glass. Panes, mullions and the glass surface stay sharp.");
+        }
+		ImGui::SliderFloat("Room Volume", &settings.RoomVolumeStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		Util::AddTooltip("Projects the authored room onto a bounded rear wall, side walls, floor and ceiling as the view changes. Zero keeps the original flat mapping. No extra texture sample.");
+		ImGui::SliderFloat("Window Recess", &settings.WindowRecess, 0.0f, 18.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+		Util::AddTooltip("Places the room behind the glass and wall opening. Higher values reveal more depth at oblique angles.");
 		ImGui::SliderFloat(T("feature.window_life.interior_lighting_response", "Interior Lighting Response"), &settings.InteriorLightingResponse, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::TextWrapped("Interior Scale crops or expands the room artwork in both manual and automatic sizing modes without changing the detected glass boundary or room identity. Contrast separates furniture and walls; emission controls readability through the original glass.");
@@ -269,9 +280,10 @@ void WindowLife::DrawSettings()
 		if (settings.DebugWindowDetection) {
 			const char* projectionViews[] = {
 				"Class Overlay", "Base Room Coordinates", "Final Room Coordinates",
-				"Framed Room UV", "Room Identity", "Room Basis", "Pane Mask"
+				"Framed Room UV", "Room Identity", "Room Basis", "Pane Mask",
+				"Room Box Surface", "Room Box Depth", "Glow Guide Signal"
 			};
-			settings.DebugRoomProjection = std::clamp(settings.DebugRoomProjection, 0, 6);
+			settings.DebugRoomProjection = std::clamp(settings.DebugRoomProjection, 0, 9);
 			ImGui::Combo("Room Projection Debug", &settings.DebugRoomProjection,
 				projectionViews, IM_ARRAYSIZE(projectionViews));
 			if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -311,6 +323,28 @@ void WindowLife::SetupResources()
     if (!globals::d3d::device)
         return;
 
+    // A renderer/device recreation must never retain views from the old D3D11
+    // device. A failed recreation leaves WindowLife neutral rather than binding
+    // a stale active SRV on a later Lighting draw.
+    activeSRV = nullptr;
+    neutralSRV = nullptr;
+    activeBuffer = nullptr;
+    neutralBuffer = nullptr;
+    glassGrimeSRV = nullptr;
+    occupantAtlasSRV = nullptr;
+    curtainAtlasSRV = nullptr;
+    roomAtlasSRV = nullptr;
+    outdoorAtlasSRV = nullptr;
+    outdoorNightAtlasSRV = nullptr;
+    authoredMaskSRVs.clear();
+    classificationCache.clear();
+    frameBaseData = {};
+    currentActiveData = {};
+    activeDataValid = false;
+    activeDataFrame = ~0u;
+    uploadFailureLogged = false;
+    invalidGeometryLogged = false;
+
     D3D11_BUFFER_DESC desc{};
     desc.ByteWidth = static_cast<UINT>(sizeof(PerGeometryData));
     desc.Usage = D3D11_USAGE_DYNAMIC;
@@ -319,19 +353,37 @@ void WindowLife::SetupResources()
     desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
     desc.StructureByteStride = static_cast<UINT>(sizeof(PerGeometryData));
 
-    DX::ThrowIfFailed(globals::d3d::device->CreateBuffer(&desc, nullptr, activeBuffer.put()));
-    DX::ThrowIfFailed(globals::d3d::device->CreateBuffer(&desc, nullptr, neutralBuffer.put()));
+    const HRESULT activeResult = globals::d3d::device->CreateBuffer(&desc, nullptr, activeBuffer.put());
+    const HRESULT neutralResult = globals::d3d::device->CreateBuffer(&desc, nullptr, neutralBuffer.put());
+    if (FAILED(activeResult) || FAILED(neutralResult)) {
+        logger::error("[WindowLife] Per-draw buffer creation failed (active 0x{:08X}, neutral 0x{:08X}); module renders neutral.",
+            static_cast<std::uint32_t>(activeResult), static_cast<std::uint32_t>(neutralResult));
+        activeBuffer = nullptr;
+        neutralBuffer = nullptr;
+        return;
+    }
 
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
     srvDesc.Format = DXGI_FORMAT_UNKNOWN;
     srvDesc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
     srvDesc.Buffer.FirstElement = 0;
     srvDesc.Buffer.NumElements = 1;
-    DX::ThrowIfFailed(globals::d3d::device->CreateShaderResourceView(activeBuffer.get(), &srvDesc, activeSRV.put()));
-    DX::ThrowIfFailed(globals::d3d::device->CreateShaderResourceView(neutralBuffer.get(), &srvDesc, neutralSRV.put()));
+    const HRESULT activeViewResult = globals::d3d::device->CreateShaderResourceView(activeBuffer.get(), &srvDesc, activeSRV.put());
+    const HRESULT neutralViewResult = globals::d3d::device->CreateShaderResourceView(neutralBuffer.get(), &srvDesc, neutralSRV.put());
+    if (FAILED(activeViewResult) || FAILED(neutralViewResult)) {
+        logger::error("[WindowLife] Per-draw SRV creation failed (active 0x{:08X}, neutral 0x{:08X}); module renders neutral.",
+            static_cast<std::uint32_t>(activeViewResult), static_cast<std::uint32_t>(neutralViewResult));
+        activeSRV = nullptr;
+        neutralSRV = nullptr;
+        return;
+    }
 
     PerGeometryData neutral{};
-    UploadData(neutralBuffer.get(), neutral);
+    if (!UploadData(neutralBuffer.get(), neutral)) {
+        activeSRV = nullptr;
+        neutralSRV = nullptr;
+        return;
+    }
     frameBaseData = {};
     currentActiveData = {};
     activeDataValid = false;
@@ -623,7 +675,7 @@ void WindowLife::SetupResources()
     }
 
     logger::info(
-		"[WindowLife] Layered-window GPU resources ready (PS t{} grime={}, t{} occupants={}, t{} curtains={}, t{} optional exact pane clip, t{} room atlas={}, t{} structured SRV, 240-byte per-draw payload; FeatureData b6 unchanged).",
+		"[WindowLife] Layered-window GPU resources ready (PS t{} grime={}, t{} occupants={}, t{} curtains={}, t{} optional exact pane clip, t{} room atlas={}, t{} structured SRV, 256-byte per-draw payload; FeatureData b6 unchanged).",
         kGlassGrimeSRVSlot,
         glassGrimeSRV ? "ready" : "analytic",
         kOccupantAtlasSRVSlot,
@@ -729,9 +781,9 @@ void WindowLife::RefreshFrameBaseData()
     };
     // Runtime1.x is a debug mode, not a rendering parameter. Existing shaders
     // treat any non-zero value as the historical class overlay, so mode 1 keeps
-    // that behaviour and modes 2..7 expose the room-projection diagnostics.
+    // that behaviour and modes 2..10 expose room/material diagnostics.
     const int debugMode = settings.DebugWindowDetection
-        ? std::clamp(settings.DebugRoomProjection, 0, 6) + 1
+        ? std::clamp(settings.DebugRoomProjection, 0, 9) + 1
         : 0;
     frameBaseData.Runtime1 = {
         static_cast<float>(debugMode),
@@ -795,24 +847,40 @@ void WindowLife::RefreshFrameBaseData()
         std::clamp(settings.CloseLayerFeather, 0.0f, 1.5f),
         interiorView ? 1.0f : 0.0f
     };
+    frameBaseData.Presentation1 = {
+        std::clamp(settings.InteriorSoftness, 0.0f, 1.0f),
+        std::clamp(settings.RoomVolumeStrength, 0.0f, 1.0f),
+        std::clamp(settings.WindowRecess, 0.0f, 18.0f),
+        0.0f
+    };
 
     activeDataFrame = frame;
 }
 
-void WindowLife::UploadData(ID3D11Buffer* buffer, const PerGeometryData& data) const
+bool WindowLife::UploadData(ID3D11Buffer* buffer, const PerGeometryData& data) const
 {
     if (!buffer || !globals::d3d::context)
-        return;
+        return false;
 
     D3D11_MAPPED_SUBRESOURCE mapped{};
-    DX::ThrowIfFailed(globals::d3d::context->Map(buffer, 0u, D3D11_MAP_WRITE_DISCARD, 0u, &mapped));
+    const HRESULT mapResult = globals::d3d::context->Map(buffer, 0u, D3D11_MAP_WRITE_DISCARD, 0u, &mapped);
+    if (FAILED(mapResult)) {
+        if (!uploadFailureLogged) {
+            logger::error("[WindowLife] Per-draw buffer upload failed (HRESULT 0x{:08X}); binding neutral until resources recover.",
+                static_cast<std::uint32_t>(mapResult));
+            uploadFailureLogged = true;
+        }
+        return false;
+    }
     std::memcpy(mapped.pData, &data, sizeof(data));
     globals::d3d::context->Unmap(buffer, 0u);
+    uploadFailureLogged = false;
+    return true;
 }
 
 void WindowLife::BindNeutral() const
 {
-    if (!neutralSRV || !globals::d3d::context)
+    if (!globals::d3d::context)
         return;
     ID3D11ShaderResourceView* srvs[6] = {
         glassGrimeSRV.get(),
@@ -835,8 +903,12 @@ ID3D11ShaderResourceView* WindowLife::GetAuthoredMaskSRV(const Classification& c
 
 void WindowLife::BindActive(const Classification& classification) const
 {
-    if (!activeSRV || !globals::d3d::context)
+    if (!globals::d3d::context)
         return;
+    if (!activeSRV) {
+        BindNeutral();
+        return;
+    }
     ID3D11ShaderResourceView* srvs[6] = {
         glassGrimeSRV.get(),
         occupantAtlasSRV.get(),
@@ -895,6 +967,11 @@ WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShad
         "winterhold", "college", "castle", "house", "houses", "inn", "shop", "temple", "fort",
         "building", "buildings", "village", "town", "city", "exterior", "facade", "dwemer", "nordic"
     });
+	const bool diffuseArchitecture = ContainsAny(diffusePath, {
+		"architecture", "architectural", "farmhouse", "whiterun", "solitude", "windhelm", "riften", "markarth",
+		"winterhold", "college", "castle", "house", "houses", "inn", "shop", "temple", "fort",
+		"building", "buildings", "village", "town", "city", "exterior", "facade", "dwemer", "nordic"
+	});
     const bool obviousNonBuildingGlass = ContainsAny(allPaths, {
         "bottle", "potion", "alchemy", "clutter", "weapon", "armor", "shield", "crystal", "gem",
         "ice", "eye", "water", "magic", "spell", "effect", "decal", "lantern", "chandelier", "candle", "torch"
@@ -913,6 +990,13 @@ WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShad
         "window_closed", "boarded", "windowboard", "window_board"
     });
     const bool hasGlowTexture = !glowPath.empty();
+	// Some Skyrim building materials name the diffuse after the facade but put
+	// the actual pane evidence in a dedicated window glow map. The glow guide is
+	// accepted only with an architectural diffuse and remains clipped per pixel
+	// by PaneMask; a generic building path or unrelated glow map is insufficient.
+	const bool windowGlowGuide = hasGlowTexture && ContainsAny(glowPath, {
+		"window", "windows", "windowpane", "window_pane", "glasspane", "glass_pane", "glazing"
+	});
     const std::string authoredMaskKey = CanonicalWindowMaskKey(diffusePath);
     const bool hasAuthoredMask =
         settings.UseExactGlassMasks &&
@@ -944,17 +1028,21 @@ WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShad
     const bool architecturalGlass = architecture && glass && !obviousNonBuildingGlass;
     // Architecture is context, never proof. Treating the broad architecture path
     // as sufficient classified doors, roofs, gravestones and entire facade draws
-    // as windows. Require an explicit window/glass token or a dedicated authored
-    // pane mask whose basename matches the diffuse material being drawn.
+    // as windows. Require a window/glass token on the diffuse or paired glow,
+    // or a dedicated authored pane mask matching this material.
     result.isWindow = !windowProxyMask && !closedWindowSurface &&
-        (strongWindow || architecturalGlass || authoredWindowMaterial);
+        (strongWindow || architecturalGlass || authoredWindowMaterial ||
+			(diffuseArchitecture && windowGlowGuide && !obviousNonBuildingGlass));
     result.hasGlowTexture = hasGlowTexture;
-    // A mask is supplemental evidence on an already accepted material. It must
-    // never promote facade/helper geometry or restore the old proxy-mesh bug.
+    // A diffuse-matched exact mask can admit a texture replacer's window into
+    // the shallow room tier. Closed/helper proxy surfaces remain excluded above;
+    // the mask clips final glass pixels and never moves the room aperture.
     result.hasAuthoredMask = result.isWindow && hasAuthoredMask;
     result.authoredMaskKey = result.hasAuthoredMask ? authoredMaskKey : std::string{};
-    result.explicitWindow = strongWindow;
+    result.explicitWindow = strongWindow || (diffuseArchitecture && windowGlowGuide && !obviousNonBuildingGlass);
+    result.diffuseNamedWindow = strongWindow;
     result.namedGlass = glass;
+    result.diffuseNamedGlass = ContainsAny(diffusePath, { "glass", "stainedglass", "stained_glass" });
     // Cache the material side of the room identity once. The geometry instance
     // contributes its own stable salt in UpdateAndBindActive; separating the two
     // prevents per-pixel texture evidence from changing room identity.
@@ -976,7 +1064,9 @@ WindowLife::Classification WindowLife::ClassifyMaterial(const RE::BSLightingShad
     // downgrade it later; they can never promote decorative/non-window materials.
     if (strongWindow)
         result.materialTier = 3;
-    else if (architecturalGlass)
+    else if (architecturalGlass || (diffuseArchitecture && windowGlowGuide) || authoredWindowMaterial)
+        // Exact diffuse-matched masks admit a room but do not infer a safe
+        // occupant layer across a large facade draw.
         result.materialTier = 2;
 
     result.evidence = !diffusePath.empty() ? diffusePath : (!glowPath.empty() ? glowPath : allPaths);
@@ -1037,10 +1127,10 @@ void WindowLife::UpdateAndBindActive(const Classification& classification, const
 
     data.Class0 = {
         static_cast<float>(tier),
-        classification.namedGlass ? 1.0f : 0.0f,
+        classification.diffuseNamedGlass ? 2.0f : (classification.namedGlass ? 1.0f : 0.0f),
         (classification.hasGlowTexture ? 1.0f : 0.0f) +
             (classification.hasAuthoredMask ? 2.0f : 0.0f),
-        classification.explicitWindow ? 1.0f : 0.0f
+        classification.diffuseNamedWindow ? 2.0f : (classification.explicitWindow ? 1.0f : 0.0f)
     };
     data.Asset0.x = static_cast<float>(classification.roomFamily);
     // Layout eligibility is a cached material property. 2 means an explicit
@@ -1102,7 +1192,11 @@ void WindowLife::UpdateAndBindActive(const Classification& classification, const
     }
 
     if (!activeDataValid || std::memcmp(&data, &currentActiveData, sizeof(data)) != 0) {
-        UploadData(activeBuffer.get(), data);
+        if (!UploadData(activeBuffer.get(), data)) {
+            activeDataValid = false;
+            BindNeutral();
+            return;
+        }
         currentActiveData = data;
         activeDataValid = true;
     }
@@ -1118,6 +1212,25 @@ void WindowLife::BSLightingShader_SetupGeometry(RE::BSRenderPass* pass)
         return;
     }
 
+    // Malformed replacement meshes must never upload NaN bounds into the room
+    // projector or overflow the stable instance-identity quantization.
+    const auto* geometry = pass->geometry;
+    if (!geometry || !std::isfinite(geometry->worldBound.radius) ||
+        geometry->worldBound.radius < 0.0f || geometry->worldBound.radius > 1.0e8f ||
+        !std::isfinite(geometry->worldBound.center.x) ||
+        !std::isfinite(geometry->worldBound.center.y) ||
+        !std::isfinite(geometry->worldBound.center.z) ||
+        std::abs(geometry->worldBound.center.x) > 1.0e8f ||
+        std::abs(geometry->worldBound.center.y) > 1.0e8f ||
+        std::abs(geometry->worldBound.center.z) > 1.0e8f) {
+        if (!invalidGeometryLogged) {
+            logger::warn("[WindowLife] Lighting draw has missing or invalid geometry bounds; binding neutral WindowLife data.");
+            invalidGeometryLogged = true;
+        }
+        BindNeutral();
+        return;
+    }
+
     auto* material = static_cast<RE::BSLightingShaderMaterialBase*>(pass->shaderProperty->material);
     const auto& classification = GetClassification(material);
     if (!classification.isWindow) {
@@ -1125,7 +1238,7 @@ void WindowLife::BSLightingShader_SetupGeometry(RE::BSRenderPass* pass)
         return;
     }
 
-    UpdateAndBindActive(classification, pass->geometry);
+    UpdateAndBindActive(classification, geometry);
 }
 
 void WindowLife::Hooks::BSLightingShader_SetupGeometry::thunk(

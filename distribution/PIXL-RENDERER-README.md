@@ -1,4 +1,4 @@
-# PIXL Renderer 1.0.3
+# PIXL Renderer 1.0.4
 
 An integrated DirectX 11 renderer for Skyrim Special Edition.
 
@@ -18,7 +18,7 @@ Neural Rendering (NR) is experimental and optional. **The NR runtime `nvngx_dlss
 5. Return to PIXL and select **I've copied it — Check File**. Green means found; red means missing; cyan means ready to confirm. This verifies file presence, **not authenticity, compatibility or licensing**.
 6. Confirm and return to Quick Setup, then **Save & Continue**. Use supported NVIDIA hardware, DLSS/DLAA, SDR and borderless/windowed mode. Save your game, fully exit Skyrim, and relaunch through SKSE. A save reload is not enough: the DX11/DX12 sidecar is initialized at startup.
 
-This is a third-party experimental runtime, not a NVIDIA-approved PIXL download. Availability and upstream instructions may change. Installing this silent 1.0.3 update does not require deleting your shader cache or resetting your settings.
+This is a third-party experimental runtime, not a NVIDIA-approved PIXL download. Availability and upstream instructions may change. Existing user settings remain compatible; the renderer rebuilds incompatible shader permutations as needed.
 
 ### Requirements
 
@@ -35,7 +35,7 @@ combinations still require live bridge testing.
 
 ### Optional SurfaceTides compatibility
 
-PIXL 1.0.3 includes the renderer side of the SurfaceTides bridge. The FOMOD offers
+PIXL 1.0.4 retains the renderer side of the SurfaceTides bridge. The FOMOD offers
 an optional bridge for the exact SurfaceTides 1.0.2 release. Select it only when
 that original release is already installed. The choice replaces SurfaceTides' DLL,
 water shader and INI with the PIXL-tuned integration preset. It enables
@@ -91,7 +91,20 @@ ReShadePresets. Select a preset or toggle ReShade effects there; changes run in
 ReShade's callback. Its own effect compilation can still occur when switching.
 Start validation with SDR, NR and frame generation off. Depth effects and alternate
 presenters remain unvalidated. PIXL does not bundle ReShade, ENB or their presets.
-ENB presets cannot run inside PIXL's camera pipeline; ENB remains incompatible.
+ENB itself cannot run inside PIXL's camera pipeline and remains incompatible.
+
+### Experimental ENB preset translator
+
+Camera > External post-processing also includes a read-only **PIXL ENB-Bridge**
+for bringing supported preset colour response into Camera Suite after ENB itself
+has been disabled. Refresh searches the Skyrim installation for bounded,
+non-linked `enbseries.ini` files. Select a result, inspect its source tooltip,
+then choose **Apply translated PIXL style**. PIXL maps supported exposure,
+contrast, saturation, adaptation, tone and bloom values into its own settings;
+it never runs imported effect shaders or writes to a preset folder. **Restore
+before import** returns to the PIXL camera state captured immediately before the
+first import. Weather-separated source controls use their supported base/day
+values while PIXL keeps ownership of weather response.
 
 ### Optional DLSS frame-generation proxy installation
 

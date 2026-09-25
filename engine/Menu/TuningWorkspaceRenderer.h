@@ -77,6 +77,8 @@ public:
 
 	// PIXL Director live photo-mode controls / HUD.
 	[[nodiscard]] static bool IsDirectorPhotoModeActive();
+	[[nodiscard]] static bool IsDirectorVideoModeActive();
+	[[nodiscard]] static bool IsDirectorVideoPlaybackActive();
 	[[nodiscard]] static bool IsDirectorCameraTransitionPending();
 	/** Current PIXL tuner ownership state. The tuner remains open while inspecting. */
 	[[nodiscard]] static TunerInteractionMode GetTunerInteractionMode();
@@ -94,6 +96,8 @@ public:
 	[[nodiscard]] static bool IsDirectorPhotoModeAvailable(std::string* reason = nullptr);
 	/** Enters Director through its authoritative eligibility gate, or returns to its live HUD when already active. */
 	static bool OpenDirectorPhotoMode();
+	/** Enters Director Video Mode through the same guarded free-camera session. */
+	static bool OpenDirectorVideoMode();
 	/** Requests safe teardown when the tuner closes during inspection. */
 	static void CloseTunerInspection();
 	/** Advances camera teardown even when the tuner and Director HUD are hidden. */
@@ -106,6 +110,8 @@ public:
 	static void RenderDirectorPhotoModeOverlay();
 	/** Draws the user-facing hotkey module under the PIXL Renderer group. */
 	static void DrawHotkeysSettings();
+	/** Clears UI-only undo/A-B snapshots after settings are restored or reloaded. */
+	static void ResetWorkspaceHistory();
 
 private:
 	struct ListMenuVisitor

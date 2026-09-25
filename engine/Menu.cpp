@@ -19,6 +19,7 @@
 #include <iomanip>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <RE/S/SendHUDMessage.h>
@@ -200,6 +201,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	TerrainVegetationQuality,
 	CharactersQuality,
 	CameraQuality,
+	TunerFavoriteFeatures,
+	TunerRecentFeatures,
+	TunerFocusScrim,
 	Theme,
 	SelectedThemePreset)
 
@@ -450,6 +454,19 @@ void Menu::Load(json& o_json)
 	settings.TerrainVegetationQuality = std::clamp(settings.TerrainVegetationQuality, 0, 3);
 	settings.CharactersQuality = std::clamp(settings.CharactersQuality, 0, 3);
 	settings.CameraQuality = std::clamp(settings.CameraQuality, 0, 3);
+	// Keep the workspace state small and resilient to old/hand-edited configs.
+	// Feature IDs are validated by the tuner before use, so stale IDs from a
+	// removed module simply disappear from the visible list.
+	auto sanitizeWorkspaceList = [](std::vector<std::string>& entries, size_t limit) {
+		std::unordered_set<std::string> seen;
+		entries.erase(std::remove_if(entries.begin(), entries.end(), [&](const std::string& entry) {
+			return entry.empty() || entry.size() > 96 || !seen.insert(entry).second;
+		}), entries.end());
+		if (entries.size() > limit)
+			entries.resize(limit);
+	};
+	sanitizeWorkspaceList(settings.TunerFavoriteFeatures, 24);
+	sanitizeWorkspaceList(settings.TunerRecentFeatures, 12);
 	// Migrate the inherited first-party theme to PIXL's product skin. Explicit
 	// alternate themes remain respected; only the old generic default changes.
 	if (settings.SelectedThemePreset == "Default")
@@ -473,6 +490,7 @@ void Menu::Load(json& o_json)
 	migrateKey(o_json, "NeuralRenderingKey", settings.NeuralRenderingKey);
 	migrateKey(o_json, "FrameGenerationKey", settings.FrameGenerationKey);
 	migrateKey(o_json, "PhotoModeKey", settings.PhotoModeKey);
+	migrateKey(o_json, "VideoModeKey", settings.VideoModeKey);
 	migrateKey(o_json, "PhotoZoomInKey", settings.PhotoZoomInKey);
 	migrateKey(o_json, "PhotoZoomOutKey", settings.PhotoZoomOutKey);
 	migrateKey(o_json, "PhotoSpeedDownKey", settings.PhotoSpeedDownKey);
@@ -505,6 +523,7 @@ void Menu::Load(json& o_json)
 	loadComboList(o_json, "NeuralRenderingKey", settings.NeuralRenderingKey);
 	loadComboList(o_json, "FrameGenerationKey", settings.FrameGenerationKey);
 	loadComboList(o_json, "PhotoModeKey", settings.PhotoModeKey);
+	loadComboList(o_json, "VideoModeKey", settings.VideoModeKey);
 	loadComboList(o_json, "PhotoZoomInKey", settings.PhotoZoomInKey);
 	loadComboList(o_json, "PhotoZoomOutKey", settings.PhotoZoomOutKey);
 	loadComboList(o_json, "PhotoSpeedDownKey", settings.PhotoSpeedDownKey);
@@ -592,6 +611,7 @@ void Menu::Save(json& o_json)
 	InputCombo::ComboList::to_json(o_json["NeuralRenderingKey"], settings.NeuralRenderingKey);
 	InputCombo::ComboList::to_json(o_json["FrameGenerationKey"], settings.FrameGenerationKey);
 	InputCombo::ComboList::to_json(o_json["PhotoModeKey"], settings.PhotoModeKey);
+	InputCombo::ComboList::to_json(o_json["VideoModeKey"], settings.VideoModeKey);
 	InputCombo::ComboList::to_json(o_json["PhotoZoomInKey"], settings.PhotoZoomInKey);
 	InputCombo::ComboList::to_json(o_json["PhotoZoomOutKey"], settings.PhotoZoomOutKey);
 	InputCombo::ComboList::to_json(o_json["PhotoSpeedDownKey"], settings.PhotoSpeedDownKey);
@@ -880,7 +900,10 @@ void Menu::DrawSettings()
 	if (settings.AdvancedMode) {
 		const ImVec2 viewportSize =
 			ImGui::GetMainViewport()->WorkSize;
-		const float referenceScale = 0.88f * std::min(
+		// Keep the authored canvas proportions while leaving a little more of the
+		// game visible. The shared reference scale keeps every panel, font and
+		// hit target aligned instead of introducing a second compact layout.
+		const float referenceScale = 0.84f * std::min(
 			viewportSize.x / PIXLUI::Layout::ReferenceWidth,
 			viewportSize.y / PIXLUI::Layout::ReferenceHeight);
 		const ImVec2 fixedSize(
@@ -945,8 +968,20 @@ void Menu::DrawSettings()
 		if (settings.AdvancedMode) {
 			const ImVec2 rootPos = ImGui::GetWindowPos();
 
+			// Keep the header aligned with the actual advanced canvas.  The old
+			// fixed 560-unit content width left a large unused region at 1440p and
+			// above while the module surface clipped long setting rows.
+			const ImGuiViewport* viewport = ImGui::GetMainViewport();
+			const float contentStartX = rootPos.x + PIXLUI::Ref(PIXLUI::Layout::TuneContentX);
+			const float availableContentWidth = viewport->WorkPos.x + viewport->WorkSize.x -
+				contentStartX - PIXLUI::Ref(16.0f);
+			const float contentWidth = std::clamp(
+				availableContentWidth,
+				PIXLUI::Ref(PIXLUI::Layout::TuneContentFrameWidth),
+				PIXLUI::Ref(760.0f));
 			const ImVec2 headerSize(
-				PIXLUI::Ref(PIXLUI::Layout::TuneHeaderWidth),
+				PIXLUI::Ref(PIXLUI::Layout::TuneRailWidth + PIXLUI::Layout::TunePanelGap +
+					PIXLUI::Layout::TuneSidebarFrameWidth + PIXLUI::Layout::TunePanelGap) + contentWidth,
 				PIXLUI::Ref(PIXLUI::Layout::TuneHeaderHeight));
 			// Align the command bar with the complete rail + drawer + content stack.
 			// Equal outer insets make the authoring shell read as one precise unit.
@@ -997,7 +1032,7 @@ void Menu::DrawSettings()
 						PIXLUI::Ref(14.0f)));
 			{
 				MenuFonts::FontRoleGuard titleFont(
-					Menu::FontRole::Title);
+					Menu::FontRole::Body);
 				ImGui::SetWindowFontScale(1.18f);
 				ImGui::TextColored(
 					PIXLUI::ToVec4(
@@ -1027,7 +1062,13 @@ void Menu::DrawSettings()
 				TuningWorkspaceRenderer::GetTunerInteractionMode();
 			const char* tunerStatus = "LIVE";
 			ImU32 tunerStatusColor = PIXLUI::Colors::CyanSoft;
-			if (tunerMode == TuningWorkspaceRenderer::TunerInteractionMode::InspectMoving) {
+			if (TuningWorkspaceRenderer::IsDirectorVideoModeActive()) {
+				tunerStatus = "VIDEO MODE";
+				tunerStatusColor = PIXLUI::Colors::CyanBright;
+			} else if (TuningWorkspaceRenderer::IsDirectorPhotoModeActive()) {
+				tunerStatus = "PHOTO MODE";
+				tunerStatusColor = PIXLUI::Colors::CyanBright;
+			} else if (tunerMode == TuningWorkspaceRenderer::TunerInteractionMode::InspectMoving) {
 				tunerStatus = "INSPECT MOVING";
 				tunerStatusColor = PIXLUI::Colors::CyanBright;
 			} else if (tunerMode == TuningWorkspaceRenderer::TunerInteractionMode::InspectLocked) {
@@ -1056,6 +1097,7 @@ void Menu::DrawSettings()
 					"RESTORE",
 					 ImVec2(PIXLUI::Ref(76.0f), PIXLUI::Ref(27.0f)),
 					false)) {
+				TuningWorkspaceRenderer::ResetWorkspaceHistory();
 				globals::state->Load();
 			}
 
@@ -1146,7 +1188,7 @@ void Menu::DrawSettings()
 							5.0f * uiScale));
 				{
 					MenuFonts::FontRoleGuard titleFont(
-						Menu::FontRole::Title);
+						Menu::FontRole::Body);
 					ImGui::SetWindowFontScale(1.14f);
 					ImGui::TextColored(
 						PIXLUI::ToVec4(
@@ -1220,6 +1262,7 @@ void Menu::DrawSettings()
 							restoreWidth,
 							actionHeight),
 						false)) {
+					TuningWorkspaceRenderer::ResetWorkspaceHistory();
 					globals::state->Load();
 				}
 				if (auto _tt = Util::HoverTooltipWrapper())
@@ -1344,6 +1387,15 @@ void Menu::DrawGeneralSettings()
 
 	// Render settings using extracted component
 	RuntimeSettingsRenderer::RenderGeneralSettings(state);
+
+	// Workspace presentation is deliberately separate from renderer settings.
+	// It does not alter the scene and remains available in the normal PIXL UI.
+	PIXLUI::SectionBanner("TUNER WORKSPACE");
+	if (PIXLUI::LabeledToggle("Subtle tuner focus scrim", &settings.TunerFocusScrim)) {
+		logger::info("[PIXL UI] Tuner focus scrim {}", settings.TunerFocusScrim ? "enabled" : "disabled");
+	}
+	if (auto tooltip = Util::HoverTooltipWrapper())
+		ImGui::TextWrapped("Gently darkens busy gameplay behind the advanced Tuner so settings stay legible. It never changes screenshots, Director captures, Photo Mode, or renderer output.");
 }
 
 /**
@@ -1616,6 +1668,7 @@ void Menu::ProcessInputEventQueue()
 							task->AddTask([status]() { RE::SendHUDMessage::ShowHUDMessage(status.c_str(), nullptr, true); });
 					 } },
 					{ settings.PhotoModeKey, []() { TuningWorkspaceRenderer::OpenDirectorPhotoMode(); } },
+					{ settings.VideoModeKey, []() { TuningWorkspaceRenderer::OpenDirectorVideoMode(); } },
 					{ settings.SkipCompilationKey, [this, shaderCache]() {
 						 // ENTER SKYRIM converts foreground compilation into background
 						 // compilation. OverlayRenderer observes this flag on the same
@@ -1789,7 +1842,7 @@ void Menu::ProcessInputEventQueue()
 			// SkipCompilationKey (ESC) is excluded â€” ESC must reach ImGui for menu/dialog close.
 			const std::vector<InputCombo>* hotkeys[] = {
 				&settings.ToggleKey, &settings.NeuralRenderingKey, &settings.FrameGenerationKey,
-				&settings.PhotoModeKey, &settings.PhotoZoomInKey, &settings.PhotoZoomOutKey,
+				&settings.PhotoModeKey, &settings.VideoModeKey, &settings.PhotoZoomInKey, &settings.PhotoZoomOutKey,
 				&settings.PhotoSpeedDownKey, &settings.PhotoSpeedUpKey,
 				&settings.PhotoQuickPreviousKey, &settings.PhotoQuickNextKey,
 				&settings.PhotoQuickDecreaseKey, &settings.PhotoQuickIncreaseKey,

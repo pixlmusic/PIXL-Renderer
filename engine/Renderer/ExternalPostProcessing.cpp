@@ -1,11 +1,13 @@
 #include "PCH.h"
 #include "ExternalPostProcessing.h"
 #include "../Globals.h"
+#include "../State.h"
 #include "../Modules/CameraSuite.h"
 #include "../../extern/ReShade/include/reshade_events.hpp"
 #include <psapi.h>
 #include <fstream>
 #include <mutex>
+#include <unordered_set>
 
 namespace
 {
@@ -18,11 +20,6 @@ namespace
 	bool registered = false;
 	std::vector<std::string> presets;
 	std::string scanStatus;
-	bool enbBridgeEnabled = false;
-	std::vector<std::string> enbPresets;
-	std::unordered_map<std::string, std::string> enbPresetLabels;
-	std::string enbActivePreset;
-	std::string enbStatus;
 	struct QuickStyle
 	{
 		bool valid = false;
@@ -41,8 +38,27 @@ namespace
 		float lookOpacity = 0.0f;
 		float influence = 1.0f;
 	};
+	struct ENBPreset
+	{
+		std::string path;
+		std::string label;
+		std::filesystem::path effectConfig;
+		bool hasPalette = false;
+		bool hasAnnotatedEffect = false;
+		bool usesWeatherSeparatedParameters = false;
+	};
+
+	bool enbBridgeEnabled = false;
+	std::vector<ENBPreset> enbPresets;
+	std::string enbActivePreset;
+	std::string enbSelectedPreset;
+	std::string enbStatus;
+	std::optional<QuickStyle> enbImportBaseline;
 	std::array<QuickStyle, 5> quickStyles{};
 	bool quickStylesInitialized = false;
+
+	QuickStyle CaptureCurrentStyle(std::string_view defaultName);
+	void ApplyQuickStyle(const QuickStyle& style);
 
 	std::optional<float> ReadIniValue(const std::filesystem::path& file, std::string_view section, std::string_view key)
 	{
@@ -87,11 +103,80 @@ namespace
 		return std::nullopt;
 	}
 
+	constexpr std::uintmax_t kMaxExternalPresetFileBytes = 4u * 1024u * 1024u;
+	constexpr std::size_t kMaxExternalPresetCandidates = 512;
+	constexpr std::size_t kMaxExternalPresetDirectories = 8192;
+	constexpr std::size_t kMaxExternalPresetDepth = 7;
+
+	bool IsSafeExternalPresetFile(const std::filesystem::path& file)
+	{
+		std::error_code ec;
+		if (!std::filesystem::is_regular_file(file, ec) || std::filesystem::is_symlink(file, ec))
+			return false;
+		const auto size = std::filesystem::file_size(file, ec);
+		return !ec && size <= kMaxExternalPresetFileBytes;
+	}
+
+	bool EqualsInsensitive(std::wstring_view lhs, std::wstring_view rhs)
+	{
+		return lhs.size() == rhs.size() &&
+			CompareStringOrdinal(lhs.data(), static_cast<int>(lhs.size()), rhs.data(), static_cast<int>(rhs.size()), TRUE) == CSTR_EQUAL;
+	}
+
+	bool IsIgnoredPresetDirectory(std::wstring_view name)
+	{
+		// These roots are large game payloads or volatile output; presets belong
+		// beside the game or in a user-created preset folder, never inside them.
+		for (const auto& ignored : { L"Data", L"Creations", L"Downloads", L"Screenshots", L"Cache", L"Logs", L"build", L"bin", L".git" }) {
+			if (EqualsInsensitive(name, ignored))
+				return true;
+		}
+		return false;
+	}
+
+	std::string ToUtf8(const std::filesystem::path& path)
+	{
+		const auto value = path.u8string();
+		return { reinterpret_cast<const char*>(value.data()), value.size() };
+	}
+
+	std::string DisplayPresetPath(const std::filesystem::path& root, const std::filesystem::path& file)
+	{
+		std::error_code ec;
+		auto relative = std::filesystem::relative(file.parent_path(), root, ec);
+		if (ec || relative.empty() || relative == ".")
+			return "Game root";
+		return ToUtf8(relative);
+	}
+
+	std::filesystem::path FindENBEffectShader(const std::filesystem::path& preset)
+	{
+		for (const auto& candidate : { preset.parent_path() / "enbseries" / "enbeffect.fx", preset.parent_path() / "enbeffect.fx" }) {
+			if (IsSafeExternalPresetFile(candidate))
+				return candidate;
+		}
+		return {};
+	}
+
+	void InspectEffectAnnotations(const std::filesystem::path& preset, ENBPreset& result)
+	{
+		const auto shader = FindENBEffectShader(preset);
+		if (shader.empty())
+			return;
+		std::ifstream stream(shader, std::ios::binary);
+		if (!stream)
+			return;
+		std::string source((std::istreambuf_iterator<char>(stream)), {});
+		// These tags belong to the original effect runtime. PIXL uses them only
+		// as capability metadata; no foreign HLSL is compiled or executed here.
+		result.hasAnnotatedEffect = source.find("UIName") != std::string::npos || source.find("UIGroup") != std::string::npos;
+		result.usesWeatherSeparatedParameters = source.find("Separation") != std::string::npos;
+	}
+
 	std::filesystem::path FindENBEffectConfig(const std::filesystem::path& preset)
 	{
 		for (const auto& candidate : { preset.parent_path() / "enbseries" / "enbeffect.fx.ini", preset.parent_path() / "enbeffect.fx.ini" }) {
-			std::error_code ec;
-			if (std::filesystem::is_regular_file(candidate, ec))
+			if (IsSafeExternalPresetFile(candidate))
 				return candidate;
 		}
 		return {};
@@ -122,45 +207,68 @@ namespace
 	void ScanENBPresets()
 	{
 		enbPresets.clear();
-		enbPresetLabels.clear();
+		enbSelectedPreset.clear();
 		wchar_t executable[32768]{};
 		const auto length = GetModuleFileNameW(nullptr, executable, 32768);
 		if (!length || length >= 32768) { enbStatus = "Could not locate the game folder."; return; }
 		const auto root = std::filesystem::path(executable).parent_path();
-		std::vector<std::filesystem::path> candidates{ root / "enbseries.ini" };
-		const auto bridgeRoot = root / "ENB-Bridge" / "Presets";
-		std::error_code scanError;
-		if (std::filesystem::is_directory(bridgeRoot, scanError)) {
-			for (const auto& entry : std::filesystem::recursive_directory_iterator(bridgeRoot, scanError)) {
-				if (entry.is_regular_file(scanError) && entry.path().filename() == L"enbseries.ini")
-					candidates.push_back(entry.path());
+		std::unordered_set<std::wstring> seen;
+		std::error_code ec;
+		std::size_t inspectedDirectories = 0;
+		for (std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec), end;
+			it != end && enbPresets.size() < kMaxExternalPresetCandidates;
+			it.increment(ec)) {
+			if (ec) {
+				ec.clear();
+				continue;
 			}
-		}
-		for (const auto& file : candidates) {
-			std::error_code ec;
-			if (std::filesystem::is_regular_file(file, ec) && !std::filesystem::is_symlink(file, ec)) {
-				const auto utf8 = file.u8string();
-				const std::string presetPath(reinterpret_cast<const char*>(utf8.data()), utf8.size());
-				enbPresets.push_back(presetPath);
-				if (file.parent_path().filename() == "Presets")
-					enbPresetLabels[presetPath] = file.parent_path().parent_path().filename().string();
-				else if (const auto effect = FindENBEffectConfig(file); !effect.empty()) {
-					const auto rubyBrightness = ReadNamedValue(effect, "EBrightnessV2Day");
-					const auto rubyCurve = ReadNamedValue(effect, "EToneMappingCurveV2Day");
-					if (rubyBrightness && rubyCurve && std::abs(*rubyBrightness - 0.63f) < 0.02f && std::abs(*rubyCurve - 1.60f) < 0.05f)
-						enbPresetLabels[presetPath] = "RUBY ENB 2.1 (detected)";
-					else
-						enbPresetLabels[presetPath] = "Installed ENB style (translated)";
-				} else
-					enbPresetLabels[presetPath] = "Installed ENB style (enbseries.ini)";
+			const auto& entry = *it;
+			if (entry.is_symlink(ec)) {
+				if (entry.is_directory(ec))
+					it.disable_recursion_pending();
+				continue;
 			}
+			if (entry.is_directory(ec)) {
+				if (++inspectedDirectories > kMaxExternalPresetDirectories || it.depth() >= kMaxExternalPresetDepth || IsIgnoredPresetDirectory(entry.path().filename().wstring()))
+					it.disable_recursion_pending();
+				continue;
+			}
+			if (!entry.is_regular_file(ec) || !EqualsInsensitive(entry.path().filename().wstring(), L"enbseries.ini") || !IsSafeExternalPresetFile(entry.path()))
+				continue;
+
+			auto canonical = std::filesystem::weakly_canonical(entry.path(), ec);
+			if (ec) {
+				ec.clear();
+				continue;
+			}
+			const auto canonicalKey = canonical.wstring();
+			if (!seen.insert(canonicalKey).second)
+				continue;
+
+			ENBPreset preset;
+			preset.path = ToUtf8(canonical);
+			preset.label = DisplayPresetPath(root, canonical);
+			preset.effectConfig = FindENBEffectConfig(canonical);
+			preset.hasPalette = HasENBPalette(canonical);
+			InspectEffectAnnotations(canonical, preset);
+			enbPresets.emplace_back(std::move(preset));
 		}
-		enbStatus = std::format("Detected {} ENB preset file{}.", enbPresets.size(), enbPresets.size() == 1 ? "" : "s");
+		std::sort(enbPresets.begin(), enbPresets.end(), [](const auto& lhs, const auto& rhs) { return lhs.label < rhs.label; });
+		if (!enbActivePreset.empty())
+			enbSelectedPreset = enbActivePreset;
+		enbStatus = std::format("Found {} preset{} in the game folder. Scan is bounded to {} files and ignores game data, caches and links.",
+			enbPresets.size(), enbPresets.size() == 1 ? "" : "s", kMaxExternalPresetCandidates);
 	}
 
-	void ApplyENBPreset(const std::string& path)
+	void ApplyENBPreset(const ENBPreset& preset)
 	{
-		const auto file = std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(path.data()), path.size()));
+		const auto file = std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(preset.path.data()), preset.path.size()));
+		if (!IsSafeExternalPresetFile(file)) {
+			enbStatus = "The selected preset is no longer available. Refresh the library before trying again.";
+			return;
+		}
+		if (!enbImportBaseline)
+			enbImportBaseline = CaptureCurrentStyle("Before imported visual style");
 		float exposureEV = 0.0f;
 		float contrast = 1.0f;
 		float saturation = 1.0f;
@@ -195,7 +303,7 @@ namespace
 			bloomEnabled = *bloom > 0.001f;
 			bloomStrength = std::clamp(*bloom * 8.0f, 0.0f, 3.0f);
 		}
-		const auto effectConfig = FindENBEffectConfig(file);
+		const auto effectConfig = preset.effectConfig.empty() ? FindENBEffectConfig(file) : preset.effectConfig;
 		if (!effectConfig.empty()) {
 			// ENB effect configuration is a flat key/value file rather than a
 			// sectioned INI. Read the daytime tone-map controls when present and
@@ -231,14 +339,17 @@ namespace
 			lookPreset = 0;
 			lookOpacity = 0.0f;
 		}
-		if (HasENBPalette(file))
+		if (preset.hasPalette)
 			toneSource += "; palette asset detected (translated safely)";
 		globals::pipeline::cameraSuite.ApplyExternalLook(exposureEV, contrast, saturation, adaptation, highlightProtection, shadowDetail, toe, shoulder, bloomEnabled, bloomStrength, lookPreset, lookOpacity);
 		globals::pipeline::cameraSuite.LoadLookTexture();
 		globals::pipeline::cameraSuite.UpdateHDRData();
-		enbActivePreset = path;
+		if (globals::state)
+			globals::state->Save();
+		enbActivePreset = preset.path;
+		enbSelectedPreset = preset.path;
 		enbBridgeEnabled = true;
-		enbStatus = std::format("{} is active in PIXL. {}. Grade {:.0f}%%, exposure {:+.2f} EV, contrast {:.2f}, saturation {:.2f}, bloom {}.", enbPresetLabels.contains(path) ? enbPresetLabels[path] : "Preset", toneSource, lookOpacity * 100.0f, exposureEV, contrast, saturation, bloomEnabled ? "on" : "off");
+		enbStatus = std::format("{} is translated into PIXL. {}. Grade {:.0f}%, exposure {:+.2f} EV, contrast {:.2f}, saturation {:.2f}, bloom {}.", preset.label, toneSource, lookOpacity * 100.0f, exposureEV, contrast, saturation, bloomEnabled ? "on" : "off");
 	}
 
 	QuickStyle CaptureCurrentStyle(std::string_view defaultName)
@@ -273,8 +384,21 @@ namespace
 		globals::pipeline::cameraSuite.LoadLookTexture();
 		globals::pipeline::cameraSuite.UpdateHDRData();
 		enbActivePreset.clear();
+		enbSelectedPreset.clear();
+		enbImportBaseline.reset();
 		enbBridgeEnabled = false;
 		enbStatus = std::format("{} is active as a PIXL visual style.", style.name.data());
+	}
+
+	void RestoreENBImportBaseline()
+	{
+		if (!enbImportBaseline)
+			return;
+		const auto baseline = *enbImportBaseline;
+		ApplyQuickStyle(baseline);
+		if (globals::state)
+			globals::state->Save();
+		enbStatus = "Restored the PIXL camera state from before the imported visual style.";
 	}
 
 	void InitializeQuickStyles()
@@ -407,7 +531,10 @@ namespace
 
 void ExternalPostProcessing::Initialize()
 {
-	ScanENBPresets();
+	// The preset library can walk a meaningful part of the game install, so it
+	// is intentionally user-triggered from the experimental panel rather than
+	// adding filesystem work to every startup.
+	enbStatus = "Refresh the game-folder library to discover installed preset configurations.";
 	// Register only with an already loaded, API-compatible ReShade. Never load
 	// proxy DLLs, copy presets or alter ENB configuration to manufacture support.
 	HMODULE modules[1024]{};
@@ -455,28 +582,67 @@ void ExternalPostProcessing::DrawSettings()
 	const bool bridgeOpen = ImGui::TreeNode("PIXL ENB-Bridge");
 	ImGui::PopStyleColor(3);
 	if (bridgeOpen) {
-	ImGui::TextWrapped("Bring a familiar ENB preset style into PIXL while keeping the original files safely in place. PIXL translates supported colour, exposure, adaptation and bloom settings without loading ENB's renderer or d3d9_smaa.dll.");
-	if (ImGui::Checkbox("Use PIXL ENB-Bridge", &enbBridgeEnabled)) {
-		if (!enbBridgeEnabled) enbActivePreset.clear();
-	}
-	if (ImGui::Button("Find installed ENB presets")) ScanENBPresets();
-	ImGui::TextWrapped("%s", enbStatus.c_str());
-	std::string selectedPreset = enbActivePreset;
-	const auto activeLabel = enbPresetLabels.contains(enbActivePreset) ? enbPresetLabels[enbActivePreset] : enbActivePreset;
-	if (ImGui::BeginCombo("Visual style", activeLabel.empty() ? "Choose a detected preset" : activeLabel.c_str())) {
+		ImGui::TextWrapped("Import a familiar preset response into PIXL without loading an external renderer. Supported exposure, contrast, colour, adaptation and bloom values are mapped through Camera Suite; original files are read-only.");
+		if (ImGui::Button("Refresh game-folder preset library"))
+			ScanENBPresets();
+		ImGui::TextWrapped("%s", enbStatus.c_str());
+		ImGui::TextDisabled("The scan follows preset folders under the Skyrim install, rejects links and oversized files, and never scans your drives.");
+
+		const ENBPreset* selected = nullptr;
 		for (const auto& preset : enbPresets) {
-			const auto label = enbPresetLabels.contains(preset) ? enbPresetLabels[preset] : preset;
-			if (ImGui::Selectable(label.c_str(), enbActivePreset == preset)) {
-				selectedPreset = preset;
-				ApplyENBPreset(preset);
+			if (preset.path == enbSelectedPreset) {
+				selected = &preset;
+				break;
 			}
 		}
-		ImGui::EndCombo();
-	}
-	if (selectedPreset != enbActivePreset && ImGui::Button("Apply selected visual style"))
-		ApplyENBPreset(selectedPreset);
-	if (!enbActivePreset.empty() && ImGui::Button("Refresh active visual style")) ApplyENBPreset(enbActivePreset);
-	ImGui::TreePop();
+		const char* preview = selected ? selected->label.c_str() : "Choose a detected preset";
+		if (ImGui::BeginCombo("Detected preset", preview)) {
+			for (const auto& preset : enbPresets) {
+				ImGui::PushID(preset.path.c_str());
+				const bool isSelected = preset.path == enbSelectedPreset;
+				if (ImGui::Selectable(preset.label.c_str(), isSelected))
+					enbSelectedPreset = preset.path;
+				if (ImGui::IsItemHovered()) {
+					ImGui::BeginTooltip();
+					ImGui::TextUnformatted(preset.path.c_str());
+					ImGui::Separator();
+					ImGui::TextUnformatted(preset.effectConfig.empty() ? "Base configuration only" : "Effect configuration found");
+					if (preset.hasPalette) ImGui::TextUnformatted("Palette/LUT asset found");
+					if (preset.hasAnnotatedEffect) ImGui::TextUnformatted("Effect UI annotations found");
+					if (preset.usesWeatherSeparatedParameters) ImGui::TextUnformatted("Weather-separated parameters found; PIXL uses the base/day values it supports.");
+					ImGui::EndTooltip();
+				}
+				ImGui::PopID();
+			}
+			ImGui::EndCombo();
+		}
+		if (selected) {
+			ImGui::TextDisabled("%s%s%s", selected->effectConfig.empty() ? "Base settings" : "Base + effect settings", selected->hasPalette ? "  |  palette asset" : "", selected->hasAnnotatedEffect ? "  |  annotated controls" : "");
+			if (selected->usesWeatherSeparatedParameters)
+				ImGui::TextWrapped("This preset declares weather-separated controls. PIXL preserves its own weather model and imports only stable base/day camera values.");
+		}
+		ImGui::BeginDisabled(selected == nullptr);
+		if (ImGui::Button("Apply translated PIXL style"))
+			ApplyENBPreset(*selected);
+		ImGui::EndDisabled();
+		ImGui::SameLine();
+		ImGui::BeginDisabled(enbActivePreset.empty());
+		if (ImGui::Button("Refresh active style")) {
+			for (const auto& preset : enbPresets) {
+				if (preset.path == enbActivePreset) {
+					ApplyENBPreset(preset);
+					break;
+				}
+			}
+		}
+		ImGui::EndDisabled();
+		ImGui::SameLine();
+		ImGui::BeginDisabled(!enbImportBaseline.has_value());
+		if (ImGui::Button("Restore before import"))
+			RestoreENBImportBaseline();
+		ImGui::EndDisabled();
+		ImGui::TextDisabled("PIXL never executes imported effect shaders, loads an external renderer, or writes into a preset folder.");
+		ImGui::TreePop();
 	}
 
 	if (ImGui::TreeNode("ReShade compatibility")) {

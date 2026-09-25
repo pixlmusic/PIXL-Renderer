@@ -1,21 +1,29 @@
 #include "TuningWorkspaceRenderer.h"
 
+#include "Director/DirectorCameraPath.h"
+
 #include <RE/C/CrosshairPickData.h>
 #include <RE/F/FreeCameraState.h>
 #include <RE/H/HUDMenu.h>
 #include <SKSE/InputMap.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cctype>
 #include <cstdio>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <format>
 #include <imgui.h>
 #include <numbers>
 #include <ranges>
 #include <unordered_map>
 #include <unordered_set>
+
+#include <nlohmann/json.hpp>
 
 #include "RenderModule.h"
 #include "Modules/AmbientProbe.h"
@@ -64,6 +72,7 @@
 #include "Renderer/QualityProfiles.h"
 #include "Util.h"
 #include "Utils/UI.h"
+#include "Utils/FileSystem.h"
 #include "WeatherVariableRegistry.h"
 #include "WeatherManager.h"
 
@@ -106,6 +115,15 @@ namespace
 		Snow = 4
 	};
 
+	// Both modes use one authoritative Skyrim free-camera lease. Presentation,
+	// capture and playback remain mode-specific so changing tabs cannot move the
+	// camera or disturb a live Photo Finish transaction.
+	enum class DirectorMode : std::uint8_t
+	{
+		Photo,
+		Video
+	};
+
 	struct DirectorPhotoModeState
 	{
 		bool active = false;
@@ -120,6 +138,9 @@ namespace
 		bool focusTargetValid = false;
 		float focusTargetDistance = 0.0f;
 		int selectedQuickOption = 0;
+		// Composition guides are presentation-only and never enter Photo Finish.
+		// Keep the photographer's choice when opening another Director session.
+		int compositionGuide = 0;
 
 		// Free-camera boundary. 8192 Skyrim units is intentionally generous
 		// enough for wide composition while keeping the camera local to the subject.
@@ -167,6 +188,50 @@ namespace
 
 	DirectorPhotoModeState
 		g_directorPhotoMode{};
+	DirectorMode g_directorMode = DirectorMode::Photo;
+
+	enum class DirectorVideoPlaybackState : std::uint8_t
+	{
+		Stopped,
+		Playing,
+		Paused
+	};
+
+	struct DirectorVideoState
+	{
+		DirectorCameraPath::Path path{};
+		std::size_t selectedPoint = 0;
+		std::uint32_t nextPointId = 1;
+		float playbackTime = 0.0f;
+		// Preview-only multiplier. Authored segment speeds and an optional route
+		// duration remain part of the serialised path; this supports quick live
+		// direction without rewriting a shot.
+		float previewRate = 1.0f;
+		bool loop = false;
+		bool showWorldPath = true;
+		bool cinemaBars = true;
+		int compositionGuide = 0;
+		// Native free camera can run the world for live flythrough previews. The
+		// established Photo default remains frozen and is never changed here.
+		bool freezeWorld = false;
+		DirectorVideoPlaybackState playback = DirectorVideoPlaybackState::Stopped;
+		bool playbackStartPending = false;
+		std::string lastPathError{};
+		std::array<char, 96> nameBuffer{};
+		bool nameBufferInitialized = false;
+		std::vector<std::filesystem::path> savedPaths{};
+		// Reused by the timeline widget. Path rebuilds own this storage so drawing
+		// the Video workspace does not allocate one marker array per UI frame.
+		std::vector<float> timelineMarkers{};
+		// Built when the path changes and consumed by the editor route canvas.
+		// Keeping it here prevents allocations while the workspace is visible.
+		std::vector<DirectorCameraPath::Vec3> previewSamples{};
+		// Bind the working route to one Skyrim cell. Saved paths are unaffected.
+		std::uint32_t cellFormID = 0;
+		bool cellBound = false;
+	};
+
+	DirectorVideoState g_directorVideo{};
 	std::atomic_bool g_directorExitRequested{ false };
 	std::atomic_bool g_directorExitTaskScheduled{ false };
 	std::atomic_bool g_directorExitTaskComplete{ false };
@@ -201,6 +266,258 @@ namespace
 		std::unordered_map<std::string, json> g_simpleAdvancedSnapshots;
 		std::unordered_map<std::string, json> g_simplePendingAdvancedValues;
 		std::string g_simpleConflictFeature;
+		enum class TunerNavigationView : std::uint8_t
+		{
+			All,
+			Favorites,
+			Recent,
+			Modified
+		};
+		TunerNavigationView g_tunerNavigationView = TunerNavigationView::All;
+
+		// UI-only edit history. Module settings remain the source of truth: snapshots
+		// are read and restored exclusively through each feature's existing
+		// SaveSettings/LoadSettings API, never via a raw-memory copy.
+		struct TunerFeatureEdit
+		{
+			std::string feature;
+			json before;
+			json after;
+			double committedAt = 0.0;
+		};
+		std::unordered_map<std::string, json> g_tunerFeatureBaselines;
+		std::vector<TunerFeatureEdit> g_tunerEditHistory;
+		size_t g_tunerHistoryCursor = 0;
+		struct TunerABState
+		{
+			std::string feature;
+			json edited;
+			bool showingBaseline = false;
+		};
+		TunerABState g_tunerABState{};
+
+		json SnapshotFeatureSettings(RenderModule* feature)
+		{
+			json snapshot = json::object();
+			if (!feature)
+				return snapshot;
+			try {
+				feature->SaveSettings(snapshot);
+			} catch (const std::exception& error) {
+				logger::warn("[PIXL UI] Could not snapshot {} settings: {}", feature->GetShortName(), error.what());
+			}
+			return snapshot;
+		}
+
+		void ApplyFeatureSettingsSnapshot(RenderModule* feature, const json& snapshot, const char* source)
+		{
+			if (!feature || !feature->loaded)
+				return;
+			try {
+				json copy = snapshot;
+				feature->LoadSettings(copy);
+				if (globals::state)
+					globals::state->UpdateFeatureData(globals::state->inWorld);
+				logger::info("[PIXL UI] Applied {} settings snapshot for {}", source, feature->GetShortName());
+			} catch (const std::exception& error) {
+				logger::error("[PIXL UI] Failed to apply {} snapshot for {}: {}", source, feature->GetShortName(), error.what());
+			}
+		}
+
+		void EnsureFeatureBaseline(RenderModule* feature)
+		{
+			if (!feature || !feature->loaded)
+				return;
+			const auto id = feature->GetShortName();
+			if (!g_tunerFeatureBaselines.contains(id))
+				g_tunerFeatureBaselines.emplace(id, SnapshotFeatureSettings(feature));
+		}
+
+		bool IsFeatureModified(RenderModule* feature)
+		{
+			if (!feature || !feature->loaded)
+				return false;
+			EnsureFeatureBaseline(feature);
+			const auto found = g_tunerFeatureBaselines.find(feature->GetShortName());
+			return found != g_tunerFeatureBaselines.end() && SnapshotFeatureSettings(feature) != found->second;
+		}
+
+		void RecordFeatureEdit(RenderModule* feature, const json& before, const json& after)
+		{
+			if (!feature || before == after)
+				return;
+			EnsureFeatureBaseline(feature);
+			const double now = ImGui::GetTime();
+			if (g_tunerHistoryCursor < g_tunerEditHistory.size())
+				g_tunerEditHistory.erase(g_tunerEditHistory.begin() + static_cast<std::ptrdiff_t>(g_tunerHistoryCursor), g_tunerEditHistory.end());
+			// Continuous widget drags often submit a change per frame. Coalesce
+			// adjacent edits to one safe history entry rather than flooding undo.
+			if (!g_tunerEditHistory.empty() &&
+				g_tunerEditHistory.back().feature == feature->GetShortName() &&
+				now - g_tunerEditHistory.back().committedAt < 0.45) {
+				g_tunerEditHistory.back().after = after;
+				g_tunerEditHistory.back().committedAt = now;
+			} else {
+				g_tunerEditHistory.push_back({ feature->GetShortName(), before, after, now });
+				if (g_tunerEditHistory.size() > 48)
+					g_tunerEditHistory.erase(g_tunerEditHistory.begin());
+			}
+			g_tunerHistoryCursor = g_tunerEditHistory.size();
+		}
+
+		RenderModule* FindFeatureByShortName(std::string_view name)
+		{
+			for (auto* feature : RenderModule::GetModuleList())
+				if (feature && feature->GetShortName() == name)
+					return feature;
+			return nullptr;
+		}
+
+		bool UndoTunerFeatureEdit()
+		{
+			if (g_tunerHistoryCursor == 0)
+				return false;
+			const auto& edit = g_tunerEditHistory[--g_tunerHistoryCursor];
+			ApplyFeatureSettingsSnapshot(FindFeatureByShortName(edit.feature), edit.before, "undo");
+			return true;
+		}
+
+		bool RedoTunerFeatureEdit()
+		{
+			if (g_tunerHistoryCursor >= g_tunerEditHistory.size())
+				return false;
+			const auto& edit = g_tunerEditHistory[g_tunerHistoryCursor++];
+			ApplyFeatureSettingsSnapshot(FindFeatureByShortName(edit.feature), edit.after, "redo");
+			return true;
+		}
+
+		bool IsFavoriteFeature(std::string_view feature)
+		{
+			return globals::menu &&
+				std::ranges::find(globals::menu->GetSettings().TunerFavoriteFeatures, feature) !=
+					globals::menu->GetSettings().TunerFavoriteFeatures.end();
+		}
+
+		void ToggleFavoriteFeature(std::string_view feature)
+		{
+			if (!globals::menu || feature.empty())
+				return;
+			auto& favorites = globals::menu->GetSettings().TunerFavoriteFeatures;
+			const auto found = std::ranges::find(favorites, feature);
+			if (found == favorites.end()) {
+				if (favorites.size() < 24)
+					favorites.emplace_back(feature);
+			} else {
+				favorites.erase(found);
+			}
+			globals::state->Save();
+		}
+
+		void RememberRecentFeature(std::string_view feature)
+		{
+			if (!globals::menu || feature.empty())
+				return;
+			auto& recent = globals::menu->GetSettings().TunerRecentFeatures;
+			recent.erase(std::remove(recent.begin(), recent.end(), feature), recent.end());
+			recent.insert(recent.begin(), std::string(feature));
+			if (recent.size() > 12)
+				recent.resize(12);
+		}
+
+		std::string g_cachedTunerSearchQuery;
+		std::unordered_set<std::string> g_cachedTunerSearchMatches;
+		size_t g_cachedTunerSearchFeatureCount = 0;
+
+		std::string LowerTunerSearchText(std::string value)
+		{
+			std::ranges::transform(value, value.begin(), [](unsigned char character) {
+				return static_cast<char>(std::tolower(character));
+			});
+			return value;
+		}
+
+		void RebuildTunerSearchIndexIfNeeded(const std::string& query)
+		{
+			const auto& modules = RenderModule::GetModuleList();
+			const std::string normalizedQuery = LowerTunerSearchText(query);
+			if (normalizedQuery == g_cachedTunerSearchQuery &&
+				g_cachedTunerSearchFeatureCount == modules.size())
+				return;
+			g_cachedTunerSearchQuery = normalizedQuery;
+			g_cachedTunerSearchFeatureCount = modules.size();
+			g_cachedTunerSearchMatches.clear();
+			if (normalizedQuery.empty())
+				return;
+
+			// Synonyms keep discovery player-facing while module IDs and storage keys
+			// remain stable. The index is rebuilt only when the query/module list
+			// changes, never once per widget or renderer frame.
+			static const std::array<std::pair<std::string_view, std::string_view>, 18> aliases{{
+				{ "gi", "hybridgi radiance weave indirect ambient" },
+				{ "ao", "contactshadows ambientprobe occlusion" },
+				{ "fog", "atmosphere skyveil volumetric" },
+				{ "shadow", "contactshadows volumeocclusion terrainocclusion" },
+				{ "pbr", "materialforge materiallayers complex materials" },
+				{ "parallax", "materiallayers terrain detail" },
+				{ "window", "windowlife architectural glass interior" },
+				{ "snow", "groundresponse terrain detail" },
+				{ "mud", "groundresponse wet surfaces" },
+				{ "grass", "foliagedynamics groundresponse terrain" },
+				{ "water", "wateroptics waterbody rainresponse" },
+				{ "rain", "rainresponse watersurfaces camerasuite" },
+				{ "camera", "camerasuite pixelcapture image reconstruction director" },
+				{ "photo", "pixelcapture director camerasuite" },
+				{ "video", "pixelcapture director camerasuite" },
+				{ "upscale", "imagereconstruction dlss dlaa fsr" },
+				{ "performance", "pulseprofiler imagereconstruction" },
+				{ "skin", "skinoptics tissuediffusion strandshading" }
+			}};
+			for (auto* feature : modules) {
+				if (!feature)
+					continue;
+				std::string searchable = feature->GetShortName() + " " + feature->GetName() + " " + feature->GetDisplayName();
+				const auto [summary, keyFeatures] = feature->GetModuleSummary();
+				searchable += " " + summary;
+				for (const auto& keyFeature : keyFeatures)
+					searchable += " " + keyFeature;
+				for (const auto& setting : feature->GetSettingsSearchEntries())
+					searchable += " " + setting.label + " " + setting.description;
+				// Every module already owns a compact JSON settings schema. Indexing
+				// its keys gives search useful coverage even where a legacy module has
+				// not yet supplied richer SettingSearchEntry metadata. Values are
+				// intentionally excluded: they can be large, volatile, or user text.
+				const json serialized = SnapshotFeatureSettings(feature);
+				auto appendKeys = [&](const auto& self, const json& value) -> void {
+					if (!value.is_object())
+						return;
+					for (auto it = value.begin(); it != value.end(); ++it) {
+						searchable += " " + it.key();
+						self(self, it.value());
+					}
+				};
+				appendKeys(appendKeys, serialized);
+				searchable = LowerTunerSearchText(std::move(searchable));
+				bool matches = searchable.find(normalizedQuery) != std::string::npos;
+				if (!matches) {
+					for (const auto& [alias, terms] : aliases) {
+						if (normalizedQuery == alias && searchable.find(terms.substr(0, terms.find(' '))) != std::string::npos) {
+							matches = true;
+							break;
+						}
+					}
+				}
+				if (matches)
+					g_cachedTunerSearchMatches.insert(feature->GetShortName());
+			}
+		}
+
+		bool MatchesTunerSearch(RenderModule* feature, const std::string& query)
+		{
+			if (query.empty())
+				return true;
+			RebuildTunerSearchIndexIfNeeded(query);
+			return feature && g_cachedTunerSearchMatches.contains(feature->GetShortName());
+		}
 	// Relative angle around the actor. Zero is always directly in front of the
 	// player's current heading; dragging adds a deliberate orbit offset.
 	float g_characterOrbitAngleDegrees = 0.0f;
@@ -214,6 +531,309 @@ namespace
 	std::atomic_int g_directorEntryResult{ 0 };
 	bool EnterDirectorPhotoMode();
 	void ExitDirectorPhotoMode();
+	float GetDirectorWorldFov();
+	void ApplyDirectorWorldFov(float fov);
+
+	[[nodiscard]] bool IsDirectorVideoMode()
+	{
+		return g_directorPhotoMode.active && g_directorMode == DirectorMode::Video;
+	}
+
+	[[nodiscard]] RE::NiPoint3 DirectorCameraForward(float pitch, float yaw)
+	{
+		const float cosinePitch = std::cos(pitch);
+		return {
+			std::sin(yaw) * cosinePitch,
+			std::cos(yaw) * cosinePitch,
+			-std::sin(pitch)
+		};
+	}
+
+	[[nodiscard]] DirectorCameraPath::Quaternion DirectorCameraRotation(float pitch, float yaw)
+	{
+		// This matches DirectorCameraForward and the quaternion-to-forward
+		// extraction in ApplyDirectorVideoPose.  Skyrim's free camera has only
+		// pitch/yaw, so capture exactly those two live camera axes.
+		const float halfPitch = -pitch * 0.5f;
+		const float halfYaw = -yaw * 0.5f;
+		const float sinePitch = std::sin(halfPitch);
+		const float cosinePitch = std::cos(halfPitch);
+		const float sineYaw = std::sin(halfYaw);
+		const float cosineYaw = std::cos(halfYaw);
+		return {
+			cosineYaw * sinePitch,
+			sineYaw * sinePitch,
+			sineYaw * cosinePitch,
+			cosineYaw * cosinePitch
+		};
+	}
+
+	void RebuildDirectorVideoPath()
+	{
+		g_directorVideo.lastPathError.clear();
+		if (!g_directorVideo.path.Rebuild(&g_directorVideo.lastPathError)) {
+			if (!g_directorVideo.path.points.empty())
+				logger::warn("[PIXL Director] Video path is not playable: {}", g_directorVideo.lastPathError);
+			g_directorVideo.playback = DirectorVideoPlaybackState::Stopped;
+			g_directorVideo.playbackTime = 0.0f;
+		}
+		if (g_directorVideo.path.points.empty())
+			g_directorVideo.selectedPoint = 0;
+		else
+			g_directorVideo.selectedPoint = std::min(g_directorVideo.selectedPoint, g_directorVideo.path.points.size() - 1);
+		g_directorVideo.path.GetPointTimelineTimes(g_directorVideo.timelineMarkers);
+		g_directorVideo.path.GetPreviewSamples(g_directorVideo.previewSamples);
+	}
+
+	void ClearDirectorVideoWorkingPath(const char* reason)
+	{
+		g_directorVideo.playback = DirectorVideoPlaybackState::Stopped;
+		g_directorVideo.playbackTime = 0.0f;
+		g_directorVideo.playbackStartPending = false;
+		g_directorVideo.path = {};
+		g_directorVideo.nameBufferInitialized = false;
+		g_directorVideo.nextPointId = 1;
+		g_directorVideo.selectedPoint = 0;
+		RebuildDirectorVideoPath();
+		logger::info("[PIXL Director] Cleared working Video route: {}", reason);
+	}
+
+	void UpdateDirectorVideoCellBoundary()
+	{
+		auto* player = RE::PlayerCharacter::GetSingleton();
+		auto* cell = player ? player->GetParentCell() : nullptr;
+		if (!cell) {
+			if (g_directorVideo.cellBound) {
+				ClearDirectorVideoWorkingPath("player cell became unavailable");
+				g_directorPhotoMode.cameraAnchorValid = false;
+				g_directorPhotoMode.cameraMotionValid = false;
+				g_tunerInspectionMoving = false;
+				g_directorVideo.cellBound = false;
+			}
+			return;
+		}
+		const std::uint32_t currentCell = cell->GetFormID();
+		if (g_directorVideo.cellBound && g_directorVideo.cellFormID != currentCell) {
+			ClearDirectorVideoWorkingPath("player entered a different cell");
+			g_directorPhotoMode.cameraAnchorValid = false;
+			g_directorPhotoMode.cameraMotionValid = false;
+			g_tunerInspectionMoving = false;
+		}
+		g_directorVideo.cellFormID = currentCell;
+		g_directorVideo.cellBound = true;
+	}
+
+	[[nodiscard]] std::filesystem::path GetDirectorVideoPathDirectory()
+	{
+		return Util::PathHelpers::GetPluginPath() / "Director" / "Paths";
+	}
+
+	[[nodiscard]] std::string SanitiseDirectorVideoPathName(std::string name)
+	{
+		for (char& character : name) {
+			if (!(std::isalnum(static_cast<unsigned char>(character)) || character == '-' || character == '_'))
+				character = '_';
+		}
+		while (!name.empty() && name.back() == '_')
+			name.pop_back();
+		return name.empty() ? "Untitled_path" : name.substr(0, 72);
+	}
+
+	void RefreshDirectorVideoPathList()
+	{
+		g_directorVideo.savedPaths.clear();
+		std::error_code error;
+		const auto directory = GetDirectorVideoPathDirectory();
+		if (!std::filesystem::is_directory(directory, error) || error)
+			return;
+		for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
+			if (error)
+				break;
+			if (entry.is_regular_file(error) && !error && entry.path().extension() == ".json")
+				g_directorVideo.savedPaths.push_back(entry.path());
+			error.clear();
+		}
+		std::ranges::sort(g_directorVideo.savedPaths);
+	}
+
+	bool SaveDirectorVideoPath()
+	{
+		try {
+			g_directorVideo.path.name = SanitiseDirectorVideoPathName(g_directorVideo.path.name);
+			const auto directory = GetDirectorVideoPathDirectory();
+			std::error_code error;
+			std::filesystem::create_directories(directory, error);
+			if (error) {
+				logger::error("[PIXL Director] Cannot create Video path directory: {}", error.message());
+				return false;
+			}
+			const auto path = directory / (g_directorVideo.path.name + ".json");
+			std::ofstream stream(path, std::ios::out | std::ios::trunc);
+			if (!stream) {
+				logger::error("[PIXL Director] Cannot save Video path '{}'", path.string());
+				return false;
+			}
+			stream << g_directorVideo.path.ToJson().dump(2) << '\n';
+			stream.close();
+			if (!stream) {
+				logger::error("[PIXL Director] Failed while saving Video path '{}'", path.string());
+				return false;
+			}
+			RefreshDirectorVideoPathList();
+			logger::info("[PIXL Director] Saved Video path '{}'", path.string());
+			return true;
+		} catch (const std::exception& exception) {
+			logger::error("[PIXL Director] Video path save failed: {}", exception.what());
+			return false;
+		}
+	}
+
+	bool LoadDirectorVideoPath(const std::filesystem::path& path)
+	{
+		try {
+			std::ifstream stream(path);
+			if (!stream) {
+				logger::warn("[PIXL Director] Cannot open Video path '{}'", path.string());
+				return false;
+			}
+			nlohmann::json document;
+			stream >> document;
+			std::string error;
+			auto loaded = DirectorCameraPath::Path::FromJson(document, &error);
+			if (!loaded) {
+				logger::warn("[PIXL Director] Rejected Video path '{}': {}", path.string(), error);
+				return false;
+			}
+			g_directorVideo.path = std::move(*loaded);
+			g_directorVideo.selectedPoint = 0;
+			g_directorVideo.nextPointId = 1;
+			for (const auto& point : g_directorVideo.path.points)
+				g_directorVideo.nextPointId = std::max(g_directorVideo.nextPointId, point.id + 1);
+			g_directorVideo.playback = DirectorVideoPlaybackState::Stopped;
+			g_directorVideo.playbackTime = 0.0f;
+			g_directorVideo.nameBufferInitialized = false;
+			RebuildDirectorVideoPath();
+			logger::info("[PIXL Director] Loaded Video path '{}'", path.string());
+			return true;
+		} catch (const std::exception& exception) {
+			logger::warn("[PIXL Director] Video path load failed for '{}': {}", path.string(), exception.what());
+			return false;
+		}
+	}
+
+	[[nodiscard]] bool ApplyDirectorVideoPose(
+		RE::PlayerCamera* playerCamera,
+		RE::FreeCameraState* freeCameraState,
+		const DirectorCameraPath::Pose& pose)
+	{
+		if (!playerCamera || !freeCameraState || !pose.valid)
+			return false;
+
+		const auto& rotation = pose.worldRotation;
+		const float forwardX = 2.0f * (rotation.x * rotation.y - rotation.z * rotation.w);
+		const float forwardY = 1.0f - 2.0f * (rotation.x * rotation.x + rotation.z * rotation.z);
+		const float forwardZ = 2.0f * (rotation.y * rotation.z + rotation.x * rotation.w);
+		const float horizontal = std::sqrt(std::max(forwardX * forwardX + forwardY * forwardY, 1.0e-6f));
+		if (!std::isfinite(forwardX) || !std::isfinite(forwardY) || !std::isfinite(forwardZ) || !std::isfinite(horizontal))
+			return false;
+
+		freeCameraState->translation = { pose.worldPosition.x, pose.worldPosition.y, pose.worldPosition.z };
+		freeCameraState->rotation.x = std::clamp(-std::atan2(forwardZ, horizontal), -1.50f, 1.50f);
+		freeCameraState->rotation.y = std::atan2(forwardX, forwardY);
+		freeCameraState->useRunSpeed = false;
+		freeCameraState->verticalDirection = 0;
+		freeCameraState->zUpDown = {};
+		playerCamera->rotationInput = {};
+		playerCamera->translationInput = {};
+		playerCamera->zoomInput = 0.0f;
+		ApplyDirectorWorldFov(pose.fieldOfView);
+		g_directorPhotoMode.cameraMotionPosition = freeCameraState->translation;
+		g_directorPhotoMode.cameraMotionVelocity = {};
+		return true;
+	}
+
+	void CaptureDirectorVideoPointFromCamera()
+	{
+		auto* playerCamera = RE::PlayerCamera::GetSingleton();
+		if (!playerCamera || !playerCamera->IsInFreeCameraMode()) {
+			logger::warn("[PIXL Director] Cannot capture Video point without PIXL's active free camera");
+			return;
+		}
+		auto* freeCameraState = static_cast<RE::FreeCameraState*>(playerCamera->currentState.get());
+		if (!freeCameraState)
+			return;
+
+		DirectorCameraPath::Point point{};
+		point.id = g_directorVideo.nextPointId++;
+		point.worldPosition = { freeCameraState->translation.x, freeCameraState->translation.y, freeCameraState->translation.z };
+		point.fieldOfView = GetDirectorWorldFov();
+		point.worldRotation = DirectorCameraRotation(freeCameraState->rotation.x, freeCameraState->rotation.y);
+		// Captured framing is the safest default. Authors can enable a look target
+		// or spline-facing shot per point when they want automatic direction.
+		point.useLookAt = false;
+		const RE::NiPoint3 forward = DirectorCameraForward(freeCameraState->rotation.x, freeCameraState->rotation.y);
+		// Keep a target alongside the captured rotation. It can be enabled later
+		// without binding the saved route to a Skyrim reference that may unload.
+		point.lookAtPosition = {
+			point.worldPosition.x + forward.x * 512.0f,
+			point.worldPosition.y + forward.y * 512.0f,
+			point.worldPosition.z + forward.z * 512.0f
+		};
+		g_directorVideo.path.points.push_back(point);
+		g_directorVideo.selectedPoint = g_directorVideo.path.points.size() - 1;
+		RebuildDirectorVideoPath();
+		logger::info("[PIXL Director] Captured Video point {}", point.id);
+	}
+
+	void MoveDirectorCameraToPoint(std::size_t index)
+	{
+		if (index >= g_directorVideo.path.points.size())
+			return;
+		const auto& point = g_directorVideo.path.points[index];
+		const DirectorCameraPath::Pose pose{
+			point.worldPosition,
+			point.worldRotation,
+			std::clamp(point.fieldOfView, 20.0f, 110.0f),
+			point.rollDegrees,
+			true
+		};
+		auto* playerCamera = RE::PlayerCamera::GetSingleton();
+		auto* freeCameraState = playerCamera && playerCamera->IsInFreeCameraMode()
+			? static_cast<RE::FreeCameraState*>(playerCamera->currentState.get())
+			: nullptr;
+		if (ApplyDirectorVideoPose(playerCamera, freeCameraState, pose)) {
+			g_directorVideo.playback = DirectorVideoPlaybackState::Paused;
+			if (index < g_directorVideo.timelineMarkers.size())
+				g_directorVideo.playbackTime = g_directorVideo.timelineMarkers[index];
+		}
+	}
+
+	void ApplyDirectorVideoTimeline(float seconds)
+	{
+		if (!g_directorVideo.path.IsValid())
+			return;
+		const float duration = std::max(g_directorVideo.path.GetDuration(), 0.0f);
+		g_directorVideo.playbackTime = std::clamp(seconds, 0.0f, duration);
+		auto* playerCamera = RE::PlayerCamera::GetSingleton();
+		auto* freeCameraState = playerCamera && playerCamera->IsInFreeCameraMode()
+			? static_cast<RE::FreeCameraState*>(playerCamera->currentState.get())
+			: nullptr;
+		const auto pose = g_directorVideo.path.EvaluateTime(g_directorVideo.playbackTime, false);
+		if (!ApplyDirectorVideoPose(playerCamera, freeCameraState, pose))
+			logger::warn("[PIXL Director] Video path preview pose was invalid; playback stopped");
+	}
+
+	void StartDirectorVideoPlayback()
+	{
+		if (!g_directorVideo.path.IsValid())
+			return;
+		if (g_directorVideo.playbackTime >= g_directorVideo.path.GetDuration())
+			g_directorVideo.playbackTime = 0.0f;
+		g_tunerInspectionMoving = false;
+		g_directorVideo.playbackStartPending = true;
+		g_directorVideo.playback = DirectorVideoPlaybackState::Playing;
+		ApplyDirectorVideoTimeline(g_directorVideo.playbackTime);
+	}
 
 	void SetCharacterOrbitEnabled(bool enabled)
 	{
@@ -993,10 +1613,9 @@ namespace
 		g_directorCaptureLocked.store(false, std::memory_order_release);
 		g_directorCaptureDispatched.store(false, std::memory_order_release);
 
-		// CommonLib exposes Skyrim's native free-camera path directly. Passing
-		// true asks the engine to freeze world simulation while free camera is
-		// active, giving Director its photo-mode pause without a custom timescale
-		// hook or gameplay patch.
+		// CommonLib exposes Skyrim's native free-camera path directly. Photo keeps
+		// its established frozen-world contract; Video can request a live-world
+		// preview without a custom timescale hook or gameplay patch.
 		g_directorEntryResult.store(0, std::memory_order_release);
 		g_directorEntryPending.store(true, std::memory_order_release);
 		tasks->AddTask([] {
@@ -1009,7 +1628,7 @@ namespace
 			if (g_smoothCam) {
 				const auto result = g_smoothCam->RequestCameraControl(SKSE::GetPluginHandle());
 				if (result != SmoothCamAPI::APIResult::OK) {
-					logger::warn("[PIXL Camera] SmoothCam declined camera control ({}); photo entry cancelled", static_cast<int>(result));
+					logger::warn("[PIXL Camera] SmoothCam declined camera control ({}); Director entry cancelled", static_cast<int>(result));
 					RE::SendHUDMessage::ShowHUDMessage("PIXL: camera is currently owned by another camera system.", nullptr, true);
 					g_directorEntryResult.store(-1, std::memory_order_release);
 					return;
@@ -1027,7 +1646,10 @@ namespace
 						static_cast<int>(crosshairResult));
 				}
 			}
-			nativeCamera->ToggleFreeCameraMode(true);
+			const bool freezeWorld =
+				g_directorMode != DirectorMode::Video ||
+				g_directorVideo.freezeWorld;
+			nativeCamera->ToggleFreeCameraMode(freezeWorld);
 			const bool entered = nativeCamera->IsInFreeCameraMode();
 			if (!entered && g_smoothCamLease) {
 				if (g_smoothCamCrosshairLease) {
@@ -1088,6 +1710,9 @@ namespace
 			}
 
 			g_directorPhotoMode.active = false;
+			g_directorMode = DirectorMode::Photo;
+			g_directorVideo.playback = DirectorVideoPlaybackState::Stopped;
+			g_directorVideo.playbackTime = 0.0f;
 			g_tunerInspectionMoving = false;
 			g_tunerOwnsInspection = false;
 			g_tunerShiftHeld = false;
@@ -1598,6 +2223,7 @@ namespace
 		TemporalSampling,
 		MotionFinish,
 		ShutterStrength,
+		PhotoSignature,
 		Count
 	};
 
@@ -2175,6 +2801,14 @@ namespace
 			}
 			break;
 
+		case DirectorQuickOption::PhotoSignature:
+			if (capture) {
+				capture->photoWatermarkEnabled = !capture->photoWatermarkEnabled;
+				if (globals::state)
+					globals::state->Save();
+			}
+			break;
+
 		default:
 			break;
 		}
@@ -2457,6 +3091,12 @@ namespace
 			}
 			break;
 
+		case DirectorQuickOption::PhotoSignature:
+			result.label = "PIXL Signature";
+			result.value = capture && capture->photoWatermarkEnabled ? "ON" : "OFF";
+			result.normalized = capture && capture->photoWatermarkEnabled ? 1.0f : 0.0f;
+			break;
+
 		default:
 			break;
 		}
@@ -2604,6 +3244,62 @@ namespace
 		return true;
 	}
 
+	bool UpdateDirectorVideoPlaybackCamera(
+		RE::PlayerCamera* playerCamera,
+		RE::FreeCameraState* freeCameraState)
+	{
+		if (!IsDirectorVideoMode() ||
+			g_directorVideo.playback != DirectorVideoPlaybackState::Playing)
+			return false;
+
+		// Director playback is authoritative only while the author is not moving
+		// the native free camera. Holding the existing Tuner fly-camera modifier
+		// immediately pauses the route and returns control to Skyrim, so a point
+		// can be reframed and captured without two systems writing the same pose.
+		const bool authoringMove =
+			(GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0 ||
+			g_tunerInspectionMoving;
+		if (authoringMove) {
+			g_directorVideo.playback = DirectorVideoPlaybackState::Paused;
+			g_directorVideo.playbackStartPending = false;
+			return false;
+		}
+
+		if (!g_directorVideo.path.IsValid()) {
+			g_directorVideo.playback = DirectorVideoPlaybackState::Stopped;
+			return false;
+		}
+
+		const float duration = g_directorVideo.path.GetDuration();
+		if (!(duration > 0.0f) || !std::isfinite(duration)) {
+			g_directorVideo.playback = DirectorVideoPlaybackState::Stopped;
+			return false;
+		}
+
+		const float delta = g_directorVideo.playbackStartPending ? 0.0f : std::clamp(
+			static_cast<float>(RE::GetSecondsSinceLastFrame()),
+			0.0f,
+			0.25f);
+		g_directorVideo.playbackStartPending = false;
+		g_directorVideo.playbackTime += delta * std::clamp(g_directorVideo.previewRate, 0.1f, 4.0f);
+		if (g_directorVideo.loop) {
+			g_directorVideo.playbackTime = std::fmod(g_directorVideo.playbackTime, duration);
+		} else if (g_directorVideo.playbackTime >= duration) {
+			g_directorVideo.playbackTime = duration;
+			g_directorVideo.playback = DirectorVideoPlaybackState::Stopped;
+		}
+
+		const auto pose = g_directorVideo.path.EvaluateTime(
+			g_directorVideo.playbackTime,
+			g_directorVideo.loop);
+		if (!ApplyDirectorVideoPose(playerCamera, freeCameraState, pose)) {
+			g_directorVideo.playback = DirectorVideoPlaybackState::Stopped;
+			logger::warn("[PIXL Director] Video playback stopped because a path pose was invalid");
+			return false;
+		}
+		return true;
+	}
+
 	void EnforceDirectorCameraBoundary(
 		RE::PlayerCamera* playerCamera)
 	{
@@ -2642,6 +3338,7 @@ namespace
 
 		if (UpdateCharacterOrbitCamera(playerCamera, freeCameraState))
 			return;
+		UpdateDirectorVideoPlaybackCamera(playerCamera, freeCameraState);
 
 		// Let Skyrim's native free-camera state remain authoritative.  External
 		// camera systems can update the same transform during their camera pass;
@@ -2722,6 +3419,49 @@ namespace
 		g_directorPhotoMode.cameraBoundaryHit =
 			false;
 		g_directorPhotoMode.cameraMotionPosition = position;
+	}
+
+	void DrawDirectorCompositionGuide(ImDrawList* draw, const ImVec2& displaySize, float scale, int guide)
+	{
+		if (!draw || guide == 0 ||
+			displaySize.x <= 0.0f || displaySize.y <= 0.0f)
+			return;
+
+		const ImU32 guideColor = PIXLUI::ScaleAlpha(PIXLUI::Colors::CyanSoft, 0.38f);
+		const float stroke = std::max(1.0f, scale);
+		auto vertical = [&](float fraction) {
+			const float x = displaySize.x * fraction;
+			draw->AddLine(ImVec2(x, 0.0f), ImVec2(x, displaySize.y), guideColor, stroke);
+		};
+		auto horizontal = [&](float fraction) {
+			const float y = displaySize.y * fraction;
+			draw->AddLine(ImVec2(0.0f, y), ImVec2(displaySize.x, y), guideColor, stroke);
+		};
+
+		switch (guide) {
+		case 1: // Rule of thirds
+			vertical(1.0f / 3.0f);
+			vertical(2.0f / 3.0f);
+			horizontal(1.0f / 3.0f);
+			horizontal(2.0f / 3.0f);
+			break;
+		case 2: // Golden sections
+			vertical(0.382f);
+			vertical(0.618f);
+			horizontal(0.382f);
+			horizontal(0.618f);
+			break;
+		case 3: // Diagonal framing
+			draw->AddLine(ImVec2(0.0f, 0.0f), displaySize, guideColor, stroke);
+			draw->AddLine(ImVec2(displaySize.x, 0.0f), ImVec2(0.0f, displaySize.y), guideColor, stroke);
+			break;
+		case 4: // Architectural centre and horizon
+			vertical(0.5f);
+			horizontal(0.5f);
+			break;
+		default:
+			break;
+		}
 	}
 
 	void DrawDirectorViewfinder(
@@ -2821,6 +3561,35 @@ namespace
 			label.c_str());
 	}
 
+	void DrawDirectorVideoViewfinder(ImDrawList* draw, const ImVec2& displaySize, float scale)
+	{
+		const ImVec2 center(displaySize.x * 0.5f, displaySize.y * 0.5f);
+		const float reach = 26.0f * scale;
+		const float gap = 10.0f * scale;
+		const ImU32 color = PIXLUI::Colors::CyanSoft;
+		const float stroke = std::max(1.0f, 1.3f * scale);
+		// A camera gate and centre diamond distinguish moving-shot direction from
+		// Photo Mode's concentric focus rings without covering the subject.
+		draw->AddLine(ImVec2(center.x - reach, center.y), ImVec2(center.x - gap, center.y), color, stroke);
+		draw->AddLine(ImVec2(center.x + gap, center.y), ImVec2(center.x + reach, center.y), color, stroke);
+		draw->AddLine(ImVec2(center.x, center.y - reach), ImVec2(center.x, center.y - gap), color, stroke);
+		draw->AddLine(ImVec2(center.x, center.y + gap), ImVec2(center.x, center.y + reach), color, stroke);
+		draw->AddQuad(ImVec2(center.x, center.y - 5.0f * scale),
+			ImVec2(center.x + 5.0f * scale, center.y),
+			ImVec2(center.x, center.y + 5.0f * scale),
+			ImVec2(center.x - 5.0f * scale, center.y), color, stroke);
+		const char* state = g_directorVideo.playback == DirectorVideoPlaybackState::Playing
+			? "PLAYING" : "FRAMING";
+		const std::string label = std::format("VIDEO MODE  {}  |  LENS {:.0f} DEG",
+			state, GetDirectorWorldFov());
+		const ImVec2 size = ImGui::CalcTextSize(label.c_str());
+		const ImVec2 position(center.x - size.x * 0.5f, center.y + reach + 14.0f * scale);
+		draw->AddRectFilled(ImVec2(position.x - 7.0f * scale, position.y - 3.0f * scale),
+			ImVec2(position.x + size.x + 7.0f * scale, position.y + size.y + 3.0f * scale),
+			IM_COL32(5, 8, 10, 175), 2.0f * scale);
+		draw->AddText(position, color, label.c_str());
+	}
+
 	void DrawDirectorQuickPanel(
 		ImDrawList* draw,
 		const ImVec2& displaySize,
@@ -2837,8 +3606,11 @@ namespace
 				54.0f * scale,
 				displaySize.y *
 					0.09f);
-		const float width =
-			370.0f * scale;
+		const float width = std::min(
+			370.0f * scale,
+			std::max(0.0f, displaySize.x - 40.0f * scale));
+		if (width < 220.0f * scale)
+			return;
 		const float headerHeight =
 			50.0f * scale;
 		const float rowHeight =
@@ -2846,12 +3618,24 @@ namespace
 		const float footerHeight =
 			28.0f * scale;
 
-		const float height =
-			headerHeight +
-			rowHeight *
-				static_cast<float>(
-					kDirectorQuickOptionCount) +
-			footerHeight;
+		// A capture panel must remain usable at 720p and at elevated UI scales.
+		// Show a focused window around the keyboard-selected effect rather than
+		// allowing a long configuration list to run beneath the Director footer.
+		const float availableRowsHeight = std::max(
+			rowHeight * 6.0f,
+			displaySize.y - y - headerHeight - footerHeight - 92.0f * scale);
+		const int visibleRows = std::clamp(
+			static_cast<int>(std::floor(availableRowsHeight / rowHeight)),
+			6,
+			std::min(kDirectorQuickOptionCount, 12));
+		g_directorPhotoMode.selectedQuickOption = std::clamp(
+			g_directorPhotoMode.selectedQuickOption, 0, kDirectorQuickOptionCount - 1);
+		const int firstVisible = std::clamp(
+			g_directorPhotoMode.selectedQuickOption - visibleRows / 2,
+			0,
+			std::max(0, kDirectorQuickOptionCount - visibleRows));
+		const int lastVisible = std::min(kDirectorQuickOptionCount, firstVisible + visibleRows);
+		const float height = headerHeight + rowHeight * static_cast<float>(lastVisible - firstVisible) + footerHeight;
 
 		const ImVec2 min(x, y);
 		const ImVec2 max(
@@ -2900,9 +3684,7 @@ namespace
 			PIXLUI::Colors::CyanSoft,
 			"QUICK EFFECTS");
 
-		for (int i = 0;
-			 i < kDirectorQuickOptionCount;
-			 ++i) {
+		for (int i = firstVisible; i < lastVisible; ++i) {
 			const bool selected =
 				i ==
 				g_directorPhotoMode
@@ -2912,7 +3694,7 @@ namespace
 				y +
 				headerHeight +
 				rowHeight *
-					static_cast<float>(i);
+				static_cast<float>(i - firstVisible);
 
 			const auto readout =
 				GetDirectorQuickReadout(
@@ -2960,25 +3742,23 @@ namespace
 					? PIXLUI::Colors::Text
 					: PIXLUI::Colors::TextMuted;
 
-			draw->AddText(
+			const ImVec2 valueSize = ImGui::CalcTextSize(readout.value.c_str());
+			const float labelX = x + 17.0f * scale;
+			const float valueX = x + width - 17.0f * scale - valueSize.x;
+			PIXLUI::DrawClippedOverlayText(
+				draw,
 				ImVec2(
-					x +
-						17.0f * scale,
+					labelX,
 					rowY +
 						7.0f * scale),
 				textColor,
-				readout.label);
+				readout.label,
+				std::max(0.0f, valueX - labelX - 10.0f * scale));
 
-			const ImVec2 valueSize =
-				ImGui::CalcTextSize(
-					readout.value.c_str());
-
-			draw->AddText(
+			PIXLUI::DrawClippedOverlayText(
+				draw,
 				ImVec2(
-					x +
-						width -
-						17.0f * scale -
-						valueSize.x,
+					std::max(labelX, valueX),
 					rowY +
 						7.0f * scale),
 				selected
@@ -2986,7 +3766,8 @@ namespace
 						  CyanBright
 					: PIXLUI::Colors::
 						  TextDim,
-				readout.value.c_str());
+				readout.value.c_str(),
+				std::max(0.0f, x + width - 17.0f * scale - std::max(labelX, valueX)));
 
 			if (readout.normalized >= 0.0f) {
 				const float railMinX =
@@ -3033,13 +3814,18 @@ namespace
 			}
 		}
 
-		draw->AddText(
+		char footer[96]{};
+		std::snprintf(footer, sizeof(footer), "%02d-%02d OF %02d    NUM 8 / 2 SELECT    NUM 4 / 6 ADJUST",
+			firstVisible + 1, lastVisible, kDirectorQuickOptionCount);
+		PIXLUI::DrawClippedOverlayText(
+			draw,
 			ImVec2(
 				x + 15.0f * scale,
 				max.y -
 					20.0f * scale),
 			PIXLUI::Colors::TextDim,
-			"NUM 8 / 2  SELECT     NUM 4 / 6  ADJUST");
+			footer,
+			width - 30.0f * scale);
 	}
 
 	void DrawDirectorBottomBar(
@@ -3047,89 +3833,225 @@ namespace
 		const ImVec2& displaySize,
 		float scale)
 	{
-		const char* primaryHint =
-			"HOME  EXIT    END  TAKE PHOTO    INSERT  EFFECTS    DELETE  HIDE UI    SHIFT+ENTER  PIXL";
-		const std::string cameraHint = std::format(
-			"UP / DOWN  LENS FOV {:.0f} DEG    LEFT / RIGHT  CAMERA SPEED {:.0f}%    SHIFT  FAST MOVE",
-			GetDirectorWorldFov(),
-			GetDirectorCameraMoveSpeed() * 100.0f);
+		if (!draw || displaySize.x <= 0.0f || displaySize.y <= 0.0f)
+			return;
 
-		const ImVec2 primarySize =
-			ImGui::CalcTextSize(primaryHint);
-		const ImVec2 cameraSize =
-			ImGui::CalcTextSize(cameraHint.c_str());
-		const float textWidth =
-			std::max(primarySize.x, cameraSize.x);
+		// This panel is deliberately wide: it is a composition aid, not another
+		// tiny tooltip. The effect rail uses the available screen width while the
+		// short commands remain legible at narrower resolutions.
+		const float margin = 24.0f * scale;
+		const float width = std::max(0.0f, displaySize.x - margin * 2.0f);
+		if (width < 260.0f * scale)
+			return;
+		const float height = 86.0f * scale;
+		const ImVec2 min(margin, displaySize.y - height - 19.0f * scale);
+		const ImVec2 max(min.x + width, min.y + height);
 
-		const float width =
-			std::min(
-				displaySize.x -
-					40.0f * scale,
-				textWidth +
-					46.0f * scale);
+		draw->AddRectFilled(min, max, IM_COL32(5, 8, 11, 222), 4.0f * scale);
+		draw->AddRect(min, max, PIXLUI::Colors::BorderSoft, 4.0f * scale, 0, 1.0f * scale);
+		draw->AddLine(ImVec2(min.x + 8.0f * scale, min.y + 1.0f * scale),
+			ImVec2(min.x + std::min(width * 0.18f, 118.0f * scale), min.y + 1.0f * scale),
+			PIXLUI::Colors::CyanBright, 1.5f * scale);
 
-		const float height =
-			52.0f * scale;
+		CameraSuite::Settings cameraSettings{};
+		{
+			std::lock_guard<std::mutex> lock(globals::pipeline::cameraSuite.settingsMutex);
+			cameraSettings = globals::pipeline::cameraSuite.settings;
+		}
+		auto* capture = GetDirectorCapture();
+		const bool graded = cameraSettings.lookOpacity > 0.001f;
+		const bool toneAdjusted = std::abs(cameraSettings.cameraExposureCompensationEV) > 0.01f ||
+			std::abs(cameraSettings.cameraContrast - 1.0f) > 0.01f ||
+			std::abs(cameraSettings.cameraSaturation - 1.0f) > 0.01f;
+		struct EffectSegment { const char* label; bool enabled; };
+		const std::array<EffectSegment, 8> effects{{
+			{ "FRAME", true },
+			{ "LENS", true },
+			{ "LOOK", graded },
+			{ "TONE", toneAdjusted },
+			{ "BLOOM", cameraSettings.enableBloom && cameraSettings.bloomStrength > 0.001f },
+			{ "FINISH", capture && capture->photoFinishEnabled },
+			{ "NEURAL", capture && capture->photoFinishNeuralEnabled },
+			{ "PIXL", capture && capture->photoWatermarkEnabled }
+		}};
 
-		const ImVec2 min(
-			(displaySize.x -
-			 width) *
-				0.5f,
-			displaySize.y -
-				73.0f * scale);
+		char lensText[128]{};
+		std::snprintf(lensText, sizeof(lensText), "LENS %.0f DEG   MOVE %.0f%%   SHIFT FOR FAST MOVE",
+			GetDirectorWorldFov(), GetDirectorCameraMoveSpeed() * 100.0f);
+		const char* commands = "HOME EXIT   END CAPTURE   INSERT EFFECTS   DELETE HIDE UI   SHIFT+ENTER PIXL";
+		PIXLUI::DrawClippedOverlayText(draw, ImVec2(min.x + 14.0f * scale, min.y + 9.0f * scale),
+			PIXLUI::Colors::TextMuted, commands, width - 28.0f * scale);
+		PIXLUI::DrawClippedOverlayText(draw, ImVec2(min.x + 14.0f * scale, min.y + 28.0f * scale),
+			PIXLUI::Colors::CyanSoft, lensText, width - 28.0f * scale);
 
-		const ImVec2 max(
-			min.x + width,
-			min.y + height);
+		const float railMinX = min.x + 14.0f * scale;
+		const float railMaxX = max.x - 14.0f * scale;
+		const float segmentGap = 3.0f * scale;
+		const float segmentWidth = (railMaxX - railMinX - segmentGap * static_cast<float>(effects.size() - 1)) /
+			static_cast<float>(effects.size());
+		const float segmentTop = min.y + 55.0f * scale;
+		const float segmentBottom = max.y - 11.0f * scale;
+		for (std::size_t index = 0; index < effects.size(); ++index) {
+			const float x0 = railMinX + static_cast<float>(index) * (segmentWidth + segmentGap);
+			const ImVec2 segmentMin(x0, segmentTop);
+			const ImVec2 segmentMax(x0 + segmentWidth, segmentBottom);
+			const ImU32 fill = effects[index].enabled ? IM_COL32(27, 105, 111, 225) : IM_COL32(20, 26, 29, 210);
+			const ImU32 border = effects[index].enabled ? PIXLUI::Colors::CyanSoft : PIXLUI::Colors::BorderSoft;
+			draw->AddRectFilled(segmentMin, segmentMax, fill, 2.0f * scale);
+			draw->AddRect(segmentMin, segmentMax, border, 2.0f * scale, 0, 1.0f * scale);
+			if (effects[index].enabled)
+				draw->AddLine(ImVec2(segmentMin.x + 2.0f * scale, segmentMin.y + 1.0f * scale),
+					ImVec2(segmentMax.x - 2.0f * scale, segmentMin.y + 1.0f * scale), PIXLUI::Colors::CyanBright, 1.0f * scale);
+			const ImVec2 labelSize = ImGui::CalcTextSize(effects[index].label);
+			if (labelSize.x + 8.0f * scale < segmentWidth)
+				draw->AddText(ImVec2(segmentMin.x + (segmentWidth - labelSize.x) * 0.5f,
+					segmentMin.y + (segmentBottom - segmentTop - labelSize.y) * 0.5f),
+					effects[index].enabled ? PIXLUI::Colors::CyanBright : PIXLUI::Colors::TextDim,
+					effects[index].label);
+		}
+	}
 
-		draw->AddRectFilled(
-			min,
-			max,
-			IM_COL32(5, 8, 11, 218),
-			3.0f * scale);
+	[[nodiscard]] bool ProjectDirectorWorldPoint(
+		const DirectorCameraPath::Vec3& worldPoint,
+		const ImVec2& displaySize,
+		ImVec2& screenPoint)
+	{
+		auto* playerCamera = RE::PlayerCamera::GetSingleton();
+		if (!playerCamera || !playerCamera->IsInFreeCameraMode() ||
+			displaySize.x <= 1.0f || displaySize.y <= 1.0f)
+			return false;
+		auto* freeCameraState = static_cast<RE::FreeCameraState*>(playerCamera->currentState.get());
+		if (!freeCameraState)
+			return false;
 
-		draw->AddRect(
-			min,
-			max,
-			PIXLUI::Colors::BorderSoft,
-			3.0f * scale,
-			0,
-			1.0f * scale);
+		const RE::NiPoint3 forward = DirectorCameraForward(freeCameraState->rotation.x, freeCameraState->rotation.y);
+		const RE::NiPoint3 right{ std::cos(freeCameraState->rotation.y), -std::sin(freeCameraState->rotation.y), 0.0f };
+		const RE::NiPoint3 up{
+			right.y * forward.z,
+			-right.x * forward.z,
+			right.x * forward.y - right.y * forward.x
+		};
+		const RE::NiPoint3 delta{
+			worldPoint.x - freeCameraState->translation.x,
+			worldPoint.y - freeCameraState->translation.y,
+			worldPoint.z - freeCameraState->translation.z
+		};
+		const float depth = delta.x * forward.x + delta.y * forward.y + delta.z * forward.z;
+		if (!std::isfinite(depth) || depth <= 2.0f)
+			return false;
+		const float tangent = std::tan(std::clamp(GetDirectorWorldFov(), 20.0f, 110.0f) * std::numbers::pi_v<float> / 360.0f);
+		if (!(tangent > 1.0e-4f) || !std::isfinite(tangent))
+			return false;
+		const float aspect = displaySize.x / displaySize.y;
+		const float horizontal = (delta.x * right.x + delta.y * right.y + delta.z * right.z) / (depth * tangent * aspect);
+		const float vertical = (delta.x * up.x + delta.y * up.y + delta.z * up.z) / (depth * tangent);
+		if (!std::isfinite(horizontal) || !std::isfinite(vertical) || std::abs(horizontal) > 1.25f || std::abs(vertical) > 1.25f)
+			return false;
+		screenPoint = ImVec2((horizontal * 0.5f + 0.5f) * displaySize.x, (0.5f - vertical * 0.5f) * displaySize.y);
+		return true;
+	}
 
-		draw->AddLine(
-			ImVec2(
-				min.x +
-					8.0f * scale,
-				min.y +
-					height -
-					2.0f * scale),
-			ImVec2(
-				max.x -
-					8.0f * scale,
-				min.y +
-					height -
-					2.0f * scale),
-			PIXLUI::Colors::Cyan,
-			1.2f * scale);
+	void DrawDirectorWorldPathOverlay(ImDrawList* draw, const ImVec2& displaySize, float scale)
+	{
+		if (!draw || !g_directorVideo.showWorldPath || g_directorVideo.path.points.empty())
+			return;
+		const auto& samples = g_directorVideo.previewSamples;
+		ImVec2 previous{};
+		bool previousVisible = false;
+		for (const auto& sample : samples) {
+			ImVec2 projected{};
+			const bool visible = ProjectDirectorWorldPoint(sample, displaySize, projected);
+			if (visible && previousVisible)
+				draw->AddLine(previous, projected, PIXLUI::Colors::CyanSoft, 1.6f * scale);
+			previous = projected;
+			previousVisible = visible;
+		}
+		for (std::size_t index = 0; index < g_directorVideo.path.points.size(); ++index) {
+			const auto& point = g_directorVideo.path.points[index];
+			ImVec2 position{};
+			if (!ProjectDirectorWorldPoint(point.worldPosition, displaySize, position))
+				continue;
+			const bool selected = index == g_directorVideo.selectedPoint;
+			const float radius = (selected ? 8.0f : 6.0f) * scale;
+			draw->AddCircleFilled(position, radius, selected ? PIXLUI::Colors::CyanBright : PIXLUI::Colors::Cyan, 16);
+			draw->AddCircle(position, radius + 2.0f * scale, PIXLUI::Colors::SteelLight, 16, 1.0f * scale);
+			const std::string label = std::format("POI {}", index + 1);
+			PIXLUI::DrawClippedOverlayText(draw, ImVec2(position.x + 11.0f * scale, position.y - 9.0f * scale),
+				PIXLUI::Colors::Text, label.c_str(), 92.0f * scale);
+			if (point.useLookAt) {
+				ImVec2 target{};
+				if (ProjectDirectorWorldPoint(point.lookAtPosition, displaySize, target)) {
+					draw->AddLine(position, target, PIXLUI::Colors::Warning, 1.0f * scale);
+					draw->AddCircleFilled(target, 3.5f * scale, PIXLUI::Colors::Warning, 10);
+				}
+			}
+		}
+	}
 
-		draw->AddText(
-			ImVec2(
-				min.x +
-					(width -
-					 primarySize.x) *
-						0.5f,
-				min.y +
-					8.0f * scale),
-			PIXLUI::Colors::TextMuted,
-			primaryHint);
+	void DrawDirectorVideoModeOverlay(
+		ImDrawList* draw,
+		const ImVec2& displaySize,
+		float scale)
+	{
+		if (!draw || displaySize.x <= 0.0f || displaySize.y <= 0.0f)
+			return;
 
-		draw->AddText(
-			ImVec2(
-				min.x +
-					(width - cameraSize.x) * 0.5f,
-				min.y + 26.0f * scale),
-			PIXLUI::Colors::CyanSoft,
-			cameraHint.c_str());
+		DrawDirectorCompositionGuide(draw, displaySize, scale,
+			g_directorVideo.compositionGuide);
+		DrawDirectorVideoViewfinder(draw, displaySize, scale);
+		DrawDirectorWorldPathOverlay(draw, displaySize, scale);
+		const float cinemaAmount = PIXLUI::Animate01("##DirectorVideoCinemaBars", g_directorVideo.cinemaBars, 8.0f);
+		const float cinemaHeight = displaySize.y * 0.075f * cinemaAmount;
+		if (cinemaHeight > 0.5f) {
+			draw->AddRectFilled(ImVec2(0.0f, 0.0f), ImVec2(displaySize.x, cinemaHeight), IM_COL32(0, 0, 0, 222));
+			draw->AddRectFilled(ImVec2(0.0f, displaySize.y - cinemaHeight), displaySize, IM_COL32(0, 0, 0, 222));
+		}
+		const float margin = 24.0f * scale;
+		const float width = std::max(0.0f, displaySize.x - margin * 2.0f);
+		if (width < 260.0f * scale)
+			return;
+		const float height = 92.0f * scale;
+		const ImVec2 min(margin, displaySize.y - height - 18.0f * scale);
+		const ImVec2 max(min.x + width, min.y + height);
+		draw->AddRectFilled(min, max, IM_COL32(5, 8, 11, 222), 4.0f * scale);
+		draw->AddRect(min, max, PIXLUI::Colors::BorderSoft, 4.0f * scale, 0, 1.0f * scale);
+		draw->AddLine(ImVec2(min.x + 8.0f * scale, min.y + 1.0f * scale),
+			ImVec2(min.x + std::min(width * 0.18f, 118.0f * scale), min.y + 1.0f * scale),
+			PIXLUI::Colors::CyanBright, 1.5f * scale);
+
+		const float duration = g_directorVideo.path.GetDuration();
+		const bool playing = g_directorVideo.playback == DirectorVideoPlaybackState::Playing;
+		const char* state = playing ? "PLAYING" :
+			(g_directorVideo.path.IsValid() ? "READY TO PREVIEW" : "ADD TWO POINTS TO BEGIN");
+		char heading[144]{};
+		std::snprintf(heading, sizeof(heading), "PIXL DIRECTOR / VIDEO    %s    %.2f / %.2f S",
+			state, g_directorVideo.playbackTime, duration);
+		PIXLUI::DrawClippedOverlayText(draw, ImVec2(min.x + 14.0f * scale, min.y + 8.0f * scale),
+			playing ? PIXLUI::Colors::CyanBright : PIXLUI::Colors::TextMuted, heading, width - 28.0f * scale);
+		PIXLUI::DrawClippedOverlayText(draw, ImVec2(min.x + 14.0f * scale, min.y + 26.0f * scale),
+			PIXLUI::Colors::TextDim, g_directorVideo.path.name.c_str(), width - 28.0f * scale);
+
+		const float railMinX = min.x + 14.0f * scale;
+		const float railMaxX = max.x - 14.0f * scale;
+		const float railY = min.y + 55.0f * scale;
+		const float safeDuration = std::max(duration, 0.001f);
+		draw->AddLine(ImVec2(railMinX, railY), ImVec2(railMaxX, railY), PIXLUI::Colors::SteelDark, 4.0f * scale);
+		const float playhead = std::lerp(railMinX, railMaxX,
+			std::clamp(g_directorVideo.playbackTime / safeDuration, 0.0f, 1.0f));
+		draw->AddLine(ImVec2(railMinX, railY), ImVec2(playhead, railY), PIXLUI::Colors::Cyan, 4.0f * scale);
+		for (std::size_t index = 0; index < g_directorVideo.timelineMarkers.size(); ++index) {
+			const float markerX = std::lerp(railMinX, railMaxX,
+				std::clamp(g_directorVideo.timelineMarkers[index] / safeDuration, 0.0f, 1.0f));
+			const bool selected = index == g_directorVideo.selectedPoint;
+			draw->AddLine(ImVec2(markerX, railY - (selected ? 11.0f : 7.0f) * scale),
+				ImVec2(markerX, railY + (selected ? 11.0f : 7.0f) * scale),
+				selected ? PIXLUI::Colors::CyanBright : PIXLUI::Colors::SteelLight,
+				selected ? 2.0f * scale : 1.0f * scale);
+		}
+		draw->AddCircleFilled(ImVec2(playhead, railY), 4.0f * scale, PIXLUI::Colors::CyanBright, 10);
+		const char* controls = "ENTER CAPTURE POINT    SPACE PLAY / PAUSE    BACKSPACE START    SHIFT+ENTER EDIT & SCRUB    CTRL+HOME EXIT";
+		PIXLUI::DrawClippedOverlayText(draw, ImVec2(min.x + 14.0f * scale, min.y + 70.0f * scale),
+			PIXLUI::Colors::CyanSoft, controls, width - 28.0f * scale);
 	}
 
 
@@ -3220,6 +4142,9 @@ namespace
 		if (!g_directorPhotoMode.active)
 			return;
 
+		if (IsDirectorVideoMode())
+			UpdateDirectorVideoCellBoundary();
+
 		// The worker publishes Idle only after reconstruction, encoding and save
 		// have completed. Release the immutable camera/input transaction on the
 		// next Director frame; do not require another user event to unlock it.
@@ -3269,6 +4194,22 @@ namespace
 		// shortcuts or HUD. Maintenance must continue while panels are hidden.
 		if (g_tunerOwnsInspection)
 			return;
+
+		if (IsDirectorVideoMode()) {
+			// Video preview has no Photo Finish transaction. It receives the same
+			// ownership, validity and free-camera safety checks above, then draws a
+			// deliberately small non-recording HUD.
+			if (globals::menu && globals::menu->IsEnabled)
+				return;
+			if (!g_directorPhotoMode.hudVisible)
+				return;
+			const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+			DrawDirectorVideoModeOverlay(
+				ImGui::GetForegroundDrawList(),
+				displaySize,
+				Util::GetUIScale());
+			return;
+		}
 
 		// Suppress every HUD primitive before triggering capture.
 		if (g_directorPhotoMode.captureDelayFrames > 0) {
@@ -3329,6 +4270,9 @@ namespace
 
 		ImDrawList* draw =
 			ImGui::GetForegroundDrawList();
+
+		DrawDirectorCompositionGuide(draw, displaySize, scale,
+			g_directorPhotoMode.compositionGuide);
 
 		DrawDirectorViewfinder(
 			draw,
@@ -4035,36 +4979,76 @@ namespace
 		const char* inspectHint = g_directorPhotoMode.active
 			? "HOLD SHIFT + WASD    MOVE INSPECTION CAMERA"
 			: "HOLD SHIFT + WASD    INSPECT CAMERA";
-		const std::string photoHint = std::format(
-			"HOME  PHOTO MODE    END  CAPTURE    {}  CLOSE TUNER",
-			closeKey.empty() ? "PAGE DOWN" : closeKey);
+		const std::string photoKey = Util::Input::KeyIdToString(globals::menu->GetSettings().PhotoModeKey);
+		const std::string videoKey = Util::Input::KeyIdToString(globals::menu->GetSettings().VideoModeKey);
+		const std::string modeHint = TuningWorkspaceRenderer::IsDirectorVideoModeActive()
+			? "VIDEO MODE    PATH PREVIEW / DIRECTOR CAMERA"
+			: std::format("{}  PHOTO MODE    {}  VIDEO MODE    END  CAPTURE",
+				photoKey.empty() ? "HOME" : photoKey,
+				videoKey.empty() ? "CTRL + HOME" : videoKey);
+		const std::string footerHint = std::format("{}    {}  CLOSE TUNER",
+			modeHint, closeKey.empty() ? "PAGE DOWN" : closeKey);
 
-		const ImVec2 firstSize = ImGui::CalcTextSize(inspectHint);
-		const ImVec2 secondSize = ImGui::CalcTextSize(photoHint.c_str());
-		const float width = std::max(firstSize.x, secondSize.x) + 34.0f * scale;
-		const float height = 51.0f * scale;
-		const ImVec2 max(display.x - 22.0f * scale,
-			display.y - (20.0f + (1.0f - appear) * 10.0f) * scale);
-		const ImVec2 min(max.x - width, max.y - height);
+		const float margin = 22.0f * scale;
+		// The footer is a viewport overlay. Keep its full information rail, but
+		// reserve the category pillar at the lower left so it never obscures a
+		// navigation target on compact displays.
+		const float pillarClearance = 84.0f * scale;
+		const float minX = std::max(margin, pillarClearance);
+		const float width = std::min(1040.0f * scale,
+			std::max(0.0f, display.x - minX - margin));
+		if (width < 260.0f * scale)
+			return;
+		const float height = 64.0f * scale;
+		const ImVec2 min(std::max(minX, display.x - margin - width),
+			display.y - height - (16.0f + (1.0f - appear) * 8.0f) * scale);
+		const ImVec2 max(min.x + width, min.y + height);
 		auto* draw = ImGui::GetForegroundDrawList();
 		const ImU32 background = IM_COL32(5, 9, 12, static_cast<int>(205.0f * appear));
 		const ImU32 border = ImGui::ColorConvertFloat4ToU32(
 			ImVec4(0.22f, 0.70f, 0.75f, 0.55f * appear));
 		draw->AddRectFilled(min, max, background, 5.0f * scale);
 		draw->AddRect(min, max, border, 5.0f * scale, 0, 1.0f * scale);
-		draw->AddLine(
-			ImVec2(min.x + 8.0f * scale, min.y + 1.0f * scale),
-			ImVec2(min.x + 62.0f * scale, min.y + 1.0f * scale),
-			PIXLUI::Colors::CyanBright,
-			1.4f * scale);
-		draw->AddText(
-			ImVec2(min.x + 17.0f * scale, min.y + 9.0f * scale),
-			PIXLUI::Colors::CyanSoft,
-			inspectHint);
-		draw->AddText(
-			ImVec2(min.x + 17.0f * scale, min.y + 28.0f * scale),
-			PIXLUI::Colors::TextDim,
-			photoHint.c_str());
+		draw->AddLine(ImVec2(min.x + 8.0f * scale, min.y + 1.0f * scale),
+			ImVec2(min.x + std::min(width * 0.18f, 118.0f * scale), min.y + 1.0f * scale),
+			PIXLUI::Colors::CyanBright, 1.4f * scale);
+		PIXLUI::DrawClippedOverlayText(draw, ImVec2(min.x + 15.0f * scale, min.y + 8.0f * scale),
+			PIXLUI::Colors::CyanSoft, inspectHint, width - 30.0f * scale);
+		PIXLUI::DrawClippedOverlayText(draw, ImVec2(min.x + 15.0f * scale, min.y + 26.0f * scale),
+			PIXLUI::Colors::TextDim, footerHint.c_str(), width - 30.0f * scale);
+
+		struct FooterSegment { const char* label; bool active; };
+		auto* capture = GetDirectorCapture();
+		const std::array<FooterSegment, 5> segments{{
+			{ "TUNER", true },
+			{ "INSPECT", g_tunerInspectionMoving },
+			{ "PHOTO", TuningWorkspaceRenderer::IsDirectorPhotoModeActive() },
+			{ "VIDEO", IsDirectorVideoMode() },
+			{ "CAPTURE", capture && capture->IsPhotoFinishBusy() }
+		}};
+		const float railMinX = min.x + 15.0f * scale;
+		const float railMaxX = max.x - 15.0f * scale;
+		const float gap = 3.0f * scale;
+		const float segmentWidth = (railMaxX - railMinX - gap * static_cast<float>(segments.size() - 1)) /
+			static_cast<float>(segments.size());
+		const float top = min.y + 45.0f * scale;
+		const float bottom = max.y - 8.0f * scale;
+		for (std::size_t index = 0; index < segments.size(); ++index) {
+			const float x = railMinX + static_cast<float>(index) * (segmentWidth + gap);
+			const ImVec2 segmentMin(x, top);
+			const ImVec2 segmentMax(x + segmentWidth, bottom);
+			const ImU32 fill = segments[index].active ? IM_COL32(22, 93, 99, 216) : IM_COL32(18, 23, 27, 208);
+			draw->AddRectFilled(segmentMin, segmentMax, fill, 2.0f * scale);
+			draw->AddRect(segmentMin, segmentMax,
+				segments[index].active ? PIXLUI::Colors::CyanSoft : PIXLUI::Colors::BorderSoft,
+				2.0f * scale, 0, 1.0f * scale);
+			const ImVec2 label = ImGui::CalcTextSize(segments[index].label);
+			if (label.x + 8.0f * scale < segmentWidth)
+				draw->AddText(ImVec2(segmentMin.x + (segmentWidth - label.x) * 0.5f,
+					segmentMin.y + (bottom - top - label.y) * 0.5f),
+					segments[index].active ? PIXLUI::Colors::CyanBright : PIXLUI::Colors::TextDim,
+					segments[index].label);
+		}
 	}
 
 	void DrawCharacterOrbitControls()
@@ -4143,6 +5127,27 @@ bool TuningWorkspaceRenderer::IsDirectorPhotoModeActive()
 		g_directorPhotoMode.active;
 }
 
+void TuningWorkspaceRenderer::ResetWorkspaceHistory()
+{
+	if (g_tunerABState.showingBaseline)
+		ApplyFeatureSettingsSnapshot(FindFeatureByShortName(g_tunerABState.feature), g_tunerABState.edited, "A/B shutdown");
+	g_tunerABState = {};
+	g_tunerEditHistory.clear();
+	g_tunerHistoryCursor = 0;
+	g_tunerFeatureBaselines.clear();
+	logger::info("[PIXL UI] Cleared tuner edit history after a settings restore/reload");
+}
+
+bool TuningWorkspaceRenderer::IsDirectorVideoModeActive()
+{
+	return IsDirectorVideoMode();
+}
+
+bool TuningWorkspaceRenderer::IsDirectorVideoPlaybackActive()
+{
+	return IsDirectorVideoMode() && g_directorVideo.playback == DirectorVideoPlaybackState::Playing;
+}
+
 bool TuningWorkspaceRenderer::IsDirectorCameraTransitionPending()
 {
 	return g_directorEntryPending.load(std::memory_order_acquire) ||
@@ -4163,7 +5168,7 @@ TuningWorkspaceRenderer::TunerInteractionMode TuningWorkspaceRenderer::GetTunerI
 
 bool TuningWorkspaceRenderer::IsDirectorInspectionMoving()
 {
-	return g_tunerOwnsInspection && g_directorPhotoMode.active && g_tunerInspectionMoving &&
+	return (g_tunerOwnsInspection || IsDirectorVideoMode()) && g_directorPhotoMode.active && g_tunerInspectionMoving &&
 		!g_directorExitRequested.load(std::memory_order_acquire);
 }
 
@@ -4183,16 +5188,70 @@ bool TuningWorkspaceRenderer::OpenDirectorPhotoMode()
 	// If the user reopened PIXL while composing, this is simply a return to the
 	// existing viewfinder. Otherwise use the same guarded entry path as HOME.
 	if (g_directorPhotoMode.active) {
+		if (g_directorMode != DirectorMode::Photo) {
+			// A Video preview must not resume unexpectedly after returning from Photo.
+			g_directorVideo.playback = DirectorVideoPlaybackState::Stopped;
+			g_directorMode = DirectorMode::Photo;
+			g_directorPhotoMode.hudVisible = true;
+			logger::info("[PIXL Director] Switched active session from Video to Photo Mode");
+		}
 		if (globals::menu)
 			globals::menu->IsEnabled = false;
 		return true;
 	}
 
+	g_directorMode = DirectorMode::Photo;
 	if (!EnterDirectorPhotoMode())
 		return false;
 
 	if (globals::menu)
 		globals::menu->IsEnabled = false;
+	return true;
+}
+
+bool TuningWorkspaceRenderer::OpenDirectorVideoMode()
+{
+	UpdateDirectorVideoCellBoundary();
+	static bool pathMathTested = false;
+	static bool pathMathValid = false;
+	if (!pathMathTested) {
+		pathMathTested = true;
+		std::string failure;
+		pathMathValid = DirectorCameraPath::RunDeterministicSelfTest(&failure);
+		if (!pathMathValid)
+			logger::error("[PIXL Director] Video path self-test failed: {}", failure);
+	}
+	if (!pathMathValid)
+		return false;
+
+	// Video initially reuses the production-tested Director session. It never
+	// starts Photo Finish or a recording transaction merely by being opened.
+	if (g_directorPhotoMode.active) {
+		if (g_directorCaptureLocked.load(std::memory_order_acquire)) {
+			logger::warn("[PIXL Director] Video Mode request ignored while Photo Finish owns the camera");
+			return false;
+		}
+		if (g_directorMode != DirectorMode::Video) {
+			g_directorMode = DirectorMode::Video;
+			g_directorPhotoMode.hudVisible = true;
+			RefreshDirectorVideoPathList();
+			logger::info("[PIXL Director] Switched active session from Photo to Video Mode");
+		}
+		if (globals::menu)
+			globals::menu->IsEnabled = false;
+		return true;
+	}
+
+	g_directorMode = DirectorMode::Video;
+	if (!EnterDirectorPhotoMode()) {
+		g_directorMode = DirectorMode::Photo;
+		return false;
+	}
+
+	if (globals::menu)
+		globals::menu->IsEnabled = false;
+	RefreshDirectorVideoPathList();
+	logger::info("[PIXL Director] Video Mode entry requested");
 	return true;
 }
 
@@ -4289,12 +5348,18 @@ bool TuningWorkspaceRenderer::HandleTunerKeyboardInput(
 		return false;
 
 	const auto& tunerHotkeys = globals::menu->GetSettings();
+	const bool requireFlycamHold = IsDirectorVideoMode() || tunerHotkeys.TunerFlycamHoldRequired;
 	const bool isFlycamKey = InputCombo::MatchesKeyboardCombo(tunerHotkeys.TunerFlycamKey, virtualKey);
 	const bool isShift = isFlycamKey || virtualKey == VK_LSHIFT || virtualKey == VK_SHIFT;
 	if (isShift) {
 		g_tunerShiftHeld = pressed;
-		if (g_directorPhotoMode.active && !pressed)
+		if (IsDirectorVideoMode()) {
+			g_tunerInspectionMoving = pressed;
+			if (pressed && g_directorVideo.playback == DirectorVideoPlaybackState::Playing)
+				g_directorVideo.playback = DirectorVideoPlaybackState::Paused;
+		} else if (g_directorPhotoMode.active && !pressed) {
 			g_tunerInspectionMoving = false;
+		}
 		return true;
 	}
 
@@ -4312,7 +5377,7 @@ bool TuningWorkspaceRenderer::HandleTunerKeyboardInput(
 
 		// Locked inspection is deliberately re-entrant: Shift + navigation starts
 		// a new movement transaction without closing or reopening the tuner.
-		if (pressed && (g_tunerShiftHeld || !tunerHotkeys.TunerFlycamHoldRequired) && navigationKey) {
+		if (pressed && (g_tunerShiftHeld || !requireFlycamHold) && navigationKey) {
 			g_characterOrbitEnabled = false;
 			g_characterOrbitOwnsInspection = false;
 			g_tunerInspectionMoving = true;
@@ -4321,7 +5386,7 @@ bool TuningWorkspaceRenderer::HandleTunerKeyboardInput(
 		return false;
 	}
 
-	if (pressed && (g_tunerShiftHeld || !tunerHotkeys.TunerFlycamHoldRequired) && navigationKey) {
+	if (pressed && (g_tunerShiftHeld || !requireFlycamHold) && navigationKey) {
 		if (EnterDirectorPhotoMode()) {
 			g_tunerOwnsInspection = true;
 			g_tunerInspectionMoving = true;
@@ -4349,11 +5414,20 @@ bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
 	}
 
 	const auto& hotkeys = globals::menu->GetSettings();
-	if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoModeKey, virtualKey)) {
-		if (g_directorPhotoMode.active)
+	if (InputCombo::MatchesKeyboardCombo(hotkeys.VideoModeKey, virtualKey)) {
+		if (IsDirectorVideoMode())
 			ExitDirectorPhotoMode();
 		else
-			EnterDirectorPhotoMode();
+			TuningWorkspaceRenderer::OpenDirectorVideoMode();
+
+		return true;
+	}
+
+	if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoModeKey, virtualKey)) {
+		if (g_directorPhotoMode.active && g_directorMode == DirectorMode::Photo)
+			ExitDirectorPhotoMode();
+		else
+			TuningWorkspaceRenderer::OpenDirectorPhotoMode();
 
 		return true;
 	}
@@ -4378,6 +5452,34 @@ bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
 	if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoSpeedUpKey, virtualKey)) {
 		ApplyDirectorCameraMoveSpeed(GetDirectorCameraMoveSpeed() + 0.10f);
 		return true;
+	}
+
+	if (IsDirectorVideoMode()) {
+		// VIDEO is a sibling workspace. Do not let PHOTO-only capture/effect
+		// shortcuts arm a still transaction while a path is being authored.
+		if (virtualKey == VK_RETURN) {
+			CaptureDirectorVideoPointFromCamera();
+			return true;
+		}
+		if (virtualKey == VK_SPACE && g_directorVideo.path.IsValid()) {
+			if (g_directorVideo.playback == DirectorVideoPlaybackState::Playing)
+				g_directorVideo.playback = DirectorVideoPlaybackState::Paused;
+			else
+				StartDirectorVideoPlayback();
+			return true;
+		}
+		if (virtualKey == VK_BACK && g_directorVideo.path.IsValid()) {
+			g_directorVideo.playback = DirectorVideoPlaybackState::Stopped;
+			ApplyDirectorVideoTimeline(0.0f);
+			return true;
+		}
+		if (virtualKey == VK_DELETE) {
+			g_directorPhotoMode.hudVisible = !g_directorPhotoMode.hudVisible;
+			return true;
+		}
+		if (virtualKey == VK_END || virtualKey == VK_INSERT)
+			return true;
+		return false;
 	}
 
 	if (!g_directorPhotoMode.hudVisible) {
@@ -4498,6 +5600,15 @@ bool TuningWorkspaceRenderer::HandleDirectorGamepadInput(
 		return false;
 	if (g_directorCaptureLocked.load(std::memory_order_acquire))
 		return true;
+	if (IsDirectorVideoMode()) {
+		if (gamepadKeyCode == SKSE::InputMap::kGamepadButtonOffset_BACK) {
+			g_directorPhotoMode.hudVisible = !g_directorPhotoMode.hudVisible;
+			return true;
+		}
+		// Retain native stick flight; PHOTO-only capture and quick-panel buttons
+		// are deliberately inert in the Video workspace.
+		return false;
+	}
 
 	if (!g_directorPhotoMode.hudVisible) {
 		switch (gamepadKeyCode) {
@@ -4634,6 +5745,14 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 
 	const ImVec2 rootPos =
 		ImGui::GetWindowPos();
+	// A restrained focus scrim gives the active tuner legibility over busy
+	// gameplay without hiding the scene that users are adjusting. It is strictly
+	// presentation-only and remains configurable in General settings.
+	if (globals::menu->GetSettings().TunerFocusScrim && !g_directorPhotoMode.active) {
+		const ImVec2 display = ImGui::GetIO().DisplaySize;
+		ImGui::GetBackgroundDrawList()->AddRectFilled(
+			ImVec2(0.0f, 0.0f), display, IM_COL32(0, 5, 7, 28));
+	}
 
 	const ImVec2 sidebarPos(
 		rootPos.x +
@@ -4915,13 +6034,16 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 	if (panelProgress > 0.01f && drawerProgress > 0.01f) {
 		ImGui::SetCursorScreenPos(ImVec2(contentPos.x + panelOffset, contentPos.y));
 	{
-		const bool productPage = selectedMenu < menuList.size() &&
-			std::holds_alternative<BuiltInMenu>(menuList[selectedMenu]) &&
-			std::get<BuiltInMenu>(menuList[selectedMenu]).name == "PIXL Renderer";
-		const float contentWidth = productPage
-			? std::max(PIXLUI::Ref(PIXLUI::Layout::TuneContentFrameWidth),
-				ImGui::GetMainViewport()->WorkPos.x + ImGui::GetMainViewport()->WorkSize.x - contentPos.x - panelOffset - PIXLUI::Ref(16.0f))
-			: PIXLUI::Ref(PIXLUI::Layout::TuneContentFrameWidth);
+		const ImGuiViewport* viewport = ImGui::GetMainViewport();
+		const float availableContentWidth = viewport->WorkPos.x + viewport->WorkSize.x -
+			contentPos.x - panelOffset - PIXLUI::Ref(16.0f);
+		// Keep every advanced page inside the same balanced shell.  A moderate
+		// maximum gives long settings room to breathe without turning the tuner
+		// into an edge-to-edge overlay on ultrawide displays.
+		const float contentWidth = std::clamp(
+			availableContentWidth,
+			PIXLUI::Ref(PIXLUI::Layout::TuneContentFrameWidth),
+			PIXLUI::Ref(760.0f));
 		orbitViewportMinX = contentPos.x + panelOffset + contentWidth +
 			PIXLUI::Ref(PIXLUI::Layout::TunePanelGap);
 		PIXLUI::ChromeScope content(
@@ -4937,14 +6059,17 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 			0.0f);
 
 		if (content) {
-			// Keep the selected module identifiable while its controls scroll.
-			ImGui::SetCursorPos(ImVec2(PIXLUI::Ref(16.0f), PIXLUI::Ref(12.0f)));
+			// Built-in pages own their shell heading. Feature pages draw a complete
+			// module header below, so avoid repeating its title and consuming space
+			// before the controls.
+			bool featureOwnsHeader = false;
 			std::string panelTitle = "RENDERER SETTINGS";
 			if (selectedMenu < menuList.size()) {
 				if (const auto* page = std::get_if<CategoryPage>(&menuList[selectedMenu])) {
 					for (auto* feature : page->features) {
 						if (feature && feature->GetShortName() == g_tunerSelectedFeature) {
 							panelTitle = PIXLRendererPage::GetPublicName(feature->GetShortName(), feature->GetDisplayName());
+							featureOwnsHeader = true;
 							break;
 						}
 					}
@@ -4952,20 +6077,25 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 					panelTitle = menu->name;
 				}
 			}
-			ImGui::PushTextWrapPos(ImGui::GetWindowSize().x - PIXLUI::Ref(16.0f));
-			ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "%s", panelTitle.c_str());
-			ImGui::PopTextWrapPos();
-			ImGui::PushTextWrapPos(ImGui::GetWindowSize().x - PIXLUI::Ref(16.0f));
-			ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
-				"Drag a slider to preview the scene. Hover controls for help.");
-			ImGui::PopTextWrapPos();
-			const float bodyTop = std::max(PIXLUI::Ref(44.0f), ImGui::GetCursorPosY() + PIXLUI::Ref(8.0f));
+			ImGui::SetCursorPos(ImVec2(PIXLUI::Ref(16.0f), PIXLUI::Ref(12.0f)));
+			if (!featureOwnsHeader) {
+				ImGui::PushTextWrapPos(ImGui::GetWindowSize().x - PIXLUI::Ref(16.0f));
+				ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "%s", panelTitle.c_str());
+				ImGui::PopTextWrapPos();
+				ImGui::PushTextWrapPos(ImGui::GetWindowSize().x - PIXLUI::Ref(16.0f));
+				ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
+					"Drag a slider to preview the scene. Hover controls for help.");
+				ImGui::PopTextWrapPos();
+			}
+			const float bodyTop = featureOwnsHeader
+				? PIXLUI::Ref(12.0f)
+				: std::max(PIXLUI::Ref(44.0f), ImGui::GetCursorPosY() + PIXLUI::Ref(8.0f));
 			// A nested, padded surface keeps native module controls clear of the
 			// frame. Key it by selection so scroll state belongs to each module.
 			ImGui::SetCursorPos(ImVec2(PIXLUI::Ref(16.0f), bodyTop));
 			ImGui::PushID(static_cast<int>(selectedMenu));
 			ImGui::PushID(g_tunerSelectedFeature.c_str());
-			const ImVec2 innerSize(ImGui::GetWindowSize().x - PIXLUI::Ref(32.0f), ImGui::GetWindowSize().y - bodyTop - PIXLUI::Ref(16.0f));
+			const ImVec2 innerSize(ImGui::GetWindowSize().x - PIXLUI::Ref(32.0f), ImGui::GetWindowSize().y - bodyTop - PIXLUI::Ref(24.0f));
 			// Long release modules need an independently scrollable surface; hiding
 			// this scrollbar made lower controls inaccessible at common resolutions.
 			if (ImGui::BeginChild("##TunerModuleSurface", innerSize, ImGuiChildFlags_None, ImGuiWindowFlags_None)) {
@@ -5007,7 +6137,7 @@ void TuningWorkspaceRenderer::DrawHotkeysSettings()
 	auto& settings = menu.GetSettings();
 	bool changed = false;
 	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "HOTKEYS");
-	ImGui::TextWrapped("Assign PIXL and Photo Mode shortcuts to fit your load order. Existing bindings are preserved when upgrading.");
+	ImGui::TextWrapped("Assign PIXL Director shortcuts to fit your load order. Existing bindings are preserved when upgrading.");
 	ImGui::TextDisabled("Click a key, press a key combination, then release. Press Escape to cancel.");
 
 	auto drawBinding = [&](const char* label, std::vector<InputCombo>& binding, const char* id) {
@@ -5025,6 +6155,7 @@ void TuningWorkspaceRenderer::DrawHotkeysSettings()
 		drawBinding("Frame Generation", settings.FrameGenerationKey, "FrameGeneration");
 		drawBinding("PIXL Renderer menu", settings.ToggleKey, "RendererMenu");
 		drawBinding("Photo Mode", settings.PhotoModeKey, "PhotoMode");
+		drawBinding("Video Mode", settings.VideoModeKey, "VideoMode");
 		ImGui::TreePop();
 	}
 	if (ImGui::TreeNodeEx("Photo camera", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -5066,7 +6197,7 @@ std::vector<TuningWorkspaceRenderer::MenuFuncInfo> TuningWorkspaceRenderer::Buil
 	// Filter features by search string
 	if (!featureSearch.empty()) {
 		auto it = std::remove_if(sortedFeatureList.begin(), sortedFeatureList.end(),
-			[&featureSearch](RenderModule* feat) { return !Util::FeatureMatchesSearch(feat, featureSearch); });
+			[&featureSearch](RenderModule* feat) { return !MatchesTunerSearch(feat, featureSearch); });
 		sortedFeatureList.erase(it, sortedFeatureList.end());
 	}
 
@@ -5276,6 +6407,21 @@ void TuningWorkspaceRenderer::RenderLeftColumn(
 		ImGui::PopStyleColor(2);
 		ImGui::PopStyleVar(3);
 
+		// A compact second navigation row keeps Favorites, recent work and edited
+		// modules discoverable without turning the left rail into a noisy badge wall.
+		ImGui::SetCursorScreenPos(ImVec2(searchStart.x, searchStart.y + searchHeight + PIXLUI::Ref(6.0f)));
+		if (PIXLUI::SectionAction("ALL", "Show modules in the selected PIXL category."))
+			g_tunerNavigationView = TunerNavigationView::All;
+		ImGui::SameLine(0.0f, PIXLUI::Ref(3.0f));
+		if (PIXLUI::SectionAction("FAV", "Show your saved favorite modules."))
+			g_tunerNavigationView = TunerNavigationView::Favorites;
+		ImGui::SameLine(0.0f, PIXLUI::Ref(3.0f));
+		if (PIXLUI::SectionAction("REC", "Show recently opened modules in this PIXL workspace."))
+			g_tunerNavigationView = TunerNavigationView::Recent;
+		ImGui::SameLine(0.0f, PIXLUI::Ref(3.0f));
+		if (PIXLUI::SectionAction("MOD", "Show modules changed since this tuner session began."))
+			g_tunerNavigationView = TunerNavigationView::Modified;
+
 		// The icon rail owns category selection. The adjacent sidebar shows the
 		// modules belonging to the selected category, matching the reference UI
 		// instead of rendering a second category navigation list.
@@ -5286,20 +6432,22 @@ void TuningWorkspaceRenderer::RenderLeftColumn(
 						PIXLUI::Layout::TuneSidebarNavX),
 				railOrigin.y +
 					PIXLUI::Ref(
-						PIXLUI::Layout::TuneSidebarNavY)));
+						PIXLUI::Layout::TuneSidebarNavY + 37.0f)));
 
-		if (selectedMenu < menuList.size() && std::holds_alternative<CategoryPage>(menuList[selectedMenu])) {
+		if (g_tunerNavigationView == TunerNavigationView::All &&
+			selectedMenu < menuList.size() && std::holds_alternative<CategoryPage>(menuList[selectedMenu])) {
 			const auto& page = std::get<CategoryPage>(menuList[selectedMenu]);
 				for (RenderModule* feature : page.features) {
 					if (!feature)
 						continue;
-				if (!featureSearch.empty() && !Util::FeatureMatchesSearch(feature, featureSearch))
+				if (!featureSearch.empty() && !MatchesTunerSearch(feature, featureSearch))
 					continue;
 				const std::string publicName = std::string(PIXLRendererPage::GetPublicName(feature->GetShortName(), feature->GetDisplayName()));
 				const bool selected = selectedFeatureName == feature->GetShortName();
 				if (PIXLUI::NavItem(feature->GetShortName().c_str(), publicName.c_str(), selected, PIXLUI::Ref(38.0f))) {
 					SelectTunerPanel(selected);
 					selectedFeatureName = feature->GetShortName();
+					RememberRecentFeature(selectedFeatureName);
 				}
 				if (ImGui::IsItemHovered())
 					ImGui::SetTooltip("%s", selected
@@ -5307,6 +6455,50 @@ void TuningWorkspaceRenderer::RenderLeftColumn(
 						: "Open this module's settings");
 			}
 
+		} else if (g_tunerNavigationView != TunerNavigationView::All) {
+			std::vector<RenderModule*> visibleFeatures;
+			for (auto* feature : RenderModule::GetModuleList()) {
+				if (!feature || !feature->IsInMenu() || !PIXLRendererPage::GetPlacement(feature->GetShortName()))
+					continue;
+				const bool include = g_tunerNavigationView == TunerNavigationView::Favorites
+					? IsFavoriteFeature(feature->GetShortName())
+					: g_tunerNavigationView == TunerNavigationView::Recent
+						? std::ranges::find(globals::menu->GetSettings().TunerRecentFeatures, feature->GetShortName()) != globals::menu->GetSettings().TunerRecentFeatures.end()
+						: IsFeatureModified(feature);
+				if (include && MatchesTunerSearch(feature, featureSearch))
+					visibleFeatures.push_back(feature);
+			}
+			if (g_tunerNavigationView == TunerNavigationView::Recent) {
+				const auto& recency = globals::menu->GetSettings().TunerRecentFeatures;
+				std::ranges::sort(visibleFeatures, [&recency](RenderModule* left, RenderModule* right) {
+					return std::distance(recency.begin(), std::find(recency.begin(), recency.end(), left->GetShortName())) <
+						std::distance(recency.begin(), std::find(recency.begin(), recency.end(), right->GetShortName()));
+				});
+			} else {
+				std::ranges::sort(visibleFeatures, [](RenderModule* left, RenderModule* right) {
+					return left->GetDisplayName() < right->GetDisplayName();
+				});
+			}
+			if (visibleFeatures.empty()) {
+				ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "No modules in this view.");
+			} else {
+				for (auto* feature : visibleFeatures) {
+					const std::string label = std::string(PIXLRendererPage::GetPublicName(feature->GetShortName(), feature->GetDisplayName()));
+					const bool selected = selectedFeatureName == feature->GetShortName();
+					if (PIXLUI::NavItem(feature->GetShortName().c_str(), label.c_str(), selected, PIXLUI::Ref(38.0f))) {
+						for (size_t index = 0; index < menuList.size(); ++index) {
+							if (const auto* page = std::get_if<CategoryPage>(&menuList[index]);
+								page && std::ranges::find(page->features, feature) != page->features.end()) {
+								selectedMenu = index;
+								break;
+							}
+						}
+						selectedFeatureName = feature->GetShortName();
+						RememberRecentFeature(selectedFeatureName);
+						OpenTunerPanel();
+					}
+				}
+			}
 		}
 
 		// The product controls remain below the visual categories, but they use
@@ -5348,6 +6540,7 @@ void TuningWorkspaceRenderer::RenderRightColumn(
 				DrawCharacterOrbitControls();
 			for (RenderModule* feature : page.features) {
 				if (feature && feature->GetShortName() == selectedFeatureName) {
+					RememberRecentFeature(selectedFeatureName);
 					std::visit(DrawMenuVisitor{ pendingFeatureSelection }, MenuFuncInfo{ feature });
 					return;
 				}
@@ -6091,6 +7284,390 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::RenderCompactFeature(RenderModule
 	RenderCategoryFeature(feat, false);
 }
 
+namespace
+{
+	bool DrawDirectorEasing(const char* label, DirectorCameraPath::Easing& easing)
+	{
+		static constexpr const char* names[] = { "Linear", "Ease in", "Ease out", "Ease in / out" };
+		int value = static_cast<int>(easing);
+		if (!ImGui::Combo(label, &value, names, IM_ARRAYSIZE(names)))
+			return false;
+		easing = static_cast<DirectorCameraPath::Easing>(std::clamp(value, 0, 3));
+		return true;
+	}
+
+	void DrawDirectorPathPreview()
+	{
+		const auto& points = g_directorVideo.path.points;
+		const auto& samples = g_directorVideo.previewSamples;
+		const ImVec2 canvasSize(-1.0f, PIXLUI::Ref(216.0f));
+		const ImVec2 canvasMin = ImGui::GetCursorScreenPos();
+		ImGui::InvisibleButton("##DirectorRoutePreview", canvasSize);
+		const ImVec2 canvasMax = ImGui::GetItemRectMax();
+		ImDrawList* draw = ImGui::GetWindowDrawList();
+		draw->AddRectFilled(canvasMin, canvasMax, PIXLUI::Colors::Inset, PIXLUI::Ref(4.0f));
+		draw->AddRect(canvasMin, canvasMax, PIXLUI::Colors::BorderSoft, PIXLUI::Ref(4.0f));
+		PIXLUI::DrawClippedOverlayText(draw, ImVec2(canvasMin.x + PIXLUI::Ref(10.0f), canvasMin.y + PIXLUI::Ref(8.0f)),
+			PIXLUI::Colors::TextMuted, "ROUTE PLAN  /  click a point to move there", canvasMax.x - canvasMin.x - PIXLUI::Ref(20.0f));
+		if (points.empty()) {
+			PIXLUI::DrawClippedOverlayText(draw, ImVec2(canvasMin.x + PIXLUI::Ref(10.0f), canvasMin.y + PIXLUI::Ref(34.0f)),
+				PIXLUI::Colors::TextDim, "Capture two fly-camera positions to draw a spline.", canvasMax.x - canvasMin.x - PIXLUI::Ref(20.0f));
+			return;
+		}
+
+		// Use the usual Skyrim ground plane when it has useful extent; vertical
+		// paths automatically fall back to X/Z so their shape remains legible.
+		float minX = points.front().worldPosition.x, maxX = minX;
+		float minY = points.front().worldPosition.y, maxY = minY;
+		float minZ = points.front().worldPosition.z, maxZ = minZ;
+		for (const auto& point : points) {
+			minX = std::min(minX, point.worldPosition.x); maxX = std::max(maxX, point.worldPosition.x);
+			minY = std::min(minY, point.worldPosition.y); maxY = std::max(maxY, point.worldPosition.y);
+			minZ = std::min(minZ, point.worldPosition.z); maxZ = std::max(maxZ, point.worldPosition.z);
+			if (point.useLookAt) {
+				minX = std::min(minX, point.lookAtPosition.x); maxX = std::max(maxX, point.lookAtPosition.x);
+				minY = std::min(minY, point.lookAtPosition.y); maxY = std::max(maxY, point.lookAtPosition.y);
+				minZ = std::min(minZ, point.lookAtPosition.z); maxZ = std::max(maxZ, point.lookAtPosition.z);
+			}
+		}
+		const bool useXZ = (maxX - minX) + (maxY - minY) < (maxX - minX) + (maxZ - minZ);
+		const float minA = minX, maxA = maxX;
+		const float minB = useXZ ? minZ : minY;
+		const float maxB = useXZ ? maxZ : maxY;
+		const float spanA = std::max(maxA - minA, 1.0f);
+		const float spanB = std::max(maxB - minB, 1.0f);
+		const float pad = PIXLUI::Ref(22.0f);
+		const float width = std::max(canvasMax.x - canvasMin.x - pad * 2.0f, 1.0f);
+		const float height = std::max(canvasMax.y - canvasMin.y - pad * 2.0f - PIXLUI::Ref(20.0f), 1.0f);
+		const float scale = std::min(width / spanA, height / spanB);
+		const ImVec2 centre(canvasMin.x + (canvasMax.x - canvasMin.x) * 0.5f,
+			canvasMin.y + PIXLUI::Ref(26.0f) + (canvasMax.y - canvasMin.y - PIXLUI::Ref(26.0f)) * 0.5f);
+		const float midA = (minA + maxA) * 0.5f;
+		const float midB = (minB + maxB) * 0.5f;
+		auto mapPoint = [&](const DirectorCameraPath::Vec3& point) {
+			const float a = point.x;
+			const float b = useXZ ? point.z : point.y;
+			return ImVec2(centre.x + (a - midA) * scale, centre.y - (b - midB) * scale);
+		};
+
+		draw->PushClipRect(canvasMin, canvasMax, true);
+		for (std::size_t index = 1; index < samples.size(); ++index)
+			draw->AddLine(mapPoint(samples[index - 1]), mapPoint(samples[index]), PIXLUI::Colors::Cyan, PIXLUI::Ref(1.75f));
+		const auto currentPose = g_directorVideo.path.IsValid()
+			? g_directorVideo.path.EvaluateTime(g_directorVideo.playbackTime, g_directorVideo.loop)
+			: DirectorCameraPath::Pose{};
+		if (currentPose.valid)
+			draw->AddCircleFilled(mapPoint(currentPose.worldPosition), PIXLUI::Ref(4.5f), PIXLUI::Colors::CyanBright, 12);
+		draw->PopClipRect();
+
+		const ImVec2 mouse = ImGui::GetIO().MousePos;
+		std::size_t clicked = points.size();
+		for (std::size_t index = 0; index < points.size(); ++index) {
+			const ImVec2 location = mapPoint(points[index].worldPosition);
+			const bool selected = index == g_directorVideo.selectedPoint;
+			if (points[index].useLookAt) {
+				const ImVec2 target = mapPoint(points[index].lookAtPosition);
+				draw->AddLine(location, target, PIXLUI::Colors::Warning, PIXLUI::Ref(1.0f));
+				draw->AddCircleFilled(target, PIXLUI::Ref(3.0f), PIXLUI::Colors::Warning, 10);
+			}
+			draw->AddCircleFilled(location, selected ? PIXLUI::Ref(7.0f) : PIXLUI::Ref(5.0f),
+				selected ? PIXLUI::Colors::CyanBright : PIXLUI::Colors::SteelLight, 12);
+			const std::string label = std::format("{}", index + 1);
+			draw->AddText(ImVec2(location.x + PIXLUI::Ref(8.0f), location.y - PIXLUI::Ref(7.0f)), PIXLUI::Colors::Text, label.c_str());
+			const float dx = mouse.x - location.x, dy = mouse.y - location.y;
+			if (dx * dx + dy * dy <= PIXLUI::Ref(12.0f) * PIXLUI::Ref(12.0f))
+				clicked = index;
+		}
+		if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && clicked < points.size()) {
+			g_directorVideo.selectedPoint = clicked;
+			MoveDirectorCameraToPoint(clicked);
+		}
+		ImGui::TextDisabled("Plan: %s  |  cyan = spline  |  amber = enabled look target  |  bright dot = playhead",
+			useXZ ? "X / height" : "X / Y");
+	}
+
+	void DrawDirectorVideoWorkspace()
+	{
+		PIXLUI::SectionBanner("VIDEO MODE");
+		ImGui::TextWrapped("1. Fly to a framing.  2. Capture it as a point.  3. Repeat for the route.  PIXL builds the smooth spline, then lets you preview or scrub it. Video Mode never records by itself.");
+
+		std::string unavailableReason;
+		const bool available = TuningWorkspaceRenderer::IsDirectorPhotoModeAvailable(&unavailableReason);
+		const bool activeVideo = IsDirectorVideoMode();
+		const ImVec2 commandButton(PIXLUI::Ref(174.0f), PIXLUI::Ref(34.0f));
+		if (!g_directorPhotoMode.active) {
+			PIXLUI::SectionBanner("START A SHOT");
+			ImGui::TextWrapped("Enter Video Mode, frame the first shot with the normal Director fly camera, then use Capture Point. Every point stores its exact camera location, lens and pitch/yaw framing.");
+			ImGui::Checkbox("Freeze world on entry", &g_directorVideo.freezeWorld);
+			if (auto tooltip = Util::HoverTooltipWrapper())
+				ImGui::TextUnformatted("Off keeps Skyrim simulation running for a live preview. Photo Mode remains frozen regardless of this setting.");
+			ImGui::BeginDisabled(!available);
+			if (PIXLUI::ActionButton("ENTER VIDEO MODE", commandButton, true))
+				TuningWorkspaceRenderer::OpenDirectorVideoMode();
+			ImGui::EndDisabled();
+			if (!available)
+				ImGui::TextDisabled("%s", unavailableReason.c_str());
+			return;
+		}
+
+		if (!activeVideo) {
+			ImGui::TextWrapped("The existing Director session is in Photo Mode. Switching keeps the current free camera and lens so the present composition can become your first video point.");
+			if (PIXLUI::ActionButton("SWITCH TO VIDEO", commandButton, true))
+				TuningWorkspaceRenderer::OpenDirectorVideoMode();
+			return;
+		}
+
+		PIXLUI::StatusPill(g_directorVideo.freezeWorld ? "FROZEN / VIDEO PREVIEW" : "LIVE WORLD / VIDEO PREVIEW", PIXLUI::Colors::CyanBright);
+		ImGui::SameLine();
+		if (PIXLUI::ActionButton("PHOTO", ImVec2(PIXLUI::Ref(96.0f), PIXLUI::Ref(28.0f)), false))
+			TuningWorkspaceRenderer::OpenDirectorPhotoMode();
+		ImGui::SameLine();
+		if (PIXLUI::ActionButton("EXIT VIDEO", ImVec2(PIXLUI::Ref(112.0f), PIXLUI::Ref(28.0f)), false))
+			ExitDirectorPhotoMode();
+		ImGui::Checkbox("Show world route", &g_directorVideo.showWorldPath);
+		ImGui::SameLine();
+		ImGui::Checkbox("Cinema bars", &g_directorVideo.cinemaBars);
+		if (auto tooltip = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("World route draws POIs, the smooth spline and enabled look targets in Director only. The overlay is excluded from capture output.");
+		constexpr const char* videoGuideNames[] = {
+			"None", "Rule of thirds", "Golden sections", "Diagonals", "Centre / horizon"
+		};
+		g_directorVideo.compositionGuide = std::clamp(g_directorVideo.compositionGuide, 0, 4);
+		ImGui::SetNextItemWidth(PIXLUI::Ref(200.0f));
+		ImGui::Combo("Composition guide##Video", &g_directorVideo.compositionGuide,
+			videoGuideNames, IM_ARRAYSIZE(videoGuideNames));
+		if (auto tooltip = Util::HoverTooltipWrapper())
+			ImGui::TextUnformatted("Shot-framing lines for Video Mode only. Photo Mode keeps its own guide selection.");
+		ImGui::TextDisabled("Click controls normally. Hold SHIFT + WASD/Q/E only while reframing; route playback pauses immediately so native flycam cannot fight the shot.");
+
+		ImGui::Spacing();
+		PIXLUI::SectionBanner("CAMERA PATH");
+		if (!g_directorVideo.nameBufferInitialized) {
+			std::snprintf(g_directorVideo.nameBuffer.data(), g_directorVideo.nameBuffer.size(), "%s", g_directorVideo.path.name.c_str());
+			g_directorVideo.nameBufferInitialized = true;
+		}
+		ImGui::SetNextItemWidth(PIXLUI::Ref(240.0f));
+		if (ImGui::InputText("Path name", g_directorVideo.nameBuffer.data(), g_directorVideo.nameBuffer.size()))
+			g_directorVideo.path.name = g_directorVideo.nameBuffer.data();
+		if (PIXLUI::ActionButton("DELETE SPLINE", ImVec2(PIXLUI::Ref(140.0f), PIXLUI::Ref(30.0f)), false))
+			ImGui::OpenPopup("Clear Director route?");
+		ImGui::SameLine();
+		if (PIXLUI::ActionButton("CAPTURE POINT", ImVec2(PIXLUI::Ref(148.0f), PIXLUI::Ref(30.0f)), true))
+			CaptureDirectorVideoPointFromCamera();
+		ImGui::SameLine();
+		ImGui::Checkbox("Loop route", &g_directorVideo.loop);
+		ImGui::SameLine();
+		if (PIXLUI::ActionButton("SAVE PATH", ImVec2(PIXLUI::Ref(110.0f), PIXLUI::Ref(30.0f)), false))
+			SaveDirectorVideoPath();
+		ImGui::SameLine();
+		if (PIXLUI::ActionButton("REFRESH", ImVec2(PIXLUI::Ref(94.0f), PIXLUI::Ref(30.0f)), false))
+			RefreshDirectorVideoPathList();
+
+		if (ImGui::BeginPopupModal("Clear Director route?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+			ImGui::TextWrapped("Delete the working spline and all its points? Saved paths remain available.");
+			if (PIXLUI::ActionButton("CLEAR WORKING ROUTE", ImVec2(PIXLUI::Ref(196.0f), PIXLUI::Ref(30.0f)), true)) {
+				ClearDirectorVideoWorkingPath("user deleted the spline");
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (PIXLUI::ActionButton("CANCEL", ImVec2(PIXLUI::Ref(88.0f), PIXLUI::Ref(30.0f)), false))
+				ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+		}
+
+		if (!g_directorVideo.savedPaths.empty()) {
+			if (ImGui::BeginCombo("Load saved path", "Select a saved path")) {
+				for (const auto& saved : g_directorVideo.savedPaths) {
+					const auto label = saved.stem().string();
+					if (ImGui::Selectable(label.c_str()))
+						LoadDirectorVideoPath(saved);
+				}
+				ImGui::EndCombo();
+			}
+		}
+
+		const float distance = g_directorVideo.path.GetLength();
+		const float duration = g_directorVideo.path.GetDuration();
+		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
+			"%zu points  /  %.1f units  /  %.2f seconds", g_directorVideo.path.points.size(), distance, duration);
+		ImGui::SetNextItemWidth(PIXLUI::Ref(210.0f));
+		if (ImGui::SliderFloat("Preview rate", &g_directorVideo.previewRate, 0.10f, 4.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp))
+			g_directorVideo.previewRate = std::clamp(g_directorVideo.previewRate, 0.10f, 4.0f);
+		if (auto tooltip = Util::HoverTooltipWrapper())
+			ImGui::TextUnformatted("Changes only the current preview. Segment Speed and Route Duration remain the saved shot timing controls.");
+		bool fixedDuration = g_directorVideo.path.explicitDuration.has_value();
+		if (ImGui::Checkbox("Use fixed route duration", &fixedDuration)) {
+			if (fixedDuration)
+				g_directorVideo.path.explicitDuration = std::max(g_directorVideo.path.GetDuration(), 1.0f);
+			else
+				g_directorVideo.path.explicitDuration.reset();
+			RebuildDirectorVideoPath();
+		}
+		if (g_directorVideo.path.explicitDuration.has_value()) {
+			float& fixedSeconds = *g_directorVideo.path.explicitDuration;
+			ImGui::SetNextItemWidth(PIXLUI::Ref(210.0f));
+			if (ImGui::SliderFloat("Route duration", &fixedSeconds, 1.0f, 240.0f, "%.2f s", ImGuiSliderFlags_AlwaysClamp))
+				RebuildDirectorVideoPath();
+		}
+		if (!g_directorVideo.lastPathError.empty())
+			ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::Warning), "%s", g_directorVideo.lastPathError.c_str());
+
+		if (g_directorVideo.path.IsValid()) {
+			PIXLUI::SectionBanner("PATH PLAYBACK");
+			ImGui::TextWrapped("Click a point tick to move to its saved camera. Drag the rail to scrub; this pauses playback without changing the route.");
+			const bool playing = g_directorVideo.playback == DirectorVideoPlaybackState::Playing;
+			if (PIXLUI::ActionButton(playing ? "PAUSE" : "PLAY", ImVec2(PIXLUI::Ref(96.0f), PIXLUI::Ref(30.0f)), true)) {
+				if (playing)
+					g_directorVideo.playback = DirectorVideoPlaybackState::Paused;
+				else
+					StartDirectorVideoPlayback();
+			}
+			ImGui::SameLine();
+			if (PIXLUI::ActionButton("STOP", ImVec2(PIXLUI::Ref(96.0f), PIXLUI::Ref(30.0f)), false)) {
+				g_directorVideo.playback = DirectorVideoPlaybackState::Stopped;
+				ApplyDirectorVideoTimeline(0.0f);
+			}
+			ImGui::SameLine();
+			if (PIXLUI::ActionButton("RETURN TO CAMERA", ImVec2(PIXLUI::Ref(166.0f), PIXLUI::Ref(30.0f)), false))
+				ApplyDirectorVideoTimeline(g_directorVideo.playbackTime);
+			float scrubTime = g_directorVideo.playbackTime;
+			std::size_t clickedTimelinePoint = g_directorVideo.path.points.size();
+			if (PIXLUI::TimelineScrubber("DirectorVideoTimeline", scrubTime, duration,
+				g_directorVideo.timelineMarkers.data(), g_directorVideo.timelineMarkers.size(),
+				g_directorVideo.selectedPoint, playing, &clickedTimelinePoint)) {
+				g_directorVideo.playback = DirectorVideoPlaybackState::Paused;
+				if (clickedTimelinePoint < g_directorVideo.path.points.size()) {
+					g_directorVideo.selectedPoint = clickedTimelinePoint;
+					MoveDirectorCameraToPoint(clickedTimelinePoint);
+				} else {
+					ApplyDirectorVideoTimeline(scrubTime);
+				}
+			}
+			ImGui::SetNextItemWidth(-1.0f);
+			if (ImGui::SliderFloat("Precise time", &scrubTime, 0.0f, std::max(duration, 0.01f), "%.2f s", ImGuiSliderFlags_AlwaysClamp)) {
+				g_directorVideo.playback = DirectorVideoPlaybackState::Paused;
+				ApplyDirectorVideoTimeline(scrubTime);
+			}
+		}
+
+		PIXLUI::SectionBanner("ROUTE VISUALISER");
+		ImGui::TextWrapped("The plan mirrors the cyan in-world route. Click a dot or list item to move to that point, then hold Shift to reframe and save the camera to it. The route overlay is not recorded.");
+		DrawDirectorPathPreview();
+
+		PIXLUI::SectionBanner("POINTS");
+		if (ImGui::BeginListBox("##DirectorVideoPoints", ImVec2(-1.0f, PIXLUI::Ref(126.0f)))) {
+			for (std::size_t index = 0; index < g_directorVideo.path.points.size(); ++index) {
+				const bool selected = index == g_directorVideo.selectedPoint;
+				const auto label = std::format("POINT {:02}  /  {:.0f} FOV", index + 1, g_directorVideo.path.points[index].fieldOfView);
+				if (ImGui::Selectable(label.c_str(), selected)) {
+					g_directorVideo.selectedPoint = index;
+					MoveDirectorCameraToPoint(index);
+				}
+				if (selected)
+					ImGui::SetItemDefaultFocus();
+			}
+			ImGui::EndListBox();
+		}
+
+		if (!g_directorVideo.path.points.empty()) {
+			auto& point = g_directorVideo.path.points[g_directorVideo.selectedPoint];
+			bool changed = false;
+			PIXLUI::SectionBanner("SELECTED POINT");
+			ImGui::TextDisabled("Point %zu stores a live fly-camera pose. Choose captured framing, an independent target, or spline-facing motion.", g_directorVideo.selectedPoint + 1);
+			changed |= ImGui::SliderFloat("Lens FOV", &point.fieldOfView, 20.0f, 110.0f, "%.0f deg", ImGuiSliderFlags_AlwaysClamp);
+			changed |= ImGui::SliderFloat("Speed at point", &point.speed, 8.0f, 1600.0f, "%.0f units/s", ImGuiSliderFlags_AlwaysClamp);
+			if (auto tooltip = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("The route accelerates smoothly between this speed and the next point's speed. Linear position easing preserves speed through the point; other easing modes deliberately slow the shot.");
+			changed |= ImGui::SliderFloat("Hold", &point.holdDuration, 0.0f, 20.0f, "%.2f s", ImGuiSliderFlags_AlwaysClamp);
+			changed |= ImGui::Checkbox("Track independent look target", &point.useLookAt);
+			if (!point.useLookAt)
+				changed |= ImGui::Checkbox("Follow route direction", &point.followPathDirection);
+			if (point.useLookAt)
+				ImGui::TextDisabled("Target mode keeps the camera trained between this point's stored target and the next one.");
+			else if (point.followPathDirection)
+				ImGui::TextDisabled("Route mode continuously turns pitch and yaw along the spline for a smooth fly-by.");
+			else
+				ImGui::TextDisabled("Captured mode smoothly interpolates the exact camera framing you saved at each point.");
+			changed |= ImGui::SliderFloat("Manual tilt", &point.rollDegrees, -35.0f, 35.0f, "%.1f deg", ImGuiSliderFlags_AlwaysClamp);
+			if (auto tooltip = Util::HoverTooltipWrapper())
+				ImGui::TextUnformatted("Stored with the point for future camera backends. Skyrim's native free camera has pitch and yaw only, so smooth fly-by tilt is provided by Follow route direction.");
+			changed |= DrawDirectorEasing("Position easing", point.positionEasing);
+			changed |= DrawDirectorEasing("Rotation easing", point.rotationEasing);
+			if (changed)
+				RebuildDirectorVideoPath();
+
+			if (PIXLUI::ActionButton("SAVE CAMERA TO POINT", ImVec2(PIXLUI::Ref(194.0f), PIXLUI::Ref(30.0f)), false)) {
+				g_directorVideo.playback = DirectorVideoPlaybackState::Paused;
+				const std::size_t selected = g_directorVideo.selectedPoint;
+				const DirectorCameraPath::Point preserved = point;
+				const std::size_t before = g_directorVideo.path.points.size();
+				CaptureDirectorVideoPointFromCamera();
+				if (g_directorVideo.path.points.size() == before + 1) {
+					auto replacement = g_directorVideo.path.points.back();
+					replacement.id = preserved.id;
+					replacement.speed = preserved.speed;
+					replacement.holdDuration = preserved.holdDuration;
+					replacement.useLookAt = preserved.useLookAt;
+					replacement.followPathDirection = preserved.followPathDirection;
+					replacement.positionEasing = preserved.positionEasing;
+					replacement.rotationEasing = preserved.rotationEasing;
+					replacement.rollDegrees = preserved.rollDegrees;
+					replacement.autoBank = preserved.autoBank;
+					replacement.bankStrength = preserved.bankStrength;
+					g_directorVideo.path.points.pop_back();
+					g_directorVideo.path.points[selected] = replacement;
+					g_directorVideo.selectedPoint = selected;
+					RebuildDirectorVideoPath();
+				}
+			}
+			ImGui::SameLine();
+			if (PIXLUI::ActionButton("GO TO POINT", ImVec2(PIXLUI::Ref(128.0f), PIXLUI::Ref(30.0f)), false))
+				MoveDirectorCameraToPoint(g_directorVideo.selectedPoint);
+			if (PIXLUI::ActionButton("CAPTURE TARGET", ImVec2(PIXLUI::Ref(148.0f), PIXLUI::Ref(30.0f)), false)) {
+				const std::size_t selected = g_directorVideo.selectedPoint;
+				const std::size_t before = g_directorVideo.path.points.size();
+				CaptureDirectorVideoPointFromCamera();
+				if (g_directorVideo.path.points.size() == before + 1) {
+					g_directorVideo.path.points[selected].lookAtPosition = g_directorVideo.path.points.back().lookAtPosition;
+					g_directorVideo.path.points[selected].useLookAt = true;
+					g_directorVideo.path.points.pop_back();
+					g_directorVideo.selectedPoint = selected;
+					RebuildDirectorVideoPath();
+				}
+			}
+			ImGui::SameLine();
+			if (PIXLUI::ActionButton("DELETE", ImVec2(PIXLUI::Ref(92.0f), PIXLUI::Ref(30.0f)), false)) {
+				g_directorVideo.path.points.erase(g_directorVideo.path.points.begin() + static_cast<std::ptrdiff_t>(g_directorVideo.selectedPoint));
+				RebuildDirectorVideoPath();
+			}
+			ImGui::SameLine();
+			if (PIXLUI::ActionButton("DUPLICATE", ImVec2(PIXLUI::Ref(112.0f), PIXLUI::Ref(30.0f)), false)) {
+				auto duplicate = point;
+				duplicate.id = g_directorVideo.nextPointId++;
+				const auto insertAt = g_directorVideo.path.points.begin() + static_cast<std::ptrdiff_t>(g_directorVideo.selectedPoint + 1);
+				g_directorVideo.path.points.insert(insertAt, duplicate);
+				++g_directorVideo.selectedPoint;
+				RebuildDirectorVideoPath();
+			}
+			ImGui::BeginDisabled(g_directorVideo.selectedPoint == 0);
+			if (PIXLUI::ActionButton("MOVE UP", ImVec2(PIXLUI::Ref(98.0f), PIXLUI::Ref(30.0f)), false)) {
+				std::swap(g_directorVideo.path.points[g_directorVideo.selectedPoint], g_directorVideo.path.points[g_directorVideo.selectedPoint - 1]);
+				--g_directorVideo.selectedPoint;
+				RebuildDirectorVideoPath();
+			}
+			ImGui::EndDisabled();
+			ImGui::SameLine();
+			ImGui::BeginDisabled(g_directorVideo.selectedPoint + 1 >= g_directorVideo.path.points.size());
+			if (PIXLUI::ActionButton("MOVE DOWN", ImVec2(PIXLUI::Ref(112.0f), PIXLUI::Ref(30.0f)), false)) {
+				std::swap(g_directorVideo.path.points[g_directorVideo.selectedPoint], g_directorVideo.path.points[g_directorVideo.selectedPoint + 1]);
+				++g_directorVideo.selectedPoint;
+				RebuildDirectorVideoPath();
+			}
+			ImGui::EndDisabled();
+		}
+	}
+}
+
 void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 {
 	const auto featureName =
@@ -6124,6 +7701,12 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 				{ 0, 0 },
 				ImGuiChildFlags_None,
 				ImGuiWindowFlags_None)) {
+			if (g_directorMode == DirectorMode::Video) {
+				DrawDirectorVideoWorkspace();
+				ImGui::EndChild();
+				ImGui::PopStyleColor();
+				return;
+			}
 			{
 				MenuFonts::FontRoleGuard title(
 					Menu::FontRole::Title);
@@ -6143,15 +7726,11 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 				PIXLUI::ToVec4(
 					PIXLUI::Colors::CyanSoft),
 				"UP / DOWN changes lens FOV. LEFT / RIGHT changes camera speed. Hold SHIFT for fast movement.");
-			if (capture) {
-				ImGui::Dummy(ImVec2(0, PIXLUI::Ref(5.0f)));
-				if (PIXLUI::LabeledToggle("Small PIXL watermark on saved photo", &capture->photoWatermarkEnabled)) {
-					if (globals::state)
-						globals::state->Save();
-				}
-				if (auto tooltip = Util::HoverTooltipWrapper())
-					ImGui::TextUnformatted("Adds a small, elegant PIXL mark in the bottom-right of Director captures. Off by default.");
-			}
+			ImGui::Dummy(ImVec2(0, PIXLUI::Ref(6.0f)));
+			if (PIXLUI::ActionButton("VIDEO MODE", ImVec2(PIXLUI::Ref(146.0f), PIXLUI::Ref(30.0f)), false))
+				TuningWorkspaceRenderer::OpenDirectorVideoMode();
+			ImGui::SameLine();
+			ImGui::TextDisabled("Ctrl+Home opens Video Mode directly.");
 
 			ImGui::Dummy(
 				ImVec2(
@@ -6181,6 +7760,20 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 				PIXLUI::StatusPill(
 					"GAMEPLAY",
 					PIXLUI::Colors::TextDim);
+			}
+
+			if (g_directorPhotoMode.active) {
+				ImGui::Dummy(ImVec2(0, PIXLUI::Ref(6.0f)));
+				constexpr const char* guideNames[] = {
+					"None", "Rule of thirds", "Golden sections", "Diagonals", "Centre / horizon"
+				};
+				g_directorPhotoMode.compositionGuide =
+					std::clamp(g_directorPhotoMode.compositionGuide, 0, 4);
+				ImGui::SetNextItemWidth(PIXLUI::Ref(200.0f));
+				ImGui::Combo("Composition guide", &g_directorPhotoMode.compositionGuide,
+					guideNames, IM_ARRAYSIZE(guideNames));
+				if (auto tooltip = Util::HoverTooltipWrapper())
+					ImGui::TextUnformatted("Temporary framing lines visible only while composing. Photo Finish and saved images remain clean.");
 			}
 
 			ImGui::Dummy(
@@ -6790,7 +8383,9 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::RenderFeatureHeader(RenderModule*
 	const auto stage = feat->GetReleaseStage();
 	const std::string stageTag = RenderModule::GetReleaseStageTag(stage);  // empty for Release; color unused when tag is empty
 	const bool tunerHeader = globals::menu->GetSettings().AdvancedMode;
-	const float actionRailWidth = tunerHeader ? totalButtonWidth + ImGui::GetStyle().ItemSpacing.x * 1.5f : 0.0f;
+	// Advanced pages place boot state with the shared workflow below the title.
+	// Reserving a left action rail here made the boot toggle overlap FAVORITE.
+	const float actionRailWidth = 0.0f;
 	if (tunerHeader)
 		ImGui::SetCursorScreenPos(ImVec2(titleStartPos.x + actionRailWidth, titleStartPos.y));
 	float titleOnlyHeight = DrawFeatureHeader(std::string(PIXLRendererPage::GetPublicName(featureName, feat->GetDisplayName())), isLoaded ? feat->version : "", description, stageTag, StageTagColor(stage));
@@ -6806,74 +8401,125 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::RenderFeatureHeader(RenderModule*
 	if (tunerHeader)
 		buttonY = cursorPosAfterHeader.y;
 
-	const float buttonX = tunerHeader ? titleStartPos.x : titleStartPos.x + availableWidth - totalButtonWidth;
-	ImGui::SetCursorScreenPos(ImVec2(buttonX, buttonY));
-
 	// Enable/Disable at boot toggle
 	bool bootEnabled = !isDisabled;
-
-	// Apply disabled styling if feature has failed to load
-	if (!feat->failedLoadedMessage.empty()) {
-		ImGui::PushStyleColor(ImGuiCol_Text, themeSettings.StatusPalette.Error);
-	}
-
-	if (PIXLUI::Toggle("##BootToggle", &bootEnabled)) {
-		bool newState = feat->ToggleAtBootSetting();
-		logger::info("{}: {} at boot.", featureName, newState ? "Enabled" : "Disabled");
-	}
-
-	if (!feat->failedLoadedMessage.empty()) {
-		ImGui::PopStyleColor();
-	}
-
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text(
-			T("menu.features.boot_toggle_tooltip",
-				"Toggle feature loading at boot.\n"
-				"Current state: %s\n"
-				"Restart required for changes to take effect.\n"
-				"Disabling removes performance impact."),
-			bootEnabled ? T("menu.features.enabled", "Enabled") : T("menu.features.disabled", "Disabled"));
-	}
-
-	// Apply Override button (when feature has available overrides)
-	if (!isDisabled && isLoaded && hasOverrides) {
+	const auto drawBootToggle = [&]() {
+		if (!feat->failedLoadedMessage.empty())
+			ImGui::PushStyleColor(ImGuiCol_Text, themeSettings.StatusPalette.Error);
+		if (PIXLUI::Toggle("##BootToggle", &bootEnabled)) {
+			const bool newState = feat->ToggleAtBootSetting();
+			logger::info("{}: {} at boot.", featureName, newState ? "Enabled" : "Disabled");
+		}
+		if (!feat->failedLoadedMessage.empty())
+			ImGui::PopStyleColor();
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::Text(
+				T("menu.features.boot_toggle_tooltip",
+					"Toggle feature loading at boot.\n"
+					"Current state: %s\n"
+					"Restart required for changes to take effect.\n"
+					"Disabling removes performance impact."),
+				bootEnabled ? T("menu.features.enabled", "Enabled") : T("menu.features.disabled", "Disabled"));
+		}
+	};
+	const auto drawOverrideAction = [&]() {
+		if (isDisabled || !isLoaded || !hasOverrides)
+			return;
 		ImGui::SameLine();
 		if (sceneControlled)
 			ImGui::BeginDisabled();
 		if (PIXLUI::ActionButton(overrideButtonText, { overrideButtonWidth, 0 }, false)) {
-			if (feat->ReapplyOverrideSettings()) {
+			if (feat->ReapplyOverrideSettings())
 				logger::info("Successfully reapplied override settings for {}", featureName);
-			} else {
+			else
 				logger::warn("Failed to reapply override settings for {}", featureName);
-			}
 		}
 		if (sceneControlled)
 			ImGui::EndDisabled();
-
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			if (sceneControlled) {
-				ImGui::Text(
-					"%s",
-					T("menu.features.cannot_apply_overrides_scene",
-						"Cannot apply overrides while scene-specific settings are active.\n"
-						"Pause scene settings for this feature first."));
+				ImGui::Text("%s", T("menu.features.cannot_apply_overrides_scene",
+					"Cannot apply overrides while scene-specific settings are active.\n"
+					"Pause scene settings for this feature first."));
 			} else {
-				ImGui::Text(
-					"%s",
-					T("menu.features.restore_override_tooltip",
-						"Restores original override settings from mod files.\n"
-						"This will discard your customizations and revert to\n"
-						"the mod author's recommended settings."));
+				ImGui::Text("%s", T("menu.features.restore_override_tooltip",
+					"Restores original override settings from mod files.\n"
+					"This will discard your customizations and revert to\n"
+					"the mod author's recommended settings."));
 			}
 		}
+	};
+
+	if (!tunerHeader) {
+		const float buttonX = titleStartPos.x + availableWidth - totalButtonWidth;
+		ImGui::SetCursorScreenPos(ImVec2(buttonX, buttonY));
+		drawBootToggle();
+		drawOverrideAction();
+	}
+
+	// Shared module workflow. This stays in the host rather than being copied
+	// into each feature's DrawSettings implementation, so legacy and PIXL-native
+	// modules receive identical active/modified/dependency treatment.
+	if (tunerHeader) {
+		ImGui::SetCursorScreenPos(ImVec2(titleStartPos.x, cursorPosAfterHeader.y + ImGui::GetStyle().ItemSpacing.y));
+		bool hasStatusChip = false;
+		if (isDisabled || !isLoaded || sceneControlled) {
+			PIXLUI::StateChip(
+				isDisabled ? "DISABLED" : !isLoaded ? "RESTART REQUIRED" : "SCENE CONTROLLED",
+				isDisabled ? PIXLUI::Colors::TextDim : PIXLUI::Colors::Warning);
+			hasStatusChip = true;
+		}
+		if (isLoaded && IsFeatureModified(feat)) {
+			if (hasStatusChip)
+				ImGui::SameLine();
+			PIXLUI::StateChip("MODIFIED", PIXLUI::Colors::Warning);
+			hasStatusChip = true;
+		}
+		if (hasStatusChip)
+			ImGui::SameLine();
+		if (PIXLUI::SectionAction(IsFavoriteFeature(featureName) ? "UNFAVORITE" : "FAVORITE",
+			"Keep this module in the tuner Favorites view."))
+			ToggleFavoriteFeature(featureName);
+		ImGui::SameLine();
+		ImGui::BeginDisabled(g_tunerHistoryCursor == 0 || sceneControlled);
+		if (PIXLUI::SectionAction("UNDO", "Undo the last PIXL tuner setting edit."))
+			UndoTunerFeatureEdit();
+		ImGui::EndDisabled();
+		ImGui::SameLine();
+		ImGui::BeginDisabled(g_tunerHistoryCursor >= g_tunerEditHistory.size() || sceneControlled);
+		if (PIXLUI::SectionAction("REDO", "Redo the last PIXL tuner setting edit."))
+			RedoTunerFeatureEdit();
+		ImGui::EndDisabled();
+		ImGui::SameLine();
+		ImGui::BeginDisabled(!isLoaded || sceneControlled);
+		const bool thisFeatureShowingBaseline =
+			g_tunerABState.showingBaseline && g_tunerABState.feature == featureName;
+		if (PIXLUI::SectionAction(thisFeatureShowingBaseline ? "RETURN TO EDIT" : "A / B",
+			"Temporarily swaps this module to the settings present when you first opened it. Click again to restore your current edit.")) {
+			if (thisFeatureShowingBaseline) {
+				ApplyFeatureSettingsSnapshot(feat, g_tunerABState.edited, "A/B restore");
+				g_tunerABState = {};
+			} else {
+				if (g_tunerABState.showingBaseline)
+					ApplyFeatureSettingsSnapshot(FindFeatureByShortName(g_tunerABState.feature), g_tunerABState.edited, "A/B handoff");
+				EnsureFeatureBaseline(feat);
+				g_tunerABState.feature = featureName;
+				g_tunerABState.edited = SnapshotFeatureSettings(feat);
+				g_tunerABState.showingBaseline = true;
+				ApplyFeatureSettingsSnapshot(feat, g_tunerFeatureBaselines[featureName], "A/B baseline");
+			}
+		}
+		ImGui::EndDisabled();
+		ImGui::SameLine();
+		drawBootToggle();
+		drawOverrideAction();
+		ImGui::Separator();
+		ImGui::Spacing();
 	}
 
 	// Restore cursor position after the title and separator
 	if (tunerHeader) {
-		ImGui::SetCursorScreenPos(ImVec2(titleStartPos.x, buttonY + buttonHeight + ImGui::GetStyle().ItemSpacing.y));
-		ImGui::Separator();
-		ImGui::Spacing();
+		// The shared workflow above owns the header's lower divider.
 	} else {
 		ImGui::SetCursorScreenPos(cursorPosAfterHeader);
 	}
@@ -6946,15 +8592,24 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::RenderFeatureSettings(RenderModul
 			// Disable feature settings while scene overrides are actively applied (not paused)
 			if (sceneControlled)
 				ImGui::BeginDisabled();
+			const bool showingABBaseline =
+				g_tunerABState.showingBaseline &&
+				g_tunerABState.feature == feat->GetShortName();
+			if (showingABBaseline)
+				ImGui::BeginDisabled();
 
 			ImVec2 cursorPosBefore =
 				ImGui::GetCursorPos();
+			EnsureFeatureBaseline(feat);
+			const json settingsBefore = SnapshotFeatureSettings(feat);
 
 			{
 				PIXLUI::EngineeringStyleScope
 					engineerStyle;
 				feat->DrawSettings();
 			}
+			const json settingsAfter = SnapshotFeatureSettings(feat);
+			RecordFeatureEdit(feat, settingsBefore, settingsAfter);
 
 			if (globals::menu
 					->GetSettings()
@@ -6977,6 +8632,8 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::RenderFeatureSettings(RenderModul
 			ImVec2 cursorPosAfter =
 				ImGui::GetCursorPos();
 
+			if (showingABBaseline)
+				ImGui::EndDisabled();
 			if (sceneControlled)
 				ImGui::EndDisabled();
 

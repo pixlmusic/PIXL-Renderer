@@ -66,6 +66,23 @@ simple colour effects, then test depth effects, DLSS/FSR, HDR and frame generati
 individually. Record ReShade version, proxy arrangement and GPU. No ReShade/ENB
 compatibility result is claimed by this source review.
 
+### Experimental ENB preset translator
+
+The same external-post workspace can read a disabled ENB preset as a source for a
+bounded PIXL Camera Suite translation. Refresh performs an on-demand, bounded
+scan under the active Skyrim install, ignores links and large/volatile game roots,
+and only accepts ordinary `enbseries.ini` files. Selecting a result changes
+nothing. Applying it records a PIXL-only camera restore point and maps recognised
+colour, exposure, adaptation, tone and bloom controls through the normal Camera
+Suite setter. It does not write an ENB file, load an ENB DLL or compile an
+imported effect shader.
+
+ENB Helper annotations such as `UIName`, `UIGroup`, `UIBinding` and `Separation`
+describe controls for ENB's own effect runtime. PIXL may report annotated source
+and weather-separated parameters as preset metadata, but keeps PIXL's weather
+model authoritative and imports only stable supported base/day values. Use
+**Restore before import** to return to the snapshot made before the first import.
+
 ## Neural Rendering startup choice
 
 Quick Setup includes Enable Neural Rendering (experimental). Enabling it selects

@@ -432,6 +432,14 @@ void State::Load(ConfigMode a_configMode, bool a_allowReload)
 				logger::warn("Invalid entry for feature '{}' in 'Disable at Boot', expected boolean.", featureName);
 			}
 		}
+		// Grass collision is now the legacy interaction half of Ground Response,
+		// not a separately loadable PIXL module. Remove only this retired key so
+		// old profiles remain valid without carrying a misleading no-op setting.
+		constexpr std::string_view retiredGrassCollisionKey = "GrassCollision";
+		if (disabledFeatures.erase(std::string(retiredGrassCollisionKey)) != 0) {
+			disabledFeaturesJson.erase(std::string(retiredGrassCollisionKey));
+			logger::info("Migrated retired 'Disable at Boot.{}' setting; use GroundResponse instead", retiredGrassCollisionKey);
+		}
 		// Correctness services are owned by PIXL as a closed renderer. Legacy
 		// per-feature flags are migrated back on so users cannot accidentally
 		// dismantle foundational geometry, falloff, horizon, or terrain hooks.

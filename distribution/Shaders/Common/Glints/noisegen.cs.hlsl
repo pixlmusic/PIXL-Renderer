@@ -2,6 +2,7 @@ RWTexture2D<float4> tex_noise : register(u0);
 
 static const float GAUSSIAN_AVG = 0.0;
 static const float GAUSSIAN_STD = 1.0;
+static const float OPEN_UNIT_INTERVAL = 1.0e-6;
 
 uint CoordToFlatId(uint2 coord, uint width)
 {
@@ -58,6 +59,7 @@ float Erf(float x)
 
 float ErfInv(float x)
 {
+	x = clamp(x, -1.0 + OPEN_UNIT_INTERVAL, 1.0 - OPEN_UNIT_INTERVAL);
 	float w, p;
 	w = -log((1.0f - x) * (1.0f + x));
 	if (w < 5.000000f) {
@@ -94,6 +96,7 @@ float CDF(float x, float mu, float sigma)
 
 float InvCDF(float U, float mu, float sigma)
 {
+	U = clamp(U, OPEN_UNIT_INTERVAL, 1.0 - OPEN_UNIT_INTERVAL);
 	float x = sigma * sqrt(2.0) * ErfInv(2.0 * U - 1.0) + mu;
 	return x;
 }
@@ -101,25 +104,30 @@ float InvCDF(float U, float mu, float sigma)
 [numthreads(32, 32, 1)] void main(const uint2 tid : SV_DispatchThreadID) {
 	uint2 size;
 	tex_noise.GetDimensions(size.x, size.y);
-	int offset = size.x * size.y * 0x69420;
+	if (any(tid >= size)) {
+		return;
+	}
+	// This is an intentional wrapping hash salt.  Use unsigned arithmetic so
+	// the generated noise does not depend on signed-integer overflow.
+	uint offset = size.x * size.y * 0x69420u;
 
 	// Generate random numbers for this cell and the next ones in X and Y
-	int2 pixelCoord00 = tid.xy;
+	uint2 pixelCoord00 = tid.xy;
 	uint rngState00 = WangHash(CoordToFlatId(pixelCoord00 * 123, size.x) + offset);
 	float u00 = RandXorshiftFloat(rngState00);
 	float g00 = InvCDF(RandXorshiftFloat(rngState00), GAUSSIAN_AVG, GAUSSIAN_STD);
 
-	int2 pixelCoord01 = (pixelCoord00 + int2(0, 1)) % size;
+	uint2 pixelCoord01 = (pixelCoord00 + uint2(0, 1)) % size;
 	uint rngState01 = WangHash(CoordToFlatId(pixelCoord01 * 123, size.x) + offset);
 	float u01 = RandXorshiftFloat(rngState01);
 	float g01 = InvCDF(RandXorshiftFloat(rngState01), GAUSSIAN_AVG, GAUSSIAN_STD);
 
-	int2 pixelCoord10 = (pixelCoord00 + int2(1, 0)) % size;
+	uint2 pixelCoord10 = (pixelCoord00 + uint2(1, 0)) % size;
 	uint rngState10 = WangHash(CoordToFlatId(pixelCoord10 * 123, size.x) + offset);
 	float u10 = RandXorshiftFloat(rngState10);
 	float g10 = InvCDF(RandXorshiftFloat(rngState10), GAUSSIAN_AVG, GAUSSIAN_STD);
 
-	int2 pixelCoord11 = (pixelCoord00 + int2(1, 1)) % size;
+	uint2 pixelCoord11 = (pixelCoord00 + uint2(1, 1)) % size;
 	uint rngState11 = WangHash(CoordToFlatId(pixelCoord11 * 123, size.x) + offset);
 	float u11 = RandXorshiftFloat(rngState11);
 	float g11 = InvCDF(RandXorshiftFloat(rngState11), GAUSSIAN_AVG, GAUSSIAN_STD);

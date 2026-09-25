@@ -28,36 +28,52 @@ void main(uint2 dtid : SV_DispatchThreadID, uint2 gtid : SV_GroupThreadID)
 		// Quality controls real metering workload (8/6/5/4 source-pixel stride).
 		// Stable cell centres avoid metering a different set of emissive/window
 		// pixels every frame while the camera and scene are stationary.
-		uint stride = PixlCameraHistogramStride();
+		uint stride = max(PixlCameraHistogramStride(), 1u);
 		uint2 pixel = dtid * stride + stride / 2u;
         if (pixel.x < width && pixel.y < height) {
-            float3 scene = max(SceneTex.Load(int3(pixel, 0)).rgb, 0.0f);
-            float3 linearScene = isSceneLinear > 0.5f ? scene : Color::GammaToLinearSafe(scene);
-            // Match HDROutputCS metering when a legacy replacement tonemap replaced the original
-            // ISHDR mapper: expose the same reconstructed HDR signal that the
-            // camera sees.
-            if (applyAutoHDR > 0.5f && isSceneLinear <= 0.5f)
-                linearScene = DisplayMapping::PumboAutoHDR(linearScene, SharedData::HDRData.z, SharedData::HDRData.y, 2.25f, 1.0f);
+            float3 scene = SceneTex.Load(int3(pixel, 0)).rgb;
+            if (all(PixlCameraFinite(scene))) {
+                scene = max(scene, 0.0f);
+                float3 linearScene = isSceneLinear > 0.5f ? scene : Color::GammaToLinearSafe(scene);
+                // Match HDROutputCS metering when a legacy replacement tonemap replaced the original
+                // ISHDR mapper: expose the same reconstructed HDR signal that the
+                // camera sees.
+                if (applyAutoHDR > 0.5f && isSceneLinear <= 0.5f)
+                    linearScene = DisplayMapping::PumboAutoHDR(linearScene, SharedData::HDRData.z, SharedData::HDRData.y, 2.25f, 1.0f);
 
-            float lum = max(PixlLuminance(linearScene), exp2(PIXL_HISTOGRAM_LOG_MIN));
-            float logLum = clamp(log2(lum), PIXL_HISTOGRAM_LOG_MIN, PIXL_HISTOGRAM_LOG_MAX);
-            uint bin = min(255u, (uint)((logLum - PIXL_HISTOGRAM_LOG_MIN) * (255.0f / PIXL_HISTOGRAM_LOG_RANGE) + 0.5f));
-            float2 screenUV = (float2(pixel) + 0.5f) / float2(width, height);
-            float2 edgeDistance = abs(screenUV * 2.0f - 1.0f);
-            float centerWeight = saturate(1.0f - max(edgeDistance.x, edgeDistance.y));
-            uint meterWeight = 1u + (uint)(3.0f * centerWeight * centerWeight + 0.5f);
-            if (all(isfinite(linearScene)))
-                InterlockedAdd(LocalHistogram[bin], meterWeight);
+                // Reject non-finite HDR reconstruction before luminance/log/bin conversion.
+                // This prevents NaN/Inf from ever becoming an undefined histogram index.
+                if (all(PixlCameraFinite(linearScene))) {
+                    float measuredLum = PixlLuminance(max(linearScene, 0.0f));
+                    // Black borders and fully occluded pixels contain no useful
+                    // illumination measurement. Binning them at the histogram
+                    // floor would make a mostly black frame brighten itself.
+                    if (PixlCameraFinite(measuredLum) && measuredLum > 1e-5f) {
+                        float lum = max(measuredLum, exp2(PIXL_HISTOGRAM_LOG_MIN));
+                        float logLum = clamp(log2(lum), PIXL_HISTOGRAM_LOG_MIN, PIXL_HISTOGRAM_LOG_MAX);
+                        float histogramRange = max(PIXL_HISTOGRAM_LOG_RANGE, 1e-5f);
+                        uint bin = min(255u, (uint)((logLum - PIXL_HISTOGRAM_LOG_MIN) * (255.0f / histogramRange) + 0.5f));
+                        float2 screenUV = (float2(pixel) + 0.5f) / float2(width, height);
+                        float2 edgeDistance = abs(screenUV * 2.0f - 1.0f);
+                        float centerWeight = saturate(1.0f - max(edgeDistance.x, edgeDistance.y));
+                        uint meterWeight = 1u + (uint)(3.0f * centerWeight * centerWeight + 0.5f);
+                        InterlockedAdd(LocalHistogram[bin], meterWeight);
+                    }
+                }
+            }
         }
     }
 
     GroupMemoryBarrierWithGroupSync();
 
+    uint histogramWidth, histogramHeight;
+    Histogram.GetDimensions(histogramWidth, histogramHeight);
+
     [unroll]
     for (uint flushIndex = 0u; flushIndex < 4u; ++flushIndex) {
         uint bin = lane + flushIndex * 64u;
         uint count = LocalHistogram[bin];
-        if (count != 0u)
+        if (count != 0u && bin < histogramWidth && histogramHeight > 0u)
             InterlockedAdd(Histogram[uint2(bin, 0)], count);
     }
 }

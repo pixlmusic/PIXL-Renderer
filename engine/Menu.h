@@ -465,6 +465,9 @@ public:
 		// No default preserves the previous behavior; users can opt into a toggle.
 		std::vector<InputCombo> FrameGenerationKey{};
 		std::vector<InputCombo> PhotoModeKey = { InputCombo::Keyboard(VK_HOME) };
+		// Kept distinct from HOME so Photo and Video can be entered directly without
+		// changing an established Photo Mode binding.
+		std::vector<InputCombo> VideoModeKey = { InputCombo::Keyboard(VK_CONTROL), InputCombo::Keyboard(VK_HOME) };
 		std::vector<InputCombo> PhotoZoomInKey = { InputCombo::Keyboard(VK_UP) };
 		std::vector<InputCombo> PhotoZoomOutKey = { InputCombo::Keyboard(VK_DOWN) };
 		std::vector<InputCombo> PhotoSpeedDownKey = { InputCombo::Keyboard(VK_LEFT) };
@@ -504,6 +507,11 @@ public:
 		int TerrainVegetationQuality = 2;
 		int CharactersQuality = 2;
 		int CameraQuality = 2;
+		// Presentation-only tuner workspace preferences. These never alter a
+		// module's JSON schema, profile semantics, or renderer state.
+		std::vector<std::string> TunerFavoriteFeatures{};
+		std::vector<std::string> TunerRecentFeatures{};
+		bool TunerFocusScrim = true;
 		ThemeSettings Theme;
 		std::string SelectedThemePreset = "";  // Currently selected theme preset (empty = custom/user theme)
 	};

@@ -666,6 +666,16 @@ struct BSInputDeviceManager_PollInputDevices
 			menu->ProcessInputEvents(a_events);
 
 			if (menu->ShouldLockGameInputForDirector()) {
+				// Playback owns the free-camera transform. Never feed native mouse
+				// motion into the same camera pass, including while the editor is hidden.
+				const bool videoPlayback = TuningWorkspaceRenderer::IsDirectorVideoPlaybackActive();
+				const bool videoMoveHeld = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+				if (videoPlayback ||
+					(TuningWorkspaceRenderer::IsDirectorVideoModeActive() && !videoMoveHeld)) {
+					constexpr RE::InputEvent* const dummy[]{ nullptr };
+					func(a_dispatcher, dummy);
+					return;
+				}
 				// Native free-camera input is forwarded only during the active
 				// Shift-held movement transaction.  In InspectLocked the camera is
 				// intentionally immutable and all input belongs to PIXL/ImGui.

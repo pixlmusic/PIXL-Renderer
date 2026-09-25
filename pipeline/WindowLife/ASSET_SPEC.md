@@ -1,10 +1,14 @@
 # WindowLife authored interior assets
 
+Current V2 geometry and capture guidance is in `WINDOWLIFE_V2_AUTHORING.md`.
+This file retains the original art brief; the current runtime contract below
+uses the bundled 2048-square atlases, not a 4096-square upload.
+
 WindowLife keeps glass/pane detection tied to authored window masks. It first uses an optional loose `Data/Textures/masks/<diffuse-stem>_mask.dds` atlas when one is already installed, then uses the material's bound glow texture, and only uses PIXL's conservative procedural pane fallback when neither source exists. The optional assets described here supply only what appears behind that glass: a recessed room, a nearer curtain plane, and softly coloured occupants. They must not contain window frames or mullions.
 
 ## Delivery format
 
-Author room variations as separate lossless `1024 x 1024` PNG or TGA files. Ten rooms are enough for the first set. PIXL will pack them into a `4 x 4`, `4096 x 4096` runtime atlas, leaving six cells for later variations.
+Author room variations as separate lossless source images. The current runtime packs sixteen `512 x 512` cells into a `4 x 4`, `2048 x 2048` atlas. Higher-resolution source art can be retained for future derivatives.
 
 - sRGB colour, 8 bits per channel;
 - square, straight-on camera with no perspective-skewed window frame;
@@ -69,9 +73,9 @@ The same room-floor anchor applies to manual and automatic room sizing.
 Active v0.6 layer order from glass inward:
 
 1. old-glass reflection, grime, and refraction on the pane;
-2. curtain atlas at roughly `0.20` of configured room depth;
-3. occupant atlas at a seeded `0.68-1.62` depth;
-4. room atlas at roughly `1.10-1.35` depth;
+2. curtain atlas at `0.04` of configured room depth;
+3. occupant atlas at a seeded `0.45-0.85` of configured depth;
+4. authored room atlas at the configured depth, with an optional bounded box at close range;
 5. recessed-room edge/reveal fallback.
 
 Authored room colour replaces most of the flat source emission only where a trusted glass mask and recessed room are active. Missing or failed assets leave the procedural WindowLife result intact.

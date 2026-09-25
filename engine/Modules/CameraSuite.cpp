@@ -17,6 +17,7 @@
 #include "Renderer/ExternalPostProcessing.h"
 #include "Util.h"
 #include <algorithm>
+#include <cmath>
 #include <dxgi1_4.h>
 #include <dxgi1_6.h>
 #include <imgui.h>
@@ -885,13 +886,14 @@ void CameraSuite::DrawSettings()
 void CameraSuite::ApplyExternalLook(float exposureEV, float contrast, float saturation, float adaptationSeconds, float highlightProtection, float shadowDetail, float toe, float shoulder, bool bloomEnabled, float bloomStrength, uint lookPreset, float lookOpacity, float influence)
 {
 	std::lock_guard<std::mutex> lock(settingsMutex);
+	const auto finiteOr = [](float value, float fallback) { return std::isfinite(value) ? value : fallback; };
 	settings.enablePhysicalCamera = true;
 	settings.cameraAutoExposure = true;
-	settings.cameraExposureCompensationEV = std::clamp(exposureEV, -4.0f, 4.0f);
+	settings.cameraExposureCompensationEV = std::clamp(finiteOr(exposureEV, 0.0f), -4.0f, 4.0f);
 	settings.cameraContrast = std::clamp(contrast, 0.75f, 1.30f);
 	settings.cameraSaturation = std::clamp(saturation, 0.70f, 1.25f);
-	settings.cameraAdaptBrightToDark = std::clamp(adaptationSeconds, 0.05f, 4.0f);
-	settings.cameraHighlightProtection = std::clamp(highlightProtection, 0.0f, 1.0f);
+	settings.cameraAdaptBrightToDark = std::clamp(finiteOr(adaptationSeconds, 1.20f), 0.05f, 4.0f);
+	settings.cameraHighlightProtection = std::clamp(finiteOr(highlightProtection, 0.65f), 0.0f, 1.0f);
 	settings.cameraShadowDetail = std::clamp(shadowDetail, 0.0f, 0.5f);
 	settings.cameraToe = std::clamp(toe, 0.0f, 0.5f);
 	settings.cameraShoulder = std::clamp(shoulder, 0.2f, 1.5f);
@@ -923,6 +925,9 @@ void CameraSuite::LoadSettings(json& o_json)
 	std::lock_guard<std::mutex> lock(settingsMutex);
 
 	bool oldEnableHDR = settings.enableHDR;
+	const auto clampFinite = [](float value, float fallback, float minimum, float maximum) {
+		return std::clamp(std::isfinite(value) ? value : fallback, minimum, maximum);
+	};
 
 	settings = o_json;
 	// PIXL's experimental realtime DOF is retired for release. Preserve its old
@@ -943,19 +948,19 @@ void CameraSuite::LoadSettings(json& o_json)
 		cameraQuality = static_cast<std::uint32_t>(std::clamp(globals::menu->GetSettings().CameraQuality, 0, 3));
 
 	// Sanitize PIXL Physical Camera settings loaded from older or hand-edited JSON.
-	settings.cameraExposureCompensationEV = std::clamp(settings.cameraExposureCompensationEV, -4.0f, 4.0f);
-	settings.cameraMinExposureEV = std::clamp(settings.cameraMinExposureEV, -10.0f, 0.0f);
-	settings.cameraMaxExposureEV = std::clamp(settings.cameraMaxExposureEV, 0.0f, 10.0f);
-	settings.cameraLowPercentile = std::clamp(settings.cameraLowPercentile, 0.0f, 0.20f);
-	settings.cameraHighPercentile = std::clamp(settings.cameraHighPercentile, 0.80f, 1.0f);
+	settings.cameraExposureCompensationEV = clampFinite(settings.cameraExposureCompensationEV, 0.0f, -4.0f, 4.0f);
+	settings.cameraMinExposureEV = clampFinite(settings.cameraMinExposureEV, -6.0f, -10.0f, 0.0f);
+	settings.cameraMaxExposureEV = clampFinite(settings.cameraMaxExposureEV, 6.0f, 0.0f, 10.0f);
+	settings.cameraLowPercentile = clampFinite(settings.cameraLowPercentile, 0.02f, 0.0f, 0.20f);
+	settings.cameraHighPercentile = clampFinite(settings.cameraHighPercentile, 0.98f, 0.80f, 1.0f);
 	if (settings.cameraHighPercentile <= settings.cameraLowPercentile + 0.05f)
 		settings.cameraHighPercentile = std::min(1.0f, settings.cameraLowPercentile + 0.05f);
-	settings.cameraHighlightProtection = std::clamp(settings.cameraHighlightProtection, 0.0f, 1.0f);
+	settings.cameraHighlightProtection = clampFinite(settings.cameraHighlightProtection, 0.65f, 0.0f, 1.0f);
 	settings.cameraShadowDetail = std::clamp(settings.cameraShadowDetail, 0.0f, 0.5f);
 	settings.cameraContrast = std::clamp(settings.cameraContrast, 0.75f, 1.30f);
-	settings.cameraLocalExposure = std::clamp(settings.cameraLocalExposure, 0.0f, 0.5f);
-	settings.cameraAdaptBrightToDark = std::clamp(settings.cameraAdaptBrightToDark, 0.05f, 4.0f);
-	settings.cameraAdaptDarkToBright = std::clamp(settings.cameraAdaptDarkToBright, 0.03f, 2.0f);
+	settings.cameraLocalExposure = clampFinite(settings.cameraLocalExposure, 0.12f, 0.0f, 0.5f);
+	settings.cameraAdaptBrightToDark = clampFinite(settings.cameraAdaptBrightToDark, 1.20f, 0.05f, 4.0f);
+	settings.cameraAdaptDarkToBright = clampFinite(settings.cameraAdaptDarkToBright, 0.25f, 0.03f, 2.0f);
 	settings.cameraSaturation = std::clamp(settings.cameraSaturation, 0.70f, 1.25f);
 	settings.cameraToe = std::clamp(settings.cameraToe, 0.0f, 0.5f);
 	settings.cameraShoulder = std::clamp(settings.cameraShoulder, 0.2f, 1.5f);
@@ -2474,7 +2479,8 @@ ID3D11ComputeShader* CameraSuite::GetStormglassFieldCS()
 
 void CameraSuite::UpdatePhysicalCameraExposure(ID3D11ShaderResourceView* sceneSRV)
 {
-	if (!settings.enablePhysicalCamera || !sceneSRV || !cameraExposureTexture || !cameraExposureTexture->uav || !hdrDataCB || !exposureControlCB)
+	if (!settings.enablePhysicalCamera || !sceneSRV || !cameraExposureTexture || !cameraExposureTexture->uav ||
+		!hdrDataCB || !exposureControlCB || !globals::state || !globals::d3d::context)
 		return;
 
 	// Menu imagery must not become the gameplay meter's history.
@@ -2488,7 +2494,12 @@ void CameraSuite::UpdatePhysicalCameraExposure(ID3D11ShaderResourceView* sceneSR
 			holdingAutoExposure ? "HELD: histogram and adaptation dispatch skipped unless compensation changes" : "released: gameplay metering resumed",
 			settings.cameraExposureCompensationEV, settings.cameraLocalExposure, settings.enableHDR);
 	}
-	const float compensationEV = std::clamp(settings.cameraExposureCompensationEV, -4.0f, 4.0f);
+	const float compensationEV = std::isfinite(settings.cameraExposureCompensationEV) ?
+		std::clamp(settings.cameraExposureCompensationEV, -4.0f, 4.0f) : 0.0f;
+	if (!std::isfinite(lastExposureCompensationEV)) {
+		lastExposureCompensationEV = compensationEV;
+		exposureHistoryValid = false;
+	}
 	if (freezeMetering && settings.cameraAutoExposure && compensationEV == lastExposureCompensationEV)
 		return;
 	exposureControlCB->Update(ExposureControlCB{

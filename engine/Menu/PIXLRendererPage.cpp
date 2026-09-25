@@ -36,6 +36,13 @@
 
 namespace
 {
+	void WrappedTintedText(ImU32 color, const char* text)
+	{
+		ImGui::PushStyleColor(ImGuiCol_Text, PIXLUI::ToVec4(color));
+		ImGui::TextWrapped("%s", text);
+		ImGui::PopStyleColor();
+	}
+
 	constexpr std::array<const char*, 4> kProfileNames{
 		"FAST",
 		"BALANCED",
@@ -327,7 +334,7 @@ namespace
 			"##PIXLQualityPreview",
 			ImVec2(
 				0,
-				PIXLUI::Ref(400.0f)),
+				PIXLUI::Ref(365.0f)),
 			PIXLUI::ChromeStyle::Raised,
 			true,
 			ImGuiWindowFlags_NoScrollbar |
@@ -337,14 +344,14 @@ namespace
 		if (!panel)
 			return;
 
-		// Fixed inner title band. The previous text started directly against
-		// the chrome; this gives the preview a deliberate centred baseline.
+		// Keep the profile summary in one compact band so the image can use
+		// the same vertical space as the quality controls beside it.
 		const ImVec2 headerStart =
 			ImGui::GetCursorScreenPos();
 		const float headerWidth =
 			ImGui::GetContentRegionAvail().x;
 		const float headerHeight =
-			PIXLUI::Ref(28.0f);
+			PIXLUI::Ref(26.0f);
 		const float headerPadX =
 			PIXLUI::Ref(6.0f);
 
@@ -399,38 +406,37 @@ namespace
 			PIXLUI::Colors::CyanSoft,
 			context);
 
-		draw->AddLine(
-			ImVec2(
-				headerStart.x +
-					headerPadX,
-				headerStart.y +
-					headerHeight),
-			ImVec2(
-				headerStart.x +
-					headerWidth -
-					headerPadX,
-				headerStart.y +
-					headerHeight),
-			PIXLUI::Colors::BorderSoft,
-			PIXLUI::Ref(1.0f));
-
-		ImGui::SetCursorScreenPos(
-			headerStart);
-		ImGui::Dummy(
-			ImVec2(
-				headerWidth,
-				headerHeight));
-
-		ImGui::Dummy(
-			ImVec2(
-				0,
-				PIXLUI::Ref(5.0f)));
-
-		ImGui::TextColored(
-			PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
-			"%s",
-			preview.description);
-		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(4.0f)));
+		const float summaryX = headerStart.x + headerPadX +
+			headingSize.x + PIXLUI::Ref(7.0f) + contextSize.x + PIXLUI::Ref(14.0f);
+		const float summaryWidth = headerStart.x + headerWidth - headerPadX - summaryX;
+		if (summaryWidth > PIXLUI::Ref(56.0f)) {
+			const char* summary = preview.description;
+			const size_t length = std::char_traits<char>::length(summary);
+			const float ellipsisWidth = ImGui::CalcTextSize("...").x;
+			size_t visible = length;
+			if (ImGui::CalcTextSize(summary).x > summaryWidth) {
+				size_t low = 0;
+				size_t high = length;
+				while (low < high) {
+					const size_t middle = (low + high + 1) / 2;
+					if (ImGui::CalcTextSize(summary, summary + middle).x + ellipsisWidth <= summaryWidth)
+						low = middle;
+					else
+						high = middle - 1;
+				}
+				visible = low;
+			}
+			draw->AddText(ImVec2(summaryX, textY), PIXLUI::Colors::TextMuted,
+				summary, summary + visible);
+			if (visible < length)
+				draw->AddText(ImVec2(summaryX + ImGui::CalcTextSize(summary, summary + visible).x,
+					textY), PIXLUI::Colors::TextMuted, "...");
+		}
+		ImGui::SetCursorScreenPos(headerStart);
+		ImGui::InvisibleButton("##QualityPreviewSummary", ImVec2(headerWidth, headerHeight));
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("%s", preview.description);
+		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(3.0f)));
 
 		const ImVec2 imageStart =
 			ImGui::GetCursorScreenPos();
@@ -439,9 +445,7 @@ namespace
 
 		const ImVec2 imageArea(
 			available.x,
-			std::max(
-				PIXLUI::Ref(280.0f),
-				available.y));
+			std::max(PIXLUI::Ref(260.0f), available.y));
 
 		if (auto* texture =
 				GetQualityPreviewTexture(
@@ -454,37 +458,17 @@ namespace
 			const float sourceAspect =
 				texture->size.x /
 				texture->size.y;
-			const float areaAspect =
-				imageArea.x /
-				imageArea.y;
-
-			ImVec2 drawSize =
-				imageArea;
-
-			if (sourceAspect > areaAspect) {
-				drawSize.y =
-					imageArea.x /
-					sourceAspect;
-			} else {
-				drawSize.x =
-					imageArea.y *
-					sourceAspect;
-			}
-
-			ImGui::SetCursorScreenPos(
-				ImVec2(
-					imageStart.x +
-						(imageArea.x -
-						 drawSize.x) *
-							0.5f,
-					imageStart.y +
-						(imageArea.y -
-						 drawSize.y) *
-							0.5f));
-
-			ImGui::Image(
-				texture->srv.get(),
-				drawSize);
+			ImVec2 drawSize = imageArea;
+			if (imageArea.x / imageArea.y > sourceAspect)
+				drawSize.x = imageArea.y * sourceAspect;
+			else
+				drawSize.y = imageArea.x / sourceAspect;
+			ImGui::SetCursorScreenPos(ImVec2(
+				imageStart.x + (imageArea.x - drawSize.x) * 0.5f,
+				imageStart.y + (imageArea.y - drawSize.y) * 0.5f));
+			ImGui::Image(texture->srv.get(), drawSize);
+			ImGui::SetCursorScreenPos(imageStart);
+			ImGui::Dummy(imageArea);
 		} else {
 			PIXLUI::FillChamfered(
 				draw,
@@ -765,32 +749,6 @@ namespace
 		return changed;
 	}
 
-	void DrawPageIntro(
-		const char* title,
-		const char* subtitle)
-	{
-		ImGui::TextColored(
-			PIXLUI::ToVec4(
-				PIXLUI::Colors::Text),
-			"%s",
-			title);
-
-		if (subtitle &&
-			subtitle[0] != '\0') {
-			ImGui::TextColored(
-				PIXLUI::ToVec4(
-					PIXLUI::Colors::TextMuted),
-				"%s",
-				subtitle);
-		}
-
-		ImGui::Dummy(
-			ImVec2(
-				0,
-				PIXLUI::Ref(8.0f)));
-	}
-
-
 	void DrawQualityControls()
 	{
 		auto& settings =
@@ -951,14 +909,19 @@ namespace
 					PIXLUI::Ref(10.0f));
 
 				if (PIXLUI::ActionButton(
-						"MATCH PROFILE",
+						"RESTORE PROFILE",
 						ImVec2(
-							PIXLUI::Ref(118.0f),
+							PIXLUI::Ref(145.0f),
 							PIXLUI::Ref(27.0f)),
 						false)) {
 					PIXLRenderer::QualityProfiles::
 						ApplyGlobal(
 							settings.RendererQuality);
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip(
+						"Reapply the %s profile to all system details and its renderer settings. This replaces custom adjustments.",
+						kProfileNames[profile]);
 				}
 			}
 
@@ -1001,7 +964,7 @@ namespace
 						"CUSTOM");
 					if (ImGui::IsItemHovered()) {
 						ImGui::SetTooltip(
-							"Advanced values differ from the selected %s contract. Move the tier or use MATCH PROFILE to reapply it.",
+							"Advanced values differ from the selected %s contract. Move the tier or use RESTORE PROFILE to reapply it.",
 							QualityTierName(*row.value));
 					}
 				}
@@ -1147,6 +1110,13 @@ namespace
 				false);
 		}
 
+		// Neural reconstruction and frame delivery are independent runtime paths.
+		// Keep their normal controls side-by-side; advanced controls still expand
+		// in their owning column only when explicitly requested.
+		if (ImGui::BeginTable("##PIXLReconstructionDeliveryGrid", 2,
+			ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings)) {
+			ImGui::TableNextColumn();
+			ImGui::PushID("NeuralRenderingColumn");
 		SectionHeading("NEURAL RENDERING");
 		const bool nrHardwareSupported =
 			imageReconstruction.streamline.neuralRenderingSupportedOnCurrentAdapter;
@@ -1179,28 +1149,22 @@ namespace
 		DrawNeuralSetupCard(nrControlAvailable);
 
 		if (!nrHardwareSupported) {
-			ImGui::TextColored(
-				PIXLUI::ToVec4(PIXLUI::Colors::Warning),
+			WrappedTintedText(PIXLUI::Colors::Warning,
 				"NR REQUIRES AN NVIDIA RTX 30-SERIES GPU OR NEWER");
-			ImGui::TextColored(
-				PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
+			WrappedTintedText(PIXLUI::Colors::TextDim,
 				"AMD, Intel and RTX 20-series adapters use PIXL's TAA/FSR/DLSS paths without Neural Rendering.");
 		} else if (!dlssSelected) {
-			ImGui::TextColored(
-				PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
+			WrappedTintedText(PIXLUI::Colors::TextDim,
 				"Select DLSS and restart once to provision the PIXL DX12 sidecar. NR can then be toggled live.");
 		} else if (!nrSessionProvisioned) {
-			ImGui::TextColored(
-				PIXLUI::ToVec4(PIXLUI::Colors::Warning),
+			WrappedTintedText(PIXLUI::Colors::Warning,
 				"RESTART ONCE TO PROVISION THE DLSS NEURAL SIDECAR");
 		} else {
-			ImGui::TextColored(
-				PIXLUI::ToVec4(PIXLUI::Colors::Success),
+			WrappedTintedText(PIXLUI::Colors::Success,
 				"NEURAL SIDECAR READY - REAL-TIME AND PHOTO TOGGLES ARE LIVE");
 		}
-		ImGui::TextColored(
-			PIXLUI::ToVec4(PIXLUI::Colors::TextDim),
-			"SHIFT+N QUICK TOGGLE  |  DLSS SR  >  NR FINAL COMPOSITE  >  FRAME GENERATION  >  UI  |  Rebind in PIXL Renderer > Hotkeys");
+		WrappedTintedText(PIXLUI::Colors::TextDim,
+			"SHIFT+N QUICK TOGGLE  |  DLSS SR > NR COMPOSITE > FRAME DELIVERY > UI. Rebind in Hotkeys.");
 		Tooltip(
 			"The installed Feature 18 contract consumes display-resolution, post-DLSS colour plus render-resolution depth and motion guides. A pre-DLSS mode would instead receive Skyrim's linear HDR render target, require a hard DX12-to-DX11 hand-back every frame, and invalidate the model's validated colour/extent contract. PIXL therefore keeps the stable gameplay order. Photo Finish accumulates synchronized completed neural frames and performs its larger offline output reconstruction afterward.");
 
@@ -1273,6 +1237,11 @@ namespace
 			ImGui::Unindent(PIXLUI::Ref(14.0f));
 			ImGui::PopID();
 		}
+
+		ImGui::PopID();
+		ImGui::TableNextColumn();
+		ImGui::PushID("FrameDeliveryColumn");
+		SectionHeading("FRAME DELIVERY");
 
 		bool vsync = false;
 		RE::Setting* presentSetting = nullptr;
@@ -1424,9 +1393,7 @@ namespace
 			frameGenerationState == ImageReconstruction::FrameGenerationState::RestartRequired;
 
 		if (restartNeeded || frameGenerationPendingRestart) {
-			ImGui::TextColored(
-				PIXLUI::ToVec4(
-					PIXLUI::Colors::Warning),
+			WrappedTintedText(PIXLUI::Colors::Warning,
 				"RESTART SKYRIM TO APPLY DISPLAY PATH CHANGES");
 		} else {
 			const char* statusText = "DISPLAY PATH READY";
@@ -1457,7 +1424,11 @@ namespace
 				statusText = "FRAME GENERATION OFF";
 				break;
 			}
-			ImGui::TextColored(PIXLUI::ToVec4(statusColour), "%s", statusText);
+			WrappedTintedText(statusColour, statusText);
+		}
+
+		ImGui::PopID();
+		ImGui::EndTable();
 		}
 
 		if (changed)
@@ -1470,14 +1441,15 @@ namespace
 			true;
 		static bool livePreviewEffects =
 			true;
+		const bool gameScene = globals::state && globals::state->inWorld;
 
 		PIXLUI::ChromeScope panel(
 			"##PIXLCameraLivePreview",
 			ImVec2(
 				0,
-				PIXLUI::Ref(292.0f)),
-			PIXLUI::ChromeStyle::Raised,
-			true,
+				PIXLUI::Ref(gameScene ? 390.0f : 84.0f)),
+			PIXLUI::ChromeStyle::Content,
+			false,
 			ImGuiWindowFlags_NoScrollbar |
 				ImGuiWindowFlags_NoScrollWithMouse,
 			12.0f);
@@ -1490,54 +1462,58 @@ namespace
 		const float headerWidth =
 			ImGui::GetContentRegionAvail().x;
 		const float headerHeight =
-			PIXLUI::Ref(32.0f);
+			PIXLUI::Ref(28.0f);
 
 		ImDrawList* draw =
 			ImGui::GetWindowDrawList();
 
 		const char* title =
 			"LIVE GAME PREVIEW";
-		const ImVec2 titleSize =
-			ImGui::CalcTextSize(
-				title);
-
-		draw->AddText(
-			ImVec2(
-				headerStart.x +
-					PIXLUI::Ref(7.0f),
-				headerStart.y +
-					(headerHeight -
-					 titleSize.y) *
-						0.5f),
-			PIXLUI::Colors::TextMuted,
-			title);
-
-		draw->AddLine(
-			ImVec2(
-				headerStart.x +
-					PIXLUI::Ref(6.0f),
-				headerStart.y +
-					headerHeight),
-			ImVec2(
-				headerStart.x +
-					headerWidth -
-					PIXLUI::Ref(6.0f),
-				headerStart.y +
-					headerHeight),
-			PIXLUI::Colors::BorderSoft,
-			PIXLUI::Ref(1.0f));
+		const float toggleWidth = PIXLUI::Ref(60.0f);
+		const float toggleHeight = PIXLUI::Ref(24.0f);
+		const float labelGap = PIXLUI::Ref(5.0f);
+		const float groupGap = PIXLUI::Ref(10.0f);
+		const char* previewLabel = "PREVIEW";
+		const char* effectsLabel = "FX";
+		const float controlsWidth =
+			ImGui::CalcTextSize(previewLabel).x + labelGap + toggleWidth +
+			groupGap + ImGui::CalcTextSize(effectsLabel).x + labelGap + toggleWidth;
+		const float controlX = headerStart.x +
+			std::max(0.0f, headerWidth - controlsWidth - PIXLUI::Ref(8.0f));
+		if (headerWidth > controlsWidth + ImGui::CalcTextSize(title).x + PIXLUI::Ref(24.0f)) {
+			const ImVec2 titleSize = ImGui::CalcTextSize(title);
+			draw->AddText(ImVec2(headerStart.x + PIXLUI::Ref(9.0f),
+				headerStart.y + (headerHeight - titleSize.y) * 0.5f),
+				PIXLUI::Colors::TextMuted, title);
+		}
+		const float controlY = headerStart.y +
+			(headerHeight - toggleHeight) * 0.5f;
+		float nextX = controlX;
+		draw->AddText(ImVec2(nextX, controlY +
+			(toggleHeight - ImGui::GetTextLineHeight()) * 0.5f),
+			PIXLUI::Colors::TextDim, previewLabel);
+		nextX += ImGui::CalcTextSize(previewLabel).x + labelGap;
+		ImGui::SetCursorScreenPos(ImVec2(nextX, controlY));
+		PIXLUI::Toggle("##LiveCameraPreviewEnabled", &livePreviewEnabled);
+		if (ImGui::IsItemHovered()) {
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("Shows the rendered game from CameraSuite's clean scene buffer. PIXL menu UI is excluded.");
+		}
+		nextX += toggleWidth + groupGap;
+		draw->AddText(ImVec2(nextX, controlY +
+			(toggleHeight - ImGui::GetTextLineHeight()) * 0.5f),
+			PIXLUI::Colors::TextDim, effectsLabel);
+		nextX += ImGui::CalcTextSize(effectsLabel).x + labelGap;
+		ImGui::SetCursorScreenPos(ImVec2(nextX, controlY));
+		PIXLUI::Toggle("##LiveCameraPreviewEffects", &livePreviewEffects);
+		if (ImGui::IsItemHovered()) {
+			if (auto _tt = Util::HoverTooltipWrapper())
+				ImGui::TextWrapped("Preview comparison only. OFF neutralizes PIXL camera finishing in the preview and does not save or alter gameplay settings.");
+		}
 
 		ImGui::SetCursorScreenPos(
 			headerStart);
-		ImGui::Dummy(
-			ImVec2(
-				headerWidth,
-				headerHeight));
-
-		ImGui::Dummy(
-			ImVec2(
-				0,
-				PIXLUI::Ref(4.0f)));
+		ImGui::Dummy(ImVec2(headerWidth, headerHeight));
 
 		const ImVec2 imageStart =
 			ImGui::GetCursorScreenPos();
@@ -1545,27 +1521,26 @@ namespace
 			ImGui::GetContentRegionAvail();
 		const ImVec2 imageArea(
 			available.x,
-			PIXLUI::Ref(204.0f));
+			std::max(PIXLUI::Ref(40.0f), available.y));
 
 		BackgroundBlur::LivePreviewFrame
 			preview{};
 
-		if (livePreviewEnabled) {
+		if (livePreviewEnabled && gameScene) {
 			preview =
 				BackgroundBlur::
 					CaptureLivePreview(
 						livePreviewEffects);
 		}
 
-		if (livePreviewEnabled &&
-			preview) {
+		if (livePreviewEnabled && preview && preview.width > 0 && preview.height > 0) {
 			const float sourceAspect =
 				static_cast<float>(
 					preview.width) /
 				static_cast<float>(
 					preview.height);
 			const float areaAspect =
-				imageArea.x /
+				std::max(imageArea.x, 1.0f) /
 				imageArea.y;
 
 			ImVec2 drawSize =
@@ -1596,38 +1571,19 @@ namespace
 			ImGui::Image(
 				preview.srv,
 				drawSize);
+			ImGui::SetCursorScreenPos(imageStart);
+			ImGui::Dummy(imageArea);
 		} else {
-			PIXLUI::FillChamfered(
-				draw,
-				imageStart,
-				ImVec2(
-					imageStart.x +
-						imageArea.x,
-					imageStart.y +
-						imageArea.y),
-				PIXLUI::Ref(4.0f),
-				IM_COL32(
-					8,
-					11,
-					14,
-					230));
-
-			PIXLUI::StrokeChamfered(
-				draw,
-				imageStart,
-				ImVec2(
-					imageStart.x +
-						imageArea.x,
-					imageStart.y +
-						imageArea.y),
-				PIXLUI::Ref(4.0f),
-				PIXLUI::Colors::BorderSoft,
-				PIXLUI::Ref(1.0f));
+			draw->AddRectFilled(imageStart,
+				ImVec2(imageStart.x + imageArea.x, imageStart.y + imageArea.y),
+				IM_COL32(8, 11, 14, 230));
 
 			const char* message =
-				livePreviewEnabled
-					? "CLEAN SCENE PREVIEW INITIALIZING"
-					: "LIVE PREVIEW OFF";
+				!livePreviewEnabled
+					? "LIVE PREVIEW OFF"
+					: globals::state && !globals::state->inWorld
+						? "PREVIEW AVAILABLE IN GAME"
+						: "CLEAN SCENE PREVIEW INITIALIZING";
 			const ImVec2 messageSize =
 				ImGui::CalcTextSize(
 					message);
@@ -1649,38 +1605,6 @@ namespace
 				imageArea);
 		}
 
-		// Keep comparison controls immediately below the image so the preview
-		// reads as a self-contained card rather than competing with its title.
-		const float toggleWidth = PIXLUI::Ref(60.0f);
-		const float toggleHeight = PIXLUI::Ref(24.0f);
-		const float labelGap = PIXLUI::Ref(5.0f);
-		const float groupGap = PIXLUI::Ref(10.0f);
-		const char* previewLabel = "PREVIEW";
-		const char* effectsLabel = "FX";
-		const float controlsWidth =
-			ImGui::CalcTextSize(previewLabel).x + labelGap + toggleWidth +
-			groupGap + ImGui::CalcTextSize(effectsLabel).x + labelGap + toggleWidth;
-		float controlX = headerStart.x + std::max(0.0f, (headerWidth - controlsWidth) * 0.5f);
-		const float controlY = imageStart.y + imageArea.y + PIXLUI::Ref(5.0f);
-
-		draw->AddText(ImVec2(controlX, controlY + (toggleHeight - ImGui::GetTextLineHeight()) * 0.5f), PIXLUI::Colors::TextDim, previewLabel);
-		controlX += ImGui::CalcTextSize(previewLabel).x + labelGap;
-		ImGui::SetCursorScreenPos(ImVec2(controlX, controlY));
-		PIXLUI::Toggle("##LiveCameraPreviewEnabled", &livePreviewEnabled);
-		if (ImGui::IsItemHovered()) {
-			if (auto _tt = Util::HoverTooltipWrapper())
-				ImGui::TextWrapped("Shows the rendered game from CameraSuite's clean scene buffer. PIXL menu UI is excluded.");
-		}
-
-		controlX += toggleWidth + groupGap;
-		draw->AddText(ImVec2(controlX, controlY + (toggleHeight - ImGui::GetTextLineHeight()) * 0.5f), PIXLUI::Colors::TextDim, effectsLabel);
-		controlX += ImGui::CalcTextSize(effectsLabel).x + labelGap;
-		ImGui::SetCursorScreenPos(ImVec2(controlX, controlY));
-		PIXLUI::Toggle("##LiveCameraPreviewEffects", &livePreviewEffects);
-		if (ImGui::IsItemHovered()) {
-			if (auto _tt = Util::HoverTooltipWrapper())
-				ImGui::TextWrapped("Preview comparison only. OFF neutralizes PIXL camera finishing in the preview and does not save or alter gameplay settings.");
-		}
 	}
 
 	void DrawColourPresetControls()
@@ -1782,21 +1706,17 @@ namespace
 
 		if (ImGui::BeginTable(
 				"##PIXLCameraWorkspace",
-				3,
+				2,
 				ImGuiTableFlags_SizingStretchProp |
 					ImGuiTableFlags_NoSavedSettings)) {
 			ImGui::TableSetupColumn(
 				"Camera",
 				ImGuiTableColumnFlags_WidthStretch,
-				1.0f);
+				0.80f);
 			ImGui::TableSetupColumn(
-				"Preview",
+				"Preview and effects",
 				ImGuiTableColumnFlags_WidthStretch,
-				1.25f);
-			ImGui::TableSetupColumn(
-				"Effects",
-				ImGuiTableColumnFlags_WidthStretch,
-				1.0f);
+				1.20f);
 
 			// -------------------------------------------------------------
 			// LEFT — exposure + tonemap / LUT
@@ -1946,12 +1866,25 @@ namespace
 			Tooltip(
 				"Dedicated gain for main-menu, loading, and lockpicking models. Gameplay exposure is unaffected.");
 
+			SectionHeading("BLOOM");
+			changed |= ToggleControl("Bloom enabled", &camera.settings.enableBloom);
+			ImGui::BeginDisabled(!camera.settings.enableBloom);
+			changed |= SliderControl("Bloom strength", &camera.settings.bloomStrength,
+				0.0f, 2.0f, "%.2f", false);
+			changed |= SliderControl("Bloom threshold", &camera.settings.bloomThreshold,
+				0.0f, 4.0f, "%.2f", false);
+			changed |= SliderControl("Bloom radius", &camera.settings.bloomRadius,
+				0.0f, 4.0f, "%.2f", false);
+			ImGui::EndDisabled();
+
 			ImGui::PopID();
 
 			// -------------------------------------------------------------
 			// CENTRE — live scene preview
 			// -------------------------------------------------------------
-			ImGui::TableNextColumn();
+			// Keep the scene comparison in the upper-right corner. The compact
+			// setting columns stay adjacent for faster visual evaluation.
+			ImGui::TableSetColumnIndex(1);
 			ImGui::PushID(
 				"PreviewDepthColumn");
 
@@ -1967,21 +1900,8 @@ namespace
 			// -------------------------------------------------------------
 			// RIGHT — reflections / bloom / weather lens
 			// -------------------------------------------------------------
-			ImGui::TableNextColumn();
 			ImGui::PushID(
 				"PostEffectsColumn");
-
-			SectionHeading("DEPTH OF FIELD");
-			if (camera.IsCinematicDoFLoaded()) {
-				changed |= ToggleControl("Use Cinematic DoF", &camera.settings.preferCinematicDoF,
-					"Hands depth of field to the installed plugin and prevents duplicate native blur. Focus remains in Cinematic DoF's own menu; disable this hand-off to use Skyrim DoF again.");
-			}
-			ImGui::BeginDisabled(camera.UsesCinematicDoF());
-			changed |= ToggleControl(
-				"Skyrim depth of field",
-				&camera.settings.enableSkyrimDepthOfField,
-				"Uses Skyrim's native image-space depth of field. PIXL's experimental full-screen DOF path is disabled for this release.");
-			ImGui::EndDisabled();
 
 			SectionHeading(
 				"OCCLUSION & REFLECTIONS");
@@ -2064,51 +1984,6 @@ namespace
 			}
 
 			SectionHeading(
-				"BLOOM");
-
-			changed |=
-				ToggleControl(
-					"Bloom enabled",
-					&camera.settings
-						.enableBloom);
-
-			ImGui::BeginDisabled(
-				!camera.settings
-					.enableBloom);
-
-			changed |=
-				SliderControl(
-					"Bloom strength",
-					&camera.settings
-						.bloomStrength,
-					0.0f,
-					2.0f,
-					"%.2f",
-					false);
-
-			changed |=
-				SliderControl(
-					"Bloom threshold",
-					&camera.settings
-						.bloomThreshold,
-					0.0f,
-					4.0f,
-					"%.2f",
-					false);
-
-			changed |=
-				SliderControl(
-					"Bloom radius",
-					&camera.settings
-						.bloomRadius,
-					0.0f,
-					4.0f,
-					"%.2f",
-					false);
-
-			ImGui::EndDisabled();
-
-			SectionHeading(
 				"WEATHER & WATER LENS");
 
 			changed |=
@@ -2144,6 +2019,17 @@ namespace
 
 			Tooltip(
 				"Adds a restrained water-type-aware underwater response and a draining wet-lens transition when you break the surface.");
+
+			SectionHeading("DEPTH OF FIELD");
+			if (camera.IsCinematicDoFLoaded()) {
+				changed |= ToggleControl("Use Cinematic DoF", &camera.settings.preferCinematicDoF,
+					"Hands depth of field to the installed plugin and prevents duplicate native blur. Focus remains in Cinematic DoF's own menu; disable this hand-off to use Skyrim DoF again.");
+			}
+			ImGui::BeginDisabled(camera.UsesCinematicDoF());
+			changed |= ToggleControl("Skyrim depth of field",
+				&camera.settings.enableSkyrimDepthOfField,
+				"Uses Skyrim's native image-space depth of field. PIXL's experimental full-screen DOF path is disabled for this release.");
+			ImGui::EndDisabled();
 
 			ImGui::PopID();
 
@@ -2366,20 +2252,57 @@ namespace
 
 	void DrawCameraControls()
 	{
-		DrawPageIntro(
-			"CAMERA | POST-PROCESSING",
-			"Shape the final image, choose a colour grade, connect compatible post-processing tools, and tune reconstruction and frame delivery in one place.");
-		DrawColourPresetControls();
-		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(6.0f)));
-		SectionHeading("POST-PROCESSING & COMPATIBILITY");
-		ExternalPostProcessing::DrawSettings();
-		SectionHeading("CAMERA & VISUAL FINISHING");
-		DrawFinishingControls();
-		// Keep reconstruction directly below the compact camera workspace so the
-		// active upscaling path is easier to find than in the engineering tuner.
-		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(10.0f)));
-		SectionHeading("UPSCALING & FRAME DELIVERY");
-		DrawPerformanceControls();
+		static int primaryWorkspace = 0;
+		static int postWorkspace = 0;
+		const float availableWidth = ImGui::GetContentRegionAvail().x;
+		const float gap = PIXLUI::Ref(8.0f);
+		const float tabWidth = std::min(PIXLUI::Ref(240.0f),
+			std::max(PIXLUI::Ref(115.0f), (availableWidth - gap) * 0.5f));
+		const float tabGroupWidth = tabWidth * 2.0f + gap;
+		ImGui::SetCursorPosX(ImGui::GetCursorPosX() +
+			std::max(0.0f, (availableWidth - tabGroupWidth) * 0.5f));
+		if (PIXLUI::PageButton("PostProcessingWorkspace", "POST-PROCESSING",
+			primaryWorkspace == 0, ImVec2(tabWidth, PIXLUI::Ref(38.0f)))) {
+			primaryWorkspace = 0;
+			ImGui::SetScrollY(0.0f);
+		}
+		ImGui::SameLine(0.0f, gap);
+		if (PIXLUI::PageButton("UpscalingWorkspace", "UPSCALING",
+			primaryWorkspace == 1, ImVec2(tabWidth, PIXLUI::Ref(38.0f)))) {
+			primaryWorkspace = 1;
+			ImGui::SetScrollY(0.0f);
+		}
+		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(8.0f)));
+
+		if (primaryWorkspace == 1) {
+			DrawPerformanceControls();
+			return;
+		}
+
+		const float subWidth = std::min(PIXLUI::Ref(190.0f),
+			std::max(PIXLUI::Ref(92.0f), (availableWidth - gap) * 0.5f));
+		ImGui::PushID("PostProcessingViews");
+		if (PIXLUI::ActionButton("CAMERA", ImVec2(subWidth, PIXLUI::Ref(32.0f)),
+			postWorkspace == 0)) {
+			postWorkspace = 0;
+			ImGui::SetScrollY(0.0f);
+		}
+		ImGui::SameLine(0.0f, gap);
+		if (PIXLUI::ActionButton("LOOKS & PRESETS", ImVec2(subWidth, PIXLUI::Ref(32.0f)),
+			postWorkspace == 1)) {
+			postWorkspace = 1;
+			ImGui::SetScrollY(0.0f);
+		}
+		ImGui::PopID();
+		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(5.0f)));
+		if (postWorkspace == 0) {
+			DrawFinishingControls();
+		} else {
+			DrawColourPresetControls();
+			ImGui::Dummy(ImVec2(0, PIXLUI::Ref(8.0f)));
+			if (ImGui::CollapsingHeader("EXTERNAL POST-PROCESSING", ImGuiTreeNodeFlags_None))
+				ExternalPostProcessing::DrawSettings();
+		}
 	}
 
 	void DrawStatusPill(
@@ -2528,6 +2451,7 @@ namespace
 					PIXLUI::Ref(130.0f),
 					PIXLUI::Ref(34.0f)),
 				false)) {
+			TuningWorkspaceRenderer::ResetWorkspaceHistory();
 			globals::state->Load();
 		}
 
@@ -2598,24 +2522,26 @@ void PIXLRendererPage::Render()
 
 	const float gap =
 		PIXLUI::Ref(8.0f);
-
-	if (PIXLUI::ActionButton("QUICK SETUP", ImVec2(PIXLUI::Ref(150.0f), PIXLUI::Ref(30.0f)), false))
-		LaunchExperienceRenderer::OpenQuickSetup();
-	Util::AddTooltip("Reopen the guided setup card to change the quality profile or image reconstruction path. Changes are saved when you continue.");
-	ImGui::SameLine(0.0f, PIXLUI::Ref(8.0f));
-	if (PIXLUI::ActionButton("ADVANCED TUNER", ImVec2(PIXLUI::Ref(165.0f), PIXLUI::Ref(30.0f)), false)) {
-		menuSettings.AdvancedMode = true;
-		globals::state->Save();
-	}
-	Util::AddTooltip("Open the complete PIXL tuner with every module and engineering control.");
-	ImGui::Dummy(ImVec2(0.0f, PIXLUI::Ref(5.0f)));
-
 	const float pageWidth =
 		std::max(
 			PIXLUI::Ref(170.0f),
 			(ImGui::GetContentRegionAvail().x -
 				gap * 2.0f) /
 				3.0f);
+	const float entryWidth = (pageWidth - gap) * 0.5f;
+	const bool compactEntryLabels = entryWidth <
+		ImGui::CalcTextSize("ADVANCED TUNER").x + PIXLUI::Ref(24.0f);
+
+	if (PIXLUI::ActionButton(compactEntryLabels ? "SETUP" : "QUICK SETUP", ImVec2(entryWidth, PIXLUI::Ref(30.0f)), false))
+		LaunchExperienceRenderer::OpenQuickSetup();
+	Util::AddTooltip("Reopen the guided setup card to change the quality profile or image reconstruction path. Changes are saved when you continue.");
+	ImGui::SameLine(0.0f, gap);
+	if (PIXLUI::ActionButton(compactEntryLabels ? "TUNER" : "ADVANCED TUNER", ImVec2(entryWidth, PIXLUI::Ref(30.0f)), false)) {
+		menuSettings.AdvancedMode = true;
+		globals::state->Save();
+	}
+	Util::AddTooltip("Open the complete PIXL tuner with every module and engineering control.");
+	ImGui::Dummy(ImVec2(0.0f, PIXLUI::Ref(5.0f)));
 
 	if (PIXLUI::PageButton(
 			"Quality",
@@ -2682,20 +2608,19 @@ void PIXLRendererPage::Render()
 			ImVec2(0, 0),
 			ImGuiChildFlags_None,
 			publicPageFlags)) {
+		// A tab change should reveal the page's primary card. In particular, the
+		// Quality preview must never inherit a lower scroll position from a
+		// previous visit and appear to be missing.
+		if (pageChanged || ImGui::IsWindowAppearing())
+			ImGui::SetScrollY(0.0f);
 		switch (currentPage) {
 		case PublicPage::Quality: {
-			DrawPageIntro(
-				"QUALITY",
-				nullptr);
-
 			DrawQualityControls();
 
 			ImGui::Dummy(
 				ImVec2(
 					0,
-					PIXLUI::Ref(2.0f)));
-
-			SectionHeading("FEATURES");
+					PIXLUI::Ref(5.0f)));
 
 			const ImVec2 featureSpacing =
 				ImGui::GetStyle().ItemSpacing;

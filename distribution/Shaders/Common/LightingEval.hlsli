@@ -156,7 +156,16 @@ void EvaluateLegacyPhysicalDirect(DirectContext context, MaterialProperties mate
 	// point-light loops. Re-evaluating screen-space derivatives here would both
 	// double-filter legacy materials and make derivatives undefined in the
 	// variable-length point-light loop.
-	const float roughness = material.Roughness;
+	// Development-only roughness isolation. These modes sit at the final legacy
+	// GGX boundary: material decoding, parallax and derivative filtering have
+	// already completed, while the normal production path remains unchanged when
+	// the mode is Off.
+	const uint physicalDebugMode = SharedData::materialForgeSettings.LegacyPhysicalDebugMode;
+	float roughness = material.Roughness;
+	[branch] if (physicalDebugMode == 13u)
+		roughness = 0.50f;
+	else if (physicalDebugMode == 14u)
+		roughness = max(roughness, 0.15f);
 
 	lightingOutput.diffuse = NdotL * lightColor * BRDF::Diffuse_Lambert();
 
@@ -260,12 +269,14 @@ namespace PhysicalLighting
 		const float NdotL = dot(context.worldNormal, context.lightDir);
 		float3 softLightColor = context.lightColor * context.softShadow;
 #	if !defined(SPARKLE)
-		// Complex materials are converted to physical F0 and roughness in
-		// Lighting.hlsl before reaching this adapter.  Sending those pixels back
-		// through the legacy Blinn-Phong path ignores that conversion, producing
-		// black pinpricks where the environment mask removes diffuse response.
-		const bool physicalEnabled = SharedData::materialForgeSettings.EnableLegacyPhysicalDirectLighting != 0 &&
-			allowEnhancedLighting;
+		// The legacy physical pass is for ordinary Skyrim materials. Complex
+		// Materials carry an authored environment-mask response, and routing them
+		// through this adapter makes LegacyPhysicalSpecularScale amplify individual
+		// authored mask texels into white/black GGX pins. Their direct response stays
+		// on the established complex-material path instead.
+		const bool physicalEnabled =
+			SharedData::materialForgeSettings.EnableLegacyPhysicalDirectLighting != 0 &&
+			allowEnhancedLighting && !isComplexMaterial;
 		const bool comparePhysical = SharedData::materialForgeSettings.LegacyPhysicalDebugMode == 9;
 		DirectLightingOutput physicalOutput = (DirectLightingOutput)0;
 		DirectLightingOutput vanillaOutput = (DirectLightingOutput)0;

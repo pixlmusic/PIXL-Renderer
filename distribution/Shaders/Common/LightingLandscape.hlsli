@@ -47,6 +47,7 @@ namespace LandscapeLayers
 					[branch] if (LandscapeLayers::PbrTileHasGlint(TILE))                                                                                           \
 					{                                                                                                                                              \
 						glintParameters += weight * (GLINT_PARAMS);                                                                                                \
+						glintMaterialWeight += weight;                                                                                                            \
 					}                                                                                                                                              \
 				}                                                                                                                                                  \
 				else                                                                                                                                               \

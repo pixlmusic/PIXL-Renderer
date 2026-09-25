@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <cmath>
 #include <cstdio>
 #include <imgui.h>
@@ -115,7 +116,9 @@ namespace PIXLUI
 		static constexpr float TuneSidebarFrameWidth = 213.0f;
 		static constexpr float TuneSidebarFrameHeight = 810.0f;
 		static constexpr float TuneContentFrameWidth = 560.0f;
-		static constexpr float TuneContentFrameHeight = 620.0f;
+		// The advanced surface is intentionally taller than the module drawer so
+		// common tuning controls do not begin beneath the lower frame edge.
+		static constexpr float TuneContentFrameHeight = 700.0f;
 		static constexpr float TuneTitleHeight = 82.0f;
 		static constexpr float TuneNavWidth = 210.0f;
 		static constexpr float TuneNavHeight = 30.0f;
@@ -238,6 +241,118 @@ namespace PIXLUI
 				0.0f,
 				1.0f);
 		return ImGui::ColorConvertFloat4ToU32(value);
+	}
+
+	inline void FillChamfered(ImDrawList* draw, ImVec2 min, ImVec2 max, float chamfer, ImU32 color);
+	inline void StrokeChamfered(ImDrawList* draw, ImVec2 min, ImVec2 max, float chamfer, ImU32 color, float thickness);
+
+	// Draw-list overlays do not receive ImGui's normal layout clipping. Keep
+	// camera and Director HUD text inside its owning panel instead of allowing a
+	// long translated label or a narrow viewport to paint across the game view.
+	inline void DrawClippedOverlayText(
+		ImDrawList* draw,
+		ImVec2 position,
+		ImU32 color,
+		const char* text,
+		float maximumWidth)
+	{
+		if (!draw || !text || maximumWidth <= 0.0f)
+			return;
+		const ImVec4 clip(position.x, position.y,
+			position.x + maximumWidth,
+			position.y + ImGui::GetTextLineHeightWithSpacing());
+		draw->AddText(nullptr, 0.0f, position, color, text, nullptr, 0.0f, &clip);
+	}
+
+	// Shared Director timeline. The widget draws directly into the existing PIXL
+	// authoring surface, has no persistent allocation, and returns only a scrub
+	// request; camera ownership and path evaluation remain the Director's job.
+	inline bool TimelineScrubber(
+		const char* id,
+		float& currentTime,
+		float duration,
+		const float* pointTimes,
+		std::size_t pointCount,
+		std::size_t selectedPoint,
+		bool playing,
+		std::size_t* clickedPoint = nullptr)
+	{
+		const float safeDuration = std::max(duration, 0.001f);
+		const ImVec2 origin = ImGui::GetCursorScreenPos();
+		const ImVec2 size(std::max(ImGui::GetContentRegionAvail().x, Ref(220.0f)), Ref(64.0f));
+		ImGui::PushID(id);
+		ImGui::InvisibleButton("##timeline", size);
+		const bool hovered = ImGui::IsItemHovered();
+		const bool active = ImGui::IsItemActive();
+		bool changed = false;
+		const float inset = Ref(14.0f);
+		const float railMin = origin.x + inset;
+		const float railMax = origin.x + size.x - inset;
+		if (clickedPoint)
+			*clickedPoint = pointCount;
+		if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && pointTimes && clickedPoint) {
+			float nearest = Ref(12.0f);
+			for (std::size_t index = 0; index < pointCount; ++index) {
+				const float markerX = std::lerp(railMin, railMax,
+					std::clamp(pointTimes[index] / safeDuration, 0.0f, 1.0f));
+				const float distance = std::abs(ImGui::GetIO().MousePos.x - markerX);
+				if (distance <= nearest) {
+					nearest = distance;
+					*clickedPoint = index;
+				}
+			}
+		}
+		if ((hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) ||
+			(active && ImGui::IsMouseDown(ImGuiMouseButton_Left))) {
+			if (clickedPoint && *clickedPoint < pointCount) {
+				currentTime = pointTimes[*clickedPoint];
+				changed = true;
+			} else {
+			const float normalized = std::clamp(
+				(ImGui::GetIO().MousePos.x - railMin) / std::max(railMax - railMin, 1.0f),
+				0.0f, 1.0f);
+			const float requestedTime = normalized * safeDuration;
+			if (std::abs(requestedTime - currentTime) > 0.0001f) {
+				currentTime = requestedTime;
+				changed = true;
+			}
+			}
+		}
+
+		auto* draw = ImGui::GetWindowDrawList();
+		const ImU32 border = hovered ? Colors::CyanSoft : Colors::BorderSoft;
+		FillChamfered(draw, origin, ImVec2(origin.x + size.x, origin.y + size.y), Ref(4.0f), Colors::Inset);
+		StrokeChamfered(draw, origin, ImVec2(origin.x + size.x, origin.y + size.y), Ref(4.0f), border, Ref(1.0f));
+
+		char leftLabel[48]{};
+		char rightLabel[48]{};
+		std::snprintf(leftLabel, sizeof(leftLabel), "%s  %05.2f s", playing ? "PLAYING" : "SCRUB", currentTime);
+		std::snprintf(rightLabel, sizeof(rightLabel), "%05.2f s  %zu POINTS", safeDuration, pointCount);
+		draw->AddText(ImVec2(origin.x + inset, origin.y + Ref(7.0f)),
+			playing ? Colors::CyanBright : Colors::TextMuted, leftLabel);
+		const ImVec2 rightSize = ImGui::CalcTextSize(rightLabel);
+		DrawClippedOverlayText(draw,
+			ImVec2(std::max(origin.x + inset, origin.x + size.x - inset - rightSize.x), origin.y + Ref(7.0f)),
+			Colors::TextDim, rightLabel, std::max(0.0f, size.x - inset * 2.0f));
+
+		const float railY = origin.y + Ref(43.0f);
+		draw->AddLine(ImVec2(railMin, railY), ImVec2(railMax, railY), Colors::SteelDark, Ref(4.0f));
+		const float progressX = std::lerp(railMin, railMax, std::clamp(currentTime / safeDuration, 0.0f, 1.0f));
+		draw->AddLine(ImVec2(railMin, railY), ImVec2(progressX, railY), Colors::Cyan, Ref(4.0f));
+		draw->AddCircleFilled(ImVec2(progressX, railY), Ref(4.0f), Colors::CyanBright, 10);
+
+		for (std::size_t index = 0; index < pointCount; ++index) {
+			const float markerTime = pointTimes ? pointTimes[index] : 0.0f;
+			const float markerX = std::lerp(railMin, railMax, std::clamp(markerTime / safeDuration, 0.0f, 1.0f));
+			const bool selected = index == selectedPoint;
+			draw->AddLine(ImVec2(markerX, railY - Ref(selected ? 13.0f : 9.0f)),
+				ImVec2(markerX, railY + Ref(selected ? 13.0f : 9.0f)),
+				selected ? Colors::CyanBright : Colors::SteelLight,
+				Ref(selected ? 2.0f : 1.0f));
+		}
+
+		ImGui::PopID();
+		return changed;
 	}
 
 	inline float Animate01(
@@ -1901,6 +2016,61 @@ namespace PIXLUI
 
 		ImGui::PopID();
 		return pressed;
+	}
+
+	// Compact, data-backed state language shared by module headers, navigation
+	// and Director.  These are intentionally labels rather than decorative
+	// effects: cyan reports an active/available state, amber reports a user edit
+	// or dependency, and red is reserved for an actual failure.
+	inline void StateChip(const char* label, ImU32 tone = Colors::CyanSoft)
+	{
+		const ImVec2 start = ImGui::GetCursorScreenPos();
+		const ImVec2 text = ImGui::CalcTextSize(label);
+		const ImVec2 padding(Ref(7.0f), Ref(3.0f));
+		const ImVec2 size(text.x + padding.x * 2.0f, text.y + padding.y * 2.0f);
+		// A state chip is informational.  Do not make it behave like a second
+		// action button beside the module's real enable control.
+		ImGui::Dummy(size);
+		const bool hovered = ImGui::IsItemHovered();
+		auto* draw = ImGui::GetWindowDrawList();
+		FillChamfered(draw, start, ImVec2(start.x + size.x, start.y + size.y), Ref(3.0f),
+			MixColor(Colors::InsetRaised, tone, hovered ? 0.22f : 0.12f));
+		StrokeChamfered(draw, start, ImVec2(start.x + size.x, start.y + size.y), Ref(3.0f),
+			ScaleAlpha(tone, hovered ? 0.85f : 0.56f), Ref(1.0f));
+		draw->AddText(ImVec2(start.x + padding.x, start.y + padding.y), tone, label);
+	}
+
+	inline bool SectionAction(const char* label, const char* help = nullptr)
+	{
+		const bool pressed = ActionButton(label,
+			ImVec2(ImGui::CalcTextSize(label).x + Ref(20.0f), Ref(25.0f)), false);
+		if (help && ImGui::IsItemHovered())
+			ImGui::SetTooltip("%s", help);
+		return pressed;
+	}
+
+	inline void DependencyMessage(const char* message)
+	{
+		const ImVec2 start = ImGui::GetCursorScreenPos();
+		const float width = ImGui::GetContentRegionAvail().x;
+		const float height = std::max(Ref(29.0f), ImGui::GetTextLineHeightWithSpacing() + Ref(8.0f));
+		auto* draw = ImGui::GetWindowDrawList();
+		FillChamfered(draw, start, ImVec2(start.x + width, start.y + height), Ref(3.0f), IM_COL32(60, 45, 19, 170));
+		StrokeChamfered(draw, start, ImVec2(start.x + width, start.y + height), Ref(3.0f), ScaleAlpha(Colors::Warning, 0.72f), Ref(1.0f));
+		ImGui::SetCursorScreenPos(ImVec2(start.x + Ref(9.0f), start.y + Ref(5.0f)));
+		ImGui::PushTextWrapPos(start.x + width - Ref(8.0f));
+		ImGui::TextColored(ToVec4(Colors::Warning), "%s", message);
+		ImGui::PopTextWrapPos();
+		ImGui::SetCursorScreenPos(ImVec2(start.x, start.y + height));
+		ImGui::Dummy(ImVec2(width, 0.0f));
+	}
+
+	inline void ContextFooterItem(const char* key, const char* action, bool accent = false)
+	{
+		const ImU32 keyColor = accent ? Colors::CyanBright : Colors::CyanSoft;
+		StateChip(key, keyColor);
+		ImGui::SameLine(0.0f, Ref(5.0f));
+		ImGui::TextColored(ToVec4(Colors::TextDim), "%s", action);
 	}
 
 

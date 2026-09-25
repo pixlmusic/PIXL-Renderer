@@ -1759,8 +1759,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// permutations that do not compile the EMAT material path.  It remains false
 	// unless the authored environment-mask height path explicitly enables it.
 	bool complexMaterialParallax = false;
-	// Passed to the shared direct-lighting adapter. Complex-material pixels retain
-	// their authored lighting response instead of receiving legacy physical BRDF.
+	// Passed to the shared direct-lighting adapter so it can keep authored Complex
+	// Materials out of the legacy physical GGX conversion.
 	bool pixlComplexMaterialForPhysicalLighting = false;
 
 #	if defined(EMAT)
@@ -2200,6 +2200,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float pixlDetailRoughnessDelta = 0.0f;
 
 	float4 glintParameters = 0;
+	// A GLINT permutation can be shared by non-glint Skyrim materials.  Keep an
+	// explicit payload weight so zeroed constants never decode as density 40.
+	float glintMaterialWeight = 0.0;
 
 #	if defined(SNOW)
 #		if !defined(MATERIAL_FORGE)
@@ -2390,6 +2393,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	rawRMAOS = TexRMAOSSampler.SampleBias(SampRMAOSSampler, diffuseUv, SharedData::MipBias) * float4(PBRParams1.x, 1, 1, PBRParams1.z);
 	if ((PBRFlags & PBR::Flags::Glint) != 0) {
 		glintParameters = MultiLayerParallaxData;
+		glintMaterialWeight = 1.0;
 	}
 #		endif
 #	endif
@@ -2496,8 +2500,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif      // LANDSCAPE
 
 #	if defined(EMAT_ENVMAP)
-	complexMaterial = complexMaterial && complexMaterialColor.y > (4.0 / 255.0);
-	shininess = lerp(shininess, shininess * complexMaterialColor.y, complexMaterial);
+	// Complex-material classification is texture-level state.  The green channel
+	// is authored smoothness and may legitimately be zero for a fully rough texel;
+	// using it to turn the whole material model on/off created adjacent legacy and
+	// physical pixels, which appeared as black/bright square speckles on wood.
+	const float complexMaterialSmoothness = saturate(complexMaterialColor.y);
+	shininess = lerp(shininess, shininess * complexMaterialSmoothness, complexMaterial);
 	if (complexMaterial) {
 		complexSpecular = lerp(1.0, baseColor.xyz, complexMaterialColor.z);
 		baseColor.xyz = lerp(baseColor.xyz, 0.0, complexMaterialColor.z);
@@ -2757,6 +2765,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			projectedGlintParameters = SparkleParams;
 		}
 		glintParameters = lerp(glintParameters, projectedGlintParameters, projectedMaterialWeight);
+		glintMaterialWeight = lerp(glintMaterialWeight, ((PBRFlags & PBR::Flags::ProjectedGlint) != 0) ? 1.0 : 0.0, projectedMaterialWeight);
 #			else
 		projBaseColor *= Color::VanillaDiffuseColorMult();
 #			endif  // MATERIAL_FORGE
@@ -3263,14 +3272,17 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		material.F0 = lerp(rawRMAOS.w, baseColor.xyz, material.Metallic);
 	}
 
-	material.GlintScreenSpaceScale = max(1, glintParameters.x);
-	material.GlintLogMicrofacetDensity = clamp(PBR::Constants::MaxGlintDensity - glintParameters.y, PBR::Constants::MinGlintDensity, PBR::Constants::MaxGlintDensity);
-	material.GlintMicrofacetRoughness = clamp(glintParameters.z, PBR::Constants::MinGlintRoughness, PBR::Constants::MaxGlintRoughness);
-	material.GlintDensityRandomization = clamp(glintParameters.w, PBR::Constants::MinGlintDensityRandomization, PBR::Constants::MaxGlintDensityRandomization);
+	const bool glintEnabled = glintMaterialWeight > 0.0001;
+	material.GlintScreenSpaceScale = glintEnabled ? max(1, glintParameters.x) : 1.0;
+	material.GlintLogMicrofacetDensity = glintEnabled ? clamp(PBR::Constants::MaxGlintDensity - glintParameters.y, PBR::Constants::MinGlintDensity, PBR::Constants::MaxGlintDensity) : PBR::Constants::MinGlintDensity;
+	material.GlintMicrofacetRoughness = glintEnabled ? clamp(glintParameters.z, PBR::Constants::MinGlintRoughness, PBR::Constants::MaxGlintRoughness) : PBR::Constants::MinGlintRoughness;
+	material.GlintDensityRandomization = glintEnabled ? clamp(glintParameters.w, PBR::Constants::MinGlintDensityRandomization, PBR::Constants::MaxGlintDensityRandomization) : PBR::Constants::MinGlintDensityRandomization;
 
 #		if defined(GLINT)
 	float glintNoise = Random::R1Modified(float(SharedData::FrameCount), (Random::pcg2d(uint2(input.Position.xy)) / 4294967296.0).x);
-	Glints::PrecomputeGlints(glintNoise, uvOriginal, ddx(uvOriginal), ddy(uvOriginal), material.GlintScreenSpaceScale, material.GlintCache);
+	if (glintEnabled && !Glints::PrecomputeGlints(glintNoise, uvOriginal, ddx(uvOriginal), ddy(uvOriginal), material.GlintScreenSpaceScale, material.GlintCache)) {
+		material.GlintLogMicrofacetDensity = PBR::Constants::MinGlintDensity;
+	}
 #		endif
 
 	baseColor.xyz *= 1 - material.Metallic;
@@ -3344,7 +3356,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	material.Shininess = shininess;
 	material.Glossiness = glossiness;
 	material.SpecularColor = SpecularColor.xyz;
-	PhysicalMaterial::Surface physicalSurface = PhysicalMaterial::FromLegacy(baseColor.xyz, material.Shininess, material.SpecularColor, material.Glossiness);
+	PhysicalMaterial::Surface physicalSurface = PhysicalMaterial::FromLegacy(
+		baseColor.xyz, material.Shininess, material.SpecularColor, material.Glossiness);
 #		else
 	material.Shininess = 0;
 	material.Glossiness = 0;
@@ -3871,6 +3884,21 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// frequency after the color and roughness textures have selected coarser mips.
 	// Filtering alpha-squared by shading-normal variance suppresses distant shimmer
 	// without blurring the normal used by diffuse lighting or the G-buffer.
+#	if defined(EMAT_ENVMAP)
+	// Complex material's Y channel is authored smoothness.  An exact zero
+	// roughness value is not representable at screen resolution: a single normal
+	// or smoothness texel can otherwise form a needle-like GGX lobe.  Real
+	// authored surfaces retain microstructure, so keep a small 0.08 perceptual
+	// floor only for the Complex Material override.  Ordinary material and PBR
+	// roughness remain fully author-controlled, including when Specular AA is off.
+	[branch] if (complexMaterial)
+	{
+		const float complexMaterialRoughness = max(
+			1.0f - saturate(complexMaterialColor.y),
+			0.08f);
+		material.Roughness = max(material.Roughness, complexMaterialRoughness);
+	}
+#	endif
 	[branch] if (SharedData::materialForgeSettings.EnableSpecularAA != 0)
 	{
 		material.Roughness = BRDF::FilterRoughnessByNormalVariance(
@@ -3879,15 +3907,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			SharedData::materialForgeSettings.SpecularAAStrength,
 			SharedData::materialForgeSettings.SpecularAAVarianceClamp);
 #	if defined(EMAT_ENVMAP)
-		// Complex material's Y channel is authored smoothness.  Add its
-		// screen-space variance to the same GGX alpha-squared filter so isolated
-		// smooth texels on parallaxed stone/wood cannot resolve as white or black
-		// single-pixel highlights.
 		[branch] if (complexMaterial)
 		{
+			// Add screen-space smoothness variance to the normal-variance filter so
+			// isolated smooth texels on parallaxed stone/wood cannot resolve as white
+			// or black single-pixel highlights.
 			material.Roughness = BRDF::FilterRoughnessByScalarVariance(
 				material.Roughness,
-				1.0f - complexMaterialColor.y,
+				1.0f - saturate(complexMaterialColor.y),
 				SharedData::materialForgeSettings.SpecularAAStrength,
 				SharedData::materialForgeSettings.SpecularAAVarianceClamp);
 		}
@@ -4751,7 +4778,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		pixlWindowGlowLuma,
 		uv,
 		viewPosition.z,
-		pixlWindowSurface.weatherWarp,
+		pixlWindowSurface.normalWarp,
 		complexMaterialParallax);
 
 	// PIXL WL5 authored recessed room back plane. Replace the source window's flat
@@ -5074,12 +5101,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 #	if defined(EMAT_ENVMAP) && !defined(MATERIAL_FORGE)
-	// Material Forge already consumes the Complex Material specular colour as
-	// physical F0 before direct and indirect GGX are evaluated.  Multiplying the
-	// completed lobe here applied that coloured F0 twice, turning dark authored
-	// conductors into black pinpricks.  The legacy path still needs this final
-	// environment-mask tint because it does not use the physical F0 adapter.
-	specularColor *= complexSpecular;
+	// The GGX adapter has already consumed Complex Material F0 whenever the
+	// physical legacy path is active.  Applying this tint to the completed direct
+	// lobe a second time turns dark conductors into black pinpricks.  Retain the
+	// legacy tint only when the actual vanilla-lighting fallback was used.
+	const float complexLegacyTintWeight = complexMaterial ?
+		(1.0f - legacyPhysicalCoverage) : 1.0f;
+	specularColor *= lerp(1.0f.xxx, complexSpecular, complexLegacyTintWeight);
 #	endif  // defined (EMAT) && defined(ENVMAP) && !defined(MATERIAL_FORGE)
 
 #	if defined(LOD_LAND_BLEND) && defined(MATERIAL_FORGE)
@@ -5460,7 +5488,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 	const uint physicalDebugMode = SharedData::materialForgeSettings.LegacyPhysicalDebugMode;
-	[branch] if (physicalDebugMode != 0)
+	// Modes 13 and 14 alter only the final direct-GGX roughness input.  They do
+	// not replace the frame with a debug composite, so comparison screenshots are
+	// directly representative of normal rendering.  Mode 15 is an overlay that
+	// marks only material pixels whose final GGX roughness is below 0.05.
+	[branch] if (physicalDebugMode > 0 && physicalDebugMode <= 12)
 	{
 		float3 physicalDebugColor = 0.0.xxx;
 #	if defined(MATERIAL_FORGE)
@@ -5527,6 +5559,15 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		psout.Specular.xyz = 0.0;
 		psout.Albedo.xyz = 0.0;
 		psout.Reflectance.xyz = 0.0;
+#	endif
+	}
+	else if (physicalDebugMode == 15u && material.Roughness < 0.05f)
+	{
+		psout.Diffuse.xyz = float3(1.0f, 0.0f, 1.0f);
+#	if defined(DEFERRED)
+		psout.Specular.xyz = 0.0f;
+		psout.Albedo.xyz = 0.0f;
+		psout.Reflectance.xyz = 0.0f;
 #	endif
 	}
 

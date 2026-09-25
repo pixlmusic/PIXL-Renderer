@@ -1,5 +1,9 @@
 # PIXL Renderer 1.0.4 release audit
 
+## 2026-09-25 live-test follow-up
+
+Director Video input, POI navigation, point-speed timing and working-spline deletion were refined after user testing. WindowLife now passes dry-glass warp to the exterior recessed room and recognizes a window-specific glow guide on architectural diffuse materials. The Camera/Post-processing page was reordered around a wider upper-right preview, and the Tuner footer was shortened. The exact window scene, playback stability and GUI layout still require in-game confirmation. See `release_polish/DIRECTOR_WINDOWLIFE_GUI_FOLLOWUP_20260925.md` for the focused trace and test cases. Shader revision `PIXL.Shaders.20260925.2` requires another cache build. This follow-up does not close the exhaustive source review gate.
+
 ## Scope and evidence
 
 The canonical source is this repository. The baseline `PIXL-12C` Release build passed before 1.0.4 edits. The source tree contained substantial intentional uncommitted renderer, GUI, Director, material, and WindowLife work; none was reset. `docs/release_polish/ACTIVE_BUILD_INVENTORY.md` enumerates 735 PIXL-owned build/runtime candidates, including one retired module. The accompanying matrix records an automated text/pattern scan. It does **not** establish the requested per-file semantic review: callers, ownership, resource bindings, and runtime behavior remain unverified across the complete file set. This is an open release gate, separate from in-game visual testing.

@@ -115,6 +115,19 @@ static const float PIXL_HISTOGRAM_LOG_MIN = -12.0f;
 static const float PIXL_HISTOGRAM_LOG_MAX = 12.0f;
 static const float PIXL_HISTOGRAM_LOG_RANGE = 24.0f;
 
+// FXC may assume floating-point operations cannot produce INF/NaN and discard
+// isfinite() checks. Test the exponent bits so invalid camera data cannot be
+// converted into histogram indices or exposure multipliers.
+bool PixlCameraFinite(float value)
+{
+    return (asuint(value) & 0x7f800000u) != 0x7f800000u;
+}
+
+bool3 PixlCameraFinite(float3 value)
+{
+    return (asuint(value) & 0x7f800000u) != 0x7f800000u;
+}
+
 uint PixlCameraQualityTier()
 {
     return min((uint)(clamp(cameraQuality, 0.0f, 3.0f) + 0.5f), 3u);

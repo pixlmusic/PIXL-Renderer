@@ -5,12 +5,18 @@
 namespace Glints
 {
 	Texture2D<float4> Glint2023NoiseMap : register(t20);
+	static const float kOpenUnitInterval = 1.0e-6;
+	static const float kMinDerivativeDeterminant = 1.0e-10;
+	static const float kMinMicrofacetRoughness = 0.005;
 
 	//=======================================================================================
 	// TOOLS
 	//=======================================================================================
 	float erfinv(float x)
 	{
+		// The inverse CDF has singular endpoints.  Random conversion can round to
+		// either one, so keep its input strictly inside the valid open interval.
+		x = clamp(x, -1.0 + kOpenUnitInterval, 1.0 - kOpenUnitInterval);
 		float w, p;
 		w = -log((1.0 - x) * (1.0 + x));
 		if (w < 5.000000) {
@@ -42,13 +48,14 @@ namespace Glints
 	float sampleNormalDistribution(float u, float mu, float sigma)
 	{
 		//return mu + sigma * (sqrt(-2.0 * log(u.x))* cos(2.0 * pi * u.y));
-		float x = sigma * 1.414213f * erfinv(2.0 * u - 1.0) + mu;
+		float x = sigma * 1.414213f * erfinv(2.0 * clamp(u, kOpenUnitInterval, 1.0 - kOpenUnitInterval) - 1.0) + mu;
 		return x;
 	}
 
 	float3 sampleNormalDistribution(float3 u, float mu, float sigma)
 	{
 		//return mu + sigma * (sqrt(-2.0 * log(u.x))* cos(2.0 * pi * u.y));
+		u = clamp(u, kOpenUnitInterval.xxx, (1.0 - kOpenUnitInterval).xxx);
 		float x0 = sigma * 1.414213f * erfinv(2.0 * u.x - 1.0) + mu;
 		float x1 = sigma * 1.414213f * erfinv(2.0 * u.y - 1.0) + mu;
 		float x2 = sigma * 1.414213f * erfinv(2.0 * u.z - 1.0) + mu;
@@ -58,6 +65,7 @@ namespace Glints
 	float4 sampleNormalDistribution(float4 u, float mu, float sigma)
 	{
 		//return mu + sigma * (sqrt(-2.0 * log(u.x))* cos(2.0 * pi * u.y));
+		u = clamp(u, kOpenUnitInterval.xxxx, (1.0 - kOpenUnitInterval).xxxx);
 		float x0 = sigma * 1.414213f * erfinv(2.0 * u.x - 1.0) + mu;
 		float x1 = sigma * 1.414213f * erfinv(2.0 * u.y - 1.0) + mu;
 		float x2 = sigma * 1.414213f * erfinv(2.0 * u.z - 1.0) + mu;
@@ -72,15 +80,16 @@ namespace Glints
 		return frac((p3.x + p3.y) * p3.z);
 	}
 
-	float2x2 Inverse(float2x2 A)
-	{
-		return float2x2(A[1][1], -A[0][1], -A[1][0], A[0][0]) / determinant(A);
-	}
-
-	void GetGradientEllipse(float2 duvdx, float2 duvdy, out float2 ellipseMajor, out float2 ellipseMinor)
+	bool GetGradientEllipse(float2 duvdx, float2 duvdy, out float2 ellipseMajor, out float2 ellipseMinor)
 	{
 		float2x2 J = float2x2(duvdx, duvdy);
-		J = Inverse(J);
+		float det = determinant(J);
+		if (abs(det) <= kMinDerivativeDeterminant || det != det) {
+			ellipseMajor = 0.0.xx;
+			ellipseMinor = 0.0.xx;
+			return false;
+		}
+		J = float2x2(J[1][1], -J[0][1], -J[1][0], J[0][0]) / det;
 		J = mul(J, transpose(J));
 
 		float a = J[0][0];
@@ -90,16 +99,38 @@ namespace Glints
 
 		float T = a + d;
 		float D = a * d - b * c;
-		float SQ = sqrt(abs(T * T / 3.99999 - D));
+		float discriminant = T * T * 0.25 - D;
+		if (T != T || D != D || discriminant < -kMinDerivativeDeterminant) {
+			ellipseMajor = 0.0.xx;
+			ellipseMinor = 0.0.xx;
+			return false;
+		}
+		float SQ = sqrt(max(discriminant, 0.0));
 		float L1 = T / 2.0 - SQ;
 		float L2 = T / 2.0 + SQ;
+		if (L1 <= kMinDerivativeDeterminant || L2 <= kMinDerivativeDeterminant || L1 != L1 || L2 != L2) {
+			ellipseMajor = 0.0.xx;
+			ellipseMinor = 0.0.xx;
+			return false;
+		}
 
 		float2 A0 = float2(L1 - d, c);
 		float2 A1 = float2(L2 - d, c);
+		float A0Length2 = dot(A0, A0);
+		float A1Length2 = dot(A1, A1);
+		if (A0Length2 <= kMinDerivativeDeterminant || A1Length2 <= kMinDerivativeDeterminant) {
+			// Diagonal covariance matrices have an arbitrary eigenvector.  Select
+			// the canonical axes instead of normalizing a zero vector.
+			A0 = float2(1.0, 0.0);
+			A1 = float2(0.0, 1.0);
+			A0Length2 = 1.0;
+			A1Length2 = 1.0;
+		}
 		float r0 = rsqrt(L1);
 		float r1 = rsqrt(L2);
-		ellipseMajor = normalize(A0) * r0;
-		ellipseMinor = normalize(A1) * r1;
+		ellipseMajor = A0 * rsqrt(A0Length2) * r0;
+		ellipseMinor = A1 * rsqrt(A1Length2) * r1;
+		return true;
 	}
 
 	float2 RotateUV(float2 uv, float rotation, float2 mid)
@@ -221,8 +252,11 @@ namespace Glints
 
 	void CustomRand4Texture(float microfacetRoughness, float2 slope, float2 slopeRandOffset, out float4 outUniform, out float4 outGaussian, out float2 slopeLerp)
 	{
-		uint2 size = 128;
-		float2 slope2 = abs(slope) / microfacetRoughness;
+		uint width, height;
+		Glint2023NoiseMap.GetDimensions(width, height);
+		uint2 size = max(uint2(width, height), uint2(1, 1));
+		float safeMicrofacetRoughness = max(microfacetRoughness, kMinMicrofacetRoughness);
+		float2 slope2 = abs(slope) / safeMicrofacetRoughness;
 		slope2 = slope2 + (slopeRandOffset * size);
 		slopeLerp = frac(slope2);
 		uint2 slopeCoord = uint2(floor(slope2)) % size;
@@ -287,13 +321,16 @@ namespace Glints
 
 		// Compute microfacet count with randomization
 		float logDensityRand = clamp(sampleNormalDistribution(float(randSelected.x), logDensity.r, densityRandomization), 0.0, 50.0);
-		float microfacetCount = max(1e-8, vars.footprintArea.r * exp(logDensityRand));
+		// The binomial model below represents one selected facet plus the
+		// remaining population, so its valid domain begins at one facet.
+		float microfacetCount = max(1.0, vars.footprintArea.r * exp(logDensityRand));
 
 		// Compute binomial properties
-		float hitProba = roughness * targetNDF;
-		float footprintOneHitProba = (1.0 - pow(abs(1.0 - hitProba), microfacetCount));
-		float footprintMean = (microfacetCount - 1.0) * hitProba;
-		float footprintSTD = sqrt((microfacetCount - 1.0) * hitProba * (1.0 - hitProba));
+		float hitProba = saturate(max(roughness, kMinMicrofacetRoughness) * saturate(targetNDF));
+		float footprintOneHitProba = 1.0 - pow(1.0 - hitProba, microfacetCount);
+		float remainingFacetCount = microfacetCount - 1.0;
+		float footprintMean = remainingFacetCount * hitProba;
+		float footprintSTD = sqrt(max(remainingFacetCount * hitProba * (1.0 - hitProba), 0.0));
 		float binomialSmoothWidth = 0.1 * clamp(footprintOneHitProba * 10, 0.0, 1.0) * clamp((1.0 - footprintOneHitProba) * 10, 0.0, 1.0);
 
 		// Generate numbers of reflecting microfacets
@@ -434,35 +471,50 @@ namespace Glints
 		return;
 	}
 
-	void PrecomputeGlints(float rnd, float2 uv, float2 duvdx, float2 duvdy, float screenSpaceScale, out GlintCachedVars vars)
+	bool PrecomputeGlints(float rnd, float2 uv, float2 duvdx, float2 duvdy, float screenSpaceScale, out GlintCachedVars vars)
 	{
+		vars.uv = uv;
+		vars.gridSeed = 0;
+		vars.footprintArea = 1.0;
 		// ACCURATE PIXEL FOOTPRINT ELLIPSE
 		float2 ellipseMajor, ellipseMinor;
-		GetGradientEllipse(duvdx, duvdy, ellipseMajor, ellipseMinor);
-		float ellipseRatio = length(ellipseMajor) / (length(ellipseMinor) + EPSILON_GLINTS);
+		if (!GetGradientEllipse(duvdx, duvdy, ellipseMajor, ellipseMinor)) {
+			return false;
+		}
+		float majorLength = length(ellipseMajor);
+		float minorLength = length(ellipseMinor);
+		if (majorLength <= EPSILON_GLINTS || minorLength <= EPSILON_GLINTS || majorLength != majorLength || minorLength != minorLength) {
+			return false;
+		}
+		float ellipseRatio = max(majorLength / minorLength, 1.0);
 
 		// SHARED GLINT NDF VALUES
-		float halfScreenSpaceScaler = screenSpaceScale * 0.5;
-		float footprintArea = length(ellipseMajor) * halfScreenSpaceScaler * length(ellipseMinor) * halfScreenSpaceScaler * 4.0;
+		float halfScreenSpaceScaler = max(screenSpaceScale, 1.0) * 0.5;
+		float footprintArea = majorLength * halfScreenSpaceScaler * minorLength * halfScreenSpaceScaler * 4.0;
+		if (footprintArea <= EPSILON_GLINTS || footprintArea != footprintArea) {
+			return false;
+		}
 
 		// MANUAL LOD COMPENSATION
-		float lod = log2(length(ellipseMinor) * halfScreenSpaceScaler);
-		float lod0 = (int)lod;  //lod >= 0.0 ? (int)(lod) : (int)(lod - 1.0);
+		float lod = log2(max(minorLength * halfScreenSpaceScaler, EPSILON_GLINTS));
+		// Integer conversion truncates negative values toward zero.  The grid
+		// interpolation is defined over [floor(lod), floor(lod) + 1].
+		float lod0 = floor(lod);
 		float lod1 = lod0 + 1;
-		float divLod0 = pow(2.0, lod0);
-		float divLod1 = pow(2.0, lod1);
+		float divLod0 = exp2(lod0);
+		float divLod1 = exp2(lod1);
 		float lodLerp = frac(lod);
 		float footprintAreaLOD0 = exp2(2.0 * lod0);
 		float footprintAreaLOD1 = exp2(2.0 * lod1);
 
 		// MANUAL ANISOTROPY RATIO COMPENSATION
-		float ratio0 = max(pow(2.0, (int)log2(ellipseRatio)), 1.0);
+		float ratio0 = max(exp2(floor(log2(max(ellipseRatio, 1.0)))), 1.0);
 		float ratio1 = ratio0 * 2.0;
 		float ratioLerp = saturate(Remap(ellipseRatio, ratio0, ratio1, 0.0, 1.0));
 
 		// MANUAL ANISOTROPY ROTATION COMPENSATION
 		float2 v1 = float2(0.0, 1.0);
-		float2 v2 = normalize(ellipseMajor);
+		float2 v2 = ellipseMajor / majorLength;
 		float theta = atan2(v1.x * v2.y - v1.y * v2.x, v1.x * v2.x + v1.y * v2.y);
 		float thetaGrid = Math::HALF_PI / max(ratio0, 2.0);
 		float thetaBin = (int)(theta / thetaGrid) * thetaGrid;
@@ -484,8 +536,19 @@ namespace Glints
 		if (centerSpecialCase == true)  // Account for center singularity in barycentric computation
 			thetaBinLerp = Remap01To(thetaBinLerp, 0.0, ratioLerp);
 		float4 tetraBarycentricWeights = GetBarycentricWeightsTetrahedron(float3(thetaBinLerp, ratioLerp, lodLerp), tetras[0], tetras[1], tetras[2], tetras[3]);  // Compute barycentric coordinates within chosen tetrahedron
+		if (any(tetraBarycentricWeights != tetraBarycentricWeights)) {
+			return false;
+		}
+		// These are selection probabilities, not a direction.  Euclidean
+		// normalize() changed their sum and biased tetrahedron selection.
+		tetraBarycentricWeights = max(tetraBarycentricWeights, 0.0.xxxx);
+		float tetraWeightSum = dot(tetraBarycentricWeights, 1.0.xxxx);
+		if (tetraWeightSum <= EPSILON_GLINTS) {
+			return false;
+		}
+		tetraBarycentricWeights /= tetraWeightSum;
 
-		float3 accumWeights = normalize(tetraBarycentricWeights).xyz;
+		float3 accumWeights = tetraBarycentricWeights.xyz;
 		accumWeights.y += accumWeights.x;
 		accumWeights.z += accumWeights.y;
 
@@ -506,13 +569,18 @@ namespace Glints
 		vars.uv = RotateUV(uv, thetaBins[tetra.x], 0.0.rr) / divLods[tetra.z] / float2(1.0, ratios[tetra.y]);
 		vars.gridSeed = HashWithoutSine13(float3(log2(divLods[tetra.z]), fmod(thetaBins[tetra.x], Math::TAU), ratios[tetra.y])) * 4294967296.0;
 		vars.footprintArea = ratios[tetra.y] * footprintAreas[tetra.z];
+		return vars.footprintArea > EPSILON_GLINTS && vars.footprintArea == vars.footprintArea;
 	}
 
 	float4 SampleGlints2023NDF(float noise, float logDensity, float roughness, float densityRandomization, GlintCachedVars vars, float3 H, float targetNDF, float maxNDF)
 	{
 		float2 slope = H.xy;  // Orthographic slope projected grid
-		float rescaledTargetNDF = targetNDF / maxNDF;
-		float sampleContribution = SampleGlintGridSimplex(noise, logDensity, roughness, densityRandomization, vars, slope, rescaledTargetNDF);
-		return min(sampleContribution * (1.0 / roughness), 60) * maxNDF;  // somewhat brute force way of prevent glazing angle extremities}
+		float safeRoughness = max(roughness, kMinMicrofacetRoughness);
+		float safeMaxNDF = max(maxNDF, EPSILON_GLINTS);
+		float rescaledTargetNDF = saturate(max(targetNDF, 0.0) / safeMaxNDF);
+		float sampleContribution = SampleGlintGridSimplex(noise, logDensity, safeRoughness, densityRandomization, vars, slope, rescaledTargetNDF);
+		// Keep the finite Monte Carlo estimator tail bound.  This is no longer a
+		// substitute for domain checks above; it limits rare valid grazing samples.
+		return min(max(sampleContribution, 0.0) / safeRoughness, 60.0) * safeMaxNDF;
 	}
 }
