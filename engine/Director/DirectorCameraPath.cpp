@@ -103,14 +103,30 @@ namespace DirectorCameraPath
 			return Normalize({ axis.x * sine, axis.y * sine, axis.z * sine, std::cos(half) });
 		}
 
+		[[nodiscard]] Vec3 ForwardFromRotation(Quaternion rotation) noexcept
+		{
+			rotation = Normalize(rotation);
+			return {
+				2.0f * (rotation.x * rotation.y - rotation.z * rotation.w),
+				1.0f - 2.0f * (rotation.x * rotation.x + rotation.z * rotation.z),
+				2.0f * (rotation.y * rotation.z + rotation.x * rotation.w)
+			};
+		}
+
 		[[nodiscard]] Quaternion LookRotation(Vec3 forward, Quaternion fallback, float rollDegrees) noexcept
 		{
-			forward = Normalize(forward, { 0.0f, 1.0f, 0.0f });
+			const float forwardLength = Length(forward);
+			if (!IsFinite(forwardLength) || forwardLength <= kEpsilon)
+				return Normalize(fallback);
+			forward = Scale(forward, 1.0f / forwardLength);
 			Vec3 up{ 0.0f, 0.0f, 1.0f };
 			if (std::abs(Dot(forward, up)) > 0.995f)
 				up = { 0.0f, 1.0f, 0.0f };
-			const Vec3 right = Normalize(Cross(up, forward), { 1.0f, 0.0f, 0.0f });
-			up = Normalize(Cross(forward, right), { 0.0f, 0.0f, 1.0f });
+			// Local +Y is camera forward and +X is right. The opposite cross-product
+			// order creates a reflected basis (determinant -1); converting it to a
+			// quaternion makes path-facing pitch/yaw jump at some headings.
+			const Vec3 right = Normalize(Cross(forward, up), { 1.0f, 0.0f, 0.0f });
+			up = Normalize(Cross(right, forward), { 0.0f, 0.0f, 1.0f });
 			const float trace = right.x + forward.y + up.z;
 			Quaternion result{};
 		if (trace > 0.0f) {
@@ -137,7 +153,9 @@ namespace DirectorCameraPath
 			result = Normalize(result);
 			if (!IsFinite(result.w))
 				result = Normalize(fallback);
-			return Multiply(result, AxisAngle(forward, rollDegrees * std::numbers::pi_v<float> / 180.0f));
+			// Roll is a world-axis rotation around the current forward vector. It
+			// must precede the camera orientation so it cannot change native yaw/pitch.
+			return Multiply(AxisAngle(forward, rollDegrees * std::numbers::pi_v<float> / 180.0f), result);
 		}
 
 		[[nodiscard]] float Ease(Easing easing, float value) noexcept
@@ -259,7 +277,22 @@ namespace DirectorCameraPath
 		const float delta = 0.001f;
 		const Vec3 before = EvaluatePosition(segment, std::max(0.0f, parameter - delta));
 		const Vec3 after = EvaluatePosition(segment, std::min(1.0f, parameter + delta));
-		return Normalize(Subtract(after, before));
+		const Vec3 tangent = Subtract(after, before);
+		if (Length(tangent) > kEpsilon)
+			return Normalize(tangent);
+		// Coincident POIs or a nearly stationary endpoint have no local tangent.
+		// Use the nearest authored span instead of snapping the camera toward +Y.
+		if (points.size() >= 2) {
+			const std::size_t start = segment % points.size();
+			const std::size_t end = closed ? (start + 1) % points.size() : std::min(start + 1, points.size() - 1);
+			const Vec3 direct = Subtract(points[end].worldPosition, points[start].worldPosition);
+			if (Length(direct) > kEpsilon)
+				return Normalize(direct);
+			const std::size_t previous = closed ? (start + points.size() - 1) % points.size() : (start == 0 ? 0 : start - 1);
+			const std::size_t next = closed ? (end + 1) % points.size() : std::min(end + 1, points.size() - 1);
+			return Normalize(Subtract(points[next].worldPosition, points[previous].worldPosition));
+		}
+		return { 0.0f, 1.0f, 0.0f };
 	}
 
 	bool Path::Rebuild(std::string* error)
@@ -299,7 +332,9 @@ namespace DirectorCameraPath
 				// A short ninety-degree turn cannot be traversed smoothly at the
 				// same speed as a long straight. Bound angular travel at the POI;
 				// linear interpolation below eases into and out of the corner.
-				const float cornerSpeed = std::max(1.0f, std::min(beforeLength, afterLength) * 4.0f / bend);
+				// Keep short bends at a calmer angular pace. Straight or broad
+				// segments retain their authored speed and long-shot timing.
+				const float cornerSpeed = std::max(1.0f, std::min(beforeLength, afterLength) * 2.4f / bend);
 				effectiveSpeeds[index] = std::min(effectiveSpeeds[index], cornerSpeed);
 			}
 		}
@@ -328,6 +363,31 @@ namespace DirectorCameraPath
 			const Vec3 last = EvaluatePosition(segmentIndex, 1.0f);
 			subdivide(subdivide, 0.0f, first, 1.0f, last, 0);
 			segment.length = distance;
+			totalLength += segment.length;
+		}
+		// A nearby pair of POIs can require a large camera turn in only a few
+		// world units. Limit angular travel as part of the rebuild, so every
+		// captured/edited POI gets a smooth timeline without altering its saved
+		// speed. The shared endpoint cap also keeps velocity continuous there.
+		constexpr float maximumTurnRadiansPerSecond = 0.75f * std::numbers::pi_v<float>;
+		for (std::size_t segmentIndex = 0; segmentIndex < count; ++segmentIndex) {
+			const auto& segment = segments[segmentIndex];
+			if (segment.length <= kEpsilon)
+				continue;
+			const std::size_t end = closed ? (segmentIndex + 1) % points.size() : segmentIndex + 1;
+			const Quaternion first = Normalize(EvaluateSegment(segmentIndex, 0.0f).worldRotation);
+			const Quaternion last = Normalize(EvaluateSegment(segmentIndex, 1.0f).worldRotation);
+			const float alignment = std::clamp(std::abs(first.x * last.x + first.y * last.y +
+				first.z * last.z + first.w * last.w), 0.0f, 1.0f);
+			const float angle = 2.0f * std::acos(alignment);
+			if (angle > 0.35f) {
+				const float turnSpeed = std::max(1.0f, segment.length * maximumTurnRadiansPerSecond / angle);
+				effectiveSpeeds[segmentIndex] = std::min(effectiveSpeeds[segmentIndex], turnSpeed);
+				effectiveSpeeds[end] = std::min(effectiveSpeeds[end], turnSpeed);
+			}
+		}
+		for (std::size_t segmentIndex = 0; segmentIndex < count; ++segmentIndex) {
+			auto& segment = segments[segmentIndex];
 			const std::size_t end = closed ? (segmentIndex + 1) % points.size() : segmentIndex + 1;
 			const float startSpeed = effectiveSpeeds[segmentIndex];
 			const float endSpeed = effectiveSpeeds[end];
@@ -337,7 +397,6 @@ namespace DirectorCameraPath
 			segment.duration = segment.length * (std::abs(speedDifference) > 0.001f
 				? std::log(endSpeed / startSpeed) / speedDifference
 				: 1.0f / startSpeed);
-			totalLength += segment.length;
 			totalDuration += segment.duration + std::max(ClampFinite(points[end].holdDuration, 0.0f, 600.0f, 0.0f), 0.0f);
 		}
 		if (explicitDuration.has_value())
@@ -458,7 +517,8 @@ namespace DirectorCameraPath
 			// two authored points are nearly coincident, so no raw curvature value
 			// may directly become camera roll.
 			automaticBank = std::clamp(-turn * speed * strength * 0.35f, -35.0f, 35.0f);
-			pose.worldRotation = Multiply(pose.worldRotation, AxisAngle(EvaluateTangent(segment, parameter), automaticBank * std::numbers::pi_v<float> / 180.0f));
+			const Vec3 forward = ForwardFromRotation(pose.worldRotation);
+			pose.worldRotation = Multiply(AxisAngle(forward, automaticBank * std::numbers::pi_v<float> / 180.0f), pose.worldRotation);
 		}
 		pose.bankDegrees = authoredRoll + automaticBank;
 		pose.valid = IsFinite(pose.worldPosition) && IsFinite(pose.fieldOfView);
@@ -582,6 +642,16 @@ namespace DirectorCameraPath
 	bool RunDeterministicSelfTest(std::string* failure)
 	{
 		if (failure) failure->clear();
+		for (const Vec3 direction : { Vec3{ 0.0f, 1.0f, 0.0f }, Vec3{ 1.0f, 0.0f, 0.0f },
+			Vec3{ -1.0f, 0.2f, 0.3f }, Vec3{ 0.2f, 0.1f, 1.0f } }) {
+			for (const float roll : { 0.0f, 23.0f }) {
+				const Vec3 result = ForwardFromRotation(LookRotation(direction, {}, roll));
+				if (Dot(Normalize(result), Normalize(direction)) < 0.999f) {
+					if (failure) *failure = "look rotation changed camera direction or produced a reflected basis";
+					return false;
+				}
+			}
+		}
 		Path path{};
 		path.points = {
 			{ 1, { 0.0f, 0.0f, 0.0f } },
@@ -659,6 +729,14 @@ namespace DirectorCameraPath
 			if (failure) *failure = "fixed route duration lost point speed or timeline alignment";
 			return false;
 		}
+		Path closeRotation{};
+		closeRotation.points = { { 1, { 0.0f, 0.0f, 0.0f } }, { 2, { 10.0f, 0.0f, 0.0f } } };
+		closeRotation.points[1].worldRotation = AxisAngle({ 0.0f, 0.0f, 1.0f },
+			std::numbers::pi_v<float> * 0.5f);
+		if (!closeRotation.Rebuild(&error) || closeRotation.GetDuration() < 0.65f) {
+			if (failure) *failure = "close POIs did not get enough time for a sharp camera turn";
+			return false;
+		}
 		Path shortTurn{};
 		shortTurn.points = {
 			{ 1, { 0.0f, 0.0f, 0.0f } }, { 2, { 6.0f, 0.0f, 0.0f } },
@@ -676,6 +754,23 @@ namespace DirectorCameraPath
 				return false;
 			}
 			previous = sample.worldPosition;
+		}
+		for (auto& point : shortTurn.points)
+			point.followPathDirection = true;
+		if (!shortTurn.Rebuild(&error)) {
+			if (failure) *failure = "short path-facing turn failed to rebuild";
+			return false;
+		}
+		Vec3 previousForward = ForwardFromRotation(shortTurn.EvaluateTime(0.0f, false).worldRotation);
+		for (int frame = 1; frame <= 240; ++frame) {
+			const Pose sample = shortTurn.EvaluateTime(
+				shortTurn.GetDuration() * static_cast<float>(frame) / 240.0f, false);
+			const Vec3 forward = ForwardFromRotation(sample.worldRotation);
+			if (!sample.valid || !IsFinite(forward) || Dot(Normalize(previousForward), Normalize(forward)) < 0.95f) {
+				if (failure) *failure = "short path-facing turn snapped between frames";
+				return false;
+			}
+			previousForward = forward;
 		}
 		return true;
 	}

@@ -1114,7 +1114,8 @@ void Menu::DrawSettings()
 			ImGui::SetCursorScreenPos(ImVec2(closeX, headerStart.y + PIXLUI::Ref(14.0f)));
 			ImGui::PushID("CloseTuner");
 			if (PIXLUI::ActionButton("X", ImVec2(PIXLUI::Ref(27.0f), PIXLUI::Ref(27.0f)), false)) {
-				TuningWorkspaceRenderer::CloseTunerInspection();
+				if (TuningWorkspaceRenderer::IsTunerInspectionOwned())
+					TuningWorkspaceRenderer::CloseTunerInspection();
 				IsEnabled = false;
 			}
 			ImGui::PopID();
@@ -1360,8 +1361,7 @@ void Menu::DrawSettings()
 	// the existing input hook restores Skyrim's incoming state without enabling
 	// controls that another menu or scripted state had intentionally disabled.
 	if (wasEnabledAtFrameStart && !IsEnabled &&
-		TuningWorkspaceRenderer::IsDirectorPhotoModeActive() &&
-		!TuningWorkspaceRenderer::IsDirectorVideoModeActive()) {
+		TuningWorkspaceRenderer::IsTunerInspectionOwned()) {
 		TuningWorkspaceRenderer::CloseTunerInspection();
 	}
 }

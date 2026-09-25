@@ -14,7 +14,7 @@ Status values: PASS, FAIL, MANUAL TEST REQUIRED, IN PROGRESS.
 | CPU/HLSL structure parity | MANUAL TEST REQUIRED | No new shared ABI in this pass; pre-existing WindowLife/material edits passed selected FXC suites, not live binding. |
 | Resource/register runtime audit | MANUAL TEST REQUIRED | D3D debug layer and live draw inspection. |
 | Photo Mode lifecycle | MANUAL TEST REQUIRED | Enter, capture, abnormal exit, restoration. |
-| Video Mode lifecycle | MANUAL TEST REQUIRED | Video-to-Photo stops preview playback; verify Shift movement, POI selection/update, smooth speed ramp, input isolation, both mode switches and camera restoration in Skyrim. |
+| Video Mode lifecycle | MANUAL TEST REQUIRED | Path direction, angular pacing and tuner handoff have offline checks; verify Shift movement, POI selection/update, short corners, yaw seam, input isolation, both mode switches and camera restoration in Skyrim. |
 | SurfaceTides absent/present | MANUAL TEST REQUIRED | Verify V1 handshake log on river/lake draw. |
 | Configuration migration | MANUAL TEST REQUIRED | Existing keys retained; default and five preset JSON files parse, but a 1.0.3a user profile still needs live load. |
 | Debug features off by default | PASS (static) | Default JSON has zero for `DebugView`, `LegacyPhysicalDebugMode`, and `TerrainHeightDebugMode`; inspect live UI too. |
@@ -22,6 +22,6 @@ Status values: PASS, FAIL, MANUAL TEST REQUIRED, IN PROGRESS.
 | Source ZIP | PASS | 1,016 entries; current commit and working-tree snapshot, required files present, generated/private files excluded. |
 | FOMOD ZIP | PASS | 364 archive entries; XML schema, optional SurfaceTides bridge and notices validated. |
 | SurfaceTides source companion | PASS | Matching 1.0.2 modified source archive built and hash verified. |
-| Main-game deployment | PASS | Restaged DLL 1.0.4.0 hash `80DA4F9FA1263AD39996F9FEEEB6D123EC413D16A7BF2897CE5AA9D1734149CC` deployed with rollback backup; all 340 payloads hash-match the manifest. |
-| Steam-game deployment | PASS | The same restaged DLL was deployed with a separate rollback backup; all 340 payloads hash-match the manifest. |
+| Main-game deployment | MANUAL TEST REQUIRED | An earlier 1.0.4 candidate was deployed and verified. This capture-finish candidate is packaged for owner testing and has not been deployed. |
+| Steam-game deployment | MANUAL TEST REQUIRED | An earlier 1.0.4 candidate was deployed and verified. This capture-finish candidate is packaged for owner testing and has not been deployed. |
 | In-game first/third person, cells, fast travel, weather | MANUAL TEST REQUIRED | Requires owner live session. |

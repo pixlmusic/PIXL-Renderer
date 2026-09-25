@@ -81,6 +81,8 @@ public:
 	[[nodiscard]] static bool IsDirectorVideoEditorVisible();
 	[[nodiscard]] static bool IsDirectorVideoPlaybackActive();
 	[[nodiscard]] static bool IsDirectorCameraTransitionPending();
+	/** True when the full tuner started native camera inspection and owns its teardown. */
+	[[nodiscard]] static bool IsTunerInspectionOwned();
 	/** Current PIXL tuner ownership state. The tuner remains open while inspecting. */
 	[[nodiscard]] static TunerInteractionMode GetTunerInteractionMode();
 	/** True only while native free-camera navigation is actively being driven. */

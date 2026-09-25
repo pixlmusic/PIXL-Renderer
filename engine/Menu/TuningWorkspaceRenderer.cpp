@@ -740,7 +740,13 @@ namespace
 
 		freeCameraState->translation = { pose.worldPosition.x, pose.worldPosition.y, pose.worldPosition.z };
 		freeCameraState->rotation.x = std::clamp(-std::atan2(forwardZ, horizontal), -1.50f, 1.50f);
-		freeCameraState->rotation.y = std::atan2(forwardX, forwardY);
+		const float targetYaw = std::atan2(forwardX, forwardY);
+		// Skyrim's native free camera stores an unwrapped yaw. Assigning atan2's
+		// [-pi, pi] result directly can jump almost a full turn at the seam.
+		freeCameraState->rotation.y = std::isfinite(freeCameraState->rotation.y)
+			? freeCameraState->rotation.y + std::remainder(targetYaw - freeCameraState->rotation.y,
+				2.0f * std::numbers::pi_v<float>)
+			: targetYaw;
 		freeCameraState->useRunSpeed = false;
 		freeCameraState->verticalDirection = 0;
 		freeCameraState->zUpDown = {};
@@ -1634,7 +1640,9 @@ namespace
 			player->SetAlpha(1.0f);
 
 		g_directorPhotoMode.hudVisible = true;
-		g_directorPhotoMode.quickPanelVisible = false;
+		// The quick effects panel is the first-run Photo control surface. Opening
+		// it on entry makes capture, lens and movement controls discoverable.
+		g_directorPhotoMode.quickPanelVisible = g_directorMode == DirectorMode::Photo;
 		g_directorPhotoMode.focusTargetMode = false;
 		g_directorPhotoMode.focusTargetValid = false;
 		g_directorPhotoMode.focusTargetDistance = 0.0f;
@@ -3296,9 +3304,7 @@ namespace
 		// the native free camera. Holding the existing Tuner fly-camera modifier
 		// immediately pauses the route and returns control to Skyrim, so a point
 		// can be reframed and captured without two systems writing the same pose.
-		const bool authoringMove =
-			(GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0 ||
-			g_tunerInspectionMoving;
+		const bool authoringMove = g_tunerInspectionMoving;
 		if (authoringMove) {
 			g_directorVideo.playback = DirectorVideoPlaybackState::Paused;
 			g_directorVideo.playbackStartPending = false;
@@ -3504,6 +3510,34 @@ namespace
 		}
 	}
 
+	void DrawDirectorCinematographyReticle(
+		ImDrawList* draw,
+		const ImVec2& displaySize,
+		float scale,
+		bool video)
+	{
+		const ImVec2 center(displaySize.x * 0.5f, displaySize.y * 0.5f);
+		const float radius = 23.0f * scale;
+		const float arm = 8.0f * scale;
+		const ImU32 color = PIXLUI::ScaleAlpha(
+			video ? PIXLUI::Colors::CyanSoft : PIXLUI::Colors::TextMuted, 0.85f);
+		const float stroke = std::max(1.0f, 1.25f * scale);
+		for (const float xSign : { -1.0f, 1.0f }) {
+			for (const float ySign : { -1.0f, 1.0f }) {
+				const ImVec2 corner(center.x + xSign * radius, center.y + ySign * radius);
+				draw->AddLine(corner, ImVec2(corner.x - xSign * arm, corner.y), color, stroke);
+				draw->AddLine(corner, ImVec2(corner.x, corner.y - ySign * arm), color, stroke);
+			}
+		}
+		if (video) {
+			const float dot = 3.5f * scale;
+			draw->AddQuad(ImVec2(center.x, center.y - dot), ImVec2(center.x + dot, center.y),
+				ImVec2(center.x, center.y + dot), ImVec2(center.x - dot, center.y), color, stroke);
+		} else {
+			draw->AddCircle(center, 3.2f * scale, color, 12, stroke);
+		}
+	}
+
 	void DrawDirectorViewfinder(
 		ImDrawList* draw,
 		const ImVec2& displaySize,
@@ -3571,7 +3605,7 @@ namespace
 		if (width < 220.0f * scale)
 			return;
 		const float headerHeight =
-			50.0f * scale;
+			70.0f * scale;
 		const float rowHeight =
 			29.0f * scale;
 		const float footerHeight =
@@ -3642,6 +3676,14 @@ namespace
 				y + 28.0f * scale),
 			PIXLUI::Colors::CyanSoft,
 			"QUICK EFFECTS");
+		draw->AddRectFilled(ImVec2(x + 10.0f * scale, y + 46.0f * scale),
+			ImVec2(x + width - 10.0f * scale, y + 66.0f * scale),
+			IM_COL32(57, 39, 23, 205), 3.0f * scale);
+		PIXLUI::DrawClippedOverlayText(draw,
+			ImVec2(x + 16.0f * scale, y + 49.0f * scale),
+			PIXLUI::Colors::Warning,
+			"WASD FLY  |  HOLD SHIFT FOR FASTER MOVE",
+			width - 32.0f * scale);
 
 		for (int i = firstVisible; i < lastVisible; ++i) {
 			const bool selected =
@@ -3957,6 +3999,7 @@ namespace
 
 		DrawDirectorCompositionGuide(draw, displaySize, scale,
 			g_directorVideo.compositionGuide);
+		DrawDirectorCinematographyReticle(draw, displaySize, scale, true);
 		DrawDirectorWorldPathOverlay(draw, displaySize, scale);
 		const float cinemaAmount = PIXLUI::Animate01("##DirectorVideoCinemaBars", g_directorVideo.cinemaBars, 8.0f);
 		const float cinemaHeight = displaySize.y * 0.075f * cinemaAmount;
@@ -4233,6 +4276,7 @@ namespace
 
 		DrawDirectorCompositionGuide(draw, displaySize, scale,
 			g_directorPhotoMode.compositionGuide);
+		DrawDirectorCinematographyReticle(draw, displaySize, scale, false);
 
 		DrawDirectorViewfinder(
 			draw,
@@ -5121,6 +5165,11 @@ bool TuningWorkspaceRenderer::IsDirectorCameraTransitionPending()
 		g_directorExitRequested.load(std::memory_order_acquire);
 }
 
+bool TuningWorkspaceRenderer::IsTunerInspectionOwned()
+{
+	return g_tunerOwnsInspection;
+}
+
 TuningWorkspaceRenderer::TunerInteractionMode TuningWorkspaceRenderer::GetTunerInteractionMode()
 {
 	const bool tunerOpen = globals::menu && globals::menu->IsEnabled;
@@ -5128,7 +5177,7 @@ TuningWorkspaceRenderer::TunerInteractionMode TuningWorkspaceRenderer::GetTunerI
 		return TunerInteractionMode::Closed;
 	if (!g_directorPhotoMode.active)
 		return TunerInteractionMode::LiveUI;
-	if (IsDirectorVideoMode() && tunerOpen && !g_tunerInspectionMoving)
+	if (tunerOpen && !g_tunerOwnsInspection && !g_tunerInspectionMoving)
 		return TunerInteractionMode::LiveUI;
 	return g_tunerInspectionMoving
 		? TunerInteractionMode::InspectMoving
@@ -5137,7 +5186,9 @@ TuningWorkspaceRenderer::TunerInteractionMode TuningWorkspaceRenderer::GetTunerI
 
 bool TuningWorkspaceRenderer::IsDirectorInspectionMoving()
 {
-	return (g_tunerOwnsInspection || IsDirectorVideoMode()) && g_directorPhotoMode.active && g_tunerInspectionMoving &&
+	const bool tunerOpen = globals::menu && globals::menu->IsEnabled;
+	return (g_tunerOwnsInspection || IsDirectorVideoMode() || tunerOpen) &&
+		g_directorPhotoMode.active && g_tunerInspectionMoving &&
 		!g_directorExitRequested.load(std::memory_order_acquire);
 }
 
@@ -5164,6 +5215,10 @@ bool TuningWorkspaceRenderer::OpenDirectorPhotoMode()
 			g_directorPhotoMode.hudVisible = true;
 			logger::info("[PIXL Director] Switched active session from Video to Photo Mode");
 		}
+		g_directorPhotoMode.quickPanelVisible = true;
+		g_tunerOwnsInspection = false;
+		g_tunerInspectionMoving = false;
+		g_tunerShiftHeld = false;
 		if (globals::menu)
 			globals::menu->IsEnabled = false;
 		return true;
@@ -5263,10 +5318,14 @@ void TuningWorkspaceRenderer::UpdateTunerInspection()
 		if (!globals::menu || !globals::menu->IsEnabled || !globals::menu->GetSettings().AdvancedMode)
 			CloseTunerInspection();
 	}
-	if (g_tunerOwnsInspection || IsDirectorVideoMode()) {
+	if (g_directorPhotoMode.active) {
 		// Recover from a release lost during focus changes without creating a
 		// second input stream. This can only stop navigation, never start it.
 		if (!(GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
+			g_tunerShiftHeld = false;
+			g_tunerInspectionMoving = false;
+		}
+		if (g_directorMode == DirectorMode::Photo && (!globals::menu || !globals::menu->IsEnabled)) {
 			g_tunerShiftHeld = false;
 			g_tunerInspectionMoving = false;
 		}
@@ -5315,11 +5374,11 @@ bool TuningWorkspaceRenderer::HandleTunerKeyboardInput(
 		return false;
 	}
 
-	// Escape is an explicit ownership boundary while the tuner is open.  It
-	// must close both the UI and any active inspection transaction, including
-	// native free-camera mode, without forwarding the key to Skyrim.
+	// An independently opened Director session survives closing its full tuner.
+	// Inspection started by the tuner still tears down its native camera lease.
 	if (virtualKey == VK_ESCAPE && pressed) {
-		CloseTunerInspection();
+		if (!g_directorPhotoMode.active || g_tunerOwnsInspection || !globals::menu->IsEnabled)
+			CloseTunerInspection();
 		globals::menu->IsEnabled = false;
 		return true;
 	}
@@ -7408,7 +7467,9 @@ namespace
 			ImGui::SameLine();
 			ImGui::TextDisabled("%zu POI%s", g_directorVideo.path.points.size(),
 				g_directorVideo.path.points.size() == 1 ? "" : "S");
-			ImGui::TextDisabled("Mouse edits the panel. Hold Shift to fly; Delete hides all UI.");
+			ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::Warning), "HOLD SHIFT");
+			ImGui::SameLine();
+			ImGui::TextDisabled("TO FLY  /  RELEASE TO EDIT  /  DELETE CLEAN VIEW");
 
 			if (PIXLUI::ActionButton("CAPTURE POI", ImVec2(PIXLUI::Ref(128.0f), PIXLUI::Ref(30.0f)), true))
 				CaptureDirectorVideoPointFromCamera();
