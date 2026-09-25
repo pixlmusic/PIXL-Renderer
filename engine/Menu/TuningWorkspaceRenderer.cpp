@@ -5497,7 +5497,13 @@ bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
 		// VIDEO is a sibling workspace. Do not let PHOTO-only capture/effect
 		// shortcuts arm a still transaction while a path is being authored.
 		if (virtualKey == VK_RETURN) {
-			CaptureDirectorVideoPointFromCamera();
+			// The hidden Video viewfinder shares Enter with quick POI capture.
+			// Shift+Enter must restore the mouse-driven route editor instead of
+			// silently adding a point and leaving the cursor unavailable.
+			if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) && globals::menu)
+				TuningWorkspaceRenderer::OpenDirectorVideoMode();
+			else
+				CaptureDirectorVideoPointFromCamera();
 			return true;
 		}
 		if (virtualKey == VK_SPACE && g_directorVideo.path.IsValid()) {
