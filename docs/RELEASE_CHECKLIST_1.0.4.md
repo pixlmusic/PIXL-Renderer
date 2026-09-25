@@ -10,7 +10,7 @@ Status values: PASS, FAIL, MANUAL TEST REQUIRED, IN PROGRESS.
 | Required shader cases | PASS (representative) | Strict FXC: 32 material, 32 grass, 72 landscape/water, 9 WindowLife, 588 compute cases. Full in-game permutation cache remains a manual gate. |
 | Full runtime shader cache | MANUAL TEST REQUIRED | Candidate uses compile-on-device mode; `PIXL.Shaders.20260925.2` invalidates prior stages. Verify a complete in-game rebuild. |
 | GUI code test | PASS | Registry/lifetime, scaled layouts, disabled controls, callback isolation. |
-| GUI visual and input test | MANUAL TEST REQUIRED | Skyrim 720p–4K, input, extension state. |
+| GUI visual and input test | MANUAL TEST REQUIRED | Skyrim 720p to 4K, input, extension state. |
 | CPU/HLSL structure parity | MANUAL TEST REQUIRED | No new shared ABI in this pass; pre-existing WindowLife/material edits passed selected FXC suites, not live binding. |
 | Resource/register runtime audit | MANUAL TEST REQUIRED | D3D debug layer and live draw inspection. |
 | Photo Mode lifecycle | MANUAL TEST REQUIRED | Enter, capture, abnormal exit, restoration. |
@@ -19,9 +19,9 @@ Status values: PASS, FAIL, MANUAL TEST REQUIRED, IN PROGRESS.
 | Configuration migration | MANUAL TEST REQUIRED | Existing keys retained; default and five preset JSON files parse, but a 1.0.3a user profile still needs live load. |
 | Debug features off by default | PASS (static) | Default JSON has zero for `DebugView`, `LegacyPhysicalDebugMode`, and `TerrainHeightDebugMode`; inspect live UI too. |
 | Core ZIP | PASS | 341 archive entries; 340 manifest payloads verified, version 1.0.4. |
-| Source ZIP | PASS | 1,016 entries; current commit and working-tree snapshot, required files present, generated/private files excluded. |
+| Source ZIP | PASS | Exported from the staging commit; required files present, generated/private files excluded. |
 | FOMOD ZIP | PASS | 364 archive entries; XML schema, optional SurfaceTides bridge and notices validated. |
-| SurfaceTides source companion | PASS | Matching 1.0.2 modified source archive built and hash verified. |
+| SurfaceTides source companion | PASS | Previously validated 1.0.2 bridge and source archive reused unchanged; hashes verified. |
 | Main-game deployment | MANUAL TEST REQUIRED | An earlier 1.0.4 candidate was deployed and verified. This capture-finish candidate is packaged for owner testing and has not been deployed. |
 | Steam-game deployment | MANUAL TEST REQUIRED | An earlier 1.0.4 candidate was deployed and verified. This capture-finish candidate is packaged for owner testing and has not been deployed. |
 | In-game first/third person, cells, fast travel, weather | MANUAL TEST REQUIRED | Requires owner live session. |
