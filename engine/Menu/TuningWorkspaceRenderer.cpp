@@ -5248,6 +5248,10 @@ bool TuningWorkspaceRenderer::OpenDirectorVideoMode()
 			menu->SelectFeatureMenu("PixelCapture");
 			menu->IsEnabled = true;
 			OpenTunerPanel();
+			// Video owns the free-camera lease independently of the tuner's
+			// Shift-to-inspect transaction. Hiding its editor must leave the
+			// viewfinder and route preview alive until explicit Video exit.
+			g_tunerOwnsInspection = false;
 			g_tunerInspectionMoving = false;
 			g_tunerShiftHeld = false;
 		}
