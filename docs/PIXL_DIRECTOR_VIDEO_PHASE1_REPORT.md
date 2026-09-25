@@ -9,7 +9,7 @@
 - Video can enter with the world running for live shots or frozen for controlled composition. Photo Mode remains frozen exactly as before.
 - Added the user-assignable **Video Mode** binding to the PIXL Hotkeys page. Its default is `Ctrl+Home`; existing `Home` Photo Mode behavior is preserved. The setting is saved as `VideoModeKey` and older configuration files retain their defaults.
 - Video Mode blocks Photo Finish and photo-only quick-panel controls. Opening Video never begins recording or queues capture work.
-- While the Video HUD owns input, `Enter` captures a point, `Space` previews or pauses a valid route, `Backspace` returns it to the start, `Shift+Enter` opens the full editor, and the user-assignable Video Mode hotkey exits safely.
+- Video Mode now opens the PIXL Director editor with a mouse cursor. While the editor is hidden, `Enter` captures a point, `Space` previews or pauses a valid route, `Backspace` returns it to the start, and `Shift+Enter` reopens the editor. The user-assignable Video Mode hotkey exits safely.
 
 ## Storage
 
@@ -40,8 +40,8 @@ The path document carries the native schema/version produced by `DirectorCameraP
 
 ## Live-game validation
 
-1. Press `Ctrl+Home` in a safe exterior gameplay state. Confirm native free camera enters and the small Video preview HUD appears without taking a photo.
-2. Press `Shift+Enter` to reopen PIXL, open the Director workspace, then capture four points while moving the free camera. Confirm each capture keeps the current position, pitch/yaw framing and lens.
+1. Press `Ctrl+Home` in a safe exterior gameplay state. Confirm native free camera enters, the PIXL Video editor and mouse cursor appear, and no photo is taken.
+2. Capture four points while holding Shift to move the free camera between framings. Confirm each capture keeps the current position, pitch/yaw framing and lens. Hide the editor with PageDown, then reopen it with Shift+Enter.
 3. Check the route visualiser, click each POI, use Go To Point, then compare captured framing, independent look-target framing and Follow Route Direction. Verify spline-facing mode produces a smooth pitch/yaw fly-by.
 4. Vary Segment Speed, Hold, Route Duration and Preview Rate; scrub the timeline, then preview once and loop it. Verify motion remains smooth and reaches each point.
 5. Save, exit Director, reopen Video Mode, refresh the path list, load the path and preview again. Also load a prior version-1 path to confirm it remains valid.

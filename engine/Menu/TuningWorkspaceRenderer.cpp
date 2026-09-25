@@ -785,6 +785,34 @@ namespace
 		logger::info("[PIXL Director] Captured Video point {}", point.id);
 	}
 
+	void SaveDirectorVideoCameraToSelectedPoint()
+	{
+		if (g_directorVideo.selectedPoint >= g_directorVideo.path.points.size())
+			return;
+		g_directorVideo.playback = DirectorVideoPlaybackState::Paused;
+		const std::size_t selected = g_directorVideo.selectedPoint;
+		const DirectorCameraPath::Point preserved = g_directorVideo.path.points[selected];
+		const std::size_t before = g_directorVideo.path.points.size();
+		CaptureDirectorVideoPointFromCamera();
+		if (g_directorVideo.path.points.size() != before + 1)
+			return;
+		auto replacement = g_directorVideo.path.points.back();
+		replacement.id = preserved.id;
+		replacement.speed = preserved.speed;
+		replacement.holdDuration = preserved.holdDuration;
+		replacement.useLookAt = preserved.useLookAt;
+		replacement.followPathDirection = preserved.followPathDirection;
+		replacement.positionEasing = preserved.positionEasing;
+		replacement.rotationEasing = preserved.rotationEasing;
+		replacement.rollDegrees = preserved.rollDegrees;
+		replacement.autoBank = preserved.autoBank;
+		replacement.bankStrength = preserved.bankStrength;
+		g_directorVideo.path.points.pop_back();
+		g_directorVideo.path.points[selected] = replacement;
+		g_directorVideo.selectedPoint = selected;
+		RebuildDirectorVideoPath();
+	}
+
 	void MoveDirectorCameraToPoint(std::size_t index)
 	{
 		if (index >= g_directorVideo.path.points.size())
@@ -5211,6 +5239,19 @@ bool TuningWorkspaceRenderer::OpenDirectorPhotoMode()
 
 bool TuningWorkspaceRenderer::OpenDirectorVideoMode()
 {
+	// Video is an editor as well as a viewfinder. The route canvas, point list,
+	// timeline and speed controls live in PixelCapture's PIXL workspace, so a
+	// successful entry must expose that workspace and give its mouse a cursor.
+	const auto openEditor = [] {
+		if (auto* menu = globals::menu) {
+			menu->GetSettings().AdvancedMode = true;
+			menu->SelectFeatureMenu("PixelCapture");
+			menu->IsEnabled = true;
+			OpenTunerPanel();
+			g_tunerInspectionMoving = false;
+			g_tunerShiftHeld = false;
+		}
+	};
 	UpdateDirectorVideoCellBoundary();
 	static bool pathMathTested = false;
 	static bool pathMathValid = false;
@@ -5237,8 +5278,7 @@ bool TuningWorkspaceRenderer::OpenDirectorVideoMode()
 			RefreshDirectorVideoPathList();
 			logger::info("[PIXL Director] Switched active session from Photo to Video Mode");
 		}
-		if (globals::menu)
-			globals::menu->IsEnabled = false;
+		openEditor();
 		return true;
 	}
 
@@ -5248,8 +5288,7 @@ bool TuningWorkspaceRenderer::OpenDirectorVideoMode()
 		return false;
 	}
 
-	if (globals::menu)
-		globals::menu->IsEnabled = false;
+	openEditor();
 	RefreshDirectorVideoPathList();
 	logger::info("[PIXL Director] Video Mode entry requested");
 	return true;
@@ -6210,14 +6249,12 @@ std::vector<TuningWorkspaceRenderer::MenuFuncInfo> TuningWorkspaceRenderer::Buil
 	// identities remain unchanged; only the presentation hierarchy is flattened.
 	std::map<std::string, std::vector<RenderModule*>> categorizedFeatures;
 	std::vector<RenderModule*> labFeatures;
-	constexpr std::array<std::string_view, 2> developerOnlyFeatures{
-		"PulseProfiler",
-		"PixelCapture"
+	constexpr std::array<std::string_view, 1> developerOnlyFeatures{
+		"PulseProfiler"
 	};
 
-	constexpr std::array<std::string_view, 2> labOnlyFeatures{
-		"PulseProfiler",
-		"PixelCapture"
+	constexpr std::array<std::string_view, 1> labOnlyFeatures{
+		"PulseProfiler"
 	};
 	for (RenderModule* feat : sortedFeatureList) {
 		if (!feat->IsInMenu())
@@ -7548,6 +7585,27 @@ namespace
 				g_directorVideo.playback = DirectorVideoPlaybackState::Paused;
 				ApplyDirectorVideoTimeline(scrubTime);
 			}
+			// Keep the essential POI edits beside the timeline. The detailed point
+			// inspector below remains available for lens, targeting and easing.
+			if (g_directorVideo.selectedPoint < g_directorVideo.path.points.size()) {
+				ImGui::PushID("TimelineSelectedPoint");
+				auto& selected = g_directorVideo.path.points[g_directorVideo.selectedPoint];
+				ImGui::Text("POINT %02zu", g_directorVideo.selectedPoint + 1);
+				ImGui::SameLine();
+				ImGui::SetNextItemWidth(PIXLUI::Ref(190.0f));
+				if (ImGui::SliderFloat("Speed", &selected.speed, 8.0f, 1600.0f, "%.0f units/s", ImGuiSliderFlags_AlwaysClamp))
+					RebuildDirectorVideoPath();
+				ImGui::SameLine();
+				if (PIXLUI::ActionButton("SAVE CAMERA", ImVec2(PIXLUI::Ref(128.0f), PIXLUI::Ref(30.0f)), false))
+					SaveDirectorVideoCameraToSelectedPoint();
+				ImGui::SameLine();
+				if (PIXLUI::ActionButton("DELETE POI", ImVec2(PIXLUI::Ref(112.0f), PIXLUI::Ref(30.0f)), false)) {
+					g_directorVideo.playback = DirectorVideoPlaybackState::Paused;
+					g_directorVideo.path.points.erase(g_directorVideo.path.points.begin() + static_cast<std::ptrdiff_t>(g_directorVideo.selectedPoint));
+					RebuildDirectorVideoPath();
+				}
+				ImGui::PopID();
+			}
 		}
 
 		PIXLUI::SectionBanner("ROUTE VISUALISER");
@@ -7577,7 +7635,7 @@ namespace
 			changed |= ImGui::SliderFloat("Lens FOV", &point.fieldOfView, 20.0f, 110.0f, "%.0f deg", ImGuiSliderFlags_AlwaysClamp);
 			changed |= ImGui::SliderFloat("Speed at point", &point.speed, 8.0f, 1600.0f, "%.0f units/s", ImGuiSliderFlags_AlwaysClamp);
 			if (auto tooltip = Util::HoverTooltipWrapper())
-				ImGui::TextWrapped("The route accelerates smoothly between this speed and the next point's speed. Linear position easing preserves speed through the point; other easing modes deliberately slow the shot.");
+				ImGui::TextWrapped("The route accelerates smoothly between point speeds. Short, sharp turns automatically slow the camera enough to keep the turn readable; your saved speed remains unchanged.");
 			changed |= ImGui::SliderFloat("Hold", &point.holdDuration, 0.0f, 20.0f, "%.2f s", ImGuiSliderFlags_AlwaysClamp);
 			changed |= ImGui::Checkbox("Track independent look target", &point.useLookAt);
 			if (!point.useLookAt)
@@ -7596,30 +7654,8 @@ namespace
 			if (changed)
 				RebuildDirectorVideoPath();
 
-			if (PIXLUI::ActionButton("SAVE CAMERA TO POINT", ImVec2(PIXLUI::Ref(194.0f), PIXLUI::Ref(30.0f)), false)) {
-				g_directorVideo.playback = DirectorVideoPlaybackState::Paused;
-				const std::size_t selected = g_directorVideo.selectedPoint;
-				const DirectorCameraPath::Point preserved = point;
-				const std::size_t before = g_directorVideo.path.points.size();
-				CaptureDirectorVideoPointFromCamera();
-				if (g_directorVideo.path.points.size() == before + 1) {
-					auto replacement = g_directorVideo.path.points.back();
-					replacement.id = preserved.id;
-					replacement.speed = preserved.speed;
-					replacement.holdDuration = preserved.holdDuration;
-					replacement.useLookAt = preserved.useLookAt;
-					replacement.followPathDirection = preserved.followPathDirection;
-					replacement.positionEasing = preserved.positionEasing;
-					replacement.rotationEasing = preserved.rotationEasing;
-					replacement.rollDegrees = preserved.rollDegrees;
-					replacement.autoBank = preserved.autoBank;
-					replacement.bankStrength = preserved.bankStrength;
-					g_directorVideo.path.points.pop_back();
-					g_directorVideo.path.points[selected] = replacement;
-					g_directorVideo.selectedPoint = selected;
-					RebuildDirectorVideoPath();
-				}
-			}
+			if (PIXLUI::ActionButton("SAVE CAMERA TO POINT", ImVec2(PIXLUI::Ref(194.0f), PIXLUI::Ref(30.0f)), false))
+				SaveDirectorVideoCameraToSelectedPoint();
 			ImGui::SameLine();
 			if (PIXLUI::ActionButton("GO TO POINT", ImVec2(PIXLUI::Ref(128.0f), PIXLUI::Ref(30.0f)), false))
 				MoveDirectorCameraToPoint(g_directorVideo.selectedPoint);

@@ -30,7 +30,7 @@ namespace PIXLRendererPage
 		"CAMERA"
 	};
 
-	inline constexpr std::array<Placement, 34> Placements{ {
+	inline constexpr std::array<Placement, 35> Placements{ {
 		{ "HybridGI", CategoryOrder[0], "INDIRECT LIGHT & REFLECTIONS", "Lighting controls are real time. Resolution and pipeline toggles automatically rebuild the affected compute shaders." },
 		{ "WorldProbes", CategoryOrder[0], "INDIRECT LIGHT & REFLECTIONS", "Environment probes update automatically with the scene. Probe-authoring tools are available only in Developer Mode." },
 		{ "SkyBounce", CategoryOrder[0], "INDIRECT LIGHT & REFLECTIONS", "Visibility controls are real time; zenith changes automatically queue a safe probe refresh." },
@@ -63,6 +63,7 @@ namespace PIXLRendererPage
 		{ "StrandShading", CategoryOrder[2], "HAIR & FABRIC", "Hair scattering, transmission and self-shadow controls update in real time." },
 		{ "ThinSurface", CategoryOrder[2], "HAIR & FABRIC", "Global cloth and thin-surface controls update in real time; per-mesh material tags remain authoritative." },
 		{ "CameraSuite", CategoryOrder[3], "COLOUR & OUTPUT", "Camera and tone controls update in real time. Windows HDR detection or display-mode changes may require a restart." },
+		{ "PixelCapture", CategoryOrder[3], "DIRECTOR", "Photo and Video Mode share the PIXL camera. Video routes can be edited with the mouse while Shift temporarily gives movement to the free camera." },
 		{ "ImageReconstruction", CategoryOrder[3], "IMAGE & PERFORMANCE", "Image reconstruction is installed as part of the renderer but remains an explicit display choice; changing the technology can require a restart." }
 	} };
 

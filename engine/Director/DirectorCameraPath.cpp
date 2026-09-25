@@ -267,6 +267,7 @@ namespace DirectorCameraPath
 		if (error)
 			error->clear();
 		segments.clear();
+		effectiveSpeeds.clear();
 		totalLength = 0.0f;
 		totalDuration = 0.0f;
 		for (const auto& point : points) {
@@ -278,6 +279,30 @@ namespace DirectorCameraPath
 		const std::size_t count = SegmentCount();
 		if (count == 0)
 			return true;
+		effectiveSpeeds.reserve(points.size());
+		for (const Point& point : points)
+			effectiveSpeeds.push_back(ClampFinite(point.speed, 1.0f, 100000.0f, 240.0f));
+		for (std::size_t index = 0; index < points.size(); ++index) {
+			if (!closed && (index == 0 || index + 1 == points.size()))
+				continue;
+			const std::size_t previous = (index + points.size() - 1) % points.size();
+			const std::size_t next = (index + 1) % points.size();
+			const Vec3 incoming = Subtract(points[index].worldPosition, points[previous].worldPosition);
+			const Vec3 outgoing = Subtract(points[next].worldPosition, points[index].worldPosition);
+			const float beforeLength = Length(incoming);
+			const float afterLength = Length(outgoing);
+			if (beforeLength <= kEpsilon || afterLength <= kEpsilon)
+				continue;
+			const float bend = std::acos(std::clamp(Dot(Scale(incoming, 1.0f / beforeLength),
+				Scale(outgoing, 1.0f / afterLength)), -1.0f, 1.0f));
+			if (bend > 0.35f) {
+				// A short ninety-degree turn cannot be traversed smoothly at the
+				// same speed as a long straight. Bound angular travel at the POI;
+				// linear interpolation below eases into and out of the corner.
+				const float cornerSpeed = std::max(1.0f, std::min(beforeLength, afterLength) * 4.0f / bend);
+				effectiveSpeeds[index] = std::min(effectiveSpeeds[index], cornerSpeed);
+			}
+		}
 		segments.resize(count);
 		for (std::size_t segmentIndex = 0; segmentIndex < count; ++segmentIndex) {
 			auto& segment = segments[segmentIndex];
@@ -288,7 +313,10 @@ namespace DirectorCameraPath
 				const Vec3 midpoint = EvaluatePosition(segmentIndex, midpointParameter);
 				const float chord = Distance(first, last);
 				const float polyline = Distance(first, midpoint) + Distance(midpoint, last);
-				if (depth < kMaximumSubdivisionDepth && polyline - chord > kArcLengthTolerance) {
+				const float localTolerance = std::min(kArcLengthTolerance, std::max(chord * 0.0025f, 0.0005f));
+				// Small corners previously got only the two end samples: a fixed
+				// world-unit tolerance hid curvature and produced uneven motion.
+				if (depth < kMaximumSubdivisionDepth && (depth < 4 || polyline - chord > localTolerance)) {
 					self(self, firstParameter, first, midpointParameter, midpoint, depth + 1);
 					self(self, midpointParameter, midpoint, lastParameter, last, depth + 1);
 					return;
@@ -301,8 +329,8 @@ namespace DirectorCameraPath
 			subdivide(subdivide, 0.0f, first, 1.0f, last, 0);
 			segment.length = distance;
 			const std::size_t end = closed ? (segmentIndex + 1) % points.size() : segmentIndex + 1;
-			const float startSpeed = ClampFinite(points[segmentIndex].speed, 1.0f, 100000.0f, 240.0f);
-			const float endSpeed = ClampFinite(points[end].speed, 1.0f, 100000.0f, 240.0f);
+			const float startSpeed = effectiveSpeeds[segmentIndex];
+			const float endSpeed = effectiveSpeeds[end];
 			// Speed varies linearly with distance. Integrating 1 / speed gives
 			// continuous velocity at adjacent POIs and an exact segment duration.
 			const float speedDifference = endSpeed - startSpeed;
@@ -472,9 +500,9 @@ namespace DirectorCameraPath
 		for (std::size_t index = 0; index < segments.size(); ++index) {
 			const Segment& segment = segments[index];
 			if (segment.duration > kEpsilon && seconds <= segment.duration) {
-				const float startSpeed = ClampFinite(points[index].speed, 1.0f, 100000.0f, 240.0f);
+				const float startSpeed = effectiveSpeeds[index];
 				const std::size_t end = closed ? (index + 1) % points.size() : index + 1;
-				const float endSpeed = ClampFinite(points[end].speed, 1.0f, 100000.0f, 240.0f);
+				const float endSpeed = effectiveSpeeds[end];
 				const float difference = endSpeed - startSpeed;
 				const float distanceFraction = segment.length > kEpsilon && std::abs(difference) > 0.001f
 					? startSpeed * std::expm1(difference * seconds / segment.length) / difference
@@ -630,6 +658,24 @@ namespace DirectorCameraPath
 			std::abs(speedRamp.EvaluateTime(4.0f, false).worldPosition.x - halfwayDistance) > 0.1f) {
 			if (failure) *failure = "fixed route duration lost point speed or timeline alignment";
 			return false;
+		}
+		Path shortTurn{};
+		shortTurn.points = {
+			{ 1, { 0.0f, 0.0f, 0.0f } }, { 2, { 6.0f, 0.0f, 0.0f } },
+			{ 3, { 6.0f, 6.0f, 0.0f } }, { 4, { 12.0f, 6.0f, 0.0f } }
+		};
+		if (!shortTurn.Rebuild(&error) || !shortTurn.IsValid() || shortTurn.GetDuration() < 0.25f) {
+			if (failure) *failure = "short turn did not gain enough smooth traversal time";
+			return false;
+		}
+		Vec3 previous = shortTurn.EvaluateTime(0.0f, false).worldPosition;
+		for (int frame = 1; frame <= 120; ++frame) {
+			const Pose sample = shortTurn.EvaluateTime(frame / 120.0f, false);
+			if (!sample.valid || !IsFinite(sample.worldPosition) || Distance(previous, sample.worldPosition) > 2.5f) {
+				if (failure) *failure = "short turn produced a discontinuous frame step";
+				return false;
+			}
+			previous = sample.worldPosition;
 		}
 		return true;
 	}

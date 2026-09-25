@@ -110,6 +110,9 @@ namespace DirectorCameraPath
 		};
 
 		std::vector<Segment> segments{};
+		// Computed at rebuild time. Tight, short corners have a safe traversal
+		// speed without changing the user's authored speed or saved path format.
+		std::vector<float> effectiveSpeeds{};
 		float totalLength = 0.0f;
 		float totalDuration = 0.0f;
 

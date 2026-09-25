@@ -434,7 +434,7 @@ namespace WindowLife
             artSpan.y /= apertureAspect;
         artSpan = clamp(artSpan, 0.42f.xx, 0.98f.xx);
 
-        const float targetFloorV = 0.80f;
+        const float targetFloorV = 0.86f;
         float2 artCenter = float2(
             0.5f,
             sourceFloorV - (targetFloorV - 0.5f) * artSpan.y);
@@ -444,10 +444,19 @@ namespace WindowLife
             halfSpan + 0.008f.xx,
             1.0f.xx - halfSpan - 0.008f.xx);
 
-        float actualFloorV =
-            0.5f + (sourceFloorV - artCenter.y) / max(artSpan.y, 1.0e-4f);
-        floorLocalY = 1.0f - saturate(actualFloorV);
-        return saturate(artCenter + (sourceUV - 0.5f.xx) * artSpan);
+        float actualFloorV = saturate(
+            0.5f + (sourceFloorV - artCenter.y) / max(artSpan.y, 1.0e-4f));
+        // A symmetric crop cannot put the authored floor near the sill when
+        // its source tile has a high horizon: artCenter is clamped at the top
+        // edge first. Remap the visible wall/floor intervals inside the same
+        // tile, keeping atlas bounds and room identity unchanged.
+        float paneFloorV = max(saturate(actualFloorV), targetFloorV);
+        float framedV = sourceUV.y <= paneFloorV
+            ? sourceUV.y * actualFloorV / max(paneFloorV, 1.0e-4f)
+            : actualFloorV + (sourceUV.y - paneFloorV) *
+                (1.0f - actualFloorV) / max(1.0f - paneFloorV, 1.0e-4f);
+        floorLocalY = 1.0f - paneFloorV;
+        return saturate(artCenter + (float2(sourceUV.x, framedV) - 0.5f.xx) * artSpan);
     }
 
     float Verticality(float3 N)
@@ -2078,10 +2087,14 @@ namespace WindowLife
 			// Pane classification, masks, glass response and silhouettes remain
 			// untouched. A neutral 1.0/1.0 exactly preserves the accepted baseline.
 			float contrast = clamp(GetPresentation0().x, 0.50f, 2.0f);
-			float emission = clamp(GetPresentation0().y, 0.0f, 3.0f);
+			float emission = clamp(GetPresentation0().y, 0.0f, 6.0f);
+			// Lit interiors need a small radiance lift after the recessed side/
+			// floor shading. Preserve authored contrast instead of flattening the
+			// atlas toward a constant window glow.
+			float litRoomLift = lerp(1.06f, 1.20f, nightBlend);
 			layeredRoomColor = max(
 				(layeredRoomColor - 0.18f.xxx) * contrast + 0.18f.xxx,
-				0.0f.xxx) * emission;
+				0.0f.xxx) * emission * litRoomLift;
 			result.roomColor = layeredRoomColor;
             result.roomColorWeight =
                 roomSample.a * insideRoom * interiorPane * verticalSurface * grazingFade * distanceFade *
@@ -2133,7 +2146,10 @@ namespace WindowLife
         // Manual room dimensions do not change where the authored floor is.
         // Keep the feet anchored as Human Scale changes; cropping a tall person
         // at the window top is preferable to lifting them off the floor.
-        float personY = roomFloorLocal + max(GetOptics0().w, 0.50f) * 0.51f;
+        // Set the actor behind the lower sill, so feet can be occluded by the
+        // wall instead of floating above it. The taller room framing above
+        // keeps heads visible on the upper pane.
+        float personY = roomFloorLocal + max(GetOptics0().w, 0.50f) * 0.21f;
         float2 p = roomLocal - float2(personX, personY);
         p.x *= clamp(roomSize.x / max(roomSize.y, 1.0f), 0.30f, 2.50f);
 
@@ -2173,8 +2189,9 @@ namespace WindowLife
         float occupantFootprint = max(
             length(occupantGradientX * float2((float)occupantAtlasWidth, (float)occupantAtlasHeight)),
             length(occupantGradientY * float2((float)occupantAtlasWidth, (float)occupantAtlasHeight)));
+        float occupantSoftness = saturate((GetOptics0().y - 0.015f) / 0.145f);
         float occupantMip = clamp(
-            log2(max(occupantFootprint, 1.0f)) + 0.45f + GetOptics0().y * 4.0f,
+            log2(max(occupantFootprint, 1.0f)) + 0.45f + occupantSoftness * 2.75f,
             0.0f,
             occupantMaximumMip);
         float occupantInset = min(
@@ -2194,7 +2211,7 @@ namespace WindowLife
         float occupantCloseWeight = 1.0f - saturate(occupantMip * 0.50f);
         float occupantFeather = max(
             fwidth(occupantAlpha) * GetFidelity1().z * occupantCloseWeight,
-            1.0f / 255.0f);
+            1.0f / 255.0f + occupantSoftness * 0.08f);
         float authoredPerson = smoothstep(
             0.50f - occupantFeather,
             0.50f + occupantFeather,
@@ -2206,7 +2223,7 @@ namespace WindowLife
             float secondPhase = frac(phase + 0.31f + Hash11(eventSeed * 17.0f) * 0.22f);
             float secondX = 0.5f + MotionX(secondPhase, 0.34f, 1.0f - direction) * 0.42f;
             float2 p2 = roomLocal - float2(secondX,
-                roomFloorLocal + max(GetOptics0().w, 0.50f) * 0.94f * 0.51f);
+                roomFloorLocal + max(GetOptics0().w, 0.50f) * 0.94f * 0.21f);
             p2.x *= clamp(roomSize.x / max(roomSize.y, 1.0f), 0.30f, 2.50f);
             float second = PersonMask(
                 p2, 1.0f - pose, secondPhase, frac(variant + 0.37f),

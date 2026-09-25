@@ -65,41 +65,41 @@ struct WindowLife : RenderModule
         bool EnableArchitecturalGlass = true;
 
         // Occupant transmission/occlusion. Day remains subtle; night is readable.
-        float DayShadowStrength = 0.12f;
-        float NightShadowStrength = 0.58f;
-        float DayActivity = 0.32f;
-        float EveningActivity = 0.62f;
-        float LateNightActivity = 0.18f;
+        float DayShadowStrength = 0.02f;
+        float NightShadowStrength = 0.07f;
+        float DayActivity = 1.0f;
+        float EveningActivity = 1.0f;
+        float LateNightActivity = 1.0f;
 
         // Interior optical illusion.
-        float ParallaxDepth = 50.0f; // Exterior observer looking into rooms.
-        float InteriorParallaxDepth = 80.0f; // Interior observer looking outdoors.
+        float ParallaxDepth = 116.9f; // Exterior observer looking into rooms.
+        float InteriorParallaxDepth = 122.8f; // Interior observer looking outdoors.
         bool EnableOutdoorViews = true;
-        float OutdoorViewStrength = 1.20f;
-        float OutdoorViewEmission = 2.5f;
-        float Refraction = 2.5f;
-        float SilhouetteSoftness = 0.055f;
-        float HumanScale = 0.95f;
+        float OutdoorViewStrength = 2.0f;
+        float OutdoorViewEmission = 5.41f;
+        float Refraction = 7.2f;
+        float SilhouetteSoftness = 0.16f;
+        float HumanScale = 1.19f;
         // Authored people are composited as a softly filtered colour layer. This
         // is true opacity, independent of the legacy analytic-shadow fallback.
-        float OccupantOpacity = 1.00f;
-        float CurtainStrength = 0.22f;
-        float RoomDepthStrength = 0.14f;
+        float OccupantOpacity = 0.25f;
+        float CurtainStrength = 0.49f;
+        float RoomDepthStrength = 0.25f;
         bool EnableAuthoredRooms = true;
-        float AuthoredRoomStrength = 0.78f;
-		float InteriorContrast = 1.02f;
-		float InteriorEmission = 1.0f;
+        float AuthoredRoomStrength = 1.0f;
+		float InteriorContrast = 0.98f;
+		float InteriorEmission = 3.0f;
         // Magnifies authored room art inside an automatically reconstructed
         // aperture without changing the physical window bounds or room identity.
-        float InteriorScale = 1.35f;
+        float InteriorScale = 1.15f;
         // Additional atlas mip bias for authored rooms behind physical glass.
         // Kept separate from silhouette filtering so room art can soften without
         // weakening panes, mullions or occupant masks.
-        float InteriorSoftness = 0.08f;
+        float InteriorSoftness = 0.86f;
         // Exterior room volume uses the existing atlas and retains the accepted
         // flat projector as a compatibility fallback.
-        float RoomVolumeStrength = 0.75f;
-        float WindowRecess = 6.0f;
+        float RoomVolumeStrength = 1.0f;
+        float WindowRecess = 8.5f;
         // Texture-mod-safe geometry fitting owns only the room coordinate system.
         // Optional exact masks may clip the final glass pixels but never resize,
         // retile, seed or otherwise move the recessed interior.
@@ -108,32 +108,32 @@ struct WindowLife : RenderModule
         bool EnableInteriorPassers = true;
 
         // Distance LOD and pane discrimination.
-        float DistanceFadeStart = 2400.0f;
-        float DistanceFadeEnd = 7600.0f;
-        float PaneThreshold = 0.20f;
-        float PaneSoftness = 0.15f;
+        float DistanceFadeStart = 7162.0f;
+        float DistanceFadeEnd = 16000.0f;
+        float PaneThreshold = 0.0f;
+        float PaneSoftness = 0.09f;
 
         // Stable procedural room grid and event cadence.
         // Owner-validated fallback calibration. Preserve this path while the
         // optional depth-reconstructed interior tier is developed separately.
-        float RoomWidth = 110.0f;
-        float RoomHeight = 140.0f;
-        float MotionSpeed = 1.0f;
+        float RoomWidth = 150.0f;
+        float RoomHeight = 150.0f;
+        float MotionSpeed = 1.93f;
 
         // Phase 2A architectural glass.
-        float GlassStrength = 0.86f;
-        float GlassReflectionBoost = 0.62f;
-        float GlassRoughness = 0.30f;
-        float GlassTransmission = 0.93f;
-        float GlassDirtStrength = 0.42f;
-        float GlassDistortion = 0.034f;
-        float GlassNormalRetention = 0.26f;
+        float GlassStrength = 1.0f;
+        float GlassReflectionBoost = 0.53f;
+        float GlassRoughness = 0.06f;
+        float GlassTransmission = 1.0f;
+        float GlassDirtStrength = 0.09f;
+        float GlassDistortion = 0.058f;
+        float GlassNormalRetention = 0.37f;
         // High-level fidelity controls. Defaults preserve the current response
         // while enabling real probe reflection, weather coupling and restrained
         // architectural variation without exposing implementation internals.
-        float EnvironmentReflectionStrength = 0.42f;
-        float InteriorLightingResponse = 0.34f;
-        float WeatherGlassResponse = 0.62f;
+        float EnvironmentReflectionStrength = 1.5f;
+        float InteriorLightingResponse = 1.0f;
+        float WeatherGlassResponse = 1.0f;
         float SunGlintStrength = 0.24f;
         float DirectionalRevealStrength = 0.22f;
         float RoomVariationStrength = 0.12f;
@@ -142,9 +142,9 @@ struct WindowLife : RenderModule
 
         // First-stage physical eligibility guard. Geometry radius catches dedicated
         // tiny window meshes; shader normal orientation catches roof/awning panes.
-        float MinShallowWindowRadius = 22.0f;
-        float MinFullWindowRadius = 42.0f;
-        float FullWindowVerticality = 0.62f;
+        float MinShallowWindowRadius = 70.0f;
+        float MinFullWindowRadius = 75.0f;
+        float FullWindowVerticality = 0.90f;
 
         bool DebugWindowDetection = false;
         // Developer-only projection diagnostics. Zero retains the normal class
@@ -263,6 +263,9 @@ private:
     std::uint32_t activeDataFrame = ~0u;
     mutable bool uploadFailureLogged = false;
     bool invalidGeometryLogged = false;
+    // Reused by the render-thread geometry hook to avoid allocating a lower-
+    // case NIF name for every detected window draw.
+    std::string geometryNameScratch{};
 
     std::unordered_map<std::string, winrt::com_ptr<ID3D11ShaderResourceView>> authoredMaskSRVs;
     std::unordered_map<std::uintptr_t, Classification> classificationCache;

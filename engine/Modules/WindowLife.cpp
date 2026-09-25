@@ -212,13 +212,15 @@ void WindowLife::DrawSettings()
 		Util::AddTooltip("Brightens the day/night landscape seen from inside through refracted glass. Does not change exterior room images, opacity or parallax. No extra texture samples.");
 		ImGui::SliderFloat(T("feature.window_life.refraction", "Interior Refraction"), &settings.Refraction, 0.0f, 8.0f, "%.2f");
 		ImGui::SliderFloat(T("feature.window_life.softness", "Silhouette Softness"), &settings.SilhouetteSoftness, 0.015f, 0.16f, "%.3f");
+		Util::AddTooltip("Softens authored people behind the pane by selecting a filtered atlas mip and widening the alpha edge. The frame and glass stay sharp; there are no extra texture samples.");
 		ImGui::SliderFloat(T("feature.window_life.human_scale", "Human Scale"), &settings.HumanScale, 0.65f, 1.35f, "%.2f");
 		ImGui::SliderFloat(T("feature.window_life.curtain_strength", "Curtain Opacity"), &settings.CurtainStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat(T("feature.window_life.room_depth_strength", "Recessed Room Depth"), &settings.RoomDepthStrength, 0.0f, 0.40f, "%.2f");
 		ImGui::Checkbox(T("feature.window_life.authored_rooms", "Authored Room Backgrounds"), &settings.EnableAuthoredRooms);
 		ImGui::SliderFloat(T("feature.window_life.authored_room_strength", "Authored Room Visibility"), &settings.AuthoredRoomStrength, 0.0f, 1.0f, "%.2f");
 		ImGui::SliderFloat(T("feature.window_life.interior_contrast", "Interior Contrast"), &settings.InteriorContrast, 0.50f, 2.0f, "%.2f");
-		ImGui::SliderFloat("Exterior View: Room Emission", &settings.InteriorEmission, 0.0f, 3.0f, "%.2fx");
+		ImGui::SliderFloat("Exterior View: Room Emission", &settings.InteriorEmission, 0.0f, 6.0f, "%.2fx");
+		Util::AddTooltip("Brightens the authored room behind exterior glass while preserving its furniture and light contrast. Higher values increase HDR radiance without adding a render pass.");
 		ImGui::SliderFloat(T("feature.window_life.interior_scale", "Interior Scale"), &settings.InteriorScale, 1.0f, 2.50f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
         ImGui::SliderFloat("Authored Room Softness", &settings.InteriorSoftness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
         if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -823,7 +825,7 @@ void WindowLife::RefreshFrameBaseData()
     };
 	frameBaseData.Presentation0 = {
 		std::clamp(settings.InteriorContrast, 0.50f, 2.0f),
-		interiorView ? std::clamp(settings.OutdoorViewEmission, 0.0f, 8.0f) : std::clamp(settings.InteriorEmission, 0.0f, 3.0f),
+		interiorView ? std::clamp(settings.OutdoorViewEmission, 0.0f, 8.0f) : std::clamp(settings.InteriorEmission, 0.0f, 6.0f),
 		std::clamp(settings.OccupantOpacity, 0.0f, 1.0f),
 		std::clamp(settings.InteriorScale, 1.0f, 2.5f)
 	};
@@ -1148,7 +1150,10 @@ void WindowLife::UpdateAndBindActive(const Classification& classification, const
         // It lets dedicated aperture meshes use one auto-scaled room while large
         // walls/facades retain a repeating reference grid.
         const char* rawGeometryName = geometry->name.c_str();
-        const std::string geometryName = rawGeometryName ? Lower(rawGeometryName) : std::string{};
+        geometryNameScratch.assign(rawGeometryName ? rawGeometryName : "");
+        std::transform(geometryNameScratch.begin(), geometryNameScratch.end(),
+            geometryNameScratch.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        const std::string_view geometryName = geometryNameScratch;
         const bool dedicatedNameHint = ContainsAny(geometryName, {
             "window", "glass", "pane", "glazing"
         });
