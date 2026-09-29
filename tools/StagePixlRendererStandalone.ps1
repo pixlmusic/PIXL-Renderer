@@ -233,6 +233,7 @@ $presentationSource = Join-Path $sourceRoot "distribution\Interface\PIXLRenderer
 Copy-Tree (Join-Path $presentationSource "Fonts\Jost") (Join-Path $interfaceRoot "Fonts\Jost")
 Copy-Tree (Join-Path $presentationSource "Fonts\Sanguis") (Join-Path $interfaceRoot "Fonts\Sanguis")
 Copy-Tree (Join-Path $presentationSource "Visuals\Brand") (Join-Path $interfaceRoot "Visuals\Brand")
+Copy-Tree (Join-Path $presentationSource "Visuals\Tuner") (Join-Path $interfaceRoot "Visuals\Tuner")
 
 $pipelineCount = 0
 $includePipelineLibrary = -not $SkipPipelineLibrary -and -not [string]::IsNullOrWhiteSpace($PipelineLibrary)

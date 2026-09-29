@@ -76,6 +76,11 @@ foreach ($path in @(
     "distribution\Shaders\Lighting.hlsl",
     "distribution\Shaders\Water.hlsl",
     "distribution\Interface\PIXLRenderer\Visuals\Brand\PIXL-Mark.png",
+    "distribution\Interface\PIXLRenderer\Visuals\Tuner\PIXL-Renderer Button.png",
+    "distribution\Interface\PIXLRenderer\Visuals\Tuner\Lighting.png",
+    "distribution\Interface\PIXLRenderer\Visuals\Tuner\World.png",
+    "distribution\Interface\PIXLRenderer\Visuals\Tuner\Character.png",
+    "distribution\Interface\PIXLRenderer\Visuals\Tuner\Camera.png",
     "distribution\SKSE\Plugins\PIXLRenderer\QualityPreviews\README.txt"
 )) { Require-Source $path }
 
@@ -366,6 +371,11 @@ if ($PackageDirectory) {
             "SKSE\Plugins\PIXL\Config\RendererDefaults.json",
             "SKSE\Plugins\PIXL\Profiles\PIXL-Golden-Baseline.json",
             "SKSE\Plugins\PIXL\Interface\Visuals\Brand\PIXL-Mark.png",
+            "SKSE\Plugins\PIXL\Interface\Visuals\Tuner\PIXL-Renderer Button.png",
+            "SKSE\Plugins\PIXL\Interface\Visuals\Tuner\Lighting.png",
+            "SKSE\Plugins\PIXL\Interface\Visuals\Tuner\World.png",
+            "SKSE\Plugins\PIXL\Interface\Visuals\Tuner\Character.png",
+            "SKSE\Plugins\PIXL\Interface\Visuals\Tuner\Camera.png",
             "SKSE\Plugins\PIXL\Interface\QualityPreviews\README.txt",
             "Shaders\PIXL\Modules\HybridGI.ini",
 			"Shaders\AmbientProbe\DiffuseAmbientProbeCS.hlsl",
