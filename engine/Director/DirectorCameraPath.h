@@ -1,5 +1,10 @@
 ﻿#pragma once
 
+// PIXL Renderer - Director camera-path data model.
+// Copyright (C) 2026 PIXL Studio
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Additional permissions are described in the repository EXCEPTIONS.md.
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -75,6 +80,8 @@ namespace DirectorCameraPath
 	{
 	public:
 		std::string name = "Untitled path";
+		// Zero identifies a route saved before cell-aware Director paths existed.
+		std::uint32_t cellFormID = 0;
 		bool closed = false;
 		std::optional<float> explicitDuration{};
 		std::vector<Point> points{};

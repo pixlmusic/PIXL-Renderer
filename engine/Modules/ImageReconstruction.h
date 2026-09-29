@@ -131,6 +131,10 @@ public:
 	bool fidelityFXMissing = false;
 	bool d3d12SwapChainActive = false;
 	bool frameGenerationRequestedAtBoot = false;
+	bool frameGenerationConfiguredAtBoot = false;
+	uint frameGenerationBackendAtBoot = 0;
+	bool dlssgNativeHardwareCandidate = false;
+	bool dlssgProxyHardwareCandidate = false;
 	bool neuralRenderingRequestedAtBoot = false;
 	// Photo Finish can invoke Feature 18 without enabling it during gameplay.
 	// Provisioning owns the DX12 sidecar and shared resources; the live setting
@@ -310,6 +314,9 @@ public:
 	// Module availability methods
 	bool HasFrameGenModule() const;
 	bool HasDLSSGModule() const;
+	bool IsNativeDLSSGHardwareCandidate() const { return dlssgNativeHardwareCandidate; }
+	bool IsDLSSGSelectable() const;
+	bool IsSelectedFrameGenerationBackendSelectable() const;
 	bool DrawFrameGenerationBackendSelector();
 	bool UsesDLSSGFrameGeneration() const;
 

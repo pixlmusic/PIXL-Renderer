@@ -193,6 +193,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	AdvancedControls,
 	SimpleLightingBalance,
 	DeveloperMode,
+	SkipExperimentalWarning,
+	ExperimentalRenderOriginEnabled,
 	RendererQuality,
 	LightingQuality,
 	MaterialsQuality,
@@ -872,6 +874,26 @@ void Menu::Init()
  * - Dynamic window flags based on docking state
  * - Header, navigation tabs, and settings panels coordination
  */
+void Menu::ToggleMainMenuFromShortcut()
+{
+	IsEnabled = !IsEnabled;
+	if (!IsEnabled) {
+		// A menu opened from another PIXL workflow counts as the user's
+		// first surface; closing it must not discard that selection.
+		openedMainMenuThisSession = true;
+		return;
+	}
+	// The first shortcut in each session is the public landing page, even when
+	// an older config last saved the advanced tuner. Later opens restore the
+	// surface the player deliberately selected during this session.
+	if (!openedMainMenuThisSession) {
+		settings.AdvancedMode = false;
+		settings.LastPublicPage = 0;
+		openedMainMenuThisSession = true;
+	}
+	ImGui::GetIO().ClearInputKeys();
+}
+
 void Menu::DrawSettings()
 {
 	const bool wasEnabledAtFrameStart = IsEnabled;
@@ -1616,9 +1638,24 @@ void Menu::ProcessInputEventQueue()
 					IsDirectorPhotoModeActive() &&
 				!IsEnabled) {
 				const bool videoEditor = TuningWorkspaceRenderer::IsDirectorVideoEditorVisible();
-				if (event.IsDown() && (!videoEditor || (!io.WantTextInput && !popupOpen)) &&
-					TuningWorkspaceRenderer::HandleDirectorKeyboardInput(key))
+				if (event.IsDown() && !io.WantTextInput && !popupOpen &&
+					!TuningWorkspaceRenderer::IsDirectorPhotoCaptureLocked() &&
+					settings.ToggleKey != settings.PhotoModeKey &&
+					settings.ToggleKey != settings.VideoModeKey &&
+					InputCombo::MatchesKeyboardCombo(settings.ToggleKey, key)) {
+					ToggleMainMenuFromShortcut();
+					_comboFiredKeys.insert(key);
 					continue;
+				}
+				if (event.IsDown() && (!videoEditor || (!io.WantTextInput && !popupOpen)) &&
+					TuningWorkspaceRenderer::HandleDirectorKeyboardInput(key)) {
+					// Director acts on key-down. Consume its matching release as well,
+					// otherwise HOME closes Photo and immediately reopens it on key-up.
+					_comboFiredKeys.insert(key);
+					continue;
+				}
+				if (!event.IsPressed())
+					_comboFiredKeys.erase(key);
 				if (videoEditor) {
 					// The standalone Video panel owns keyboard navigation and text.
 					// Bypass global hotkeys while leaving native camera input filtered
@@ -1641,6 +1678,7 @@ void Menu::ProcessInputEventQueue()
 				TuningWorkspaceRenderer::
 					HandleDirectorKeyboardInput(
 						key)) {
+				_comboFiredKeys.insert(key);
 				continue;
 			}
 
@@ -1660,14 +1698,8 @@ void Menu::ProcessInputEventQueue()
 				auto shaderCache = globals::shaderCache;
 				KeyAction keyActions[] = {
 					{ settings.ToggleKey, [this]() {
-						 if (!LaunchExperienceRenderer::ShouldShowFirstTimeSetup()) {
-							 IsEnabled = !IsEnabled;
-							 if (IsEnabled) {
-								 // Reopen the surface the player last used. Forcing the tuner
-								 // here made Page Down skip the public three-page experience.
-								 ImGui::GetIO().ClearInputKeys();  // Prevent toggle key from remaining "held" in ImGui after open.
-							 }
-						 }
+						 if (!LaunchExperienceRenderer::ShouldShowFirstTimeSetup())
+							 ToggleMainMenuFromShortcut();
 					 } },
 					{ settings.NeuralRenderingKey, [this]() {
 						const std::string status = globals::pipeline::imageReconstruction.ToggleNeuralRenderingFromHotkey();
@@ -1679,7 +1711,7 @@ void Menu::ProcessInputEventQueue()
 						if (auto* task = SKSE::GetTaskInterface())
 							task->AddTask([status]() { RE::SendHUDMessage::ShowHUDMessage(status.c_str(), nullptr, true); });
 					 } },
-					{ settings.PhotoModeKey, []() { TuningWorkspaceRenderer::OpenDirectorPhotoMode(); } },
+					{ settings.PhotoModeKey, []() { TuningWorkspaceRenderer::ToggleDirectorPhotoMode(); } },
 					{ settings.VideoModeKey, []() { TuningWorkspaceRenderer::OpenDirectorVideoMode(); } },
 					{ settings.SkipCompilationKey, [this, shaderCache]() {
 						 // ENTER SKYRIM converts foreground compilation into background
@@ -1717,16 +1749,10 @@ void Menu::ProcessInputEventQueue()
 				return false;
 			};
 
-			// Hardcoded Shift+Enter toggle for the CS menu (always available)
+			// Shift+Enter is the alternate PIXL menu shortcut.
 			if (event.IsDown() && key == VK_RETURN && !io.WantTextInput && !wasCapturingHotkey && !popupOpen && (GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
-			if (!LaunchExperienceRenderer::ShouldShowFirstTimeSetup()) {
-				IsEnabled = !IsEnabled;
-				if (IsEnabled) {
-					// Match Page Down: Shift+Enter is an alternate toggle, not a
-					// shortcut that silently switches the user into the tuner.
-					ImGui::GetIO().ClearInputKeys();
-				}
-			}
+				if (!LaunchExperienceRenderer::ShouldShowFirstTimeSetup())
+					ToggleMainMenuFromShortcut();
 				continue;
 			}
 

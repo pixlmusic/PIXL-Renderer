@@ -1,3 +1,8 @@
+// Community Shaders Screen-Space Shadows-derived file.
+// Modified for PIXL Renderer, 2026: Directional SSS source tracking, tuning and UI.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Third-party Bend/Sony code keeps its separate notices in the adjacent files.
+
 #include "ContactShadows.h"
 
 #include "Modules/TerrainSeam.h"
@@ -26,11 +31,11 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 void ContactShadows::DrawSettings()
 {
 	if (ImGui::TreeNodeEx(T(TKEY("general"), "General"), ImGuiTreeNodeFlags_DefaultOpen)) {
-		Util::UIntCheckbox(T(TKEY("enable"), "Sun & Moon Contact Shadows"), &bendSettings.Enable);
+		Util::UIntCheckbox(T(TKEY("enable"), "Directional SSS"), &bendSettings.Enable);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text("%s", T(TKEY("enable_tooltip"), "Enable screen-space contact shadows from the sun/moon direction."));
+			ImGui::TextWrapped("%s", T(TKEY("enable_tooltip"), "Refines the active Skyrim sun or moon directional shadow. The source is read every frame; PBR Local Contact Shadows remains separate for point and clustered lights."));
 
-		Util::UIntSlider(T(TKEY("sample_count"), "Shadow Ray Quality"), &bendSettings.SampleCount, 1, 4);
+		Util::UIntSlider(T(TKEY("sample_count"), "Directional Ray Quality"), &bendSettings.SampleCount, 1, 4);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("%s", T(TKEY("sample_count_tooltip"), "Multiplier for shadow ray sample count. Higher values increase shadow reach at the cost of performance. Adapts to render resolution and automatically rebuilds the ray-march shader when needed."));
 
@@ -46,13 +51,27 @@ void ContactShadows::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("%s", T(TKEY("shadow_contrast_tooltip"), "Contrast boost for the shadow transition. 1 preserves the traced visibility; higher values produce harder contact edges."));
 
-		ImGui::SliderFloat("Directional Shadow Strength", &bendSettings.Strength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat("Directional SSS Strength", &bendSettings.Strength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Blends PIXL's depth-reconstructed sun/moon shadows with Skyrim's existing directional shadow map. Zero keeps only Skyrim shadows; one uses the complete PIXL refinement.");
+			ImGui::TextWrapped("Blends PIXL's depth-reconstructed sun/moon visibility with Skyrim's directional shadow map. Zero keeps Skyrim shadows; one applies the complete PIXL refinement.");
 
 		ImGui::Spacing();
 		ImGui::Spacing();
 		ImGui::TreePop();
+	}
+}
+
+void ContactShadows::UpdateDirectionalSource(const void* source)
+{
+	if (activeDirectionalSource == source)
+		return;
+
+	activeDirectionalSource = source;
+	++directionalSourceEpoch;
+	if (source) {
+		logger::info("[PIXL][DirectionalSSS] Active directional source updated (epoch {}).", directionalSourceEpoch);
+	} else {
+		logger::info("[PIXL][DirectionalSSS] No active directional source; directional visibility remains neutral.");
 	}
 }
 
@@ -128,20 +147,36 @@ void ContactShadows::DrawShadows()
 	auto context = globals::d3d::context;
 
 	auto accumulator = *globals::game::currentAccumulator.get();
-	if (!accumulator)
+	if (!accumulator) {
+		UpdateDirectionalSource(nullptr);
 		return;
+	}
 	auto* shadowSceneNode = accumulator->GetRuntimeData().activeShadowSceneNode;
 	if (!shadowSceneNode || !shadowSceneNode->GetRuntimeData().sunLight ||
 		!shadowSceneNode->GetRuntimeData().sunLight->light) {
+		UpdateDirectionalSource(nullptr);
 		return;
 	}
 	auto dirLight = skyrim_cast<RE::NiDirectionalLight*>(
 		shadowSceneNode->GetRuntimeData().sunLight->light.get());
-	if (!dirLight)
+	if (!dirLight) {
+		UpdateDirectionalSource(nullptr);
 		return;
+	}
+	UpdateDirectionalSource(dirLight);
 
-	auto& directionNi = dirLight->GetWorldDirection();
-	float3 light = { directionNi.x, directionNi.y, directionNi.z };
+	// Follow PIXL's live sky orientation (the same sun node used by SkyBounce,
+	// SkyVeil and SharedData) so custom weather/sky rotations also drive SSS.
+	float3 light{};
+	if (auto sky = globals::game::sky; sky && sky->sun && sky->sun->root && sky->root) {
+		const auto& sunPos = sky->sun->root->world.translate;
+		const auto& skyPos = sky->root->world.translate;
+		light = { sunPos.x - skyPos.x, sunPos.y - skyPos.y, sunPos.z - skyPos.z };
+	}
+	if (light.LengthSquared() < 1.0e-6f) {
+		auto& directionNi = dirLight->GetWorldDirection();
+		light = { directionNi.x, directionNi.y, directionNi.z };
+	}
 	light.Normalize();
 	float4 lightProjection = float4(-light.x, -light.y, -light.z, 0.0f);
 
@@ -274,10 +309,12 @@ void ContactShadows::Prepass()
 	float white[4] = { 1, 1, 1, 1 };
 	context->ClearUnorderedAccessViewFloat(contactShadowsTexture->uav.get(), white);
 
-	if (auto sky = globals::game::sky)
-		if (bendSettings.Enable && sky->mode.get() == RE::Sky::Mode::kFull) {
-			DrawShadows();
-		}
+	auto sky = globals::game::sky;
+	if (bendSettings.Enable && sky && sky->mode.get() == RE::Sky::Mode::kFull) {
+		DrawShadows();
+	} else {
+		UpdateDirectionalSource(nullptr);
+	}
 
 	auto view = contactShadowsTexture->srv.get();
 	context->PSSetShaderResources(45, 1, &view);
@@ -297,6 +334,14 @@ void ContactShadows::LoadSettings(json& o_json)
 void ContactShadows::SaveSettings(json& o_json)
 {
 	o_json = bendSettings;
+}
+
+void ContactShadows::Reset()
+{
+	// Scene transitions may destroy the old Skyrim light before the next prepass.
+	// The source is always reacquired from the active shadow scene before use.
+	activeDirectionalSource = nullptr;
+	directionalSourceEpoch = 0;
 }
 
 void ContactShadows::RestoreDefaultSettings()

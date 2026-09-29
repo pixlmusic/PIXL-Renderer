@@ -1124,6 +1124,9 @@ namespace
 			imageReconstruction.d3d12SwapChainActive &&
 			imageReconstruction.neuralRenderingProvisionedAtBoot;
 		const bool nrControlAvailable = nrHardwareSupported && dlssSelected;
+		PIXLUI::StatusPill(
+			nrControlAvailable ? "DLSS READY" : "RTX 30+ / DLSS REQUIRED",
+			nrControlAvailable ? PIXLUI::Colors::Success : PIXLUI::Colors::Warning);
 
 		ImGui::BeginDisabled(!nrControlAvailable);
 		if (ToggleControl(
@@ -1319,8 +1322,14 @@ namespace
 					false);
 		}
 
+		if (imageReconstruction.DrawFrameGenerationBackendSelector()) {
+			changed = restartNeeded = true;
+		}
 		bool frameGeneration =
 			settings.frameGenerationMode != 0;
+		const bool frameGenerationBackendAvailable =
+			imageReconstruction.IsSelectedFrameGenerationBackendSelectable();
+		ImGui::BeginDisabled(!frameGenerationBackendAvailable && !frameGeneration);
 		if (ToggleControl(
 				"Frame generation",
 				&frameGeneration,
@@ -1330,9 +1339,12 @@ namespace
 				settings.frameGenerationForceEnable = 1;
 			changed = restartNeeded = true;
 		}
-		if (imageReconstruction.DrawFrameGenerationBackendSelector()) {
-			changed = restartNeeded = true;
-		}
+		ImGui::EndDisabled();
+		if (!frameGenerationBackendAvailable)
+			WrappedTintedText(PIXLUI::Colors::Warning,
+				imageReconstruction.UsesDLSSGFrameGeneration()
+					? "DLSS FRAME GENERATION: SUPPORTED RTX HARDWARE OR THE RTX 30 PROXY IS REQUIRED"
+					: "FSR FRAME GENERATION RUNTIME IS NOT INSTALLED");
 		if (imageReconstruction.UsesDLSSGFrameGeneration()) {
 			const char* multipliers[] = { "2x (1 generated frame)", "3x (2 generated frames)", "4x (3 generated frames)" };
 			int multiplier = static_cast<int>(std::clamp(settings.dlssgGeneratedFrames, 1u, 3u)) - 1;
@@ -1341,7 +1353,7 @@ namespace
 				changed = true;
 			}
 			if (auto _tt = Util::HoverTooltipWrapper())
-				ImGui::TextWrapped("Total output frames per rendered frame. Higher multipliers increase GPU work and do not improve input response. Limited by the runtime and MaxGeneratedFrames in dlssg_sm86.ini; applied when generation resumes.");
+				ImGui::TextWrapped("Total output frames per rendered frame. Higher multipliers increase GPU work and do not improve input response. The active runtime determines its own limit; optional SM86 installs may also use MaxGeneratedFrames in dlssg_sm86.ini.");
 			if (imageReconstruction.HasDLSSGModule())
 				ImGui::Text("Runtime limit: %ux", imageReconstruction.streamlineDX12.dlssgMaxFramesToGenerate + 1u);
 		}
@@ -1395,6 +1407,10 @@ namespace
 		if (restartNeeded || frameGenerationPendingRestart) {
 			WrappedTintedText(PIXLUI::Colors::Warning,
 				"RESTART SKYRIM TO APPLY DISPLAY PATH CHANGES");
+		} else if (frameGenerationState == ImageReconstruction::FrameGenerationState::Unavailable &&
+			imageReconstruction.UsesDLSSGFrameGeneration()) {
+			WrappedTintedText(PIXLUI::Colors::Warning,
+				"DLSS FRAME GENERATION COULD NOT START. CHECK BORDERLESS MODE, GPU DRIVER, HARDWARE-ACCELERATED GPU SCHEDULING AND PIXL LOG.");
 		} else {
 			const char* statusText = "DISPLAY PATH READY";
 			auto statusColour = PIXLUI::Colors::TextDim;
@@ -2122,7 +2138,7 @@ namespace
 				shadows.Enable != 0u;
 
 			if (ToggleControl(
-					"Screen-space shadows",
+					"Directional SSS",
 					&screenShadows)) {
 				shadows.Enable =
 					screenShadows ? 1u : 0u;

@@ -10,6 +10,8 @@ param(
     [string]$AllowedOutputRoot = "",
     [ValidateSet("LIVE-TEST", "RELEASE-CANDIDATE", "RELEASE")]
     [string]$Channel = "LIVE-TEST",
+    [ValidateRange(0, 9)]
+    [int]$CompressionLevel = 7,
     [switch]$SkipPipelineLibrary,
     [switch]$SkipArchive
 )
@@ -89,6 +91,12 @@ function Copy-TrackedTree([string]$Source, [string]$Destination) {
     }
     $relativeRoot = $resolvedSource.Substring($sourceRoot.TrimEnd('\').Length + 1).Replace('\', '/')
     $trackedFiles = @(& git -C $sourceRoot ls-files -- "$relativeRoot/")
+    if ($Channel -ne 'RELEASE') {
+        # A release-candidate may validate a deliberate working-tree snapshot.
+        # Final RELEASE remains commit-only so corresponding source is exact.
+        $trackedFiles += @(& git -C $sourceRoot ls-files --others --exclude-standard -- "$relativeRoot/")
+        $trackedFiles = @($trackedFiles | Sort-Object -Unique)
+    }
     if ($LASTEXITCODE -ne 0) { throw "Unable to enumerate tracked package files below $relativeRoot" }
     if ($trackedFiles.Count -eq 0) { throw "No tracked package files found below $relativeRoot" }
     foreach ($tracked in $trackedFiles) {
@@ -118,6 +126,8 @@ $required = @(
     (Join-Path $sourceRoot "distribution\Shaders"),
     (Join-Path $sourceRoot "distribution\Shaders\Common\Color.hlsli"),
     (Join-Path $sourceRoot "pipeline\Camera Suite\Kernels\CameraSuite\HDROutputCS.hlsl"),
+    (Join-Path $sourceRoot "pipeline\Camera Suite\Kernels\CameraSuite\DOFCoCCS.hlsl"),
+    (Join-Path $sourceRoot "pipeline\Camera Suite\Kernels\CameraSuite\DOFBlurCS.hlsl"),
     (Join-Path $sourceRoot "distribution\SKSE\Plugins\PIXLRenderer\SettingsDefault.json"),
     (Join-Path $sourceRoot "COPYING")
 )
@@ -131,8 +141,10 @@ foreach ($path in $required) {
 $requiredNotices = @(
     'COPYING',
     'EXCEPTIONS.md',
+    'NOTICE.md',
     'ATTRIBUTION.md',
     'THIRD_PARTY_NOTICES.md',
+    'TRADEMARKS.md',
     'SOURCE-AND-CREDITS.md'
 )
 
@@ -292,7 +304,7 @@ Copy-Item -LiteralPath (Join-Path $sourceRoot 'distribution\SOURCE-AND-CREDITS.m
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'docs\MOD_COMPATIBILITY.md') -Destination $documentationRoot -Force
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'extern\ReShade\LICENSE.md') -Destination (Join-Path $documentationRoot 'ReShade-API-LICENSE.md') -Force
 Copy-Item -LiteralPath (Join-Path $sourceRoot "docs\ImageReconstruction\DLSSG_SM86_INTEGRATION.md") -Destination $documentationRoot -Force
-foreach ($document in @("COPYING", "EXCEPTIONS.md", "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md", "SOURCE-AND-CREDITS.md")) {
+foreach ($document in @("COPYING", "EXCEPTIONS.md", "NOTICE.md", "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md", "TRADEMARKS.md", "SOURCE-AND-CREDITS.md")) {
     $documentSource = Join-Path $sourceRoot $document
     if ($document -eq 'SOURCE-AND-CREDITS.md') {
         $documentSource = Join-Path $sourceRoot 'distribution\SOURCE-AND-CREDITS.md'
@@ -393,13 +405,14 @@ if (-not $SkipArchive -and $archive) {
     if ($sevenZip) {
         Push-Location $output
         try {
-            & $sevenZip a -tzip -mx=7 -mmt=on $archive "*"
+            & $sevenZip a -tzip "-mx=$CompressionLevel" -mmt=on $archive "*"
             if ($LASTEXITCODE -ne 0) { throw "7-Zip failed with exit code $LASTEXITCODE" }
         } finally {
             Pop-Location
         }
     } else {
-        Compress-Archive -Path (Join-Path $output "*") -DestinationPath $archive -CompressionLevel Optimal
+        $fallbackCompression = if ($CompressionLevel -eq 0) { 'NoCompression' } elseif ($CompressionLevel -le 3) { 'Fastest' } else { 'Optimal' }
+        Compress-Archive -Path (Join-Path $output "*") -DestinationPath $archive -CompressionLevel $fallbackCompression
     }
     $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
     Set-Content -LiteralPath ($archive + ".sha256") -Value "$hash  $([IO.Path]::GetFileName($archive))" -Encoding ascii

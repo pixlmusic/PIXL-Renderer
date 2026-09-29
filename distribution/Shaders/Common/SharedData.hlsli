@@ -39,6 +39,16 @@ namespace SharedData
 		// fields retain their offsets.
 		float4 PlayerWaterPosition;  // xyz absolute position, w in-water flag
 		float4 PlayerWaterVelocity;  // xyz world velocity, w horizontal speed
+		// PIXL RenderOrigin::GPUData. Append-only; native engine b12 is untouched.
+		float4 RenderOriginHigh;
+		float4 RenderOriginLow;
+		float4 PreviousRenderOriginHigh;
+		float4 PreviousRenderOriginLow;
+		float4 RenderOriginDelta;
+		float4 EngineToRenderOffset;
+		float4 PreviousEngineToRenderOffset;
+		float4 EngineOriginDelta;
+		uint4 RenderOriginFlags; // enabled, epoch low32, shifted, history valid
 	};
 
 	struct FoliageDynamicsSettings
@@ -312,7 +322,7 @@ namespace SharedData
 		float SkyProbeSaturation;
 		float FogAmount;
 		uint DALCMode;  // 0: Luminance Ratio, 1: Color Ratio, 2: DALC + Sky, 3: DALC + Sky (Directional)
-		float pad0;
+		float InteriorAmbientScale;
 		float pad1;
 	};
 
@@ -496,7 +506,7 @@ namespace SharedData
 		uint EnableGGXMultiScatter;
 		float GGXMultiScatterStrength;
 		float LocalLightMinimumDistance;
-		float pad0;
+		float PhysicalLocalLightFalloffStrength;
 	};
 
 	struct SkinOpticsData

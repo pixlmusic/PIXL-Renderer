@@ -32,7 +32,11 @@ namespace HDRSun
 		float paperWhiteNits = max(SharedData::HDRData.y, 1.0f);
 		float peakNits = max(SharedData::HDRData.z, paperWhiteNits + 1.0f);
 		float peakRatio = peakNits / paperWhiteNits;
-		float menuSunMul = (SharedData::HDRData.w > 1e-3f) ? (kMenuSunNits / peakNits) : 1.0f;
+		// Director uses 0.75 to freeze Skyrim's native ISHDR eye adaptation,
+		// but its viewfinder still shows the live world, not a dimmed menu sun.
+		float sceneMode = SharedData::HDRData.w;
+		bool isDirector = sceneMode > 0.70f && sceneMode < 0.80f;
+		float menuSunMul = (sceneMode > 1e-3f && !isDirector) ? (kMenuSunNits / peakNits) : 1.0f;
 		float maxBoost = max(kMinHdrSunBoost, peakRatio * menuSunMul);
 
 		// --- weight 0..1: local brightness / alpha / UV rim ---

@@ -1078,6 +1078,55 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 		// old SharedData padding instead of referencing FrameBuffer there.
 		const auto& cameraPosAdjust = globals::game::frameBufferCached.GetCameraPosAdjust();
 		data.CameraPosAdjust = { cameraPosAdjust.x, cameraPosAdjust.y, cameraPosAdjust.z };
+		// One render-thread snapshot per PIXL frame. Never write these values into
+		// Skyrim's camera, objects, physics, persistent world data or native b12.
+		auto& renderOrigin = PIXL::RenderOrigin::Get();
+		// The Experimental workspace owns the persisted user opt-in. DeveloperMode
+		// remains independent so testing Render Origin never changes compiler flags.
+		if (globals::menu)
+			renderOrigin.requestedEnabled = globals::menu->GetSettings().ExperimentalRenderOriginEnabled;
+		const auto& previousAdjust = globals::game::frameBufferCached.GetCameraPreviousPosAdjust();
+		const PIXL::RenderOrigin::Position engineOrigin{ cameraPosAdjust.x, cameraPosAdjust.y, cameraPosAdjust.z };
+		const PIXL::RenderOrigin::Position previousEngineOrigin{ previousAdjust.x, previousAdjust.y, previousAdjust.z };
+		if (renderOrigin.NeedsUpdate(frameCount)) {
+			const auto inverseView = globals::game::frameBufferCached.GetCameraViewInverse().Transpose();
+			// Skyrim rewrites the shared per-frame buffer for auxiliary views. Reflection,
+			// UI and post-display camera setups can therefore replace the gameplay view
+			// before this snapshot runs. Using that transient inverse view made the render
+			// origin alternate between the player and a near-zero auxiliary camera.
+			// PlayerCamera's root is the authoritative rendered camera for gameplay,
+			// SmoothCam and PIXL's free/director cameras. Keep matrix reconstruction only
+			// as a startup/menu fallback while no camera root is available.
+			PIXL::RenderOrigin::Position cameraAbsolute =
+				engineOrigin + PIXL::RenderOrigin::Position{ inverseView._41, inverseView._42, inverseView._43 };
+			if (auto* playerCamera = RE::PlayerCamera::GetSingleton();
+				playerCamera && playerCamera->cameraRoot) {
+				const auto& cameraPosition = playerCamera->cameraRoot->world.translate;
+				const PIXL::RenderOrigin::Position authoritativeCamera{
+					cameraPosition.x, cameraPosition.y, cameraPosition.z
+				};
+				if (authoritativeCamera.Finite())
+					cameraAbsolute = authoritativeCamera;
+			}
+			std::uint64_t worldContext = 0;
+			if (auto* player = globals::game::player) {
+				if (auto* cell = player->GetParentCell()) {
+					if (cell->IsInteriorCell()) worldContext = (std::uint64_t{1} << 32) | cell->GetFormID();
+					else if (auto* world = player->GetWorldspace()) worldContext = world->GetFormID();
+				}
+			}
+			const bool wasEnabled = renderOrigin.Enabled();
+			if (renderOrigin.Update(frameCount, cameraAbsolute, worldContext) &&
+				(wasEnabled != renderOrigin.Enabled() || (renderOrigin.verbose && renderOrigin.ShiftedThisFrame()))) {
+				const auto origin = renderOrigin.GetCurrentOrigin();
+				const auto previous = renderOrigin.GetPreviousOrigin();
+				logger::info("[PIXL][RenderOrigin] enabled={} epoch={} world={} origin=({},{},{}) previous=({},{},{}) camera=({},{},{}) discontinuity={}",
+					renderOrigin.Enabled(), renderOrigin.GetOriginEpoch(), worldContext,
+					origin.x, origin.y, origin.z, previous.x, previous.y, previous.z,
+					cameraAbsolute.x, cameraAbsolute.y, cameraAbsolute.z, renderOrigin.Discontinuity());
+			}
+		}
+		data.RenderCoordinates = renderOrigin.GetGPUData(engineOrigin, previousEngineOrigin);
 		data.Timer = timer;
 
 		auto temporal = Util::GetTemporal();

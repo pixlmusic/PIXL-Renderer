@@ -26,6 +26,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	SkyProbeSaturation,
 	FogAmount,
 	DALCMode,
+	InteriorAmbientScale,
 	DisableInInteriors,
 	DisableInWorldMap,
 	DisableInLoadingScreen)
@@ -78,6 +79,10 @@ void AmbientProbe::DrawSettings()
 								  "DALC + Sky (Directional): Same, but SkyBounce also dims vanilla ambient per-direction."));
 		}
 	}
+	Util::WeatherUI::SliderFloat(T(TKEY("interior_ambient_scale"), "Interior Ambient Strength"), this, "InteriorAmbientScale", &settings.InteriorAmbientScale, 0.0f, 1.0f, "%.2f");
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::Text("%s", T(TKEY("interior_ambient_scale_tooltip"), "Caps interior diffuse ambient below Skyrim's vanilla level. Lower values make interiors darker without changing direct lights or emissives."));
+	}
 	Util::UIntCheckbox(T(TKEY("use_static_ibl"), "Use Stable Lighting Outside the World"), &settings.UseStaticAmbientProbe);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("use_static_ibl_tooltip"), "Uses pre-baked static AmbientProbe cubemap textures for objects rendered outside the game world (e.g. inventory items, loading screens)."));
@@ -109,6 +114,7 @@ void AmbientProbe::DrawSettings()
 void AmbientProbe::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	settings.InteriorAmbientScale = std::clamp(std::isfinite(settings.InteriorAmbientScale) ? settings.InteriorAmbientScale : 0.72f, 0.0f, 1.0f);
 }
 
 void AmbientProbe::SaveSettings(json& o_json)
@@ -203,7 +209,8 @@ AmbientProbe::PerFrame AmbientProbe::GetCommonBufferData() const
 		.EnvironmentProbeSaturation = settings.EnvironmentProbeSaturation,
 		.SkyProbeSaturation = settings.SkyProbeSaturation,
 		.FogAmount = settings.FogAmount,
-		.DALCMode = settings.DALCMode
+		.DALCMode = settings.DALCMode,
+		.InteriorAmbientScale = settings.InteriorAmbientScale
 	};
 
 	return data;

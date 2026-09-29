@@ -852,7 +852,27 @@ float3 GetWaterSpecularColor(PS_INPUT input, float3 normal, float3 viewDirection
 
 	if (SharedData::HideSky)
 		reflectionAmount = 0.0;
-	reflectionColor = lerp(dynamicCubemap, reflectionColor, reflectionAmount);
+		reflectionColor = lerp(dynamicCubemap, reflectionColor, reflectionAmount);
+#			endif
+
+#			if USE_PIXL_WATER_OPTICS
+	// At a grazing view angle Fresnel makes the reflection dominant.  The
+	// cubemap can still contain a bright sky texel even when the water is in a
+	// dark cave or under a heavy atmosphere, which produces a white, detached
+	// sheen.  Limit only that extreme grazing contribution against the local
+	// resolved fog luminance; ordinary water reflections and authored colour
+	// remain untouched.  This is a luminance guard, not a blanket HDR clamp.
+	float waterNdotV = saturate(dot(normal, -viewDirection));
+	float grazingReflectionWeight = smoothstep(0.78f, 0.97f, 1.0f - waterNdotV);
+	float localAtmosphereLuminance = max(
+		Color::RGBToLuminance(Color::Fog(FogFarColor.xyz)),
+		0.015f);
+	float reflectionLuminance = Color::RGBToLuminance(max(reflectionColor, 0.0f.xxx));
+	float grazingLuminanceLimit = max(localAtmosphereLuminance * 4.0f, 0.12f);
+	float grazingLuminanceScale = min(
+		1.0f,
+		grazingLuminanceLimit / max(reflectionLuminance, 1e-4f));
+	reflectionColor *= lerp(1.0f, grazingLuminanceScale, grazingReflectionWeight);
 #			endif
 
 #			if !defined(LOD) && NUM_SPECULAR_LIGHTS == 0
@@ -1209,6 +1229,11 @@ float3 GetSunColor(float3 normal, float3 viewDirection, float3 worldPosition)
 	float authoredLobe = reflectionMul * lerp(1.0f, 0.78f, roughnessFactor);
 	float directionalGlint = tightGlint * lerp(0.55f, 1.05f, fresnel);
 	reflectionMul = min(max(authoredLobe, directionalGlint), 1.05f);
+	// Keep a near-horizon directional glint tied to the same local surface
+	// response as the reflection guard above.  This prevents a sharp white bar
+	// when the sun lobe and Fresnel peak overlap at a very shallow view angle.
+	float grazingGlintWeight = smoothstep(0.82f, 0.98f, 1.0f - NdotV);
+	reflectionMul *= lerp(1.0f, 0.72f, grazingGlintWeight);
 #			endif
 
 	float llDirLightMult = (SharedData::linearLightCoreSettings.enableLinearLightCore && !SharedData::linearLightCoreSettings.isDirLightLinear) ? SharedData::linearLightCoreSettings.dirLightMult : 1.0f;
@@ -1612,7 +1637,16 @@ PS_OUTPUT main(PS_INPUT input)
 	// At a grazing view angle it previously remained fully opaque and formed a
 	// bright horizontal line against the sky. Blend it toward the already
 	// computed atmospheric fog colour only for distant, near-horizontal rays.
-	float viewElevation = abs(normalize(input.WPosition.xyz).z);
+	// WPosition is world-space (and may be camera-relative after render-origin
+	// adjustment), so its absolute Z is not the viewing elevation.  Use the ray
+	// from the camera to the water surface; this keeps ordinary nearby water
+	// from being classified as a horizon just because the world happens to be
+	// high above the origin.
+	float3 cameraToWater = input.WPosition.xyz - FrameBuffer::CameraPosAdjust.xyz;
+	float cameraToWaterLengthSq = dot(cameraToWater, cameraToWater);
+	float viewElevation = cameraToWaterLengthSq > 1e-8f
+		? abs(cameraToWater.z * rsqrt(cameraToWaterLengthSq))
+		: 1.0f;
 	float horizonAngleFade = smoothstep(
 		HorizonBlend::FadeStartElevation,
 		HorizonBlend::FadeEndElevation,
@@ -1621,7 +1655,17 @@ PS_OUTPUT main(PS_INPUT input)
 		HorizonBlend::FadeStartDistance,
 		HorizonBlend::FadeEndDistance,
 		distanceBlendFactor);
-	float horizonSkirtFade = horizonAngleFade * horizonDistanceFade;
+	// HORIZON_BLEND folds only the beyond-far-plane skirt to FoldedDepth.  The
+	// previous implementation applied the atmospheric blend to any distant,
+	// grazing water pixel, creating a pale rectangular sheen on real surfaces.
+	// Gate the effect on the folded depth itself so regular water keeps its
+	// normal reflection/refraction composition.
+	float waterDepth = input.HPosition.z / max(abs(input.HPosition.w), 1e-6f);
+	float foldedSkirtMask = smoothstep(
+		HorizonBlend::FoldedDepth - 0.0001f,
+		HorizonBlend::FoldedDepth,
+		waterDepth);
+	float horizonSkirtFade = horizonAngleFade * horizonDistanceFade * foldedSkirtMask;
 	// The folded skirt is composited after the normal water fog path.  The raw
 	// far-fog value is slightly brighter than PIXL's resolved atmospheric result,
 	// so attenuate it to avoid a visible pale seam at the transition.

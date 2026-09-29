@@ -1,3 +1,9 @@
+// Mixed-provenance PIXL Renderer file.
+// Community Shaders Grass Collision ancestry is retained; PIXL added the
+// snow/mud terrain-deformation controls and resources in 2026.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Additional permissions are described in the repository EXCEPTIONS.md.
+
 #pragma once
 
 #include "Buffer.h"

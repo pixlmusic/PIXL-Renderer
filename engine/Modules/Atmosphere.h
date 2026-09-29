@@ -50,46 +50,46 @@ public:
 	{
 		uint enabled = 1;
 		uint useWorldProbes = 1;
-		float startDistance = 10500.0f;
-		float fogHeight = 22000.0f;
-		float fogHeightFalloff = 0.30f;
-		float fogDensity = 0.27f;
-		float directionalInscatteringMultiplier = 1.3600000143051147f;
-		float directionalInscatteringAnisotropy = 0.26600000262260437f;
-		float4 inscatteringTint = { 1.0f, 1.0f, 1.0f, 0.45490196347236633f };
-		float cubemapMipLevel = 7.0f;
-		float sunlightAttenuationAmount = 0.3100000023841858f;
-		uint respectVanillaFogFade = 1;
+		float startDistance = 58680.6f;
+		float fogHeight = 11304.1f;
+		float fogHeightFalloff = 1.243f;
+		float fogDensity = 0.138f;
+		float directionalInscatteringMultiplier = 1.17f;
+		float directionalInscatteringAnisotropy = 0.158f;
+		float4 inscatteringTint = { 1.0f, 1.0f, 1.0f, 0.41568628f };
+		float cubemapMipLevel = 5.0f;
+		float sunlightAttenuationAmount = 0.15f;
+		uint respectVanillaFogFade = 0;
 		uint disableVanillaFog = 1;
-		float4 fogInscatteringColor = { 0.8509804010391235f, 0.8509804010391235f, 0.8509804010391235f, 1.0f };
-		float originalFogColorAmount = 0.2800000011920929f;
+		float4 fogInscatteringColor = { 0.623529434f, 0.796078444f, 0.8117647f, 0.450980395f };
+		float originalFogColorAmount = 0.0f;
 		uint volumetricFogEnabled = 1;
-		uint volumetricGridPixelSize = 36;
-		uint volumetricGridSizeZ = 40;
-		float volumetricFogDistance = 12075.0f;
+		uint volumetricGridPixelSize = 24;
+		uint volumetricGridSizeZ = 64;
+		float volumetricFogDistance = 32506.0f;
 		float volumetricFogStartDistance = 0.0f;
 		float volumetricFogNearFadeInDistance = 0.0f;
-		float volumetricFogExtinctionScale = 1.059999942779541f;
-		float4 volumetricFogAlbedo = { 1.0f, 1.0f, 1.0f, 1.0f };
-		float4 volumetricFogEmissive = { 1.0f, 1.0f, 1.0f, 0.0f };
-		float volumetricDirectionalScatteringIntensity = 1.4500000476837158f;
-		float volumetricShadowBias = 0.004000000189989805f;
-		float volumetricDepthDistributionScale = 8.100000381469727f;
-		float volumetricSkyLightingIntensity = 1.559999942779541f;
-		float volumetricFogScatteringDistribution = 0.2800000011920929f;
-		float volumetricHistoryWeight = 0.9599999785423279f;
-		uint volumetricHistoryMissSampleCount = 2;
+		float volumetricFogExtinctionScale = 0.55f;
+		float4 volumetricFogAlbedo = { 0.9529412f, 0.968627453f, 1.0f, 0.647058845f };
+		float4 volumetricFogEmissive = { 1.0f, 1.0f, 1.0f, 0.09411765f };
+		float volumetricDirectionalScatteringIntensity = 1.22f;
+		float volumetricShadowBias = 0.004f;
+		float volumetricDepthDistributionScale = 8.1f;
+		float volumetricSkyLightingIntensity = 1.0f;
+		float volumetricFogScatteringDistribution = 0.19f;
+		float volumetricHistoryWeight = 0.96f;
+		uint volumetricHistoryMissSampleCount = 4;
 		float volumetricSampleJitterMultiplier = 0.0f;
 		float volumetricUpsampleJitterMultiplier = 1.0f;
-		float volumetricLocalLightScatteringIntensity = 1.4900000095367432f;
-		float skyProtection = 0.25f;
+		float volumetricLocalLightScatteringIntensity = 1.43f;
+		float skyProtection = 0.2f;
 		float pad0 = 0.0f;
 
 		// Atmosphere 2.0 reconstruction / temporal quality.
 		uint volumetricUseDisplayResolutionGrid = 1;
 		uint volumetricDepthAwareUpsampling = 1;
-		float volumetricDepthAwareUpsamplingStrength = 8.0f;
-		float volumetricHistoryRadianceClamp = 4.0f;
+		float volumetricDepthAwareUpsamplingStrength = 8.1f;
+		float volumetricHistoryRadianceClamp = 3.9f;
 
 		float volumetricHistoryDepthRejection = 8.0f;
 		uint mapAtmosphereEnabled = 1;
@@ -97,22 +97,22 @@ public:
 		uint mapDisableVanillaFog = 1;
 
 		// World/local map visibility profile. Gameplay values remain untouched.
-		float mapFogDensityMultiplier = 0.20000000298023224f;
-		float mapFogHeightFalloffMultiplier = 1.7400000095367432f;
-		float mapStartDistance = 4061.0f;
-		float mapMinimumTransmittance = 0.699999988079071f;
+		float mapFogDensityMultiplier = 0.24f;
+		float mapFogHeightFalloffMultiplier = 0.52f;
+		float mapStartDistance = 0.0f;
+		float mapMinimumTransmittance = 0.32f;
 
-		float mapAmbientInscatteringMultiplier = 1.399999976158142f;
-		float mapDirectionalInscatteringMultiplier = 0.7599999904632568f;
-		float mapSunlightAttenuationMultiplier = 0.2800000011920929f;
-		float mapWorldProbeMultiplier = 0.7599999904632568f;
+		float mapAmbientInscatteringMultiplier = 0.0f;
+		float mapDirectionalInscatteringMultiplier = 1.13f;
+		float mapSunlightAttenuationMultiplier = 0.29f;
+		float mapWorldProbeMultiplier = 0.53f;
 
 		// Automatic mode preserves the authored sliders as a look/quality baseline,
 		// then adapts visibility, phase and range from Skyrim's live weather.
 		uint automaticWeatherFog = 1;
-		float automaticWeatherStrength = 1.0f;
-		float minimumAtmosphereTransmittance = 0.30000001192092896f;
-		float weatherMieStrength = 0.75f;
+		float automaticWeatherStrength = 0.90f;
+		float minimumAtmosphereTransmittance = 0.14f;
+		float weatherMieStrength = 1.0f;
 	} settings;
 	STATIC_ASSERT_ALIGNAS_16(Settings);
 	static_assert(sizeof(Settings) == 272, "Atmosphere settings must match the 17-register FeatureData block.");

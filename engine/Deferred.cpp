@@ -1,4 +1,5 @@
 #include "Deferred.h"
+#include "Modules/ContainedLiquids.h"
 
 #include <DDSTextureLoader.h>
 
@@ -16,6 +17,7 @@
 #include "Modules/GroundResponse.h"
 #include "Modules/RainResponse.h"
 #include "Modules/MaterialLayers.h"
+#include "Modules/DistantLife.h"
 
 #include "Hooks.h"
 
@@ -420,6 +422,10 @@ void Deferred::DeferredPasses()
 	// Dedicated rain runoff is composited after the opaque/deferred scene is
 	// resolved but before later forward precipitation/effects. It therefore has
 	// real scene depth available and no longer depends on Skyrim rain-card placement.
+	auto& distantLife = globals::pipeline::distantLife;
+	if (distantLife.loaded)
+		distantLife.DrawDistantLife();
+
 	auto& rainResponse = globals::pipeline::rainResponse;
 	if (rainResponse.loaded)
 		rainResponse.DrawRoofRunoff();
@@ -462,6 +468,8 @@ void Deferred::EndDeferred()
 	deferredPass = false;
 
 	ResetBlendStates();
+	if (globals::pipeline::containedLiquids.loaded)
+		globals::pipeline::containedLiquids.ReplayAfterDeferred();
 }
 
 void Deferred::OverrideBlendStates()

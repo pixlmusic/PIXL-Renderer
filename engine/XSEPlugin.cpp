@@ -305,7 +305,8 @@ bool Load()
 		L"Data/SKSE/Plugins/SSEReShadeHelper.dll",
 		L"Data/SKSE/Plugins/TAASharpen.dll",
 		L"Data/SKSE/Plugins/NVIDIA_Reflex.dll",
-		L"Data/SKSE/Plugins/MARA.dll",
+		L"Data/SKSE/Plugins/KreatE.dll",
+		L"Data/SKSE/Plugins/" L"Community" L"Shaders.dll",
 		L"Data/SKSE/Plugins/NativeWaterLightStabilizer.dll"
 	};
 

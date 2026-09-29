@@ -90,8 +90,9 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 		std::max(1.0f, std::min(700.0f * scale, io.DisplaySize.x - 24.0f)),
 		std::max(1.0f, std::min(760.0f * scale, io.DisplaySize.y - 24.0f))
 	};
-	if (!ImGui::IsPopupOpen("##PIXLLaunchExperience"))
+	if (!ImGui::IsPopupOpen("##PIXLLaunchExperience")) {
 		ImGui::OpenPopup("##PIXLLaunchExperience");
+	}
 	ImGui::SetNextWindowPos({ io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f }, ImGuiCond_Always, { 0.5f, 0.5f });
 	ImGui::SetNextWindowSize(cardSize, ImGuiCond_Always);
 	// Modal ordering isolates setup without stealing focus from its combo popups.
@@ -198,6 +199,7 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 
 	static int setupQuality = 2;
 	static int setupUpscaler = 0;
+	static int setupFGBackend = 0;
 	static bool setupFrameGeneration = false;
 	static bool setupNeuralRendering = false;
 	static bool nrSetupConfirmed = false;
@@ -210,6 +212,7 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 		if (setupUpscaler == 3 && reconstruction.qualityMode == 0)
 			setupUpscaler = 4;
 		setupFrameGeneration = reconstruction.frameGenerationMode != 0;
+		setupFGBackend = std::clamp(static_cast<int>(reconstruction.frameGenerationBackend), 0, 1);
 		setupNeuralRendering = reconstruction.neuralRenderingEnabled;
 		nrSetupConfirmed = false;
 	}
@@ -230,18 +233,46 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	}
 	Util::AddTooltip("DLAA uses DLSS anti-aliasing at native resolution, without an upscaling performance boost. DLSS Quality renders at a lower resolution. Both require a supported NVIDIA device/runtime.");
 
-	ImGui::Checkbox("Enable frame generation", &setupFrameGeneration);
+	const auto& reconstructionRuntime = globals::pipeline::imageReconstruction;
+	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "FRAME DELIVERY");
+	const char* fgBackendNames[] = { "FSR 3 Frame Generation", "NVIDIA DLSS Frame Generation" };
+	ImGui::SetNextItemWidth(-1.0f);
+	if (ImGui::BeginCombo("##PIXLSetupFGBackend", fgBackendNames[setupFGBackend])) {
+		for (int index = 0; index < IM_ARRAYSIZE(fgBackendNames); ++index) {
+			const bool selectable = index == 0 ? reconstructionRuntime.HasFrameGenModule() :
+				reconstructionRuntime.IsDLSSGSelectable();
+			ImGui::BeginDisabled(!selectable);
+			if (ImGui::Selectable(fgBackendNames[index], setupFGBackend == index))
+				setupFGBackend = index;
+			ImGui::EndDisabled();
+			if (!selectable && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+				ImGui::SetTooltip("%s", index == 0
+					? "FSR Frame Generation runtime files are unavailable."
+					: "Requires GeForce RTX 40-series or newer, or RTX 30-series with the optional SM86 proxy files.");
+		}
+		ImGui::EndCombo();
+	}
+	Util::AddTooltip("Choose the frame-generation backend before enabling it. Supported GeForce RTX 40-series or newer cards can select native DLSS Frame Generation. RTX 30-series needs the optional SM86 proxy files.");
+	const bool setupFGAvailable = setupFGBackend == 0 ? reconstructionRuntime.HasFrameGenModule() :
+		reconstructionRuntime.IsDLSSGSelectable();
+	ImGui::BeginDisabled(!setupFGAvailable && !setupFrameGeneration);
+	PIXLUI::VisibleCheckbox("Enable frame generation", &setupFrameGeneration);
+	ImGui::EndDisabled();
 	Util::AddTooltip("Applies frame generation when you save setup, including the low-refresh-rate override. If its sidecar was not created at launch, one restart is required.");
+	if (!setupFGAvailable)
+		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::Warning), "%s",
+			setupFGBackend == 1
+				? "DLSS Frame Generation needs supported RTX hardware or the RTX 30 proxy. Save leaves unavailable generation off."
+				: "FSR Frame Generation files are unavailable. Save leaves generation off; check the installed PIXL Core files.");
 	if (setupFrameGeneration) {
 		ImGui::TextWrapped("Uses your selected frame-generation backend. First activation may require a restart; borderless/windowed mode and a compatible runtime are required.");
 		if (!globals::pipeline::imageReconstruction.isWindowed)
 			ImGui::TextWrapped("Exclusive fullscreen detected: switch to borderless/windowed before relaunching. Restarting alone will not enable frame generation.");
 	}
 
-	const auto& reconstructionRuntime = globals::pipeline::imageReconstruction;
 	const bool neuralAvailable = dlssAvailable && reconstructionRuntime.streamline.neuralRenderingSupportedOnCurrentAdapter;
 	ImGui::BeginDisabled(!neuralAvailable);
-	if (ImGui::Checkbox("Enable Neural Rendering (experimental)", &setupNeuralRendering)) {
+	if (PIXLUI::VisibleCheckbox("Enable Neural Rendering (experimental)", &setupNeuralRendering)) {
 		nrSetupConfirmed = false;
 		if (setupNeuralRendering) {
 			if (setupUpscaler < 3)
@@ -311,6 +342,11 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 		ImGui::PopStyleColor();
 	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "Photo mode and high-quality capture");
 	ImGui::EndGroup();
+	if (!menuSettings.ToggleKey.empty() && menuSettings.ToggleKey == menuSettings.PhotoModeKey) {
+		ImGui::PushStyleColor(ImGuiCol_Text, PIXLUI::ToVec4(PIXLUI::Colors::Warning));
+		ImGui::TextWrapped("PIXL menu and Photo Mode share a shortcut. Assign different keys so both open reliably.");
+		ImGui::PopStyleColor();
+	}
 
 	ImGui::Spacing();
 	const ImVec2 continueSize{ contentWidth, 38.0f * scale };
@@ -337,7 +373,8 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 			if (selectedMethod != static_cast<uint>(ImageReconstruction::UpscaleMethod::kDLSS))
 				reconstruction.upscaleMethodNoDLSS = selectedMethod;
 			reconstruction.qualityMode = !selectedDLAA && selectedMethod >= static_cast<uint>(ImageReconstruction::UpscaleMethod::kFSR) ? 1u : 0u;
-			reconstruction.frameGenerationMode = setupFrameGeneration ? 1u : 0u;
+			reconstruction.frameGenerationMode = setupFrameGeneration && setupFGAvailable ? 1u : 0u;
+			reconstruction.frameGenerationBackend = static_cast<uint>(setupFGBackend);
 			reconstruction.neuralRenderingEnabled = setupNeuralRendering && neuralAvailable && selectedMethod == 3u;
 			if (setupFrameGeneration)
 				reconstruction.frameGenerationForceEnable = 1;

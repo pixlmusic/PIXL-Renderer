@@ -1,8 +1,7 @@
 @echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
-set "MESSAGE=%~1"
-if not defined MESSAGE set "MESSAGE=PIXL Renderer update"
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\PIXLRelease.ps1" -Action PackageCommitPush -Message "%MESSAGE%"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\PIXLDeveloperTools.ps1" -Action Git
 set "exit_code=%ERRORLEVEL%"
+if not "%exit_code%"=="0" pause
 endlocal & exit /b %exit_code%

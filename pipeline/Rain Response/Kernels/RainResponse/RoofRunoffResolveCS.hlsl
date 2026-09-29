@@ -1,5 +1,6 @@
 #include "Common/FrameBuffer.hlsli"
 #include "Common/SharedData.hlsli"
+#include "Common/PIXLRenderOrigin.hlsli"
 
 Texture2D<float2> RoofEdgeMask : register(t0);
 Texture2D<float4> PreviousRunoffState : register(t1);
@@ -10,7 +11,7 @@ cbuffer RoofRunoffTuning : register(b13)
 	float RunoffMaxDistance;
 	float RunoffNearSizeDistance;
 	float RunoffEmitterSpacing;
-	float RunoffTuningPad0;
+	float RunoffDeltaTime;
 	float2 RunoffRenderSize;
 	float2 RunoffInvRenderSize;
 	float2 RunoffOutputSize;
@@ -75,7 +76,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 	// history smearing onto a different edge after disocclusion/teleportation.
 	float previousAccumulation = 0.0f;
 	float3 previousCameraRelative =
-		absolutePosition - FrameBuffer::CameraPreviousPosAdjust.xyz;
+		PIXLRenderOrigin::CurrentEngineToPreviousEngine(cameraRelativePosition);
 	float4 previousCS = mul(
 		FrameBuffer::CameraPreviousViewProjUnjittered,
 		float4(previousCameraRelative, 1.0f));
@@ -119,10 +120,13 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 	// variation prevents every eave releasing at the same rate.
 	float capacityVariation =
 		lerp(0.72f, 1.22f, Hash31(stableCell + float3(93.0f, 11.0f, 57.0f)));
+	// The reservoir rates were originally calibrated per 60 Hz frame. Convert
+	// them to elapsed time so 30/120 FPS and paused capture behave consistently.
+	float frameScale = clamp(RunoffDeltaTime * 60.0f, 0.0f, 4.0f);
 	float inflow =
-		edge.x * rain * lerp(0.0065f, 0.0240f, rain * rain) * capacityVariation;
+		edge.x * rain * lerp(0.0065f, 0.0240f, rain * rain) * capacityVariation * frameScale;
 
-	float retention = lerp(0.9964f, 0.99945f, rain);
+	float retention = pow(lerp(0.9964f, 0.99945f, rain), frameScale);
 	float accumulation =
 		saturate(previousAccumulation * retention + inflow);
 
@@ -145,7 +149,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 		(1.0f - smoothstep(0.67f, 0.76f, dischargePhase));
 	accumulation = max(
 		0.0f,
-		accumulation - dischargeWindow * smoothstep(0.26f, 0.78f, accumulation) * 0.022f);
+		accumulation - dischargeWindow * smoothstep(0.26f, 0.78f, accumulation) * 0.022f * frameScale);
 
 	// x accumulated water, y world-stable seed, z source device depth, w edge strength.
 	NextRunoffState[q] = float4(accumulation, seed, edge.y, edge.x);

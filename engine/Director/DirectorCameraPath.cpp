@@ -1,5 +1,10 @@
 ﻿#include "Director/DirectorCameraPath.h"
 
+// PIXL Renderer - Director camera-path evaluation and serialization.
+// Copyright (C) 2026 PIXL Studio
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Additional permissions are described in the repository EXCEPTIONS.md.
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -267,9 +272,19 @@ namespace DirectorCameraPath
 		const std::size_t end = closed ? (start + 1) % count : std::min(start + 1, count - 1);
 		if (count == 2)
 			return Lerp(points[start].worldPosition, points[end].worldPosition, std::clamp(parameter, 0.0f, 1.0f));
-		const std::size_t previous = closed ? (start + count - 1) % count : (start == 0 ? 0 : start - 1);
-		const std::size_t next = closed ? (end + 1) % count : std::min(end + 1, count - 1);
-		return CentripetalCatmullRom(points[previous].worldPosition, points[start].worldPosition, points[end].worldPosition, points[next].worldPosition, parameter);
+		const Vec3 startPosition = points[start].worldPosition;
+		const Vec3 endPosition = points[end].worldPosition;
+		// An open path has no control point before its first POI or after its
+		// last. Duplicating an endpoint gives the first/last segment a nearly
+		// stationary tangent and a visible lurch. Extrapolation preserves the
+		// authored initial/final heading without moving either POI.
+		const Vec3 previous = !closed && start == 0
+			? Subtract(Scale(startPosition, 2.0f), endPosition)
+			: points[(start + count - 1) % count].worldPosition;
+		const Vec3 next = !closed && end + 1 == count
+			? Subtract(Scale(endPosition, 2.0f), startPosition)
+			: points[(end + 1) % count].worldPosition;
+		return CentripetalCatmullRom(previous, startPosition, endPosition, next, parameter);
 	}
 
 	Vec3 Path::EvaluateTangent(std::size_t segment, float parameter) const noexcept
@@ -343,15 +358,18 @@ namespace DirectorCameraPath
 			auto& segment = segments[segmentIndex];
 			segment.samples.push_back({ 0.0f, 0.0f });
 			float distance = 0.0f;
+			const auto easedPosition = [&](float parameter) {
+				return EvaluatePosition(segmentIndex, Ease(points[segmentIndex].positionEasing, parameter));
+			};
 			const auto subdivide = [&](auto&& self, float firstParameter, Vec3 first, float lastParameter, Vec3 last, std::uint32_t depth) -> void {
 				const float midpointParameter = (firstParameter + lastParameter) * 0.5f;
-				const Vec3 midpoint = EvaluatePosition(segmentIndex, midpointParameter);
+				const Vec3 midpoint = easedPosition(midpointParameter);
 				const float chord = Distance(first, last);
 				const float polyline = Distance(first, midpoint) + Distance(midpoint, last);
 				const float localTolerance = std::min(kArcLengthTolerance, std::max(chord * 0.0025f, 0.0005f));
 				// Small corners previously got only the two end samples: a fixed
 				// world-unit tolerance hid curvature and produced uneven motion.
-				if (depth < kMaximumSubdivisionDepth && (depth < 4 || polyline - chord > localTolerance)) {
+				if (depth < kMaximumSubdivisionDepth && (depth < 6 || polyline - chord > localTolerance)) {
 					self(self, firstParameter, first, midpointParameter, midpoint, depth + 1);
 					self(self, midpointParameter, midpoint, lastParameter, last, depth + 1);
 					return;
@@ -359,8 +377,8 @@ namespace DirectorCameraPath
 				distance += std::max(polyline, 0.0f);
 				segment.samples.push_back({ lastParameter, distance });
 			};
-			const Vec3 first = EvaluatePosition(segmentIndex, 0.0f);
-			const Vec3 last = EvaluatePosition(segmentIndex, 1.0f);
+			const Vec3 first = easedPosition(0.0f);
+			const Vec3 last = easedPosition(1.0f);
 			subdivide(subdivide, 0.0f, first, 1.0f, last, 0);
 			segment.length = distance;
 			totalLength += segment.length;
@@ -585,6 +603,7 @@ namespace DirectorCameraPath
 	nlohmann::json Path::ToJson() const
 	{
 		nlohmann::json document{ { "schema", "PIXL.DirectorCameraPath" }, { "version", kSchemaVersion }, { "name", name }, { "closed", closed }, { "points", nlohmann::json::array() } };
+		if (cellFormID != 0) document["cellFormID"] = cellFormID;
 		if (explicitDuration.has_value()) document["duration"] = *explicitDuration;
 		for (const Point& point : points) {
 			nlohmann::json encoded{ { "id", point.id }, { "position", Encode(point.worldPosition) }, { "rotation", Encode(Normalize(point.worldRotation)) },
@@ -606,6 +625,7 @@ namespace DirectorCameraPath
 				throw std::runtime_error("unsupported Director camera-path schema");
 			Path path{};
 			path.name = document.value("name", path.name);
+			path.cellFormID = document.value("cellFormID", 0u);
 			path.closed = document.value("closed", false);
 			if (document.contains("duration")) path.explicitDuration = document.at("duration").get<float>();
 			const auto& entries = document.at("points");
@@ -695,6 +715,12 @@ namespace DirectorCameraPath
 			if (failure) *failure = "round-trip JSON failed: " + error;
 			return false;
 		}
+		path.cellFormID = 0x00018A2Bu;
+		const auto cellBound = Path::FromJson(path.ToJson(), &error);
+		if (!cellBound.has_value() || cellBound->cellFormID != path.cellFormID) {
+			if (failure) *failure = "cell-bound route lost its Skyrim cell on save/load";
+			return false;
+		}
 		auto versionOne = path.ToJson();
 		versionOne["version"] = 1;
 		for (auto& point : versionOne["points"])
@@ -744,6 +770,15 @@ namespace DirectorCameraPath
 		};
 		if (!shortTurn.Rebuild(&error) || !shortTurn.IsValid() || shortTurn.GetDuration() < 0.25f) {
 			if (failure) *failure = "short turn did not gain enough smooth traversal time";
+			return false;
+		}
+		// The first segment must depart along its authored heading. Duplicate
+		// endpoint knots used to stall then accelerate into the first turn.
+		const Vec3 startPosition = shortTurn.EvaluateTime(0.0f, false).worldPosition;
+		const Vec3 earlyPosition = shortTurn.EvaluateTime(
+			std::min(shortTurn.GetDuration() * 0.01f, 1.0f / 120.0f), false).worldPosition;
+		if (!(earlyPosition.x > startPosition.x && std::abs(earlyPosition.y - startPosition.y) < 0.25f)) {
+			if (failure) *failure = "open spline stalled or veered at the first POI";
 			return false;
 		}
 		Vec3 previous = shortTurn.EvaluateTime(0.0f, false).worldPosition;

@@ -96,10 +96,19 @@ namespace RainResponse
 
 		float clumpSize = max(SharedData::rainResponseSettings.RainClumpSize, 128.0f);
 		float2 fieldDrift = travelDir * SharedData::rainResponseSettings.Time * lerp(0.035f, 0.10f, rain);
-		float2 fieldUV = absolutePosition.xy / clumpSize - fieldDrift;
-		float densityNoise = RainFBM2D(fieldUV);
-		float curtainNoise = RainValueNoise2D(fieldUV * float2(0.43f, 1.17f) + 31.7f);
-		float densityField = saturate(densityNoise * 0.72f + curtainNoise * 0.38f);
+	float2 fieldUV = absolutePosition.xy / clumpSize - fieldDrift;
+	// Rotate the broad field and add a smaller breakup octave. Sampling the
+	// population directly on world X/Y axes made the large value-noise cells
+	// read as visible square rain blocks when the camera looked across them.
+	float2 rotatedFieldUV = float2(
+		dot(fieldUV, float2(0.819152f, 0.573576f)),
+		dot(fieldUV, float2(-0.573576f, 0.819152f)));
+	float densityNoise = RainFBM2D(rotatedFieldUV);
+	float breakupNoise = RainValueNoise2D(rotatedFieldUV * 3.73f + float2(17.3f, -9.1f));
+	float curtainNoise = RainValueNoise2D(
+		rotatedFieldUV * float2(0.43f, 1.17f) + 31.7f);
+	float densityField = saturate(
+		densityNoise * 0.57f + breakupNoise * 0.18f + curtainNoise * 0.25f);
 
 		// Dense bands are allowed to become a little stronger than 1 while gaps
 		// retain enough primary precipitation to avoid obvious particle popping.
@@ -107,9 +116,13 @@ namespace RainResponse
 		result.clump = lerp(1.0f, clumpTarget,
 			saturate(SharedData::rainResponseSettings.RainClumpStrength) * rain);
 
-		float2 populationCell = floor(absolutePosition.xy / 96.0f);
-		float particleSelector = RainHash12(populationCell + float2(13.0f, 71.0f));
-		float variationHash = RainHash12(populationCell + float2(-29.0f, 43.0f));
+	// Keep the population world-stable, but interpolate the selector and streak
+	// variation instead of hard-switching at 96-unit cell borders. Those hard
+	// switches were visible as square clumps in otherwise natural rain.
+	float2 populationUV = absolutePosition.xy / 96.0f;
+	float particleSelector = RainValueNoise2D(populationUV + float2(13.17f, 71.41f));
+	float variationHash = RainValueNoise2D(
+		populationUV * float2(1.07f, 0.93f) + float2(-29.23f, 43.61f));
 		result.selector = particleSelector;
 
 		float variation = saturate(SharedData::rainResponseSettings.RainStreakVariation);

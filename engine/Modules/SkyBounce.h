@@ -1,3 +1,8 @@
+// Community Shaders Skylighting-derived file.
+// Modified for PIXL Renderer, 2026: SkyBounce naming and runtime interface.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Additional permissions are described in the repository EXCEPTIONS.md.
+
 #pragma once
 
 /** @brief Simulates realistic ambient lighting by calculating sky occlusion via a 3D probe array. */

@@ -26,6 +26,9 @@
 #include "Modules/PixelCapture.h"
 #include "Modules/SkinOptics.h"
 #include "Modules/WindowLife.h"
+#include "Modules/ContainedLiquids.h"
+#include "Modules/CurvedSurfaceMapping.h"
+#include "Modules/DistantLife.h"
 #include "Modules/SkyContinuity.h"
 #include "Modules/SkyBounce.h"
 #include "Modules/TissueDiffusion.h"
@@ -264,8 +267,11 @@ const std::vector<RenderModule*>& RenderModule::GetModuleList()
 		&globals::pipeline::atmosphere,
 		&globals::pipeline::cameraSuite,
 		&globals::pipeline::skinOptics,
-		// Keep WindowLife last so its SetupGeometry hook chains after SkinOptics.
-		&globals::pipeline::windowLife
+		// WindowLife chains after SkinOptics; ContainedLiquids owns separate final slots.
+		&globals::pipeline::windowLife,
+		&globals::pipeline::containedLiquids,
+		&globals::pipeline::curvedSurfaceMapping,
+		&globals::pipeline::distantLife
 	};
 
 	return features;

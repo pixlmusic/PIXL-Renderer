@@ -1,3 +1,9 @@
+// Community Shaders HDR Display-derived file.
+// Modified for PIXL Renderer, 2026: physical camera, capture/Director integration,
+// exposure, stormglass, bloom and Cinematic DOF 2.0 orchestration.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Additional permissions are described in the repository EXCEPTIONS.md.
+
 #include "CameraSuite.h"
 
 #include "PCH.h"
@@ -65,6 +71,71 @@ static constexpr DISPLAYCONFIG_DEVICE_INFO_TYPE kDisplayConfigGetAdvancedColorIn
 // https://github.com/Filoppi/Luma-Framework/blob/f1fbc2a36f2d24fd551721ce90f26821a8e754c1/Source/Core/utils/display.hpp
 namespace
 {
+	RE::NiCamera* FindActiveCamera(RE::NiAVObject* object)
+	{
+		if (!object)
+			return nullptr;
+		if (auto* camera = netimmerse_cast<RE::NiCamera*>(object))
+			return camera;
+		const auto node = object->AsNode();
+		if (!node)
+			return nullptr;
+		for (const auto& child : node->GetChildren()) {
+			if (auto* camera = FindActiveCamera(child.get()))
+				return camera;
+		}
+		return nullptr;
+	}
+
+	// CinematicDoF binds Skyrim's main depth surface directly. The generic PIXL
+	// helper may prefer TerrainSeam's blended post-Z copy, which is useful for
+	// terrain effects but is not guaranteed to contain the same actor/geometry
+	// depth as the presentation color buffer. Keep the DOF depth contract explicit.
+	ID3D11ShaderResourceView* GetCinematicDofDepthSRV()
+	{
+		auto* renderer = globals::game::renderer;
+		if (!renderer)
+			return nullptr;
+		auto& mainDepth = renderer->GetDepthStencilData().depthStencils[
+			RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+		return mainDepth.depthSRV ? mainDepth.depthSRV :
+			Util::GetCurrentSceneDepthSRV(false);
+	}
+
+	std::optional<float> GetDialogueActorFocusDistance()
+	{
+		const auto* topics = RE::MenuTopicManager::GetSingleton();
+		if (!topics || !topics->menuOpen)
+			return std::nullopt;
+
+		auto target = topics->speaker.get();
+		if (!target || target->IsDeleted() || target->IsDisabled() || !target->Is3DLoaded())
+			return std::nullopt;
+
+		RE::NiPoint3 focusPosition = target->GetLookingAtLocation();
+		if (const auto head = target->GetNodeByName(RE::BSFixedString("NPC Head [Head]")))
+			focusPosition = head->world.translate;
+
+		const auto* playerCamera = RE::PlayerCamera::GetSingleton();
+		auto* camera = playerCamera ? FindActiveCamera(playerCamera->cameraRoot.get()) : nullptr;
+		if (!camera)
+			return std::nullopt;
+
+		float screenX{};
+		float screenY{};
+		float screenDepth{};
+		if (!camera->WorldPtToScreenPt3(focusPosition, screenX, screenY, screenDepth, 1.0e-5f) ||
+			!std::isfinite(screenX) || !std::isfinite(screenY) || !std::isfinite(screenDepth) ||
+			screenX < -0.15f || screenX > 1.15f || screenY < -0.15f || screenY > 1.15f || screenDepth <= 0.0f)
+			return std::nullopt;
+
+		const auto delta = focusPosition - camera->world.translate;
+		const auto distanceGameUnits = std::sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+		return std::isfinite(distanceGameUnits) && distanceGameUnits > 100.0f
+			? std::optional<float>{ std::clamp(distanceGameUnits, 100.0f, 20000.0f) }
+			: std::nullopt;
+	}
+
 	// Returns the GDI device name for the swap chain's output via GetContainingOutput.
 	// Returns false if the output cannot be determined (e.g. Streamline wraps the swap chain).
 	bool GetSwapChainOutputDeviceName(IDXGISwapChain* swapChain, WCHAR (&outDeviceName)[32])
@@ -331,6 +402,7 @@ bool CameraSuite::DetectHDR()
 	X(preferCinematicDoF) \
 	X(enableEnhancedDepthOfField) \
 	X(dofAutoFocus) \
+	X(dofActorTracking) \
 	X(dofStrength) \
 	X(dofFocusDistance) \
 	X(dofFocusRange) \
@@ -338,8 +410,21 @@ bool CameraSuite::DetectHDR()
 	X(dofHighlightResponse) \
 	X(dofFocusEdgeProtection) \
 	X(dofForegroundCoverage) \
+	X(dofNearBlurIntensity) \
+	X(dofFarBlurIntensity) \
+	X(dofFarBlurDistance) \
 	X(dofCatEye) \
 	X(dofAnamorphicRatio) \
+	X(dofPhysicalLens) \
+	X(dofFocalLengthMm) \
+	X(dofFStop) \
+	X(dofSensorHeightMm) \
+	X(dofFocusSpeed) \
+	X(dofFocusDeadband) \
+	X(dofMaxBokehPixels) \
+	X(dofApertureBlades) \
+	X(dofBladeCurvature) \
+	X(dofApertureRotation) \
 	X(enableModernMotionBlur) \
 	X(motionBlurStrength) \
 	X(motionBlurShutter) \
@@ -848,12 +933,53 @@ void CameraSuite::DrawSettings()
 		if (ImGui::CollapsingHeader("Skyrim Depth of Field", ImGuiTreeNodeFlags_DefaultOpen)) {
 			if (IsCinematicDoFLoaded()) {
 				changed |= ImGui::Checkbox("Let Cinematic DoF own depth of field", &settings.preferCinematicDoF);
-				DrawSettingsTooltip("Prevents duplicate Skyrim blur without changing Cinematic DoF's settings. Turn off if you disable the external effect and want native depth of field again.");
-				ImGui::TextWrapped("Cinematic DoF detected. Focus and outdoor distances are controlled in its SKSE Menu Framework page. Version 0.8.31 has no external live-control API.");
+				DrawSettingsTooltip("Leaves depth of field to the installed standalone effect. Turn this off to use PIXL's native buffer-integrated cinematic focus instead.");
+				ImGui::TextWrapped("Cinematic DoF Standalone detected. PIXL can either leave it in control or use its own native DOF path.");
 			}
 			ImGui::BeginDisabled(UsesCinematicDoF());
+			changed |= ImGui::Checkbox("Enable PIXL Cinematic Depth of Field", &settings.enableEnhancedDepthOfField);
+			DrawSettingsTooltip("Uses PIXL's native scene color and depth buffers with a restrained bokeh response. It avoids the heavy constant blur of the legacy path and remains disabled while Cinematic DoF owns the effect.");
+			if (settings.enableEnhancedDepthOfField) {
+				changed |= ImGui::Checkbox("Track Dialogue Actors", &settings.dofActorTracking);
+				DrawSettingsTooltip("During dialogue, smoothly follows the visible speaker's head instead of jumping between screen-depth samples. Outside dialogue, PIXL uses stable screen autofocus.");
+				changed |= ImGui::Checkbox("Autofocus from Scene Depth", &settings.dofAutoFocus);
+				DrawSettingsTooltip("Samples the scene depth around the screen centre and eases focus changes over time to prevent pumping during camera movement.");
+				changed |= ImGui::SliderFloat("DOF Strength", &settings.dofStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+				DrawSettingsTooltip("Controls the visible separation. Lower values keep normal gameplay readable; higher values produce stronger cinematic focus.");
+				changed |= ImGui::SliderFloat("Near Blur Intensity", &settings.dofNearBlurIntensity, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+				DrawSettingsTooltip("Controls foreground/near-field blur independently from autofocus. Higher values expand nearby bokeh more strongly over the background.");
+				changed |= ImGui::SliderFloat("Far / Distance Blur", &settings.dofFarBlurIntensity, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+				DrawSettingsTooltip("Adds controllable distance blur over autofocus to soften distant LOD transitions and background detail. Higher values increase the far-field haze.");
+				changed |= ImGui::SliderFloat("Distance Blur Start", &settings.dofFarBlurDistance, 500.0f, 30000.0f, "%.0f game units", ImGuiSliderFlags_AlwaysClamp);
+				DrawSettingsTooltip("The distance where the additional far-field haze begins. Autofocus remains physical-camera based and independent of this threshold.");
+				changed |= ImGui::SliderFloat("Focus / Distance Fade", &settings.dofFocusRange, 240.0f, 20000.0f, "%.0f game units", ImGuiSliderFlags_AlwaysClamp);
+				DrawSettingsTooltip("Controls the soft focus transition and how gradually the distance blur reaches full strength. Long values such as 10000-15000 keep gameplay readable while hiding distant LOD changes.");
+				if (ImGui::TreeNode("Advanced Lens")) {
+					changed |= ImGui::Checkbox("Physical Thin-Lens Model", &settings.dofPhysicalLens);
+					DrawSettingsTooltip("Uses focal length, sensor size and f-stop to derive a signed, resolution-aware circle of confusion. Director and Photo modes use this automatically.");
+					ImGui::BeginDisabled(!settings.dofPhysicalLens && !TuningWorkspaceRenderer::IsDirectorPhotoModeActive() && !TuningWorkspaceRenderer::IsDirectorVideoModeActive());
+					changed |= ImGui::SliderFloat("Focal Length", &settings.dofFocalLengthMm, 18.0f, 200.0f, "%.0f mm", ImGuiSliderFlags_AlwaysClamp);
+					changed |= ImGui::SliderFloat("F-Stop", &settings.dofFStop, 0.7f, 32.0f, "f/%.1f", ImGuiSliderFlags_AlwaysClamp);
+					changed |= ImGui::SliderFloat("Sensor Height", &settings.dofSensorHeightMm, 10.0f, 40.0f, "%.1f mm", ImGuiSliderFlags_AlwaysClamp);
+					changed |= ImGui::SliderFloat("Focus Speed", &settings.dofFocusSpeed, 0.25f, 20.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+					changed |= ImGui::SliderFloat("Maximum Bokeh Radius", &settings.dofMaxBokehPixels, 4.0f, 96.0f, "%.0f px", ImGuiSliderFlags_AlwaysClamp);
+					int apertureBlades = static_cast<int>(settings.dofApertureBlades);
+					if (ImGui::SliderInt("Aperture Blades", &apertureBlades, 3, 12)) {
+						settings.dofApertureBlades = static_cast<uint>(apertureBlades);
+						changed = true;
+					}
+					changed |= ImGui::SliderFloat("Blade Curvature", &settings.dofBladeCurvature, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+					changed |= ImGui::SliderAngle("Aperture Rotation", &settings.dofApertureRotation, -180.0f, 180.0f);
+					changed |= ImGui::SliderFloat("Cat-Eye", &settings.dofCatEye, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+					changed |= ImGui::SliderFloat("Anamorphic Ratio", &settings.dofAnamorphicRatio, 0.5f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+					ImGui::EndDisabled();
+					ImGui::TreePop();
+				}
+			}
+			ImGui::EndDisabled();
+			ImGui::BeginDisabled(settings.enableEnhancedDepthOfField || UsesCinematicDoF());
 			changed |= ImGui::Checkbox("Enable Skyrim Depth of Field", &settings.enableSkyrimDepthOfField);
-			DrawSettingsTooltip("Enables Skyrim's native image-space depth of field in real time. PIXL's experimental replacement is retired for this release, so weather, interiors and authored image spaces remain in control of focus and blur.");
+			DrawSettingsTooltip("Enables Skyrim's authored image-space depth of field when PIXL Cinematic Depth of Field is not active.");
 			ImGui::EndDisabled();
 		}
 
@@ -930,9 +1056,6 @@ void CameraSuite::LoadSettings(json& o_json)
 	};
 
 	settings = o_json;
-	// PIXL's experimental realtime DOF is retired for release. Preserve its old
-	// JSON keys for backwards compatibility but never reactivate the compute path.
-	settings.enableEnhancedDepthOfField = false;
 	settings.enableColdLens = o_json.value("enableColdLens", settings.enableColdLens);
 	settings.coldLensStrength = o_json.value("coldLensStrength", settings.coldLensStrength);
 	settings.coldAltitudeStart = o_json.value("coldAltitudeStart", settings.coldAltitudeStart);
@@ -994,8 +1117,20 @@ void CameraSuite::LoadSettings(json& o_json)
 	settings.dofHighlightResponse = std::clamp(settings.dofHighlightResponse, 0.0f, 1.0f);
 	settings.dofFocusEdgeProtection = std::clamp(settings.dofFocusEdgeProtection, 0.0f, 2.0f);
 	settings.dofForegroundCoverage = std::clamp(settings.dofForegroundCoverage, 0.0f, 1.5f);
+	settings.dofNearBlurIntensity = std::clamp(settings.dofNearBlurIntensity, 0.0f, 2.0f);
+	settings.dofFarBlurIntensity = std::clamp(settings.dofFarBlurIntensity, 0.0f, 2.0f);
+	settings.dofFarBlurDistance = std::clamp(settings.dofFarBlurDistance, 500.0f, 50000.0f);
 	settings.dofCatEye = std::clamp(settings.dofCatEye, 0.0f, 1.0f);
 	settings.dofAnamorphicRatio = std::clamp(settings.dofAnamorphicRatio, 0.5f, 2.0f);
+	settings.dofFocalLengthMm = std::clamp(settings.dofFocalLengthMm, 18.0f, 200.0f);
+	settings.dofFStop = std::clamp(settings.dofFStop, 0.7f, 32.0f);
+	settings.dofSensorHeightMm = std::clamp(settings.dofSensorHeightMm, 10.0f, 40.0f);
+	settings.dofFocusSpeed = std::clamp(settings.dofFocusSpeed, 0.25f, 20.0f);
+	settings.dofFocusDeadband = std::clamp(settings.dofFocusDeadband, 0.0f, 0.25f);
+	settings.dofMaxBokehPixels = std::clamp(settings.dofMaxBokehPixels, 4.0f, 96.0f);
+	settings.dofApertureBlades = std::clamp(settings.dofApertureBlades, 3u, 12u);
+	settings.dofBladeCurvature = std::clamp(settings.dofBladeCurvature, 0.0f, 1.0f);
+	settings.dofApertureRotation = std::clamp(settings.dofApertureRotation, -3.14159f, 3.14159f);
 	settings.motionBlurStrength = std::clamp(settings.motionBlurStrength, 0.0f, 1.0f);
 	settings.motionBlurShutter = std::clamp(settings.motionBlurShutter, 0.10f, 1.0f);
 	settings.motionBlurMaxPixels = std::clamp(settings.motionBlurMaxPixels, 4.0f, 48.0f);
@@ -1075,19 +1210,33 @@ void CameraSuite::RestoreDefaultSettings()
 	settings.coldAltitudeFull = 60000.0f;
 	settings.enableElementalDamageLens = true;
 	settings.elementalLensStrength = 0.45f;
-	settings.enableSkyrimDepthOfField = true;
-	settings.preferCinematicDoF = true;
-	settings.enableEnhancedDepthOfField = false;
+	settings.enableSkyrimDepthOfField = false;
+	settings.preferCinematicDoF = false;
+	settings.enableEnhancedDepthOfField = true;
 	settings.dofAutoFocus = true;
-	settings.dofStrength = 0.24f;
+	settings.dofActorTracking = true;
+	settings.dofStrength = 1.0f;
 	settings.dofFocusDistance = 2200.0f;
-	settings.dofFocusRange = 480.0f;
+	settings.dofFocusRange = 11605.0f;
 	settings.dofBokehRadius = 1.0f;
-	settings.dofHighlightResponse = 0.28f;
-	settings.dofFocusEdgeProtection = 0.85f;
-	settings.dofForegroundCoverage = 0.70f;
-	settings.dofCatEye = 0.20f;
+	settings.dofHighlightResponse = 0.30f;
+	settings.dofFocusEdgeProtection = 0.95f;
+	settings.dofForegroundCoverage = 0.55f;
+	settings.dofNearBlurIntensity = 0.0f;
+	settings.dofFarBlurIntensity = 1.03f;
+	settings.dofFarBlurDistance = 25598.0f;
+	settings.dofCatEye = 0.12f;
 	settings.dofAnamorphicRatio = 1.0f;
+	settings.dofPhysicalLens = true;
+	settings.dofFocalLengthMm = 18.0f;
+	settings.dofFStop = 1.8f;
+	settings.dofSensorHeightMm = 14.9f;
+	settings.dofFocusSpeed = 8.81f;
+	settings.dofFocusDeadband = 0.055f;
+	settings.dofMaxBokehPixels = 5.0f;
+	settings.dofApertureBlades = 6;
+	settings.dofBladeCurvature = 0.63f;
+	settings.dofApertureRotation = 0.06981317f;
 	settings.enableModernMotionBlur = false;
 	settings.motionBlurStrength = 0.45f;
 	settings.motionBlurShutter = 0.50f;
@@ -1300,9 +1449,11 @@ void CameraSuite::SetupResources()
 	Util::SetResourceName(lookSampler.get(), "PIXL Camera::LinearClampSampler");
 
 	hdrDataCB = new ConstantBuffer(ConstantBufferDesc<HDRDataCB>(), "HDR::DataCB");
+	dofControlCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<DofControlCB>(), "PIXL Camera::DofControl");
 	exposureControlCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<ExposureControlCB>(), "PIXL Camera::ExposureControl");
 	exposureHistoryValid = false;
 	exposureHoldLogged = false;
+	lastExposureCompensationEV = 0.0f;
 
 	UpdateHDRData();
 
@@ -1327,7 +1478,9 @@ void CameraSuite::SetupCameraFinishingResources(const D3D11_TEXTURE2D_DESC& scen
 	};
 	for (auto** texture : { &cameraLocalExposureTexture, &stormglassFieldTexture, &bloomHalfTexture, &bloomQuarterTexture,
 		     &bloomEighthTexture, &bloomSixteenthTexture, &bloomEighthScratchTexture,
-		     &bloomQuarterScratchTexture, &bloomHalfScratchTexture })
+			     &bloomQuarterScratchTexture, &bloomHalfScratchTexture, &dofCoCTexture, &dofCoCHistoryTexture,
+			     &dofFarTexture, &dofNearTexture, &dofFocusTexture, &dofFocusHistoryTexture,
+			     &dofHalfSceneTexture, &dofTileTexture })
 		releaseTexture(*texture);
 
 	auto createTexture = [](UINT width, UINT height, DXGI_FORMAT format, const char* name) -> Texture2D* {
@@ -1399,6 +1552,21 @@ void CameraSuite::SetupCameraFinishingResources(const D3D11_TEXTURE2D_DESC& scen
 
 	cameraLocalExposureTexture = createTexture(quarterWidth, quarterHeight, DXGI_FORMAT_R16_FLOAT, "PIXL Camera::LocalExposure");
 	stormglassFieldTexture = createTexture(quarterWidth, quarterHeight, DXGI_FORMAT_R16G16B16A16_FLOAT, "PIXL Camera::StormglassField");
+	dofCoCTexture = createTexture(sceneDesc.Width, sceneDesc.Height, DXGI_FORMAT_R16_FLOAT, "PIXL Camera::DOF CoC");
+	dofCoCHistoryTexture = createTexture(sceneDesc.Width, sceneDesc.Height, DXGI_FORMAT_R16_FLOAT, "PIXL Camera::DOF CoC History");
+	dofFocusTexture = createTexture(1, 1, DXGI_FORMAT_R16G16B16A16_FLOAT, "PIXL Camera::DOF Focus");
+	dofFocusHistoryTexture = createTexture(1, 1, DXGI_FORMAT_R16G16B16A16_FLOAT, "PIXL Camera::DOF Focus History");
+	dofHalfSceneTexture = createTexture(halfWidth, halfHeight, DXGI_FORMAT_R11G11B10_FLOAT, "PIXL Camera::DOF Half Scene");
+	if (!dofHalfSceneTexture)
+		dofHalfSceneTexture = createTexture(halfWidth, halfHeight, DXGI_FORMAT_R16G16B16A16_FLOAT, "PIXL Camera::DOF Half Scene Fallback");
+	dofTileTexture = createTexture((sceneDesc.Width + 15u) / 16u, (sceneDesc.Height + 15u) / 16u,
+		DXGI_FORMAT_R16G16B16A16_FLOAT, "PIXL Camera::DOF Tile Classification");
+	dofFarTexture = createTexture(halfWidth, halfHeight, DXGI_FORMAT_R16G16B16A16_FLOAT, "PIXL Camera::DOF Far Blur");
+	dofNearTexture = createTexture(halfWidth, halfHeight, DXGI_FORMAT_R16G16B16A16_FLOAT, "PIXL Camera::DOF Near Blur");
+	if (dofFocusHistoryTexture && dofFocusHistoryTexture->uav) {
+		const FLOAT initialFocus[4] = { settings.dofFocusDistance, 1.0f, 1.0f / std::max(settings.dofFocusDistance, 1.0f), 0.0f };
+		globals::d3d::context->ClearUnorderedAccessViewFloat(dofFocusHistoryTexture->uav.get(), initialFocus);
+	}
 	logger::info("[PIXL Camera] Finishing resources: bloom={}x{} format={}, local exposure={}x{}, Stormglass={}x{}",
 		halfWidth, halfHeight, static_cast<int>(bloomFormat), quarterWidth, quarterHeight, quarterWidth, quarterHeight);
 }
@@ -2021,7 +2189,7 @@ void CameraSuite::DispatchHDROutput(ID3D11ShaderResourceView* sceneSRV, ID3D11Sh
 	if (!computeShader || !uav)
 		return;
 
-	ID3D11ShaderResourceView* views[9] = {
+	ID3D11ShaderResourceView* views[12] = {
 		sceneSRV,
 		uiSRV,
 		cameraExposureTexture ? cameraExposureTexture->srv.get() : nullptr,
@@ -2030,14 +2198,17 @@ void CameraSuite::DispatchHDROutput(ID3D11ShaderResourceView* sceneSRV, ID3D11Sh
 		localExposurePassReady && cameraLocalExposureTexture ? cameraLocalExposureTexture->srv.get() : nullptr,
 		stormglassPassReady && stormglassFieldTexture ? stormglassFieldTexture->srv.get() : nullptr,
 		frostLensTextureView.get(),
-		fireLensTextureView.get()
+		fireLensTextureView.get(),
+		dofPassReady && dofCoCTexture ? dofCoCTexture->srv.get() : nullptr,
+		dofPassReady && dofFarTexture ? dofFarTexture->srv.get() : nullptr,
+		dofPassReady && dofNearTexture ? dofNearTexture->srv.get() : nullptr
 	};
 	context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 	// CameraSuite owns its DOF compositor and therefore binds scene depth at the
 	// SharedData slot explicitly. This removes the old dependency on Skyrim
 	// deciding to schedule ISDepthOfField and also survives post-process state
 	// resets that clear the global t17 binding before Present.
-	ID3D11ShaderResourceView* sceneDepthView = Util::GetCurrentSceneDepthSRV(true);
+	ID3D11ShaderResourceView* sceneDepthView = GetCinematicDofDepthSRV();
 	context->CSSetShaderResources(17, 1, &sceneDepthView);
 	ID3D11SamplerState* samplers[1] = { lookSampler.get() };
 	context->CSSetSamplers(0, ARRAYSIZE(samplers), samplers);
@@ -2045,7 +2216,7 @@ void CameraSuite::DispatchHDROutput(ID3D11ShaderResourceView* sceneSRV, ID3D11Sh
 	ID3D11UnorderedAccessView* uavs[1] = { uav };
 	context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 
-	ID3D11Buffer* cbs[1] = { hdrDataCB->CB() };
+	ID3D11Buffer* cbs[2] = { hdrDataCB->CB(), dofControlCB ? dofControlCB->CB() : nullptr };
 	context->CSSetConstantBuffers(0, ARRAYSIZE(cbs), cbs);
 
 	context->CSSetShader(computeShader, nullptr, 0);
@@ -2067,6 +2238,7 @@ void CameraSuite::DispatchHDROutput(ID3D11ShaderResourceView* sceneSRV, ID3D11Sh
 	context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 
 	cbs[0] = nullptr;
+	cbs[1] = nullptr;
 	context->CSSetConstantBuffers(0, ARRAYSIZE(cbs), cbs);
 
 	context->CSSetShader(nullptr, nullptr, 0);
@@ -2136,6 +2308,8 @@ ID3D11Texture2D* CameraSuite::ComposeCleanCapture(ID3D11ShaderResourceView* scen
 	// frame; never reuse stale low-resolution finishing surfaces.
 	data.auxiliaryPassMask = 0.0f;
 	hdrDataCB->Update(data);
+	if (dofControlCB)
+		dofControlCB->Update(dofControlData);
 
 	DispatchHDROutput(sceneSRV, nullptr, outputTexture->uav.get());
 
@@ -2217,6 +2391,14 @@ void CameraSuite::DestroyResources()
 	destroyTexture(bloomQuarterScratchTexture);
 	destroyTexture(bloomHalfScratchTexture);
 	destroyTexture(stormglassFieldTexture);
+	destroyTexture(dofCoCTexture);
+	destroyTexture(dofCoCHistoryTexture);
+	destroyTexture(dofFarTexture);
+	destroyTexture(dofNearTexture);
+	destroyTexture(dofFocusTexture);
+	destroyTexture(dofFocusHistoryTexture);
+	destroyTexture(dofHalfSceneTexture);
+	destroyTexture(dofTileTexture);
 	localExposurePassReady = false;
 	bloomPassReady = false;
 	stormglassPassReady = false;
@@ -2225,6 +2407,7 @@ void CameraSuite::DestroyResources()
 		delete hdrDataCB;
 		hdrDataCB = nullptr;
 	}
+	dofControlCB.reset();
 	exposureControlCB.reset();
 	exposureHistoryValid = false;
 	exposureHoldLogged = false;
@@ -2376,6 +2559,37 @@ void CameraSuite::ClearShaderCache()
 		bloomUpsampleCS->Release();
 		bloomUpsampleCS = nullptr;
 	}
+	if (dofCoCCS) {
+		dofCoCCS->Release();
+		dofCoCCS = nullptr;
+	}
+	if (dofFocusResolveCS) {
+		dofFocusResolveCS->Release();
+		dofFocusResolveCS = nullptr;
+	}
+	if (dofHalfDownsampleCS) {
+		dofHalfDownsampleCS->Release();
+		dofHalfDownsampleCS = nullptr;
+	}
+	if (dofTileClassifyCS) {
+		dofTileClassifyCS->Release();
+		dofTileClassifyCS = nullptr;
+	}
+	if (dofFarBlurCS) {
+		dofFarBlurCS->Release();
+		dofFarBlurCS = nullptr;
+	}
+	if (dofNearBlurCS) {
+		dofNearBlurCS->Release();
+		dofNearBlurCS = nullptr;
+	}
+	dofCoCCompileFailed = false;
+	dofFarBlurCompileFailed = false;
+	dofNearBlurCompileFailed = false;
+	dofFocusResolveCompileFailed = false;
+	dofHalfDownsampleCompileFailed = false;
+	dofTileClassifyCompileFailed = false;
+	dofPassReady = false;
 	if (stormglassFieldCS) {
 		stormglassFieldCS->Release();
 		stormglassFieldCS = nullptr;
@@ -2465,6 +2679,79 @@ ID3D11ComputeShader* CameraSuite::GetBloomUpsampleCS()
 	return bloomUpsampleCS;
 }
 
+ID3D11ComputeShader* CameraSuite::GetDofCoCCS()
+{
+	if (!dofCoCCS && !dofCoCCompileFailed) {
+		std::vector<std::pair<const char*, const char*>> defines;
+		dofCoCCS = static_cast<ID3D11ComputeShader*>(
+			Util::CompileShader(L"Data\\Shaders\\CameraSuite\\DOFCoCCS.hlsl", defines, "cs_5_0"));
+		if (!dofCoCCS) {
+			dofCoCCompileFailed = true;
+			logger::error("PIXL Camera: Failed to compile DOFCoCCS.hlsl");
+		}
+	}
+	return dofCoCCS;
+}
+
+ID3D11ComputeShader* CameraSuite::GetDofFocusResolveCS()
+{
+	if (!dofFocusResolveCS && !dofFocusResolveCompileFailed) {
+		std::vector<std::pair<const char*, const char*>> defines;
+		dofFocusResolveCS = static_cast<ID3D11ComputeShader*>(
+			Util::CompileShader(L"Data\\Shaders\\CameraSuite\\DOFFocusResolveCS.hlsl", defines, "cs_5_0"));
+		if (!dofFocusResolveCS) {
+			dofFocusResolveCompileFailed = true;
+			logger::error("PIXL Camera: Failed to compile DOFFocusResolveCS.hlsl");
+		}
+	}
+	return dofFocusResolveCS;
+}
+
+ID3D11ComputeShader* CameraSuite::GetDofHalfDownsampleCS()
+{
+	if (!dofHalfDownsampleCS && !dofHalfDownsampleCompileFailed) {
+		std::vector<std::pair<const char*, const char*>> defines;
+		dofHalfDownsampleCS = static_cast<ID3D11ComputeShader*>(
+			Util::CompileShader(L"Data\\Shaders\\CameraSuite\\DOFHalfDownsampleCS.hlsl", defines, "cs_5_0"));
+		if (!dofHalfDownsampleCS) {
+			dofHalfDownsampleCompileFailed = true;
+			logger::error("PIXL Camera: Failed to compile DOFHalfDownsampleCS.hlsl");
+		}
+	}
+	return dofHalfDownsampleCS;
+}
+
+ID3D11ComputeShader* CameraSuite::GetDofTileClassifyCS()
+{
+	if (!dofTileClassifyCS && !dofTileClassifyCompileFailed) {
+		std::vector<std::pair<const char*, const char*>> defines;
+		dofTileClassifyCS = static_cast<ID3D11ComputeShader*>(
+			Util::CompileShader(L"Data\\Shaders\\CameraSuite\\DOFTileClassifyCS.hlsl", defines, "cs_5_0"));
+		if (!dofTileClassifyCS) {
+			dofTileClassifyCompileFailed = true;
+			logger::error("PIXL Camera: Failed to compile DOFTileClassifyCS.hlsl");
+		}
+	}
+	return dofTileClassifyCS;
+}
+
+ID3D11ComputeShader* CameraSuite::GetDofBlurCS(bool nearPlane)
+{
+	auto*& shader = nearPlane ? dofNearBlurCS : dofFarBlurCS;
+	bool& failed = nearPlane ? dofNearBlurCompileFailed : dofFarBlurCompileFailed;
+	if (!shader && !failed) {
+		std::vector<std::pair<const char*, const char*>> defines;
+		defines.emplace_back("DOF_NEAR", nearPlane ? "1" : "0");
+		shader = static_cast<ID3D11ComputeShader*>(
+			Util::CompileShader(L"Data\\Shaders\\CameraSuite\\DOFBlurCS.hlsl", defines, "cs_5_0"));
+		if (!shader) {
+			failed = true;
+			logger::error("PIXL Camera: Failed to compile DOFBlurCS.hlsl ({})", nearPlane ? "near" : "far");
+		}
+	}
+	return shader;
+}
+
 ID3D11ComputeShader* CameraSuite::GetStormglassFieldCS()
 {
 	if (!stormglassFieldCS) {
@@ -2486,7 +2773,10 @@ void CameraSuite::UpdatePhysicalCameraExposure(ID3D11ShaderResourceView* sceneSR
 	// Menu imagery must not become the gameplay meter's history.
 	if (globals::state->IsDisplayReferredModelMenuOpen(globals::game::ui) || globals::state->isMapMenuOpen)
 		return;
-	const bool freezeMetering = TuningWorkspaceRenderer::IsDirectorPhotoModeActive() && exposureHistoryValid;
+	// Director must never take a fresh histogram sample, including the first
+	// frame after a resize/reload. The 1x1 exposure texture starts at unity;
+	// the first held dispatch applies the user's compensation to that value.
+	const bool freezeMetering = TuningWorkspaceRenderer::IsDirectorPhotoModeActive();
 	const bool holdingAutoExposure = freezeMetering && settings.cameraAutoExposure;
 	if (holdingAutoExposure != exposureHoldLogged) {
 		exposureHoldLogged = holdingAutoExposure;
@@ -2504,7 +2794,7 @@ void CameraSuite::UpdatePhysicalCameraExposure(ID3D11ShaderResourceView* sceneSR
 		return;
 	exposureControlCB->Update(ExposureControlCB{
 		freezeMetering ? 1.0f : 0.0f,
-		exposureHistoryValid ? compensationEV - lastExposureCompensationEV : 0.0f });
+		freezeMetering || exposureHistoryValid ? compensationEV - lastExposureCompensationEV : 0.0f });
 
 	auto* context = globals::d3d::context;
 	auto* cb = hdrDataCB->CB();
@@ -2590,6 +2880,80 @@ void CameraSuite::UpdatePhysicalCameraExposure(ID3D11ShaderResourceView* sceneSR
 	context->CSSetConstantBuffers(0, 1, &nullCB);
 }
 
+void CameraSuite::RunDepthOfFieldPasses(ID3D11ShaderResourceView* sceneSRV)
+{
+	dofPassReady = false;
+	if (!settings.enableEnhancedDepthOfField || UsesCinematicDoF() || !sceneSRV ||
+		!hdrDataCB || !dofCoCTexture || !dofCoCHistoryTexture || !dofFarTexture || !dofNearTexture ||
+		!dofFocusTexture || !dofFocusHistoryTexture || !dofHalfSceneTexture || !dofTileTexture || !dofControlCB ||
+		!dofCoCTexture->uav || !dofFarTexture->uav || !dofNearTexture->uav ||
+		!globals::d3d::context)
+		return;
+
+	auto* context = globals::d3d::context;
+	ID3D11ShaderResourceView* depthSRV = GetCinematicDofDepthSRV();
+	if (!depthSRV)
+		return;
+	ID3D11Buffer* cb = hdrDataCB->CB();
+	ID3D11SamplerState* sampler = lookSampler.get();
+
+	const auto dispatch = [&](const char* name, ID3D11ComputeShader* shader,
+		ID3D11ShaderResourceView* const* srvs, UINT count, Texture2D* output) {
+		if (!shader || !output || !output->uav)
+			return false;
+		context->CSSetShaderResources(0, count, srvs);
+		context->CSSetShaderResources(17, 1, &depthSRV);
+		ID3D11UnorderedAccessView* uav = output->uav.get();
+		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+		ID3D11Buffer* cbs[2] = { cb, dofControlCB->CB() };
+		context->CSSetConstantBuffers(0, 2, cbs);
+		context->CSSetSamplers(0, 1, &sampler);
+		context->CSSetShader(shader, nullptr, 0);
+		globals::profiler->BeginPass(name);
+		context->Dispatch((output->desc.Width + 7u) / 8u, (output->desc.Height + 7u) / 8u, 1u);
+		globals::profiler->EndPass();
+		ID3D11ShaderResourceView* nulls[4] = { nullptr, nullptr, nullptr, nullptr };
+		context->CSSetShaderResources(0, count, nulls);
+		ID3D11ShaderResourceView* noDepth = nullptr;
+		context->CSSetShaderResources(17, 1, &noDepth);
+		uav = nullptr;
+		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+		context->CSSetShader(nullptr, nullptr, 0);
+		cbs[0] = nullptr;
+		cbs[1] = nullptr;
+		context->CSSetConstantBuffers(0, 2, cbs);
+		return true;
+	};
+
+	ID3D11ShaderResourceView* focusInputs[1] = { dofFocusHistoryTexture->srv.get() };
+	if (!dispatch("CameraSuite::DOF::FocusResolve", GetDofFocusResolveCS(), focusInputs, 1u, dofFocusTexture))
+		return;
+	context->CopyResource(dofFocusHistoryTexture->resource.get(), dofFocusTexture->resource.get());
+
+	auto& motionTarget = globals::game::renderer->GetRuntimeData().renderTargets[
+		RE::RENDER_TARGETS::kMOTION_VECTOR];
+	ID3D11ShaderResourceView* cocInputs[4] = {
+		sceneSRV,
+		dofFocusTexture->srv.get(),
+		dofCoCHistoryTexture->srv.get(),
+		motionTarget.SRV
+	};
+	if (!dispatch("CameraSuite::DOF::CoC", GetDofCoCCS(), cocInputs, 4u, dofCoCTexture))
+		return;
+	context->CopyResource(dofCoCHistoryTexture->resource.get(), dofCoCTexture->resource.get());
+	ID3D11ShaderResourceView* halfInputs[1] = { sceneSRV };
+	if (!dispatch("CameraSuite::DOF::HalfDownsample", GetDofHalfDownsampleCS(), halfInputs, 1u, dofHalfSceneTexture))
+		return;
+	ID3D11ShaderResourceView* tileInputs[1] = { dofCoCTexture->srv.get() };
+	if (!dispatch("CameraSuite::DOF::TileClassify", GetDofTileClassifyCS(), tileInputs, 1u, dofTileTexture))
+		return;
+
+	ID3D11ShaderResourceView* blurInputs[4] = { sceneSRV, dofCoCTexture->srv.get(), dofHalfSceneTexture->srv.get(), dofTileTexture->srv.get() };
+	const bool farReady = dispatch("CameraSuite::DOF::FarBlur", GetDofBlurCS(false), blurInputs, 4u, dofFarTexture);
+	const bool nearReady = dispatch("CameraSuite::DOF::NearBlur", GetDofBlurCS(true), blurInputs, 4u, dofNearTexture);
+	dofPassReady = farReady && nearReady;
+}
+
 void CameraSuite::RunCameraFinishingPasses(ID3D11ShaderResourceView* sceneSRV)
 {
 	localExposurePassReady = false;
@@ -2597,6 +2961,8 @@ void CameraSuite::RunCameraFinishingPasses(ID3D11ShaderResourceView* sceneSRV)
 	stormglassPassReady = false;
 
 	const bool wantsPhysicalCamera = settings.enablePhysicalCamera;
+	const bool wantsDof = settings.enableEnhancedDepthOfField && !UsesCinematicDoF() &&
+		dofCoCTexture && dofFarTexture && dofNearTexture;
 	const bool wantsBloom = settings.enableBloom && settings.bloomStrength > 1e-4f;
 	// Stormglass must follow the actual rendered exterior sky, not the generic
 	// globals::state->inWorld flag. The diagnostic proved inWorld/map state can
@@ -2612,13 +2978,15 @@ void CameraSuite::RunCameraFinishingPasses(ID3D11ShaderResourceView* sceneSRV)
 	const bool stormglassLensVisible = (1.0f - std::clamp(submergedBlendState, 0.0f, 1.0f) * 1.25f) > 0.001f;
 	const bool wantsStormglass = settings.enableStormglass && environmentPresentation && stormglassLensVisible && stormglassFieldTexture &&
 		std::max({ stormglassRainIntensityState, stormglassWetnessState, surfaceBreakFilmState }) > 0.002f;
-	if ((!wantsPhysicalCamera && !wantsBloom && !wantsStormglass) || !sceneSRV || !hdrDataCB || !cameraExposureTexture ||
+	if ((!wantsPhysicalCamera && !wantsBloom && !wantsStormglass && !wantsDof) || !sceneSRV || !hdrDataCB || !cameraExposureTexture ||
 		globals::state->IsDisplayReferredModelMenuOpen(globals::game::ui))
 		return;
 
 	auto* context = globals::d3d::context;
 	ID3D11Buffer* cb = hdrDataCB->CB();
 	ID3D11SamplerState* sampler = lookSampler.get();
+
+	RunDepthOfFieldPasses(sceneSRV);
 
 	auto dispatchPass = [&](const char* profilerName,
 		ID3D11ComputeShader* shader,
@@ -2646,7 +3014,10 @@ void CameraSuite::RunCameraFinishingPasses(ID3D11ShaderResourceView* sceneSRV)
 		return true;
 	};
 
-	if (wantsPhysicalCamera && settings.cameraLocalExposure > 1e-4f && cameraLocalExposureTexture) {
+	// Local exposure responds to each new camera framing. Keep it out of
+	// Photo/Video captures so the held global exposure is actually stable.
+	if (wantsPhysicalCamera && !TuningWorkspaceRenderer::IsDirectorPhotoModeActive() &&
+		settings.cameraLocalExposure > 1e-4f && cameraLocalExposureTexture) {
 		ID3D11ShaderResourceView* localSrvs[2] = { sceneSRV, cameraExposureTexture->srv.get() };
 		localExposurePassReady = dispatchPass(
 			"CameraSuite::LocalExposure", GetPhysicalCameraLocalExposureCS(), localSrvs, 2u, cameraLocalExposureTexture);
@@ -2803,6 +3174,8 @@ float4 CameraSuite::GetSharedDataHDR() const
 	if (isMainOrLoading) {
 		menuSceneEncoding = kHdrMenuSceneMainOrLoading;
 	} else if (TuningWorkspaceRenderer::IsDirectorPhotoModeActive() && !state->isMapMenuOpen) {
+		// ISHDR uses this state to hold Skyrim's earlier eye adaptation. HDRSun
+		// independently treats Director as a live scene rather than a pause menu.
 		menuSceneEncoding = kHdrMenuScenePhoto;
 	} else if (inMenuOrPause) {
 		menuSceneEncoding = kHdrMenuScenePauseOrMap;
@@ -2824,7 +3197,7 @@ CameraSuite::PostProcessSettings CameraSuite::GetPostProcessData() const
 	ApplyPlayerPostProcessing();
 
 	return {
-		0u,
+		settings.enableEnhancedDepthOfField && !UsesCinematicDoF() ? 1u : 0u,
 		std::clamp(settings.dofBokehRadius, 0.5f, 2.0f),
 		std::clamp(settings.dofHighlightResponse, 0.0f, 1.0f),
 		std::clamp(settings.dofFocusEdgeProtection, 0.0f, 2.0f),
@@ -3039,7 +3412,8 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 	data.cameraHighlightProtection = std::clamp(settings.cameraHighlightProtection, 0.0f, 1.0f);
 	data.cameraShadowDetail = std::clamp(settings.cameraShadowDetail, 0.0f, 0.5f);
 	data.cameraContrast = std::clamp(settings.cameraContrast, 0.75f, 1.30f);
-	data.cameraLocalExposure = std::clamp(settings.cameraLocalExposure, 0.0f, 0.5f);
+	data.cameraLocalExposure = TuningWorkspaceRenderer::IsDirectorPhotoModeActive() ? 0.0f :
+		std::clamp(settings.cameraLocalExposure, 0.0f, 0.5f);
 	data.cameraAdaptBrightToDark = std::clamp(settings.cameraAdaptBrightToDark, 0.05f, 4.0f);
 	data.cameraAdaptDarkToBright = std::clamp(settings.cameraAdaptDarkToBright, 0.03f, 2.0f);
 	data.bodycamEnabled = settings.enablePhysicalCamera && settings.experimentalBodycam ? 1.f : 0.f;
@@ -3111,14 +3485,77 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 		data.submergedFogAmount = std::clamp(waterData.underwaterFogAmount, 0.0f, 1.0f);
 	}
 
-	// PIXL's experimental realtime DOF is retired. Keep the legacy ABI payload
-	// neutral so old shader caches and settings remain compatible while Skyrim's
-	// native image-space pass owns the visible depth-of-field result.
+	// PIXL/Director presentation owns the optional DOF path only when explicitly enabled and when an
+	// external provider has not claimed the effect. The final composite already
+	// has the scene color and depth SRV, so this avoids another hook or an extra
+	// full-resolution intermediate buffer.
+	const bool directorPhoto = TuningWorkspaceRenderer::IsDirectorPhotoModeActive();
+	const bool directorVideo = TuningWorkspaceRenderer::IsDirectorVideoModeActive();
+	const bool directorPresentation = directorPhoto || directorVideo;
+	const bool interiorScene = Util::IsInterior();
 	const bool dofGameplay = globals::state && !globals::state->isMapMenuOpen &&
-		!(ui && ui->GameIsPaused()) && !isMainOrLoadingMenu;
-	data.dofEnabled = 0.0f;
+		(!(ui && ui->GameIsPaused()) || directorPresentation) && !isMainOrLoadingMenu;
+	const bool pixlDofEnabled = settings.enableEnhancedDepthOfField && dofGameplay &&
+		!UsesCinematicDoF() && GetCinematicDofDepthSRV();
+	const auto* playerCamera = RE::PlayerCamera::GetSingleton();
+	const bool firstPersonView = playerCamera && playerCamera->IsInFirstPerson();
+	const bool thirdPersonView = playerCamera && !firstPersonView;
+	// Focus history belongs to a camera view, not merely to the player. A
+	// third/first-person switch radically changes both the subject and the near
+	// clip content, so carrying the previous diopter produces a visibly wrong
+	// rack focus and can let first-person hands drive the centre ROI.
+	const auto& cameraNow = globals::game::frameBufferCached.GetCameraPosAdjust();
+	const auto& cameraPrevious = globals::game::frameBufferCached.GetCameraPreviousPosAdjust();
+	const float cameraDx = cameraNow.x - cameraPrevious.x;
+	const float cameraDy = cameraNow.y - cameraPrevious.y;
+	const float cameraDz = cameraNow.z - cameraPrevious.z;
+	const auto& dynamicResolution = globals::game::frameBufferCached.GetDynamicResolutionParams1();
+	const bool reconstructionDiscontinuity =
+		cameraDx * cameraDx + cameraDy * cameraDy + cameraDz * cameraDz > 4096.0f * 4096.0f ||
+		std::abs(dynamicResolution.x - dynamicResolution.z) > 0.01f ||
+		std::abs(dynamicResolution.y - dynamicResolution.w) > 0.01f;
+	const bool focusHistoryReset =
+		!dofViewStateValid ||
+		(firstPersonView != dofWasFirstPerson) ||
+		(pixlDofEnabled != dofWasEnabled) ||
+		reconstructionDiscontinuity;
+	if (focusHistoryReset)
+		dofFocusStateValid = false;
+	dofViewStateValid = true;
+	dofWasFirstPerson = firstPersonView;
+	dofWasEnabled = pixlDofEnabled;
+	float focusDistance = std::clamp(settings.dofFocusDistance, 100.0f, 20000.0f);
+	bool actorFocusActive = false;
+	bool directorFocusActive = false;
+	if (pixlDofEnabled) {
+		if (const auto directorDistance = TuningWorkspaceRenderer::GetDirectorFocusDistance()) {
+			focusDistance = *directorDistance;
+			directorFocusActive = true;
+		}
+	}
+	if (pixlDofEnabled && !directorPresentation && settings.dofActorTracking) {
+		if (const auto actorDistance = GetDialogueActorFocusDistance()) {
+			focusDistance = *actorDistance;
+			actorFocusActive = true;
+		}
+	}
+	if (pixlDofEnabled && settings.dofAutoFocus && !actorFocusActive && !directorFocusActive && !directorPhoto)
+		focusDistance = std::clamp(settings.dofFocusDistance, 100.0f, 20000.0f);
+
+	if (!dofFocusStateValid) {
+		dofFocusDistanceState = focusDistance;
+		dofFocusStateValid = true;
+	} else if (dofFocusStateFrame != (globals::state ? globals::state->frameCount : 0u)) {
+		const float focusResponse = 1.0f - std::exp(-frameDelta *
+			(directorFocusActive ? (TuningWorkspaceRenderer::IsDirectorInspectionMoving() ? 3.0f : 9.0f) :
+				(actorFocusActive ? 7.0f : (directorPresentation ? 2.0f : 3.0f))));
+		dofFocusDistanceState = std::lerp(dofFocusDistanceState, focusDistance, focusResponse);
+	}
+	dofFocusStateFrame = globals::state ? globals::state->frameCount : 0u;
+
+	data.dofEnabled = pixlDofEnabled ? 1.0f : 0.0f;
 	data.dofStrength = std::clamp(settings.dofStrength, 0.0f, 1.0f);
-	data.dofFocusDistance = std::clamp(settings.dofFocusDistance, 100.0f, 20000.0f);
+	data.dofFocusDistance = std::clamp(dofFocusDistanceState, 100.0f, 20000.0f);
 	data.dofFocusRange = std::clamp(settings.dofFocusRange, 100.0f, 20000.0f);
 	data.dofBokehRadius = std::clamp(settings.dofBokehRadius, 0.5f, 2.0f);
 	data.dofHighlightResponse = std::clamp(settings.dofHighlightResponse, 0.0f, 1.0f);
@@ -3127,7 +3564,11 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 	data.dofCatEye = std::clamp(settings.dofCatEye, 0.0f, 1.0f);
 	data.dofAnamorphicRatio = std::clamp(settings.dofAnamorphicRatio, 0.5f, 2.0f);
 	data.dofQuality = static_cast<float>(std::clamp(cameraQuality, 0u, 3u));
-	data.dofAutoFocus = settings.dofAutoFocus ? 1.0f : 0.0f;
+	// c19.w remains ABI-compatible with the original autofocus boolean. Values
+	// 2/3 additionally tell the shader that the camera is inside, allowing sky
+	// pixels and portal openings to receive a much gentler blur than open sky.
+	data.dofAutoFocus = (settings.dofAutoFocus && !actorFocusActive && !directorFocusActive && !directorPhoto ? 1.0f : 0.0f) +
+		(interiorScene ? 2.0f : 0.0f);
 	const bool elementalGameplay = environmentPresentation &&
 		!(ui && ui->GameIsPaused()) && !isMainOrLoadingMenu;
 	data.coldLensAmount = elementalGameplay && settings.enableColdLens
@@ -3139,10 +3580,54 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 	data.coldLensStrength = std::clamp(settings.coldLensStrength, 0.0f, 1.0f);
 	data.elementalLensStrength = std::clamp(settings.elementalLensStrength, 0.0f, 1.0f);
 	data.motionBlurEnabled = settings.enableModernMotionBlur && dofGameplay && !photoModeDofIsolation &&
-		Util::GetCurrentSceneDepthSRV(true) ? 1.0f : 0.0f;
+		GetCinematicDofDepthSRV() ? 1.0f : 0.0f;
 	data.motionBlurStrength = std::clamp(settings.motionBlurStrength, 0.0f, 1.0f);
 	data.motionBlurShutter = std::clamp(settings.motionBlurShutter, 0.10f, 1.0f);
 	data.motionBlurMaxPixels = std::clamp(settings.motionBlurMaxPixels, 4.0f, 48.0f);
+
+	// Keep all DOF shader stages on one authoritative focus/lens record. The
+	// legacy HDR fields above remain populated for compatibility with older
+	// CameraSuite permutations, but no DOF shader is allowed to resolve a second
+	// centre-screen focus independently.
+	dofControlData = {};
+	dofControlData.focusDistance = data.dofFocusDistance;
+	dofControlData.focusDiopter = 1.0f / std::max(data.dofFocusDistance, 1.0f);
+	dofControlData.focusSpeed = std::clamp(settings.dofFocusSpeed, 0.25f, 20.0f);
+	dofControlData.focusDeadband = std::clamp(settings.dofFocusDeadband, 0.0f, 0.25f);
+	dofControlData.focalLengthMm = std::clamp(settings.dofFocalLengthMm, 18.0f, 200.0f);
+	dofControlData.fStop = std::clamp(settings.dofFStop, 0.7f, 32.0f);
+	dofControlData.sensorHeightMm = std::clamp(settings.dofSensorHeightMm, 10.0f, 40.0f);
+	dofControlData.maxCoCPixels = std::clamp(settings.dofMaxBokehPixels, 4.0f, 96.0f);
+	dofControlData.bokehRadius = std::clamp(settings.dofBokehRadius, 0.5f, 2.0f);
+	dofControlData.strength = std::clamp(settings.dofStrength, 0.0f, 1.0f);
+	dofControlData.highlightResponse = std::clamp(settings.dofHighlightResponse, 0.0f, 1.0f);
+	dofControlData.focusEdgeProtection = std::clamp(settings.dofFocusEdgeProtection, 0.0f, 2.0f);
+	dofControlData.foregroundCoverage = std::clamp(settings.dofForegroundCoverage, 0.0f, 1.5f);
+	dofControlData.nearBlurIntensity = std::clamp(settings.dofNearBlurIntensity, 0.0f, 2.0f);
+	dofControlData.farBlurIntensity = std::clamp(settings.dofFarBlurIntensity, 0.0f, 2.0f);
+	dofControlData.farBlurDistance = std::clamp(settings.dofFarBlurDistance, 500.0f, 50000.0f);
+	dofControlData.catEye = std::clamp(settings.dofCatEye, 0.0f, 1.0f);
+	dofControlData.anamorphicRatio = std::clamp(settings.dofAnamorphicRatio, 0.5f, 2.0f);
+	dofControlData.apertureRotation = settings.dofApertureRotation;
+	dofControlData.bladeCurvature = std::clamp(settings.dofBladeCurvature, 0.0f, 1.0f);
+	dofControlData.apertureBlades = static_cast<float>(std::clamp(settings.dofApertureBlades, 3u, 12u));
+	dofControlData.quality = static_cast<float>(std::clamp(cameraQuality, 0u, 3u));
+	dofControlData.focusMode = directorFocusActive ? 1.0f : (actorFocusActive ? 2.0f : (settings.dofAutoFocus ? 3.0f : 0.0f));
+	if (hdrTexture) {
+		dofControlData.renderWidth = static_cast<float>(hdrTexture->desc.Width);
+		dofControlData.renderHeight = static_cast<float>(hdrTexture->desc.Height);
+	}
+	dofControlData.invRenderWidth = 1.0f / std::max(dofControlData.renderWidth, 1.0f);
+	dofControlData.invRenderHeight = 1.0f / std::max(dofControlData.renderHeight, 1.0f);
+	dofControlData.frameIndex = data.frameIndex;
+	dofControlData.flags =
+		((settings.dofPhysicalLens || directorPresentation) ? 1u : 0u) |
+		(firstPersonView ? 2u : 0u) |
+		(directorPresentation ? 4u : 0u) |
+		(globals::pipeline::imageReconstruction.GetUpscaleMethod() != ImageReconstruction::UpscaleMethod::kNONE ? 8u : 0u) |
+		(thirdPersonView ? 16u : 0u);
+	dofControlData.historyValid = dofFocusStateValid && !focusHistoryReset ? 1u : 0u;
+	dofControlData.deltaTime = frameDelta;
 	return data;
 }
 
@@ -3153,6 +3638,8 @@ void CameraSuite::UpdateHDRData() const
 		return;
 
 	hdrDataCB->Update(BuildHDRData());
+	if (dofControlCB)
+		dofControlCB->Update(dofControlData);
 }
 
 void CameraSuite::ApplyPlayerPostProcessing() const
@@ -3166,14 +3653,16 @@ void CameraSuite::ApplyPlayerPostProcessing() const
 	if (settings.enableBloom)
 		hdr.bloomScale = 0.0f;
 
-	// Skyrim owns DOF again. Its Imagespace INI switch is live, so the PIXL toggle
-	// can enable/disable the native pass without rewriting SkyrimPrefs.ini.
+	// Keep Skyrim's authored DOF disabled while PIXL or an external cinematic
+	// provider owns the final image. The INI setting is live and does not require
+	// rewriting SkyrimPrefs.ini.
 	const auto applyNativeDofSetting = [&](RE::INISettingCollection* collection) {
 		if (!collection)
 			return false;
 		if (auto* setting = collection->GetSetting("bDoDepthOfField:Imagespace");
 			setting && setting->GetType() == RE::Setting::Type::kBool) {
-			setting->data.b = settings.enableSkyrimDepthOfField && !UsesCinematicDoF();
+			setting->data.b = settings.enableSkyrimDepthOfField &&
+				!settings.enableEnhancedDepthOfField && !UsesCinematicDoF();
 			return true;
 		}
 		return false;

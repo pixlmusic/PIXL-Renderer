@@ -1,7 +1,7 @@
 {
     "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
     "name": "pixl-renderer",
-    "license": "GPL-3.0",
+    "license": "GPL-3.0-or-later",
     "features": {
         "commonlibsse-ng": {
             "description": "Dependencies of clib-ng",

@@ -11,7 +11,9 @@
 #include "Common/DisplayMapping.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/SharedData.hlsli"
+#include "Common/PIXLRenderOrigin.hlsli"
 #include "CameraSuite/PhysicalCameraCommon.hlsli"
+#include "CameraSuite/DofControl.hlsli"
 #include "CameraSuite/Stormglass.hlsli"
 
 Texture2D<float4> SceneTex : register(t0);
@@ -23,6 +25,9 @@ Texture2D<float> LocalExposureTex : register(t5);
 Texture2D<float4> StormglassFieldTex : register(t6);
 Texture2D<float4> FrostLensTex : register(t7);
 Texture2D<float4> FireLensTex : register(t8);
+Texture2D<float> DofCoCTex : register(t9);
+Texture2D<float4> DofFarBlurTex : register(t10);
+Texture2D<float4> DofNearBlurTex : register(t11);
 SamplerState LinearClampSampler : register(s0);
 RWTexture2D<float4> HDROutput : register(u0);
 
@@ -233,22 +238,45 @@ float3 LoadSubmergedSceneLinear(float2 uv, uint2 dim)
 
 float PixlDofLinearDepth(float2 uv, out bool isSky)
 {
-	float rawDepth = SharedData::GetDepth(saturate(uv));
+	// Use normalized sampling here instead of SharedData::GetDepth's integer
+	// Load path. Skyrim's color and depth surfaces can have different physical
+	// dimensions under dynamic resolution; using the scene BufferDim for both
+	// silently reads the wrong depth region and turns the whole frame into blur.
+	float rawDepth = SharedData::DepthTexture.SampleLevel(LinearClampSampler, saturate(uv), 0.0f).x;
 	// A cleared/unavailable depth SRV reads zero. Keep that pixel sharp instead
 	// of mistaking it for a near-plane receiver and blurring the entire frame.
-	if (rawDepth <= 1.0e-5f) {
+	if (!isfinite(rawDepth) || rawDepth <= 1.0e-5f) {
 		isSky = false;
 		return 0.0f;
 	}
 	isSky = rawDepth >= 0.999998f;
-	return isSky
-		? dofFocusDistance + dofFocusRange * 8.0f
+	float linearDepth = isSky
+		? dofFocusDistance + dofFocusRange * (dofAutoFocus >= 2.0f ? 2.0f : 8.0f)
 		: max(SharedData::GetScreenDepth(rawDepth), 0.0f);
+	// CameraData is updated by a separate renderer path. During resize, menu,
+	// cell-transition, or stale-depth frames it can briefly produce INF/negative
+	// view depth. Treat that frame as unsupported rather than spreading one bad
+	// sample across the whole bokeh gather.
+	if (!isfinite(linearDepth) || linearDepth <= 0.0f || linearDepth > 2000000.0f) {
+		isSky = false;
+		return 0.0f;
+	}
+	return linearDepth;
+}
+
+bool PixlDofAutoFocusEnabled()
+{
+	return (dofAutoFocus >= 1.0f && dofAutoFocus < 2.0f) || dofAutoFocus >= 3.0f;
+}
+
+bool PixlDofInteriorScene()
+{
+	return dofAutoFocus >= 2.0f;
 }
 
 float PixlDofResolvedFocusDistance(uint2 dim)
 {
-	if (dofAutoFocus < 0.5f)
+	if (!PixlDofAutoFocusEnabled())
 		return dofFocusDistance;
 
 	// Centre focus uses the exact scene depth that drives bokeh. Four nearby
@@ -280,7 +308,7 @@ float PixlDofResolvedFocusDistance(uint2 dim)
 
 float PixlDofEffectiveFocusRange(float focusDistance)
 {
-	if (dofAutoFocus < 0.5f)
+	if (!PixlDofAutoFocusEnabled())
 		return max(dofFocusRange, 1.0f);
 
 	// Dialogue remains selective while landscape focus gains enough tolerance to
@@ -288,9 +316,11 @@ float PixlDofEffectiveFocusRange(float focusDistance)
 	// large values saved by the old manual-only UI are migrated in-shader to the
 	// new 480-unit autofocus baseline; manual mode still honours them exactly.
 	float configuredAutoBase = dofFocusRange > 4000.0f
-		? 480.0f
-		: clamp(dofFocusRange, 240.0f, 900.0f);
-	float adaptiveMinimum = clamp(160.0f + focusDistance * 0.12f, 300.0f, 1800.0f);
+		? 720.0f
+		: clamp(dofFocusRange, 360.0f, 1200.0f);
+	// A wider near-focus tolerance prevents small depth changes on terrain,
+	// foliage and close actors from turning into an aquarium-like wall of blur.
+	float adaptiveMinimum = clamp(360.0f + focusDistance * 0.18f, 520.0f, 2400.0f);
 	return max(configuredAutoBase, adaptiveMinimum);
 }
 
@@ -299,7 +329,7 @@ float PixlDofEffectiveEdgeProtection()
 	// Old/manual profiles are allowed to expose the full artistic range. Gameplay
 	// autofocus must never inherit a zero edge guard: that value lets ground and
 	// displaced snow gather colour through their own depth silhouette.
-	return dofAutoFocus > 0.5f
+	return PixlDofAutoFocusEnabled()
 		? max(dofFocusEdgeProtection, 0.85f)
 		: max(dofFocusEdgeProtection, 0.0f);
 }
@@ -309,7 +339,7 @@ float PixlDofEffectiveForegroundCoverage()
 	// A coverage of 1.0 previously replaced depth rejection entirely and caused
 	// foreground terrain to smear over distant scenery. Keep autofocus cinematic
 	// but bounded; manual photo-mode work still honours the full control range.
-	return dofAutoFocus > 0.5f
+	return PixlDofAutoFocusEnabled()
 		? min(saturate(dofForegroundCoverage), 0.72f)
 		: saturate(dofForegroundCoverage);
 }
@@ -354,14 +384,19 @@ float PixlDofSignedCoC(float linearDepth, bool isSky, float focusDistance, float
 {
 	if (linearDepth <= 0.0f)
 		return 0.0f;
+	// In an interior, a cleared depth pixel is usually a portal/ceiling opening,
+	// not an infinite outdoor background. Protect it from the large outdoor sky
+	// CoC so rooms do not acquire a tunnel-like wall of blur.
+	float skyCoC = PixlDofInteriorScene() ? 0.32f : 2.75f;
 	float signedDistance = isSky
-		? 8.0f
+		? skyCoC
 		: (linearDepth - focusDistance) / max(focusRange, 1.0f);
 	// Nearby objects should expand over a focused background rather than looking
 	// cut out, while the user control still bounds that foreground coverage.
 	if (signedDistance < 0.0f)
 		signedDistance *= lerp(0.72f, 1.35f, PixlDofEffectiveForegroundCoverage());
-	return clamp(signedDistance * saturate(dofStrength), -1.0f, 1.0f);
+	float distanceResponse = smoothstep(0.02f, 0.92f, abs(signedDistance));
+	return clamp(sign(signedDistance) * distanceResponse * saturate(dofStrength), -1.0f, 1.0f);
 }
 
 float2 PixlDofAperturePoint(uint sampleIndex, uint sampleCount, float rotation)
@@ -386,8 +421,7 @@ float2 PixlCameraMotionVector(float2 uv, uint2 dim, out float centerDepth)
 	currentRelative /= currentRelative.w;
 	centerDepth = max(SharedData::GetScreenDepth(rawDepth), 0.0f);
 
-	float3 absolutePosition = currentRelative.xyz + FrameBuffer::CameraPosAdjust.xyz;
-	float3 previousRelative = absolutePosition - FrameBuffer::CameraPreviousPosAdjust.xyz;
+	float3 previousRelative = PIXLRenderOrigin::CurrentEngineToPreviousEngine(currentRelative.xyz);
 	float4 previousCS = mul(
 		FrameBuffer::CameraPreviousViewProjUnjittered,
 		float4(previousRelative, 1.0f));
@@ -448,92 +482,122 @@ float3 PixlApplyCameraMotionBlur(float2 uv, uint2 dim, float3 sharpScene)
 	return lerp(sharpScene, blurred, smoothstep(0.65f, 3.0f, pixelMotion) * saturate(motionBlurStrength));
 }
 
+float3 PixlReconstructFarBlur(float2 uv)
+{
+	uint width, height;
+	DofFarBlurTex.GetDimensions(width, height);
+	float2 texel = 1.0f / max(float2(width, height), 1.0f.xx);
+	// Jimenez-style 3x3 tent resolve. CinematicDoF applies this to its
+	// half-resolution far layer before compositing; doing the equivalent here
+	// hides the half-res footprint and produces a softer, temporally stable edge.
+	const float2 offsets[9] = {
+		float2(-1, -1), float2(0, -1), float2(1, -1),
+		float2(-1,  0), float2(0,  0), float2(1,  0),
+		float2(-1,  1), float2(0,  1), float2(1,  1)
+	};
+	const float tentWeights[9] = { 1, 2, 1, 2, 4, 2, 1, 2, 1 };
+	float3 result = 0.0f.xxx;
+	float weight = 0.0f;
+	[unroll]
+	for (uint i = 0; i < 9; ++i) {
+		float2 sampleUV = saturate(uv + offsets[i] * texel);
+		float sampleCoC = DofCoCTex.SampleLevel(LinearClampSampler, sampleUV, 0.0f);
+		float tapWeight = tentWeights[i];
+		// Far reconstruction follows signed CoC rather than raw depth. Two distant,
+		// out-of-focus surfaces (for example a mountain against sky) must share the
+		// same blur footprint; rejecting them by depth leaves a sharp white cut-out.
+		// Focused and foreground samples have non-positive CoC and remain excluded.
+		float farThreshold = max(0.35f, dofControlMaxCoCPixels * 0.0125f);
+		float sampleFarSupport = smoothstep(farThreshold, farThreshold * 2.5f, sampleCoC);
+		tapWeight *= sampleFarSupport;
+		result += DofFarBlurTex.SampleLevel(LinearClampSampler, sampleUV, 0.0f).rgb * tapWeight;
+		weight += tapWeight;
+	}
+	return weight > 1.0e-4f ? result / weight : DofFarBlurTex.SampleLevel(LinearClampSampler, saturate(uv), 0.0f).rgb;
+}
+
+float4 PixlReconstructNearBlur(float2 uv)
+{
+	uint width, height;
+	DofNearBlurTex.GetDimensions(width, height);
+	float2 texel = 1.0f / max(float2(width, height), 1.0f.xx);
+	const float2 offsets[9] = {
+		float2(-1, -1), float2(0, -1), float2(1, -1),
+		float2(-1,  0), float2(0,  0), float2(1,  0),
+		float2(-1,  1), float2(0,  1), float2(1,  1)
+	};
+	const float tentWeights[9] = { 1, 2, 1, 2, 4, 2, 1, 2, 1 };
+	float4 result = 0.0f.xxxx;
+	float weight = 0.0f;
+	[unroll]
+	for (uint i = 0; i < 9; ++i) {
+		float2 sampleUV = saturate(uv + offsets[i] * texel);
+		float tapWeight = tentWeights[i];
+		result += DofNearBlurTex.SampleLevel(LinearClampSampler, sampleUV, 0.0f) * tapWeight;
+		weight += tapWeight;
+	}
+	return weight > 1.0e-4f ? result / weight : DofNearBlurTex.SampleLevel(LinearClampSampler, saturate(uv), 0.0f);
+}
+
+float3 PixlPreserveDofLuminance(float3 sharpScene, float3 blurredScene)
+{
+	// A gather conserves energy over its footprint, not at each destination
+	// pixel. Matching every blurred pixel to the original sharp luminance made
+	// bright reconstructed silhouette pixels become white contours under DLSS.
+	// Keep only the invalid-buffer fallback here; HDR energy is normalized in the
+	// gather itself.
+	if (any(!isfinite(blurredScene)))
+		return max(sharpScene, 0.0f);
+	return max(blurredScene, 0.0f);
+}
+
 float3 PixlApplyDepthOfField(float2 uv, uint2 dim, float3 sharpScene)
 {
 	if (dofEnabled < 0.5f || dofStrength <= 1.0e-4f)
 		return sharpScene;
 
-	bool centerIsSky;
-	float centerDepth = PixlDofLinearDepth(uv, centerIsSky);
-	float focusDistance = PixlDofResolvedFocusDistance(dim);
-	float focusRange = PixlDofEffectiveFocusRange(focusDistance);
-	float centerCoC = PixlDofSignedCoC(centerDepth, centerIsSky, focusDistance, focusRange);
-	float depthContinuity = PixlDofDepthContinuity(uv, dim, centerDepth, centerIsSky);
-	float blurAmount = saturate(abs(centerCoC)) * depthContinuity;
-	if (blurAmount <= 0.012f)
+	// The reference keeps CoC generation and near/far filtering in separate
+	// resources. Sampling those layers here prevents a single pixel's depth from
+	// dragging unrelated foreground and background across the whole frame.
+	float signedCoC = DofCoCTex.SampleLevel(LinearClampSampler, saturate(uv), 0.0f);
+	if (!isfinite(signedCoC))
 		return sharpScene;
-
-	uint quality = min((uint)(clamp(dofQuality, 0.0f, 3.0f) + 0.5f), 3u);
-	uint sampleCount = quality == 3u ? 16u : (quality == 2u ? 12u : (quality == 1u ? 8u : 6u));
-	float maxRadiusPixels = lerp(7.0f, 18.0f, quality / 3.0f) * max(dofBokehRadius, 0.5f);
-	float2 pixelSize = rcp(max(float2(dim), 1.0f.xx));
-	float2 framePosition = uv * 2.0f - 1.0f;
-	float frameRadius = saturate(length(framePosition) * 0.82f);
-	float2 radialDirection = length(framePosition) > 1.0e-4f
-		? normalize(framePosition)
-		: float2(1.0f, 0.0f);
-	float2 tangentDirection = float2(-radialDirection.y, radialDirection.x);
-	float catEyeCompression = 1.0f - saturate(dofCatEye) * frameRadius * 0.48f;
-	float anamorphic = clamp(dofAnamorphicRatio, 0.5f, 2.0f);
-	// A per-pixel random aperture rotation made every defocused region look like
-	// persistent sensor noise. The golden-angle disk is already well distributed;
-	// a fixed orientation keeps the kernel deterministic and temporally stable.
-	const float rotation = 0.0f;
-
-	float effectiveEdgeProtection = PixlDofEffectiveEdgeProtection();
-	float effectiveForegroundCoverage = PixlDofEffectiveForegroundCoverage();
-	float centerWeight = lerp(3.25f, 1.50f, blurAmount);
-	float3 accumulated = sharpScene * centerWeight;
-	float accumulatedWeight = centerWeight;
-	[loop]
-	for (uint i = 0u; i < 16u; ++i) {
-		if (i >= sampleCount)
-			break;
-
-		float2 aperture = PixlDofAperturePoint(i, sampleCount, rotation);
-		float radialComponent = dot(aperture, radialDirection) * catEyeCompression;
-		float tangentComponent = dot(aperture, tangentDirection);
-		aperture = radialDirection * radialComponent + tangentDirection * tangentComponent;
-		aperture *= float2(anamorphic, rcp(sqrt(anamorphic)));
-
-		float2 sampleUV = saturate(uv + aperture * pixelSize * (maxRadiusPixels * blurAmount));
-		bool sampleIsSky;
-		float sampleDepth = PixlDofLinearDepth(sampleUV, sampleIsSky);
-		if (sampleDepth <= 0.0f)
-			continue;
-		float sampleCoC = PixlDofSignedCoC(sampleDepth, sampleIsSky, focusDistance, focusRange);
-		float depthScale = max(min(centerDepth, sampleDepth) * 0.035f + focusRange * 0.12f, 8.0f);
-		float depthSeparation = abs(sampleDepth - centerDepth) / depthScale;
-		float edgeWeight = exp2(-depthSeparation * effectiveEdgeProtection * 1.7f);
-
-		// Background bokeh cannot bleed through a nearer silhouette. Foreground
-		// bokeh is allowed to cover the background according to its dedicated control.
-		float occlusionWeight = edgeWeight;
-		if (centerCoC > 0.0f && sampleDepth < centerDepth)
-			occlusionWeight *= edgeWeight;
-		else if (centerCoC < 0.0f && sampleDepth > centerDepth)
-			occlusionWeight = lerp(
-				edgeWeight,
-				sqrt(saturate(edgeWeight)),
-				effectiveForegroundCoverage * 0.55f);
-
-		// A gather filter cannot correctly scatter a foreground disc across the
-		// opposite side of a depth edge. Suppress those cross-sign taps instead of
-		// producing the familiar halo around terrain, actors and snow displacement.
-		if (centerCoC * sampleCoC < 0.0f)
-			occlusionWeight *= 0.08f;
-
-		float sampleSupport = smoothstep(0.015f, 0.16f, abs(sampleCoC));
-		float3 sampleColor = LoadSceneLinear(sampleUV, dim);
-		float highlight = saturate((PixlLuminance(sampleColor) - 0.65f) * 0.75f);
-		float highlightWeight = 1.0f + highlight * saturate(dofHighlightResponse) * 1.5f;
-		float weight = max(occlusionWeight * lerp(0.45f, 1.0f, sampleSupport) * highlightWeight, 1.0e-4f);
-		accumulated += sampleColor * weight;
-		accumulatedWeight += weight;
-	}
-
-	float3 bokeh = accumulated / max(accumulatedWeight, 1.0e-4f);
-	return lerp(sharpScene, bokeh, smoothstep(0.012f, 0.88f, blurAmount));
+	// CoC generation already applies the user strength once. Composite coverage
+	// must not multiply it again or retain a conspicuous sharp image underneath.
+	float blurAmount = smoothstep(0.5f, max(2.0f, dofControlMaxCoCPixels * 0.22f), abs(signedCoC));
+	bool centerSky;
+	float centerDepth = PixlDofLinearDepth(uv, centerSky);
+	if (blurAmount <= 0.01f)
+		return sharpScene;
+	float nearWeight = signedCoC < 0.0f ? blurAmount : 0.0f;
+	float farWeight = signedCoC > 0.0f ? blurAmount : 0.0f;
+	nearWeight = saturate(nearWeight * dofControlNearBlurIntensity);
+	farWeight = saturate(farWeight * dofControlFarBlurIntensity);
+	// Water, sky portals and thin geometry can have a valid centre depth but
+	// unstable neighbouring depth. Reduce DOF authority at that discontinuity
+	// instead of compositing a dark/invalid half-resolution sample over it.
+	float continuity = PixlDofDepthContinuity(uv, dim, centerDepth, centerSky);
+	float edgeSafe = lerp(0.30f, 1.0f, continuity);
+	nearWeight *= edgeSafe;
+	// Reducing far coverage at discontinuities exposes the sharp source exactly
+	// where the bokeh should hide it. CoC-aware reconstruction performs the
+	// foreground rejection instead.
+	float3 farBlur = PixlReconstructFarBlur(uv);
+	float4 nearLayer = PixlReconstructNearBlur(uv);
+	farBlur = PixlPreserveDofLuminance(sharpScene, farBlur);
+	nearLayer.rgb = PixlPreserveDofLuminance(sharpScene, nearLayer.rgb);
+	float3 nearBlur = nearLayer.rgb;
+	// The signed CoC is itself reliable coverage for the destination pixel. The
+	// gathered alpha is an additional foreground-support signal, not a reason
+	// to keep the original sharp image visibly stacked underneath the blur.
+	float nearCoverage = max(
+		saturate(-signedCoC / max(dofControlMaxCoCPixels, 1.0f)),
+		saturate(nearLayer.a * dofControlForegroundCoverage));
+	float3 result = lerp(sharpScene, farBlur, farWeight);
+	// Near coverage lets foreground silhouettes expand over the background,
+	// while the bilateral CoC sign prevents the far layer from crossing them.
+	float nearBlend = max(nearWeight, nearCoverage * blurAmount * edgeSafe);
+	return lerp(result, nearBlur, nearBlend * 0.98f);
 }
 
 float CameraMapLuminance(float x, float displayRange)

@@ -7,7 +7,7 @@ param(
 $ErrorActionPreference = "Stop"
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $trackedPipelineFiles = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-@(& git -C $repo ls-files -- pipeline) | ForEach-Object {
+@(& git -C $repo ls-files -- pipeline) + @(& git -C $repo ls-files --others --exclude-standard -- pipeline) | ForEach-Object {
     $null = $trackedPipelineFiles.Add($_.Replace('/', '\'))
 }
 if ($LASTEXITCODE -ne 0) { throw "Unable to enumerate tracked pipeline files for package audit." }
@@ -15,6 +15,34 @@ if ([string]::IsNullOrWhiteSpace($BuildDirectory)) {
     $BuildDirectory = Join-Path $repo "build\PIXL-12C\Release"
 }
 $errors = [Collections.Generic.List[string]]::new()
+
+# Repository hygiene is part of the release contract. Build products belong
+# below ignored output roots, and public tooling must not encode one
+# contributor's drive or profile layout.
+$trackedFiles = @(& git -C $repo ls-files)
+if ($LASTEXITCODE -ne 0) { throw 'Unable to enumerate tracked repository files.' }
+$generatedPathPattern = '(?i)(^|/)(build|bin|out|obj|CMakeFiles|\.vs|\.idea|\.vscode)/|\.(obj|pdb|ilk|idb|iobj|ipdb|tlog|lastbuildstate|user|suo|VC\.db|VC\.opendb|log|tmp|temp|bak|old|dmp|mdmp)$'
+foreach ($tracked in $trackedFiles) {
+    if ($tracked -match $generatedPathPattern) {
+        $errors.Add("Generated or machine-local file is tracked: $tracked")
+    }
+}
+
+$portableScriptExemptions = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+$null = $portableScriptExemptions.Add('tools/TestPixlDiagnosticSafety.ps1') # Deliberate invalid-path fixtures.
+$null = $portableScriptExemptions.Add('tools/AuditPixlRenderer.ps1') # Contains the detector pattern itself.
+foreach ($tracked in $trackedFiles | Where-Object { $_ -match '(?i)\.(bat|cmd|ps1|py)$' }) {
+    if ($portableScriptExemptions.Contains($tracked)) { continue }
+    $path = Join-Path $repo $tracked
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+    # Require a drive root to begin at a token boundary. Without this guard,
+    # portable strings such as HKCU:\\ and regex fragments such as Offset:\\s
+    # are misidentified as local filesystem paths.
+    $machinePath = Select-String -LiteralPath $path -Pattern '(?i)((?<![A-Za-z0-9_])[A-Z]:\\|C:/Users/|/Users/[^/]+/Desktop|Desktop[\\/]|PIXL STUDIO PC)' | Select-Object -First 1
+    if ($machinePath) {
+        $errors.Add("Machine-specific path in public tool: ${tracked}:$($machinePath.LineNumber)")
+    }
+}
 
 if ((Split-Path -Leaf $repo) -match '(?i)^community[-_ ]?shaders$') {
     $errors.Add("Physical source root still uses a retired renderer identity: $repo")
@@ -30,7 +58,10 @@ function Require-PackageFile([string]$Root, [string]$RelativePath) {
 
 foreach ($path in @(
     "ATTRIBUTION.md",
+    "AUTHORS.md",
+    "NOTICE.md",
     "THIRD_PARTY_NOTICES.md",
+    "TRADEMARKS.md",
     "EXCEPTIONS.md",
     "engine\RenderModule.cpp",
     "engine\Renderer\QualityProfiles.cpp",
@@ -278,9 +309,6 @@ foreach ($relativePath in @(
     "docs\MOD_COMPATIBILITY.md", # Compatibility guidance must identify conflicting renderers.
     "docs\LEGAL_LICENSE_AUDIT_20260918.md", # Provenance audit records historical upstream attribution.
     "distribution\PIXL-RENDERER-README.md", # Installation compatibility warnings name other renderers.
-    "tools\Discord\InitializePixlDiscordPosts.ps1", # Public support template names a renderer for conflict reports.
-    "tools\Discord\PolishPixlDiscordCommunity.ps1", # Public compatibility wording names supported conflict cases.
-    "tools\Discord\PolishPixlDiscordGuides.ps1", # Public credits and compatibility wording retain accurate names.
     "docs\assets\discord\RULES_SCREENING.md" # Public community rules retain accurate third-party credit.
 )) {
     $null = $identityAllowPaths.Add((Join-Path $repo $relativePath))
@@ -292,12 +320,17 @@ $textFiles = foreach ($root in $scanRoots) {
     if (Test-Path -LiteralPath $root -PathType Leaf) { Get-Item -LiteralPath $root; continue }
     Get-ChildItem -LiteralPath $root -Recurse -File | Where-Object {
         $_.Extension -in @('.cpp','.h','.hlsl','.hlsli','.ini','.json','.ps1','.txt','.md') -and
+        $_.FullName -notlike (Join-Path $repo 'docs\release_polish\*') -and
         -not $identityAllowPaths.Contains($_.FullName) -and
         $_.Name -ne 'AuditPixlRenderer.ps1' -and
-        $_.Name -notin @('SOURCE-AND-CREDITS.md','COPYING','EXCEPTIONS.md','ATTRIBUTION.md','THIRD_PARTY_NOTICES.md','LICENSE','license.md','license.txt','reflex.license.txt','nvngx_dlss.license.txt')
+        $_.Name -ne 'WriteSourceProvenanceAudit.ps1' -and
+        $_.Name -notin @('SOURCE-AND-CREDITS.md','COPYING','EXCEPTIONS.md','NOTICE.md','ATTRIBUTION.md','AUTHORS.md','THIRD_PARTY_NOTICES.md','TRADEMARKS.md','LICENSE','license.md','license.txt','reflex.license.txt','nvngx_dlss.license.txt')
     }
 }
-$identityHit = $textFiles | Select-String -Pattern 'Community Shaders|CommunityShaders|community-shaders|TruePBR|True PBR|CS Editor' | Select-Object -First 1
+$identityHit = $textFiles |
+    Select-String -Pattern 'Community Shaders|CommunityShaders|community-shaders|TruePBR|True PBR|CS Editor' |
+    Where-Object { $_.Line -notmatch '^\s*(//|/\*|\*|#)' } |
+    Select-Object -First 1
 if ($identityHit) { Add-Error "Retired renderer identity remains in active source: $($identityHit.Path):$($identityHit.LineNumber)" }
 
 $builtDll = Join-Path $BuildDirectory "PIXLRenderer.dll"
@@ -308,6 +341,13 @@ if ($PackageDirectory) {
         Add-Error "Package directory does not exist: $PackageDirectory"
     } else {
         $package = (Resolve-Path -LiteralPath $PackageDirectory).Path
+        $forbiddenPackagePattern = '(?i)(^|\\)(\.git|\.vs|\.idea|\.vscode|CMakeFiles|__pycache__)(\\|$)|\.(obj|pdb|ilk|lib|exp|idb|iobj|ipdb|tlog|lastbuildstate|user|suo|log|tmp|temp|bak|old|cpp|hpp|cmake|bat|cmd|ps1|sln|vcxproj)$'
+        foreach ($item in Get-ChildItem -LiteralPath $package -Recurse -File) {
+            $relativePackagePath = $item.FullName.Substring($package.Length + 1)
+            if ($relativePackagePath -match $forbiddenPackagePattern) {
+                Add-Error "Development artifact appears in runtime package: $relativePackagePath"
+            }
+        }
         try {
             & (Join-Path $PSScriptRoot 'VerifyPixlPackageManifest.ps1') -PackageDirectory $package
         } catch {
@@ -316,8 +356,10 @@ if ($PackageDirectory) {
         foreach ($file in @(
             "SKSE\Plugins\PIXL\Documentation\COPYING",
             "SKSE\Plugins\PIXL\Documentation\EXCEPTIONS.md",
+            "SKSE\Plugins\PIXL\Documentation\NOTICE.md",
             "SKSE\Plugins\PIXL\Documentation\ATTRIBUTION.md",
             "SKSE\Plugins\PIXL\Documentation\THIRD_PARTY_NOTICES.md",
+            "SKSE\Plugins\PIXL\Documentation\TRADEMARKS.md",
             "SKSE\Plugins\PIXL\Documentation\SOURCE-AND-CREDITS.md",
 			"PIXL-TerrainField.esp",
             "SKSE\Plugins\PIXLRenderer.dll",
@@ -350,8 +392,10 @@ if ($PackageDirectory) {
             'SKSE\Plugins\PIXL\Interface\Locale\en.json' = 'distribution\SKSE\Plugins\PIXLRenderer\Translations\en.json'
             'SKSE\Plugins\PIXL\Documentation\COPYING' = 'COPYING'
             'SKSE\Plugins\PIXL\Documentation\EXCEPTIONS.md' = 'EXCEPTIONS.md'
+            'SKSE\Plugins\PIXL\Documentation\NOTICE.md' = 'NOTICE.md'
             'SKSE\Plugins\PIXL\Documentation\ATTRIBUTION.md' = 'ATTRIBUTION.md'
             'SKSE\Plugins\PIXL\Documentation\THIRD_PARTY_NOTICES.md' = 'THIRD_PARTY_NOTICES.md'
+            'SKSE\Plugins\PIXL\Documentation\TRADEMARKS.md' = 'TRADEMARKS.md'
         }
         foreach ($entry in $fixedSourceFiles.GetEnumerator()) {
             $stagedPath = Join-Path $package $entry.Key
@@ -419,7 +463,10 @@ if ($PackageDirectory) {
             # caller explicitly supplies it.
             $_.Name -notin @('PIXL-RENDERER.manifest.json','UserGraphics.json','SOURCE-AND-CREDITS.md','ATTRIBUTION.md','THIRD_PARTY_NOTICES.md')
         }
-        $packageHit = $packageText | Select-String -Pattern 'Community Shaders|CommunityShaders|community-shaders|TruePBR|True PBR|CS Editor' | Select-Object -First 1
+        $packageHit = $packageText |
+            Select-String -Pattern 'Community Shaders|CommunityShaders|community-shaders|TruePBR|True PBR|CS Editor' |
+            Where-Object { $_.Line -notmatch '^\s*(//|/\*|\*|#)' } |
+            Select-Object -First 1
         if ($packageHit) { Add-Error "Retired identity remains in live package: $($packageHit.Path):$($packageHit.LineNumber)" }
 
         if (Test-Path -LiteralPath $builtDll) {

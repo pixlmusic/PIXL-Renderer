@@ -1,3 +1,8 @@
+// Community Shaders Skylighting-derived file.
+// Modified for PIXL Renderer, 2026: SkyBounce integration and controls.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Additional permissions are described in the repository EXCEPTIONS.md.
+
 #include "SkyBounce.h"
 
 #include "Deferred.h"
@@ -230,13 +235,25 @@ SkyBounce::SkyBounceCB SkyBounce::GetCommonBufferData([[maybe_unused]] bool a_in
 	auto cellID = eyePos / cellSize;
 	cellID = { round(cellID.x), round(cellID.y), round(cellID.z) };
 	auto cellOrigin = cellID * cellSize;
+	if (PIXL::RenderOrigin::Get().Enabled()) {
+		// Preserve the absolute toroidal cell identity. Compute its local offset
+		// in double before publishing float values; do not reindex on an origin shift.
+		const double x = std::round(static_cast<double>(cameraPos.x) / cellSize.x);
+		const double y = std::round(static_cast<double>(cameraPos.y) / cellSize.y);
+		const double z = std::round(static_cast<double>(cameraPos.z) / cellSize.z);
+		cellID = { static_cast<float>(x), static_cast<float>(y), static_cast<float>(z) };
+		// cellOrigin below is only used in PosOffset; keep that subtraction local.
+		cellOrigin = { static_cast<float>(x * cellSize.x - cameraPos.x),
+			static_cast<float>(y * cellSize.y - cameraPos.y),
+			static_cast<float>(z * cellSize.z - cameraPos.z) };
+	}
 	float3 cellIDDiff = prevCellID - cellID;
 	prevCellID = cellID;
 
 	return {
 		.OcclusionViewProj = OcclusionTransform,
 		.OcclusionDir = OcclusionDir,
-		.PosOffset = cellOrigin - eyePos,
+		.PosOffset = PIXL::RenderOrigin::Get().Enabled() ? cellOrigin : cellOrigin - eyePos,
 		.ArrayOrigin = {
 			((int)cellID.x - probeArrayDims[0] / 2) % probeArrayDims[0],
 			((int)cellID.y - probeArrayDims[1] / 2) % probeArrayDims[1],

@@ -58,9 +58,14 @@ if ($IncludeWorkingTree) {
     try {
         $snapshotPrefix = 'PIXL-Renderer-1.0.4-Source/'
         foreach ($entry in @($snapshot.Entries)) {
-            if ($entry.FullName.EndsWith('/')) { continue }
             $relative = $entry.FullName.Substring($snapshotPrefix.Length)
             $local = Join-Path $sourceRoot $relative
+            if ($entry.FullName.EndsWith('/')) {
+                if ($relative -and -not (Test-Path -LiteralPath $local -PathType Container)) {
+                    $entry.Delete()
+                }
+                continue
+            }
             $name = $entry.FullName
             $entry.Delete()
             if (Test-Path -LiteralPath $local -PathType Leaf) {
@@ -89,9 +94,13 @@ $required = @(
     "README.md",
     "COPYING",
     "EXCEPTIONS.md",
+    "NOTICE.md",
     "ATTRIBUTION.md",
+    "AUTHORS.md",
     "THIRD_PARTY_NOTICES.md",
+    "TRADEMARKS.md",
     "SOURCE_DEPENDENCIES.md",
+    "distribution/SOURCE-AND-CREDITS.md",
     "engine/XSEPlugin.cpp",
     "distribution/Shaders/Lighting.hlsl",
     "pipeline/WindowLife/Kernels/WindowLife/WindowLife.hlsli",
@@ -106,6 +115,7 @@ $forbiddenPatterns = @(
     '^PIXL-Renderer-v1\.0-Source/tools/GeneratePixlPresetExperiments\.ps1$',
     '^PIXL-Renderer-v1\.0-Source/docs/(release_polish|reports|PIXL_GUI_Audit|Crysis3Pipeline|DynamicFire|HairReconstruction)/',
     '^PIXL-Renderer-v1\.0-Source/tools/PixDiTEnhance/',
+    '^PIXL-Renderer-v1\.0-Source/tools/Discord/',
     '^PIXL-Renderer-v1\.0-Source/(build|bin|dist|Data)/',
     '^PIXL-Renderer-v1\.0-Source/\.playwright-cli/',
     '^PIXL-Renderer-v1\.0-Source/(AGENTS|AI-INSTRUCTIONS|PIXL_ACTIVE_STATE|PIXL_DEVELOPMENT_WORKFLOW|PIXL_ENGINEERING_CONTEXT|PIXL_RELEASE_PREP_REPORT|PIXL_RELEASE_STATE|START_CODEX_ACTIVE_DEVELOPMENT|PRIVATE_COMPONENTS)\.md$',

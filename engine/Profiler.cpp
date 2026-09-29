@@ -287,31 +287,7 @@ void Profiler::CollectResults()
 		results.push_back(std::move(result));
 	}
 
-	// Emit a compact periodic trace that can be correlated with an in-game
-	// profiler screenshot without logging every frame. This deliberately reports
-	// the individual GPU passes rather than the shader-type buckets shown by the
-	// overlay, making expensive modules such as Radiance Weave immediately clear.
-	++collectedFrameCount;
-	if (collectedFrameCount % 120u == 0u && !results.empty()) {
-		std::vector<size_t> order;
-		for (size_t i = 0; i < results.size(); ++i)
-			if (results[i].valid)
-				order.push_back(i);
-		std::sort(order.begin(), order.end(), [this](size_t lhs, size_t rhs) {
-			return results[lhs].gpuTimeMs > results[rhs].gpuTimeMs;
-		});
-		std::string topPasses;
-		const size_t count = order.size();
-		for (size_t i = 0; i < count; ++i) {
-			if (i > 0)
-				topPasses += " | ";
-			const auto& result = results[order[i]];
-			topPasses += std::format("{}={:.2f}ms (avg {:.2f}, p95 {:.2f}, CPU {:.2f})", result.name, result.gpuTimeMs, result.avgMs, result.p95Ms, result.cpuTimeMs);
-		}
-		logger::info(
-			"[PIXL Perf] Profiled pass sums: GPU {:.2f}ms CPU submission {:.2f}ms | {}",
-			totalTimeMs,
-			cpuTotalTimeMs,
-			topPasses);
-	}
+	// Per-pass timings remain available to the Pulse Profiler overlay and API,
+	// but are never emitted periodically to the release log. This keeps the
+	// persistent SKSE log actionable instead of growing with frame telemetry.
 }

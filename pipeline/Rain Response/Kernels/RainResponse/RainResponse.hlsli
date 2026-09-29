@@ -1,3 +1,8 @@
+// Community Shaders Wetness Effects-derived shader.
+// Modified for PIXL Renderer, 2026: Rain Response material and optical behavior.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Additional permissions are described in the repository EXCEPTIONS.md.
+
 #include "Common/BRDF.hlsli"
 #include "Common/Shading.hlsli"
 #include "RainResponse/optimized-ggx.hlsli"

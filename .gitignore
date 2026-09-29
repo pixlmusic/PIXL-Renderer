@@ -84,22 +84,32 @@
 # It is not compiled, linked, loaded, or packaged by PIXL Renderer.
 /tools/PixDiTEnhance/
 
-# Local automation/browser state
+# Local service administration and automation/browser state
+/tools/Discord/
 /.playwright-cli/
 .idea/
 .vs*/
 CMakeUserPresets.json
 shadertoolsconfig.json
-.vscode
+.vscode/
+compile_commands.json
 
 # Folder view configuration files
 **/.DS_Store
+**/Thumbs.db
+**/Desktop.ini
 *.vortex_backup
 *.tmp
+*.temp
 *.bak
+*.old
 __folder_managed_by_vortex
 /dist-*.sha256
 .claude/settings.local.json
+
+# Generated compiler directories outside the canonical build tree.
+/obj/
+**/obj/
 
 # Local captures and transient package archives
 /Screenshots/

@@ -1,3 +1,8 @@
+// Community Shaders HDR Display-derived file.
+// Modified for PIXL Renderer, 2026: CameraSuite controls, resources and modes.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Additional permissions are described in the repository EXCEPTIONS.md.
+
 #pragma once
 
 #include "Buffer.h"
@@ -106,22 +111,37 @@ public:
 		bool enableElementalDamageLens = true;
 		float elementalLensStrength = 0.45f;
 
-		// Release path: let Skyrim own depth of field and expose only its native
-		// runtime enable. The retired PIXL fields remain serialized below solely so
-		// older UserGraphics files keep loading without a schema break.
-		bool enableSkyrimDepthOfField = true;
-		bool preferCinematicDoF = true;
-		bool enableEnhancedDepthOfField = false;
+		// Release-tested PIXL physical DOF baseline. CinematicDoF hand-off remains
+		// available, but new installs use the native buffer-integrated path.
+		bool enableSkyrimDepthOfField = false;
+		bool preferCinematicDoF = false;
+		bool enableEnhancedDepthOfField = true;
 		bool dofAutoFocus = true;
-		float dofStrength = 0.24f;
+		bool dofActorTracking = true;
+		float dofStrength = 1.0f;
 		float dofFocusDistance = 2200.0f;
-		float dofFocusRange = 480.0f;
+		float dofFocusRange = 11605.0f;
 		float dofBokehRadius = 1.0f;
-		float dofHighlightResponse = 0.28f;
-		float dofFocusEdgeProtection = 0.85f;
-		float dofForegroundCoverage = 0.70f;
-		float dofCatEye = 0.20f;
+		float dofHighlightResponse = 0.30f;
+		float dofFocusEdgeProtection = 0.95f;
+		float dofForegroundCoverage = 0.55f;
+		float dofNearBlurIntensity = 0.0f;
+		float dofFarBlurIntensity = 1.03f;
+		float dofFarBlurDistance = 25598.0f;
+		float dofCatEye = 0.12f;
 		float dofAnamorphicRatio = 1.0f;
+		// DOF 2.0 lens controls. Defaults retain the restrained gameplay look;
+		// Director/Photo/Video modes may opt into the physical lens model.
+		bool dofPhysicalLens = true;
+		float dofFocalLengthMm = 18.0f;
+		float dofFStop = 1.8f;
+		float dofSensorHeightMm = 14.9f;
+		float dofFocusSpeed = 8.81f;
+		float dofFocusDeadband = 0.055f;
+		float dofMaxBokehPixels = 5.0f;
+		uint dofApertureBlades = 6;
+		float dofBladeCurvature = 0.63f;
+		float dofApertureRotation = 0.06981317f;
 
 		// Depth-aware camera motion blur. This is deliberately opt-in so the
 		// accepted PIXL Ultra presentation remains unchanged until requested.
@@ -148,7 +168,7 @@ public:
 	// SharedData::HDRData.w: menu/scene path for ISHDR; HDRSun uses w>0 to scale sun toward kMenuSunNits (see HDRSun.hlsli).
 	static constexpr float kHdrMenuSceneGameplay = 0.f;
 	static constexpr float kHdrMenuScenePauseOrMap = 0.58f;
-	// Photo Mode preserves pause-menu sun treatment but holds native eye adaptation.
+	// ISHDR freezes native eye adaptation for the Director capture viewfinder.
 	static constexpr float kHdrMenuScenePhoto = 0.75f;
 	static constexpr float kHdrMenuSceneMainOrLoading = 1.f;
 
@@ -437,6 +457,50 @@ public:
 	static_assert(sizeof(ExposureControlCB) == 16);
 	static_assert(offsetof(ExposureControlCB, compensationDeltaEV) == 4);
 	std::unique_ptr<ConstantBuffer> exposureControlCB;
+
+	// Private DOF ABI. Lens/focus controls stay isolated from HDRDataCB so the
+	// rest of CameraSuite does not inherit another shared register contract.
+	struct DofControlCB
+	{
+		float focusDistance;
+		float focusDiopter;
+		float focusSpeed;
+		float focusDeadband;
+		float focalLengthMm;
+		float fStop;
+		float sensorHeightMm;
+		float maxCoCPixels;
+		float bokehRadius;
+		float strength;
+		float highlightResponse;
+		float focusEdgeProtection;
+		float foregroundCoverage;
+		float nearBlurIntensity;
+		float farBlurIntensity;
+		float catEye;
+		float anamorphicRatio;
+		float apertureRotation;
+		float bladeCurvature;
+		float apertureBlades;
+		float quality;
+		float focusMode;
+		float renderWidth;
+		float renderHeight;
+		float invRenderWidth;
+		float invRenderHeight;
+		uint32_t frameIndex;
+		uint32_t flags;
+		uint32_t historyValid;
+		float deltaTime;
+		float farBlurDistance;
+		uint32_t pad3;
+	};
+	static_assert(sizeof(DofControlCB) == 8 * 16);
+	static_assert(offsetof(DofControlCB, focalLengthMm) == 16);
+	static_assert(offsetof(DofControlCB, renderWidth) == 88);
+	static_assert(offsetof(DofControlCB, deltaTime) == 116);
+	std::unique_ptr<ConstantBuffer> dofControlCB;
+	mutable DofControlCB dofControlData{};
 	float lastExposureCompensationEV = 0.0f;
 	bool exposureHistoryValid = false;
 	bool exposureHoldLogged = false;
@@ -499,6 +563,17 @@ public:
 	Texture2D* bloomEighthScratchTexture = nullptr;
 	Texture2D* bloomQuarterScratchTexture = nullptr;
 	Texture2D* bloomHalfScratchTexture = nullptr;
+	// Cinematic DOF is kept in explicit intermediate layers. A signed CoC field
+	// and separate near/far half-resolution blurs prevent the single-pass gather
+	// from smearing silhouettes across the entire presentation image.
+	Texture2D* dofCoCTexture = nullptr;
+	Texture2D* dofCoCHistoryTexture = nullptr;
+	Texture2D* dofFocusTexture = nullptr;
+	Texture2D* dofFocusHistoryTexture = nullptr;
+	Texture2D* dofHalfSceneTexture = nullptr;
+	Texture2D* dofTileTexture = nullptr;
+	Texture2D* dofFarTexture = nullptr;
+	Texture2D* dofNearTexture = nullptr;
 	Texture2D* stormglassFieldTexture = nullptr;
 	ID3D11ComputeShader* physicalCameraHistogramCS = nullptr;
 	ID3D11ComputeShader* physicalCameraExposureCS = nullptr;
@@ -506,6 +581,19 @@ public:
 	ID3D11ComputeShader* bloomPrefilterCS = nullptr;
 	ID3D11ComputeShader* bloomDownsampleCS = nullptr;
 	ID3D11ComputeShader* bloomUpsampleCS = nullptr;
+	ID3D11ComputeShader* dofCoCCS = nullptr;
+	ID3D11ComputeShader* dofFocusResolveCS = nullptr;
+	ID3D11ComputeShader* dofHalfDownsampleCS = nullptr;
+	ID3D11ComputeShader* dofTileClassifyCS = nullptr;
+	ID3D11ComputeShader* dofFarBlurCS = nullptr;
+	ID3D11ComputeShader* dofNearBlurCS = nullptr;
+	bool dofPassReady = false;
+	bool dofCoCCompileFailed = false;
+	bool dofFarBlurCompileFailed = false;
+	bool dofNearBlurCompileFailed = false;
+	bool dofFocusResolveCompileFailed = false;
+	bool dofHalfDownsampleCompileFailed = false;
+	bool dofTileClassifyCompileFailed = false;
 	ID3D11ComputeShader* stormglassFieldCS = nullptr;
 	bool localExposurePassReady = false;
 	bool bloomPassReady = false;
@@ -516,9 +604,15 @@ public:
 	ID3D11ComputeShader* GetBloomPrefilterCS();
 	ID3D11ComputeShader* GetBloomDownsampleCS();
 	ID3D11ComputeShader* GetBloomUpsampleCS();
+	ID3D11ComputeShader* GetDofCoCCS();
+	ID3D11ComputeShader* GetDofFocusResolveCS();
+	ID3D11ComputeShader* GetDofHalfDownsampleCS();
+	ID3D11ComputeShader* GetDofTileClassifyCS();
+	ID3D11ComputeShader* GetDofBlurCS(bool nearPlane);
 	ID3D11ComputeShader* GetStormglassFieldCS();
 	void UpdatePhysicalCameraExposure(ID3D11ShaderResourceView* sceneSRV);
 	void RunCameraFinishingPasses(ID3D11ShaderResourceView* sceneSRV);
+	void RunDepthOfFieldPasses(ID3D11ShaderResourceView* sceneSRV);
 	void SetupCameraFinishingResources(const D3D11_TEXTURE2D_DESC& sceneDesc);
 
 	ID3D11ComputeShader* uiBrightnessCS = nullptr;
@@ -535,6 +629,12 @@ public:
 	/** @brief Queries the DXGI output for the display's maximum luminance in nits. */
 	float GetDisplayMaxLuminance() const;
 	mutable float cachedDisplayMaxLuminance = 1000.0f;
+	mutable float dofFocusDistanceState = 2200.0f;
+	mutable bool dofFocusStateValid = false;
+	mutable std::uint32_t dofFocusStateFrame = UINT32_MAX;
+	mutable bool dofViewStateValid = false;
+	mutable bool dofWasFirstPerson = false;
+	mutable bool dofWasEnabled = false;
 
 	// Saved state for UI rendering redirection
 	bool renderingUI = false;

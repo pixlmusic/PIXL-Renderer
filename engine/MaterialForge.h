@@ -1,3 +1,8 @@
+// Community Shaders TruePBR-derived file.
+// Modified for PIXL Renderer, 2026: MaterialForge controls and GPU contracts.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Additional permissions are described in the repository EXCEPTIONS.md.
+
 #pragma once
 
 #include "RenderModule.h"

@@ -1,3 +1,9 @@
+// Community Shaders TruePBR-derived file.
+// Modified for PIXL Renderer, 2026: MaterialForge naming, physical-material
+// integration, tuning, compatibility and renderer-module connections.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Additional permissions are described in the repository EXCEPTIONS.md.
+
 #include "MaterialForge.h"
 
 #include "MaterialForge/BSLightingShaderMaterialPBR.h"
@@ -625,6 +631,13 @@ void MaterialForge::SaveSettings(json& o_json)
 void MaterialForge::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	settings.EnablePhysicalLocalLightFalloff = settings.EnablePhysicalLocalLightFalloff ? 1u : 0u;
+	settings.LocalLightMinimumDistance = std::clamp(
+		std::isfinite(settings.LocalLightMinimumDistance) ? settings.LocalLightMinimumDistance : 28.0f,
+		1.0f, 256.0f);
+	settings.PhysicalLocalLightFalloffStrength = std::clamp(
+		std::isfinite(settings.PhysicalLocalLightFalloffStrength) ? settings.PhysicalLocalLightFalloffStrength : 0.65f,
+		0.0f, 1.0f);
 	if (const auto it = o_json.find("Legacy Conversion Tuning"); it != o_json.end() && it->is_object())
 		legacyTuningSettings = it->get<LegacyTuningSettings>();
 	legacyTuningSettings.Magic = LegacyTuningMagic;

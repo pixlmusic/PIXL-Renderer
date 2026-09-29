@@ -118,12 +118,53 @@ cbuffer PIXLMaterialLayersTuningCB : register(b9)
 	float PIXLML_TerrainSyntheticGain;
 	float PIXLML_ObjectVirtualDepthStrength;
 	float PIXLML_ObjectVirtualDepthMaxWorld;
+
+	// c19-c26: Curved Surface Mapping transport (owned by the CSPOM module).
+	uint PIXL_CSPOM_Enabled;
+	uint PIXL_CSPOM_Quality;
+	uint PIXL_CSPOM_CurvedSurface;
+	uint PIXL_CSPOM_SilhouetteClipping;
+
+	uint PIXL_CSPOM_SelfOcclusion;
+	uint PIXL_CSPOM_SelfShadow;
+	uint PIXL_CSPOM_DepthWrite;
+	uint PIXL_CSPOM_DebugMode;
+
+	float PIXL_CSPOM_Depth;
+	float PIXL_CSPOM_HeightBias;
+	float PIXL_CSPOM_CurvatureStrength;
+	float PIXL_CSPOM_SilhouetteStrength;
+
+	float PIXL_CSPOM_FullQualityDistance;
+	float PIXL_CSPOM_MaxDistance;
+	float PIXL_CSPOM_MaxTexelShift;
+	float PIXL_CSPOM_NormalStrength;
+
+	uint PIXL_CSPOM_MinSteps;
+	uint PIXL_CSPOM_MaxSteps;
+	uint PIXL_CSPOM_BinarySteps;
+	uint PIXL_CSPOM_ShadowSteps;
+
+	uint PIXL_CSPOM_StaticOpaque;
+	uint PIXL_CSPOM_Trees;
+	uint PIXL_CSPOM_Terrain;
+	uint PIXL_CSPOM_Pad0;
+
+	uint PIXL_CSPOM_Pad1;
+	uint PIXL_CSPOM_Pad2;
+	uint PIXL_CSPOM_Pad3;
+	uint PIXL_CSPOM_Pad4;
+
+	float PIXL_CSPOM_OcclusionStrength;
+	float PIXL_CSPOM_ShadowStrength;
+	float PIXL_CSPOM_GrazingProtection;
+	float PIXL_CSPOM_Pad5;
 };
 
 namespace MaterialLayersTuning
 {
 	static const uint Magic = 0x504D4C54u;
-	static const uint Version = 3u;
+	static const uint Version = 4u;
 
 	bool IsValid()
 	{

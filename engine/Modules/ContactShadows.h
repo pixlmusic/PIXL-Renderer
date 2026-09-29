@@ -1,3 +1,8 @@
+// Community Shaders Screen-Space Shadows-derived file.
+// Modified for PIXL Renderer, 2026: Directional SSS runtime interface.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Third-party Bend/Sony code keeps its separate notices in the adjacent files.
+
 #pragma once
 
 #include "Buffer.h"
@@ -6,7 +11,8 @@ struct ContactShadows : RenderModule
 {
 public:
 	virtual inline std::string GetName() override { return "Contact Shadows"; }
-	virtual std::string GetDisplayName() override { return T("feature.contact_shadows.name", "Contact Shadows"); }
+	// Keep GetName()/GetShortName() stable: they are persisted in existing profiles/cache keys.
+	virtual std::string GetDisplayName() override { return T("feature.contact_shadows.name", "Directional SSS"); }
 	virtual inline std::string GetShortName() override { return "ContactShadows"; }
 	virtual inline std::string_view GetShaderDefineName() override { return "CONTACT_SHADOWS"; }
 	virtual std::string_view GetCategory() const override { return ModuleGroups::kLighting; }
@@ -14,12 +20,12 @@ public:
 	/** @brief Returns a localized description and list of key features for the UI summary panel. */
 	virtual std::pair<std::string, std::vector<std::string>> GetModuleSummary() override
 	{
-		return { T("feature.contact_shadows.description", "Contact Shadows enhances shadow quality by adding detailed contact shadows and improving shadow accuracy.\nThis technique adds fine-detail shadows that traditional shadow mapping might miss."),
-			{ T("feature.contact_shadows.key_feature_1", "Enhanced contact shadows"),
-				T("feature.contact_shadows.key_feature_2", "Improved shadow detail"),
-				T("feature.contact_shadows.key_feature_3", "Better shadow accuracy"),
-				T("feature.contact_shadows.key_feature_4", "Fine-scale shadow effects"),
-				T("feature.contact_shadows.key_feature_5", "Configurable shadow contrast") } };
+		return { T("feature.contact_shadows.description", "Directional SSS refines Skyrim's active sun or moon shadow with depth-aware screen-space ray marching. It follows the active directional source every frame. PBR Local Contact Shadows remains the separate control for point and clustered lights."),
+			{ T("feature.contact_shadows.key_feature_1", "Active sun and moon source tracking"),
+				T("feature.contact_shadows.key_feature_2", "Fine directional contact detail"),
+				T("feature.contact_shadows.key_feature_3", "Depth-aware edge filtering"),
+				T("feature.contact_shadows.key_feature_4", "Separate from local-light contact shadows"),
+				T("feature.contact_shadows.key_feature_5", "Resolution-scaled ray quality") } };
 	}
 
 	bool HasShaderDefine(RE::BSShader::Type shaderType) override;
@@ -108,6 +114,13 @@ public:
 	/** @brief Dispatches the Bend SSS compute shader to generate screen-space contact shadows. */
 	void DrawShadows();
 
+	// The directional light is reacquired from Skyrim's active shadow scene every prepass.
+	// This cached pointer exists only to report source transitions; it never supplies render data.
+	void UpdateDirectionalSource(const void* source);
+	const void* activeDirectionalSource = nullptr;
+	std::uint64_t directionalSourceEpoch = 0;
+
+	virtual void Reset() override;
 	virtual void RestoreDefaultSettings() override;
 
 };

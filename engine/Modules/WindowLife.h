@@ -1,3 +1,8 @@
+// PIXL Renderer - WindowLife runtime interface and GPU data.
+// Copyright (C) 2026 PIXL Studio
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Additional permissions are described in the repository EXCEPTIONS.md.
+
 #pragma once
 
 #include "Buffer.h"
@@ -72,45 +77,45 @@ struct WindowLife : RenderModule
         float LateNightActivity = 1.0f;
 
         // Interior optical illusion.
-        float ParallaxDepth = 116.9f; // Exterior observer looking into rooms.
-        float InteriorParallaxDepth = 122.8f; // Interior observer looking outdoors.
+        float ParallaxDepth = 35.8f; // Exterior observer looking into rooms.
+        float InteriorParallaxDepth = 54.4f; // Interior observer looking outdoors.
         bool EnableOutdoorViews = true;
-        float OutdoorViewStrength = 2.0f;
-        float OutdoorViewEmission = 5.41f;
-        float Refraction = 7.2f;
+        float OutdoorViewStrength = 1.24f;
+        float OutdoorViewEmission = 4.48f;
+        float Refraction = 2.06f;
         float SilhouetteSoftness = 0.16f;
         float HumanScale = 1.19f;
         // Authored people are composited as a softly filtered colour layer. This
         // is true opacity, independent of the legacy analytic-shadow fallback.
         float OccupantOpacity = 0.25f;
-        float CurtainStrength = 0.49f;
-        float RoomDepthStrength = 0.25f;
+        float CurtainStrength = 1.0f;
+        float RoomDepthStrength = 0.27f;
         bool EnableAuthoredRooms = true;
         float AuthoredRoomStrength = 1.0f;
-		float InteriorContrast = 0.98f;
-		float InteriorEmission = 3.0f;
+		float InteriorContrast = 0.99f;
+		float InteriorEmission = 0.57f;
         // Magnifies authored room art inside an automatically reconstructed
         // aperture without changing the physical window bounds or room identity.
-        float InteriorScale = 1.15f;
+        float InteriorScale = 2.0f;
         // Additional atlas mip bias for authored rooms behind physical glass.
         // Kept separate from silhouette filtering so room art can soften without
         // weakening panes, mullions or occupant masks.
-        float InteriorSoftness = 0.86f;
+        float InteriorSoftness = 0.52f;
         // Exterior room volume uses the existing atlas and retains the accepted
         // flat projector as a compatibility fallback.
-        float RoomVolumeStrength = 1.0f;
-        float WindowRecess = 8.5f;
+        float RoomVolumeStrength = 0.43f;
+        float WindowRecess = 8.0f;
         // Texture-mod-safe geometry fitting owns only the room coordinate system.
         // Optional exact masks may clip the final glass pixels but never resize,
         // retile, seed or otherwise move the recessed interior.
         bool AutomaticRoomSizing = true;
-        bool UseExactGlassMasks = true;
+        bool UseExactGlassMasks = false;
         bool EnableInteriorPassers = true;
 
         // Distance LOD and pane discrimination.
         float DistanceFadeStart = 7162.0f;
         float DistanceFadeEnd = 16000.0f;
-        float PaneThreshold = 0.0f;
+        float PaneThreshold = 0.19f;
         float PaneSoftness = 0.09f;
 
         // Stable procedural room grid and event cadence.
@@ -122,12 +127,12 @@ struct WindowLife : RenderModule
 
         // Phase 2A architectural glass.
         float GlassStrength = 1.0f;
-        float GlassReflectionBoost = 0.53f;
+        float GlassReflectionBoost = 1.1f;
         float GlassRoughness = 0.06f;
         float GlassTransmission = 1.0f;
         float GlassDirtStrength = 0.09f;
-        float GlassDistortion = 0.058f;
-        float GlassNormalRetention = 0.37f;
+        float GlassDistortion = 0.057f;
+        float GlassNormalRetention = 0.24f;
         // High-level fidelity controls. Defaults preserve the current response
         // while enabling real probe reflection, weather coupling and restrained
         // architectural variation without exposing implementation internals.
@@ -142,9 +147,9 @@ struct WindowLife : RenderModule
 
         // First-stage physical eligibility guard. Geometry radius catches dedicated
         // tiny window meshes; shader normal orientation catches roof/awning panes.
-        float MinShallowWindowRadius = 70.0f;
+        float MinShallowWindowRadius = 30.0f;
         float MinFullWindowRadius = 75.0f;
-        float FullWindowVerticality = 0.90f;
+        float FullWindowVerticality = 0.9f;
 
         bool DebugWindowDetection = false;
         // Developer-only projection diagnostics. Zero retains the normal class

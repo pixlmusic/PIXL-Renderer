@@ -4,6 +4,7 @@
 #include <cmath>
 #include <dxgi.h>
 #include <dxgi1_3.h>
+#include <string_view>
 
 #include "../../Deferred.h"
 #include "../../Hooks.h"
@@ -594,31 +595,41 @@ bool Streamline::IsRTXAndBelow40Series(IDXGIAdapter* a_adapter)
 	return false;
 }
 
+namespace
+{
+	unsigned int GetGeForceRTXSeries(IDXGIAdapter* adapter)
+	{
+		DXGI_ADAPTER_DESC adapterDesc{};
+		if (!adapter || FAILED(adapter->GetDesc(&adapterDesc)) ||
+			adapterDesc.VendorId != NVIDIA_VENDOR_ID)
+			return 0;
+
+		// Treat the adapter name as a selection hint only. Streamline's actual
+		// feature probe remains authoritative after the DX12 device is created.
+		const std::wstring description(adapterDesc.Description);
+		const auto marker = description.find(L"GeForce RTX ");
+		if (marker == std::wstring::npos)
+			return 0;
+		const auto digit = marker + std::wstring_view(L"GeForce RTX ").size();
+		if (digit + 1u >= description.size())
+			return 0;
+		const wchar_t tens = description[digit];
+		const wchar_t ones = description[digit + 1u];
+		if (tens < L'0' || tens > L'9' || ones < L'0' || ones > L'9')
+			return 0;
+		return static_cast<unsigned int>(tens - L'0') * 10u +
+			static_cast<unsigned int>(ones - L'0');
+	}
+}
+
 bool Streamline::IsRTX30SeriesOrNewer(IDXGIAdapter* a_adapter)
 {
-	DXGI_ADAPTER_DESC adapterDesc{};
-	if (!a_adapter || FAILED(a_adapter->GetDesc(&adapterDesc)) ||
-		adapterDesc.VendorId != NVIDIA_VENDOR_ID)
-		return false;
+	return GetGeForceRTXSeries(a_adapter) >= 30u;
+}
 
-	// NVIDIA's marketing name is more stable here than an incomplete device-ID
-	// table and naturally covers laptop variants. Parse the two-digit RTX family
-	// so future generations do not require a PIXL binary update. RTX A-series and
-	// other professional names remain conservatively disabled until validated.
-	const std::wstring description(adapterDesc.Description);
-	const auto marker = description.find(L"RTX ");
-	if (marker == std::wstring::npos || marker + 6u > description.size())
-		return false;
-
-	const wchar_t tens = description[marker + 4u];
-	const wchar_t ones = description[marker + 5u];
-	if (tens < L'0' || tens > L'9' || ones < L'0' || ones > L'9')
-		return false;
-
-	const unsigned int family =
-		static_cast<unsigned int>(tens - L'0') * 10u +
-		static_cast<unsigned int>(ones - L'0');
-	return family >= 30u;
+bool Streamline::IsRTX40SeriesOrNewer(IDXGIAdapter* a_adapter)
+{
+	return GetGeForceRTXSeries(a_adapter) >= 40u;
 }
 
 void Streamline::SetDLSSOptions(sl::ViewportHandle p_viewport, uint32_t width)

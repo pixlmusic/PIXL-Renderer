@@ -8,6 +8,10 @@ From the viewer inward: Skyrim's window glass and pane mask; PIXL's world-anchor
 
 The exterior room can now intersect a bounded box: back wall, left/right wall, floor and ceiling. Side hits reuse strips of the selected *same* room tile, so a room must have suitable wall and floor content near its edges. The Room Volume control blends this with the original planar projector; Window Recess places the box behind the pane. At distance the original mapping is used. Existing assets remain valid without changes.
 
+When the player views an authored window from indoors, WindowLife instead uses the outdoor day/night atlas in a wider, deeper volume behind the glass. The window aperture and frame remain fixed, and the transmitted image responds to camera movement and glass refraction. This is still a single color atlas, so it cannot reproduce the independent depth of real outdoor objects. Check lateral motion, nearby windows, and grazing angles in game before judging an authored outdoor view.
+
+Dry old-glass waviness uses stable world-plane slopes to bend only the transmitted artwork. Refraction and Glass Distortion set its strength; Interior Softness also softens the outdoor atlas. Indoors, the former curtain resource slot holds the outdoor night atlas, so curtain artwork is not drawn over the exterior view.
+
 ## Texture artist checklist
 
 1. Create a square, straight-on view of a medieval room. Keep the outer left/right strips useful as side-wall material and the lower strip useful as floor material. Put the most recognizable furniture in the central 70%; avoid a high-contrast object bisected by the tile edge.

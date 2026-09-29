@@ -61,6 +61,8 @@ public:
 		float SkyProbeSaturation = 1.0f;
 		float FogAmount = 0.0f;
 		uint DALCMode = 2;  // 0: Luminance Ratio, 1: Color Ratio, 2: DALC + Sky, 3: DALC + Sky (Directional)
+		/** Interior diffuse ambient ceiling as a fraction of Skyrim's vanilla ambient. */
+		float InteriorAmbientScale = 0.72f;
 		bool DisableInInteriors = true;
 		bool DisableInWorldMap = true;
 		bool DisableInLoadingScreen = true;
@@ -78,7 +80,8 @@ public:
 		float SkyProbeSaturation;
 		float FogAmount;
 		uint DALCMode;
-		float pad0[2];
+		float InteriorAmbientScale;
+		float pad0;
 	};
 	STATIC_ASSERT_ALIGNAS_16(PerFrame);
 

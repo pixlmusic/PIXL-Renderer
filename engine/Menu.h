@@ -499,6 +499,8 @@ public:
 		bool AdvancedControls = false;                                                      // Legacy JSON compatibility; unified tuner always exposes full controls
 		float SimpleLightingBalance = 1.0f;                                                 // Routed Lighting-category balance while AdvancedControls is off
 		bool DeveloperMode = false;                                                         // Enables diagnostics, debug compilation, and engineering tools
+		bool SkipExperimentalWarning = false;                                               // Acknowledged the Experimental workspace entry warning
+		bool ExperimentalRenderOriginEnabled = false;                                       // Opt-in renderer-only origin rebasing; release default stays off
 		int RendererQuality = 2;                                                           // 0 Low, 1 Medium, 2 High, 3 Ultra
 		int LightingQuality = 2;
 		int MaterialsQuality = 2;
@@ -605,6 +607,8 @@ public:
 
 private:
 	Settings settings;
+	bool openedMainMenuThisSession = false;
+	void ToggleMainMenuFromShortcut();
 
 	std::string cachedIniPath;  // io.IniFilename must point to a string that lives for the duration of the runtime
 

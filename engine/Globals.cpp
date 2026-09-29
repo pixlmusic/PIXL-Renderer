@@ -25,6 +25,9 @@
 #include "Modules/PixelCapture.h"
 #include "Modules/SkinOptics.h"
 #include "Modules/WindowLife.h"
+#include "Modules/ContainedLiquids.h"
+#include "Modules/CurvedSurfaceMapping.h"
+#include "Modules/DistantLife.h"
 #include "Modules/SkyContinuity.h"
 #include "Modules/SkyBounce.h"
 #include "Modules/TissueDiffusion.h"
@@ -95,6 +98,9 @@ namespace globals
 		MaterialForge materialForge{};
 		SkinOptics skinOptics{};
 		WindowLife windowLife{};
+		ContainedLiquids containedLiquids{};
+		CurvedSurfaceMapping curvedSurfaceMapping{};
+		DistantLife distantLife{};
 
 		namespace llf
 		{

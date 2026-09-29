@@ -46,6 +46,36 @@ float SampleMinDepthWideGather(float2 uv)
 	return min(min(d0, d1), min(d2, d3));
 }
 
+float SampleEdgeAwareDepth(float2 uv)
+{
+	float filteredDepth = DepthTex.SampleLevel(LinearSampler, uv, 0);
+	float4 depthQuad = DepthTex.GatherRed(LinearSampler, uv);
+	float minimumDepth = Min4(depthQuad);
+	float maximumDepth = max(max(depthQuad.x, depthQuad.y), max(depthQuad.z, depthQuad.w));
+
+	const bool containsSky = maximumDepth >= 0.999998f;
+	const bool containsGeometry = minimumDepth > 1.0e-6f && minimumDepth < 0.999998f;
+	bool discontinuity = containsSky && containsGeometry;
+	if (!discontinuity && containsGeometry) {
+		float nearLinear = SharedData::GetScreenDepth(minimumDepth);
+		float farLinear = SharedData::GetScreenDepth(maximumDepth);
+		float relativeSpan = abs(farLinear - nearLinear) / max(min(nearLinear, farLinear), 64.0f);
+		discontinuity = relativeSpan > 0.08f;
+	}
+
+	if (!discontinuity)
+		return filteredDepth;
+
+	// Device depth is not a colour value: bilinear interpolation across a
+	// silhouette invents a false depth ramp which post effects interpret as real
+	// geometry. Select the nearest source-depth texel only at discontinuities;
+	// continuous terrain still receives smooth interpolation.
+	uint width, height;
+	DepthTex.GetDimensions(width, height);
+	uint2 nearestPixel = min(uint2(saturate(uv) * float2(width, height)), uint2(width, height) - 1u);
+	return DepthTex.Load(int3(nearestPixel, 0));
+}
+
 PS_OUTPUT main(PS_INPUT input)
 {
 	PS_OUTPUT psout;
@@ -58,9 +88,10 @@ PS_OUTPUT main(PS_INPUT input)
 	// Clamp within dynamic-resolution bounds.
 	uv = FrameBuffer::ClampDynamicResolutionAdjustedScreenPosition(uv, input.TexCoord);
 
-	// Upscale using linear sampling
+	// Refraction normals are continuous and may use linear filtering. Depth uses
+	// edge-aware reconstruction so DLSS/FSR silhouettes remain categorical.
 	psout.RefractionNormals = RefractionNormals.SampleLevel(LinearSampler, uv, 0);
-	psout.Depth = DepthTex.SampleLevel(LinearSampler, uv, 0);
+	psout.Depth = SampleEdgeAwareDepth(uv);
 
 	psout.SAOCameraZ = psout.Depth;
 

@@ -1,8 +1,8 @@
 # PIXL Renderer attribution and ancestry
 
 PIXL Renderer is a modified work derived in substantial part from the Skyrim
-Community Shaders project. The historical comparison baseline for this release
-is Community Shaders v1.8.3, commit
+Community Shaders project. The historical comparison baseline recorded by the
+project is Community Shaders v1.8.3, commit
 `2f2919a71bed6132b125e41781304c8f6f73d002`:
 
 - https://github.com/community-shaders/skyrim-community-shaders
@@ -15,13 +15,14 @@ affiliated with the Community Shaders team or Bethesda Game Studios.
 
 ## Licence and modification notice
 
-The covered renderer source is distributed under the same GPL-3.0 convention
-used by the v1.8.3 upstream project. The complete licence is in `COPYING`. The
-unchanged Community Shaders modding/linking additional permission is in
-`EXCEPTIONS.md`.
+Unless a file or component says otherwise, the covered renderer source is
+distributed under **GPL-3.0-or-later**, with the retained Community Shaders
+Modding Exception and GPL-3.0 Linking Exception (with Corresponding Source).
+The complete GPL text is in `COPYING`; the unchanged additional permissions
+are in `EXCEPTIONS.md`. Component-local licences remain authoritative.
 
-PIXL Studio substantially modified the upstream work for PIXL Renderer through
-August 2026. Changes include an integrated renderer/module architecture,
+PIXL Studio substantially modified the upstream work for PIXL Renderer during
+2025-2026. Changes include an integrated renderer/module architecture,
 renamed and extended rendering systems, PIXL settings and quality profiles,
 new runtime integrations, shader changes, user interface work, packaging, and
 product branding. File history and this notice must be kept with redistributed

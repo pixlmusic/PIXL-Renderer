@@ -40,6 +40,9 @@ struct CameraSuite;
 struct PixelCapture;
 struct SkinOptics;
 struct WindowLife;
+struct ContainedLiquids;
+struct CurvedSurfaceMapping;
+struct DistantLife;
 
 class State;
 class Deferred;
@@ -128,6 +131,9 @@ namespace globals
 		extern MaterialForge materialForge;
 		extern SkinOptics skinOptics;
 		extern WindowLife windowLife;
+		extern ContainedLiquids containedLiquids;
+		extern CurvedSurfaceMapping curvedSurfaceMapping;
+		extern DistantLife distantLife;
 
 	}
 

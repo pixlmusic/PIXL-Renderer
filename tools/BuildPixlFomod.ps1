@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory=$true)][string]$SurfaceTidesSource,
     [string]$SurfaceTidesSourceArchive = "",
     [string]$OutputDirectory = "",
-    [string]$ArchivePath = ""
+    [string]$ArchivePath = "",
+    [ValidateRange(0, 9)][int]$CompressionLevel = 7
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,10 +56,14 @@ foreach ($required in @(
     'Shaders\Water.hlsl',
     'Shaders\Common\Color.hlsli',
     'Shaders\CameraSuite\HDROutputCS.hlsl',
+    'Shaders\CameraSuite\DOFCoCCS.hlsl',
+    'Shaders\CameraSuite\DOFBlurCS.hlsl',
     'SKSE\Plugins\PIXL\Documentation\COPYING',
     'SKSE\Plugins\PIXL\Documentation\EXCEPTIONS.md',
+    'SKSE\Plugins\PIXL\Documentation\NOTICE.md',
     'SKSE\Plugins\PIXL\Documentation\ATTRIBUTION.md',
     'SKSE\Plugins\PIXL\Documentation\THIRD_PARTY_NOTICES.md',
+    'SKSE\Plugins\PIXL\Documentation\TRADEMARKS.md',
     'SKSE\Plugins\PIXL\Documentation\SOURCE-AND-CREDITS.md'
 )) {
     if (!(Test-Path -LiteralPath (Join-Path $base $required))) { throw "Incomplete PIXL package: $required" }
@@ -118,7 +123,7 @@ if ($SurfaceTidesSourceArchive) {
 $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
 if (!(Test-Path -LiteralPath $sevenZip)) { throw '7-Zip is required to create the release archive.' }
 Push-Location $output
-try { & $sevenZip a -tzip -mx=7 $archive '.' | Out-Host }
+try { & $sevenZip a -tzip "-mx=$CompressionLevel" -mmt=on $archive '.' | Out-Host }
 finally { Pop-Location }
 if ($LASTEXITCODE -ne 0) { throw '7-Zip archive creation failed.' }
 & $sevenZip t $archive | Out-Host

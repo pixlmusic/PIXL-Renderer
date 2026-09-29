@@ -17,7 +17,11 @@ if (-not $fxc) { throw 'fxc.exe was not found. Install the Windows SDK or add it
 $output = Join-Path $PSScriptRoot '..\build\windowlife-shader-tests'
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 $cases = @(@(), @('DO_ALPHA_TEST'), @('ENVMAP'), @('GLOWMAP'), @('MATERIAL_FORGE'), @('SKINNED'),
-    @('EMAT', 'ENVMAP'), @('MODELSPACENORMALS'), @('DEFERRED', 'EMAT', 'ENVMAP'))
+    @('EMAT', 'ENVMAP'), @('MODELSPACENORMALS'), @('DEFERRED', 'EMAT', 'ENVMAP'),
+    @('MATERIAL_LAYERS'), @('MATERIAL_LAYERS', 'GLOWMAP'),
+    @('MATERIAL_LAYERS', 'ENVMAP', 'DEFERRED'),
+    @('MATERIAL_LAYERS', 'DO_ALPHA_TEST'),
+    @('MATERIAL_LAYERS', 'MATERIAL_FORGE'))
 for ($i = 0; $i -lt $cases.Count; ++$i) {
     $args = @('/nologo','/WX','/Ges','/O3','/T','ps_5_0','/E','main','/I',$ShaderRoot)
     foreach ($define in (@('WINPC','DX11','PSHADER','PIXL_WINDOW_LIFE') + $cases[$i])) { $args += @('/D',$define) }

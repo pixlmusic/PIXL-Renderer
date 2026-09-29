@@ -1,5 +1,9 @@
 ﻿#pragma once
 
+// Community Shaders Unified Water-derived file, retained and integrated by
+// PIXL Renderer. SPDX-License-Identifier: GPL-3.0-or-later
+// Additional permissions are described in the repository EXCEPTIONS.md.
+
 /** @brief Manages the water flowmap texture used for directional water flow rendering. */
 class Flowmap
 {

@@ -1,3 +1,8 @@
+// Community Shaders Water Effects-derived file.
+// Modified for PIXL Renderer, 2026: Water Optics interface and physical tuning.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Additional permissions are described in the repository EXCEPTIONS.md.
+
 #pragma once
 
 #include <winrt/base.h>

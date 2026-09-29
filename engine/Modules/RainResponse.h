@@ -1,3 +1,8 @@
+// Community Shaders Wetness Effects-derived file.
+// Modified for PIXL Renderer, 2026: Rain Response settings and render passes.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Additional permissions are described in the repository EXCEPTIONS.md.
+
 #pragma once
 
 #include "Buffer.h"

@@ -1806,7 +1806,7 @@ namespace PIXLUI
 				p.y + h),
 			Ref(4.0f),
 			MixColor(
-				Colors::Border,
+				Colors::BorderBright,
 				Colors::CyanSoft,
 				std::max(
 					onT,
@@ -1837,7 +1837,7 @@ namespace PIXLUI
 				rune.x - r,
 				rune.y),
 			MixColor(
-				Colors::TextDim,
+				Colors::TextMuted,
 				Colors::CyanBright,
 				std::max(
 					onT,
@@ -1876,7 +1876,7 @@ namespace PIXLUI
 					textSize.y *
 						0.5f),
 			MixColor(
-				Colors::TextDim,
+				Colors::TextMuted,
 				Colors::Text,
 				std::max(
 					onT,
@@ -2016,6 +2016,19 @@ namespace PIXLUI
 
 		ImGui::PopID();
 		return pressed;
+	}
+
+	inline bool VisibleCheckbox(const char* label, bool* value)
+	{
+		ImGui::PushStyleColor(ImGuiCol_CheckMark, ToVec4(Colors::CyanBright));
+		ImGui::PushStyleColor(ImGuiCol_FrameBg, ToVec4(Colors::InsetRaised));
+		ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ToVec4(Colors::SteelDark));
+		ImGui::PushStyleColor(ImGuiCol_Border, ToVec4(Colors::BorderBright));
+		ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, Ref(1.0f));
+		const bool changed = ImGui::Checkbox(label, value);
+		ImGui::PopStyleVar();
+		ImGui::PopStyleColor(4);
+		return changed;
 	}
 
 	// Compact, data-backed state language shared by module headers, navigation

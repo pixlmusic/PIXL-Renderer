@@ -5,6 +5,7 @@
 #include <Tracy/TracyD3D11.hpp>
 
 #include <Buffer.h>
+#include "Renderer/RenderOrigin.h"
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -59,7 +60,7 @@ public:
 
 	uint32_t currentVertexDescriptor = 0;
 	uint32_t currentPixelDescriptor = 0;
-	spdlog::level::level_enum logLevel = spdlog::level::info;
+	spdlog::level::level_enum logLevel = spdlog::level::warn;
 	std::string shaderDefinesString = "";
 	std::vector<std::pair<std::string, std::string>> shaderDefines{};  // data structure to parse string into; needed to avoid dangling pointers
 
@@ -372,9 +373,11 @@ public:
 		float4 HDRData;  // xyz + menu scene encoding in w â€” see CameraSuite::GetSharedDataHDR
 		float4 PlayerWaterPosition;
 		float4 PlayerWaterVelocity;
+		PIXL::RenderOrigin::GPUData RenderCoordinates;
 	};
 	STATIC_ASSERT_ALIGNAS_16(SharedDataCB);
-	static_assert(sizeof(SharedDataCB) == 704, "SharedData b5 must match the HLSL 44-register layout.");
+	static_assert(sizeof(SharedDataCB) == 848, "SharedData b5 must match the HLSL 53-register layout.");
+	static_assert(offsetof(SharedDataCB, RenderCoordinates) == 704, "Render origin b5 offset mismatch.");
 	static_assert(offsetof(SharedDataCB, PlayerWaterPosition) == 672, "Player water position b5 offset mismatch.");
 	static_assert(offsetof(SharedDataCB, PlayerWaterVelocity) == 688, "Player water velocity b5 offset mismatch.");
 

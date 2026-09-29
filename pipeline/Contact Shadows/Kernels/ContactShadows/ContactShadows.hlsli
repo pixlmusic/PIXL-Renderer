@@ -111,7 +111,13 @@ namespace ContactShadows
 			float2 rayUV = FrameBuffer::ViewToUV(rayPositionVS);
 			if (!FrameBuffer::IsOutsideFrame(rayUV)) {
 				float sceneDepth = SharedData::GetScreenDepth(rayUV);
-				float depthDelta = rayPositionVS.z - sceneDepth;
+				// Skyrim's view space is right-handed (visible geometry has negative
+				// Z), while GetScreenDepth returns a positive linear distance.  The
+				// old comparison mixed those conventions, so every ray appeared to be
+				// in front of the depth surface and local shadows stayed white.  Compare
+				// positive distances on both sides; this also stabilizes near-clip rays.
+				float rayDepth = -rayPositionVS.z;
+				float depthDelta = rayDepth - sceneDepth;
 
 				float rayT = ((float)stepIndex + 0.45f) * invStepCount;
 				float baseThickness = max(3.0f, abs(rayPositionVS.z) * 0.0025f);

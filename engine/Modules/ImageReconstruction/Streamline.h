@@ -154,6 +154,7 @@ public:
 	 */
 	bool IsRTXAndBelow40Series(IDXGIAdapter* a_adapter);
 	bool IsRTX30SeriesOrNewer(IDXGIAdapter* a_adapter);
+	bool IsRTX40SeriesOrNewer(IDXGIAdapter* a_adapter);
 
 	/**
 	 * @brief Configures DLSS quality mode and resolution options for a viewport.

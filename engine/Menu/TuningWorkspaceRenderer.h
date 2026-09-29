@@ -89,6 +89,8 @@ public:
 	[[nodiscard]] static bool IsDirectorInspectionMoving();
 	/** True while a Photo Finish transaction owns and freezes the Director camera. */
 	[[nodiscard]] static bool IsDirectorPhotoCaptureLocked();
+	/** Returns the live Director focus target, when the focus reticle has a valid hit. */
+	[[nodiscard]] static std::optional<float> GetDirectorFocusDistance();
 	/**
 	 * @brief Returns whether Director can safely take ownership of gameplay now.
 	 *
@@ -99,6 +101,8 @@ public:
 	[[nodiscard]] static bool IsDirectorPhotoModeAvailable(std::string* reason = nullptr);
 	/** Enters Director through its authoritative eligibility gate, or returns to its live HUD when already active. */
 	static bool OpenDirectorPhotoMode();
+	/** Toggles Photo Mode through the same teardown used by Escape and the Director exit button. */
+	static bool ToggleDirectorPhotoMode();
 	/** Enters Director Video Mode through the same guarded free-camera session. */
 	static bool OpenDirectorVideoMode();
 	/** Requests safe teardown when the tuner closes during inspection. */

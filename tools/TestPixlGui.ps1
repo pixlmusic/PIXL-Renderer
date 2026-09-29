@@ -1,7 +1,21 @@
 [CmdletBinding()]
-param([string]$VcVars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat')
+param([string]$VcVars = '')
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+
+if ([string]::IsNullOrWhiteSpace($VcVars)) {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+        throw 'Visual Studio locator was not found. Run from a VS x64 developer prompt or pass -VcVars explicitly.'
+    }
+    $installation = @(& $vswhere -latest -version '[17.0,18.0)' -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath) |
+        Select-Object -First 1
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($installation)) {
+        throw 'Visual Studio 2022 with the x64 C++ toolchain was not found. Pass -VcVars explicitly if it is installed in a custom layout.'
+    }
+    $installation = $installation.Trim()
+    $VcVars = Join-Path $installation 'VC\Auxiliary\Build\vcvars64.bat'
+}
 $vc = (Resolve-Path -LiteralPath $VcVars).Path
 $dependencies = Join-Path $repo 'build\PIXL-12C\vcpkg_installed\x64-windows-static-md-release'
 $output = Join-Path $repo ('build\gui-tests-' + [Guid]::NewGuid().ToString('N'))

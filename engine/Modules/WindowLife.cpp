@@ -1,3 +1,8 @@
+// PIXL Renderer - WindowLife runtime implementation.
+// Copyright (C) 2026 PIXL Studio
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Additional permissions are described in the repository EXCEPTIONS.md.
+
 #include "WindowLife.h"
 #include "AtmosphereWeather.h"
 
@@ -897,7 +902,11 @@ void WindowLife::BindNeutral() const
 
 ID3D11ShaderResourceView* WindowLife::GetAuthoredMaskSRV(const Classification& classification) const
 {
-    if (!settings.UseExactGlassMasks || !classification.hasAuthoredMask || classification.authoredMaskKey.empty())
+    // Authored room materials carry their own pane layout. A legacy/preset
+    // mask is for vanilla glass only; binding it over authored room art clips
+    // the procedural aperture and can pull the room projection off-centre.
+    if (frameBaseData.Asset0.z > 0.5f ||
+        !settings.UseExactGlassMasks || !classification.hasAuthoredMask || classification.authoredMaskKey.empty())
         return nullptr;
     const auto it = authoredMaskSRVs.find(classification.authoredMaskKey);
     return it != authoredMaskSRVs.end() ? it->second.get() : nullptr;

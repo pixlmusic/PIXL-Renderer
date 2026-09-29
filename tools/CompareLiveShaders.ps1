@@ -67,6 +67,11 @@ Get-ChildItem -LiteralPath (Join-Path $sourceRootPath 'pipeline') -Directory | S
         throw "Missing module descriptor: $descriptor"
     }
     $descriptorText = Get-Content -LiteralPath $descriptor -Raw
+    # Match StagePixlRendererStandalone.ps1 exactly: retired ABI stubs remain in
+    # source for compatibility archaeology but are not part of the runtime tree.
+    if ($descriptorText -match '(?im)^\s*Pipeline\s*=\s*Retired\s*$') {
+        return
+    }
     $idMatch = [regex]::Match($descriptorText, '(?m)^\s*Id\s*=\s*([^\r\n]+?)\s*$')
     if (-not $idMatch.Success) {
         throw "Module descriptor has no Id: $descriptor"
@@ -76,8 +81,20 @@ Get-ChildItem -LiteralPath (Join-Path $sourceRootPath 'pipeline') -Directory | S
 
     $kernelRoot = Join-Path $moduleDirectory.FullName 'Kernels'
     if (Test-Path -LiteralPath $kernelRoot) {
-        Get-ChildItem -LiteralPath $kernelRoot -File -Recurse | Sort-Object FullName | ForEach-Object {
-            Add-SourceFile (Get-RelativePath $kernelRoot $_.FullName) $_.FullName "pipeline/$($moduleDirectory.Name)/Kernels"
+        # Packaging copies reviewable Git-indexed kernels only. This deliberately
+        # excludes machine-local SDK runtimes such as nvngx_dlssnr.dll.
+        $relativeKernelRoot = Get-RelativePath $sourceRootPath $kernelRoot
+        $trackedKernels = @(& git -C $sourceRootPath ls-files -- ($relativeKernelRoot + '/'))
+        if ($LASTEXITCODE -ne 0) {
+            throw "Unable to enumerate tracked shader kernels below $relativeKernelRoot"
+        }
+        $trackedKernels | Sort-Object | ForEach-Object {
+            $trackedPath = Join-Path $sourceRootPath $_.Replace('/', '\')
+            if (-not (Test-Path -LiteralPath $trackedPath -PathType Leaf)) {
+                throw "Tracked shader kernel is missing: $_"
+            }
+            $relative = $_.Substring($relativeKernelRoot.Length + 1)
+            Add-SourceFile $relative $trackedPath "pipeline/$($moduleDirectory.Name)/Kernels"
         }
     }
 }

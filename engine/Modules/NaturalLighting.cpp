@@ -1,5 +1,7 @@
 #include "NaturalLighting.h"
 #include "Modules/NaturalLighting/Common.h"
+#include "Modules/DistantLife.h"
+#include "Globals.h"
 #include "RadiantGrid.h"
 #include <numbers>
 
@@ -31,6 +33,14 @@ RE::NiPointLight* NaturalLighting::CreatePointLight::thunk(RE::TESObjectLIGH* li
 
 	if (ligh && root && niLight)
 		SetExtLightData(niLight, ligh);
+	// Renderer-only DistantLife observes this genuine instantiated reference.
+	// It never retains the engine pointer or changes the light/gameplay state.
+	if (refr)
+		globals::pipeline::distantLife.ObserveStaticLight(
+			ligh,
+			refr,
+			&niLight->world.translate,
+			refr->As<RE::Actor>() != nullptr);
 
 	return niLight;
 }

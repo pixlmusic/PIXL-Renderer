@@ -99,9 +99,9 @@ function Apply-EnhancedContract([object]$Config) {
     $tuning.EnableDetailReconstruction = 1
     $tuning.DetailQuality = 2
 
-    $Config.Atmosphere.volumetricGridPixelSize = 30
-    $Config.Atmosphere.volumetricGridSizeZ = 52
-    $Config.Atmosphere.volumetricHistoryMissSampleCount = 3
+    $Config.Atmosphere.volumetricGridPixelSize = 24
+    $Config.Atmosphere.volumetricGridSizeZ = 64
+    $Config.Atmosphere.volumetricHistoryMissSampleCount = 4
 
     $water = $Config.'Water Optics'
     $water.EnableEnhancedSSR = 1

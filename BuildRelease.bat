@@ -1,5 +1,17 @@
 @echo off
 
+rem No arguments opens the guarded PIXL developer console. Existing one-click
+rem wrappers still pass presets and retain the proven direct CMake path below.
+if not "%~1"=="" goto :legacy
+setlocal EnableExtensions
+cd /d "%~dp0"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\PIXLDeveloperTools.ps1" -Action Build
+set "exit_code=%ERRORLEVEL%"
+if not "%exit_code%"=="0" pause
+endlocal & exit /b %exit_code%
+
+:legacy
+
 rem Usage: BuildRelease.bat [BUILD_PRESET] [CONFIGURE_PRESET]
 rem Configure runs automatically when build\<CONFIGURE_PRESET>\CMakeCache.txt
 rem is missing. CONFIGURE_PRESET defaults to BUILD_PRESET. One-click wrappers:
@@ -62,8 +74,19 @@ if exist "build\%configpreset%\CMakeCache.txt" (
 )
 :configure
 cmake -S . --preset=%configpreset%
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+    echo ERROR: PIXL configure failed.
+    pause
+    exit /b 1
+)
 
 :build
 cmake --build --preset=%preset%
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+    echo ERROR: PIXL build failed.
+    pause
+    exit /b 1
+)
+echo.
+echo PASS: PIXL build preset %preset% completed successfully.
+exit /b 0

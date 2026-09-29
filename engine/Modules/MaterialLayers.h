@@ -69,7 +69,7 @@ struct MaterialLayers : RenderModule
 	Settings settings;
 
 	static constexpr uint TuningMagic = 0x504D4C54u;  // "PMLT"
-	static constexpr uint TuningVersion = 3u;
+	static constexpr uint TuningVersion = 4u;
 
 	/**
 	 * @brief PIXL material tuning data bound through a dedicated PS constant buffer (b9).
@@ -192,11 +192,54 @@ struct MaterialLayers : RenderModule
 		float TerrainSyntheticGain = 1.75f;
 		float ObjectVirtualDepthStrength = 0.0f;
 		float ObjectVirtualDepthMaxWorld = 4.0f;
+
+		// c19-c26 — CSPOM transport. CurvedSurfaceMapping remains the authoritative owner.
+		uint CSPOMEnabled = 0;
+		uint CSPOMQuality = 2;
+		uint CSPOMCurvedSurface = 1;
+		uint CSPOMSilhouetteClipping = 1;
+
+		uint CSPOMSelfOcclusion = 1;
+		uint CSPOMSelfShadow = 1;
+		uint CSPOMDepthWrite = 1;
+		uint CSPOMDebugMode = 0;
+
+		float CSPOMDepth = 1.0f;
+		float CSPOMHeightBias = 0.0f;
+		float CSPOMCurvatureStrength = 0.65f;
+		float CSPOMSilhouetteStrength = 0.75f;
+
+		float CSPOMFullQualityDistance = 480.0f;
+		float CSPOMMaxDistance = 1536.0f;
+		float CSPOMMaxTexelShift = 18.0f;
+		float CSPOMNormalStrength = 0.55f;
+
+		uint CSPOMMinSteps = 8;
+		uint CSPOMMaxSteps = 28;
+		uint CSPOMBinarySteps = 4;
+		uint CSPOMShadowSteps = 6;
+
+		uint CSPOMStaticOpaque = 1;
+		uint CSPOMTrees = 1;
+		uint CSPOMTerrain = 0;
+		uint CSPOMPad0 = 0;
+
+		uint CSPOMPad1 = 0;
+		uint CSPOMPad2 = 0;
+		uint CSPOMPad3 = 0;
+		uint CSPOMPad4 = 0;
+
+		float CSPOMOcclusionStrength = 0.42f;
+		float CSPOMShadowStrength = 0.55f;
+		float CSPOMGrazingProtection = 0.78f;
+		float CSPOMPad5 = 0.0f;
 	};
 	STATIC_ASSERT_ALIGNAS_16(TuningSettings);
-	static_assert(sizeof(TuningSettings) == 304, "MaterialLayers::TuningSettings must match PS b9 v3.");
+	static_assert(sizeof(TuningSettings) == 432, "MaterialLayers::TuningSettings must match PS b9 v4.");
 	static_assert(offsetof(TuningSettings, ObjectVirtualDepthStrength) == 296);
 	static_assert(offsetof(TuningSettings, ObjectVirtualDepthMaxWorld) == 300);
+	static_assert(offsetof(TuningSettings, CSPOMEnabled) == 304);
+	static_assert(offsetof(TuningSettings, CSPOMOcclusionStrength) == 416);
 
 	TuningSettings tuningSettings;
 	ConstantBuffer* tuningCB = nullptr;

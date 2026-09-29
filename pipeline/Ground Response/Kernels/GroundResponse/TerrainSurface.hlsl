@@ -503,6 +503,20 @@ float4 GroundDerivedSampleAbsolute(Texture2D<float4> field, float2 absoluteXY)
     return lerp(lerp(s00, s10, f.x), lerp(s01, s11, f.x), f.y);
 }
 
+float2 GroundSmoothedDerivedGradient(float2 absoluteXY)
+{
+    // Relax only the geometric normal signal. Compaction height and the packed
+    // floor remain untouched, so the deformation footprint does not widen.
+    const float radius = 8.0f;
+    float2 centre = GroundDerivedSampleAbsolute(GroundDerivedGradientField, absoluteXY).xy;
+    float2 axis =
+        GroundDerivedSampleAbsolute(GroundDerivedGradientField, absoluteXY + float2(radius, 0.0f)).xy +
+        GroundDerivedSampleAbsolute(GroundDerivedGradientField, absoluteXY + float2(-radius, 0.0f)).xy +
+        GroundDerivedSampleAbsolute(GroundDerivedGradientField, absoluteXY + float2(0.0f, radius)).xy +
+        GroundDerivedSampleAbsolute(GroundDerivedGradientField, absoluteXY + float2(0.0f, -radius)).xy;
+    return centre * 0.40f + axis * 0.15f;
+}
+
 float4 GroundFilteredCompactionField(float2 absoluteXY, float2 heat)
 {
     const float r = PIXL_T101_GEOMETRY_FILTER_RADIUS;
@@ -1126,9 +1140,10 @@ float PatchTessellation(
             max(tess, detailTess),
             adaptiveWeight);
 
-    // Half-step factors retain fractional-odd crack safety while avoiding
-    // small frame-to-frame factor changes that manifest as shimmer.
-    return clamp(floor(tess * 2.0f + 0.5f) * 0.5f, 1.0f, 16.0f);
+    // Integer factors keep the generated vertex pattern stable while the
+    // camera crosses a deformation edge. Shared-edge factors are derived from
+    // the same endpoints, so adjacent terrain triangles remain crack-free.
+    return clamp(ceil(tess), 1.0f, 16.0f);
 }
 
 PATCH_CONSTANTS PatchConstants(
@@ -1219,7 +1234,7 @@ PATCH_CONSTANTS PatchConstants(
 }
 
 [domain("tri")]
-[partitioning("fractional_odd")]
+[partitioning("integer")]
 // D3D11 tessellator winding is opposite the rasterizer-front-face flag used
 // by Skyrim's landscape passes in this pipeline. v2.1 mapped these directly,
 // which culled the displaced surface from above and exposed only its underside.
@@ -1480,11 +1495,10 @@ TERRAIN_POINT DSMain(
                     baseCompressedFloor,
                     1.0e-4f);
 
-            // Interpret MaximumDepth as a fraction of the material's ordinary
-            // compressible layer, then apply that same fraction to the LOCAL
-            // pristine capacity. This makes every point descend proportionally
-            // toward its floor instead of shallow points hitting the floor early
-            // while thicker neighbours remain suspended as terraces.
+            // Scale ordinary snow proportionally, but never turn the artist's
+            // absolute compression-depth limit into a much deeper cut through
+            // a tall procedural drift. The old proportional-only path could
+            // carve ~45u from a 72u drift with a 7.7u depth setting.
             float compressionFraction =
                 saturate(
                     requestedCompressionDepth /
@@ -1497,8 +1511,9 @@ TERRAIN_POINT DSMain(
                     0.0f);
 
             float variedBaseMaximumCompression =
-                variedPhysicalCapacity *
-                compressionFraction;
+                min(
+                    variedPhysicalCapacity * compressionFraction,
+                    requestedCompressionDepth);
 
             float surfaceThickness =
                 variedBaseSurfaceThickness * distanceMask;
@@ -1561,10 +1576,8 @@ TERRAIN_POINT DSMain(
                     surface.previous = GroundVerticalCompressionProfile(derivedResponse.y);
                     surface.freshness = saturate(derivedResponse.z);
                     surface.previousFreshness = saturate(derivedResponse.w);
-                    float4 derivedGradient = GroundDerivedSampleAbsolute(
-                        GroundDerivedGradientField,
-                        absoluteXY);
-                    currentHeightGradient = derivedGradient.xy * maximumCompression;
+                    currentHeightGradient =
+                        GroundSmoothedDerivedGradient(absoluteXY) * maximumCompression;
                 }
 
                 surface.current *= interactionWeight;
@@ -1717,6 +1730,11 @@ TERRAIN_POINT DSMain(
                         0.0f);
             }
 
+            // Slumping widens/softens a track, but it must not excavate below
+            // the same user-facing depth limit as direct compaction.
+            currentRaise = max(currentRaise, surfaceThickness - requestedCompressionDepth * distanceMask);
+            previousRaise = max(previousRaise, previousSurfaceThickness - requestedCompressionDepth * previousDistanceMask);
+
             // Elemental snow mass is independent of compaction history. Frost
             // adds a compressible layer; fire removes height and may reach the
             // authored base terrain, but never displaces geometry below it.
@@ -1788,9 +1806,14 @@ TERRAIN_POINT DSMain(
                 {
                     tangent *= rsqrt(tangentLengthSq);
                     bitangent = normalize(cross(displacedNormal, tangent)) * handedness;
-                    output.TBN0 = float3(tangent.x, bitangent.x, displacedNormal.x);
-                    output.TBN1 = float3(tangent.y, bitangent.y, displacedNormal.y);
-                    output.TBN2 = float3(tangent.z, bitangent.z, displacedNormal.z);
+                    // The terrain replay stores the *negated* lighting basis:
+                    // Lighting.hlsl reverses all three columns again for the
+                    // physical front face. Preserve that contract when updating
+                    // the track normal, or only walked pixels face downward and
+                    // shade almost black even with darkening set to zero.
+                    output.TBN0 = float3(tangent.x, bitangent.x, -displacedNormal.x);
+                    output.TBN1 = float3(tangent.y, bitangent.y, -displacedNormal.y);
+                    output.TBN2 = float3(tangent.z, bitangent.z, -displacedNormal.z);
                 }
             }
         }

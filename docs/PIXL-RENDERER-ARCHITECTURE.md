@@ -4,13 +4,53 @@ PIXL Renderer is shipped as one renderer, not a collection of separately install
 
 ## Unified source map
 
+```text
+PIXL-Renderer-Engine/
+|-- engine/        C++ renderer, hooks, modules, GUI, runtime services
+|-- pipeline/      module descriptors, kernels, and module-owned assets
+|-- distribution/ tracked runtime template and shared Skyrim shaders
+|-- installer/     FOMOD metadata and installer artwork
+|-- include/       external public headers
+|-- extern/        pinned third-party source dependencies
+|-- cmake/         build integration, ports, patches, and templates
+|-- tools/         portable build, test, audit, package, and export tools
+|-- docs/          public architecture, compatibility, and release guidance
+|-- build/         generated local build output (ignored)
+`-- dist/          generated release staging and archives (ignored)
+```
+
 - `engine/Renderer/` owns cross-system policy such as Low/Medium/High/Ultra quality contracts.
 - `engine/Modules/` contains runtime hook adapters and module-specific resource lifetimes.
+- `engine/Hooks`, `engine/Runtime`, `engine/Utils`, and the root-level engine coordinators own shared SKSE, DX11, lifecycle, and utility infrastructure. Code belongs here only when multiple renderer modules depend on it.
 - `engine/Menu/` contains the Essentials, Advanced, and Developer presentation layers.
 - `distribution/Shaders/Common/` is the shared physical shading ABI and BRDF library.
 - `distribution/Shaders/` contains Skyrim entry-point overrides whose names and signatures must remain unchanged.
 - `pipeline/*/Kernels/` is the authoring location for integrated subsystem shaders. Packaging merges every module into one `Data/Shaders` tree.
 - `distribution/SKSE/Plugins/PIXLRenderer/` owns settings, the tested preset, theme, and translations.
+- `installer/` owns FOMOD metadata and installer presentation assets.
+- `tools/` contains portable build, validation, packaging, and source-export tooling. Personal deployment or service-administration scripts are not public repository content.
+- `extern/` and `include/` contain third-party dependencies and their stable integration surface. Their licences and upstream history remain separate from PIXL-owned code.
+
+## Source, build, staging, and release boundaries
+
+| Boundary | Location | Contract |
+|---|---|---|
+| Source | repository root, `engine/`, `pipeline/`, `distribution/`, `installer/`, `cmake/` | Tracked, reviewable inputs only. No compiler output, caches, captures, credentials, or machine-specific paths. |
+| Build | `build/<preset>/` | CMake, compiler, test, audit, and temporary staging output. Entire tree is generated and ignored. |
+| Runtime template | `distribution/` plus module assets selected from `pipeline/` | Authoritative tracked inputs used to assemble a Skyrim `Data` layout. It is not itself a developer build directory. |
+| Release staging | `dist/` through `tools/StagePixlRendererStandalone.ps1` | Generated, ignored, manifest-backed package content. Only runtime files and deliberate user/legal documents are admitted. |
+| Deployment | Game roots supplied through `PIXL_SKYRIM_ROOT_1/2/3` | Local operation outside the source tree. Paths are environment configuration and are never committed. |
+
+The existing directory names are runtime contracts in several places. Shader includes, module descriptors, package overlays, and Skyrim resource lookup all depend on them. Structural cleanup therefore preserves these stable roots instead of creating parallel `src/`, `modules/`, or `shaders/` trees.
+
+## Adding a renderer module
+
+1. Put the C++ owner and lifetime code in `engine/Modules/<ModuleName>.h/.cpp`. Put reusable renderer infrastructure in `engine/Renderer/` only when it serves more than one module.
+2. Add `pipeline/<Display Name>/Module.ini` with the stable runtime ID. Place shader sources below `pipeline/<Display Name>/Kernels/<RuntimeId>/` so the existing compiler and staging discovery can find them.
+3. Use `distribution/Shaders/Common/` for genuinely shared shader ABI and math. Keep module-only helpers with that module.
+4. Add module controls through the established `engine/Menu/` framework and keep settings in the module's authoritative C++ settings structure and descriptor.
+5. Add portable validation under `tools/`; generated test output must stay below `build/`.
+6. Run the canonical `PIXL-Audit` target. It verifies module registration, descriptors, shader dependencies, runtime assets, repository hygiene, and package contents.
 
 ## Player quality contract
 

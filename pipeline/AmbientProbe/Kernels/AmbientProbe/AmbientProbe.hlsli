@@ -130,7 +130,16 @@ namespace AmbientProbe
 			linEnv = GetEnvironmentAmbientColor(rayDir);
 			linSky = GetSkyAmbientColor(rayDir);
 		}
-		return linEnv + linSky;
+		float3 ambient = max(linEnv + linSky, 0.0f.xxx);
+		if (SharedData::InInterior) {
+			// Bound indoor probe energy below Skyrim's native ambient baseline.
+			float vanillaLuminance = Color::RGBToLuminance(max(vanillaDALC, 0.0f.xxx));
+			float ambientLuminance = Color::RGBToLuminance(ambient);
+			float targetLuminance = vanillaLuminance * saturate(SharedData::ambientProbeSettings.InteriorAmbientScale);
+			if (ambientLuminance > targetLuminance && ambientLuminance > 1e-4f)
+				ambient *= targetLuminance / ambientLuminance;
+		}
+		return ambient;
 	}
 
 	/// Compute diffuse AmbientProbe ambient with a skyBounce visibility factor applied per DALCMode
@@ -148,7 +157,15 @@ namespace AmbientProbe
 			linEnv = GetEnvironmentAmbientColor(rayDir);
 			linSky = GetSkyAmbientColor(rayDir) * visibility;
 		}
-		return linEnv + linSky;
+		float3 ambient = max(linEnv + linSky, 0.0f.xxx);
+		if (SharedData::InInterior) {
+			float vanillaLuminance = Color::RGBToLuminance(max(vanillaDALC, 0.0f.xxx));
+			float ambientLuminance = Color::RGBToLuminance(ambient);
+			float targetLuminance = vanillaLuminance * saturate(SharedData::ambientProbeSettings.InteriorAmbientScale);
+			if (ambientLuminance > targetLuminance && ambientLuminance > 1e-4f)
+				ambient *= targetLuminance / ambientLuminance;
+		}
+		return ambient;
 	}
 
 	/// Combined env + sky AmbientProbe color with a visibility factor applied to the sky term.

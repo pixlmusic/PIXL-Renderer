@@ -1350,16 +1350,17 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		psout.Diffuse = float4(diffuseColor, 1);
 	}
 #			else
-	psout.Diffuse.xyz = diffuseColor;
+	psout.Diffuse = float4(diffuseColor, 1.0f);
 #			endif
 
-	// Basic grass has no authored normal map. Its spherical/card vertex normal can
-	// point almost sideways, which makes the Hybrid GI cosine lobe evaluate near
-	// zero even though the blade is visibly sky-facing. Preserve detailed Complex
-	// Grass normals, but provide a stable upward-biased GI normal for vanilla cards.
-	float3 hybridGINormal = complex
-		? normal
-		: normalize(lerp(normal, grassWorldUp, 0.46f));
+	// Hybrid GI needs the receiver's stable macro orientation, not the packed
+	// per-texel normal used by direct/specular lighting. On thin vertical cards the
+	// latter can point sideways (or alternate between the two card faces), reducing
+	// the hemispherical indirect-light response almost to zero and destabilising it
+	// under TAA. Keep authored detail in the visible lighting above, but use a
+	// two-sided, modestly sky-facing foliage-volume normal for deferred GI.
+	float giUpBias = complex ? 0.30f : 0.46f;
+	float3 hybridGINormal = normalize(lerp(geometricNormal, grassWorldUp, giUpBias));
 	float3 normalVS = normalize(FrameBuffer::WorldToView(hybridGINormal, false));
 	psout.Albedo = float4(albedo, 1);
 	psout.NormalGlossiness = float4(GBuffer::EncodeNormal(normalVS), grassGBufferGloss, 1);

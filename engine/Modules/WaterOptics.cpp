@@ -1,3 +1,8 @@
+// Community Shaders Water Effects-derived module.
+// Modified for PIXL Renderer, 2026: Water Optics controls, resources and hooks.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Additional permissions are described in the repository EXCEPTIONS.md.
+
 #include "WaterOptics.h"
 
 #include <DDSTextureLoader.h>

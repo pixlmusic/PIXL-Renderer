@@ -34,7 +34,7 @@ PIXL's native water remains authoritative unless the optional SurfaceTides bridg
 
 ## Validation record
 
-The 1.0.4.0 Release DLL and integrated audit passed. Strict FXC coverage passed 733 selected cases. Core, Source and FOMOD archives passed. The Core was deployed to both `H:\The Elder Scrolls - Skyrim - Special Edition\Data` and `H:\SteamLibrary\steamapps\common\Skyrim Special Edition\Data`; all 340 manifest payloads match by SHA-256 in each location. Separate rollback backups are under `build/deployment-backups`. The main game's installed SurfaceTides DLL matches the local 1.0.2 source build; the optional bridge was not newly installed into Steam. See `RELEASE_CHECKLIST_1.0.4.md` for live tests still required. Test output is retained under ignored `build/` paths.
+The 1.0.4.0 Release DLL and integrated audit passed. Strict FXC coverage passed 733 selected cases. Core, Source and FOMOD archives passed. The Core was deployed to both authorized Skyrim installations; all 340 manifest payloads matched by SHA-256 in each location. Separate rollback backups are under `build/deployment-backups`. The main installation's SurfaceTides DLL matched the local 1.0.2 source build; the optional bridge was not newly installed into the alternate installation. See `RELEASE_CHECKLIST_1.0.4.md` for live tests still required. Test output is retained under ignored `build/` paths.
 
 ## Exact live-game validation sequence
 

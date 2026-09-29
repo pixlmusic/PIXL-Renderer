@@ -1,4 +1,5 @@
 #include "ImageReconstruction.h"
+#include "ContainedLiquids.h"
 
 #include "../I18n/I18n.h"
 #include "Deferred.h"
@@ -87,8 +88,7 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 	auto& imageReconstruction = globals::pipeline::imageReconstruction;
 	imageReconstruction.LoadUpscalingSDKs();
 
-	if (imageReconstruction.IsBackendInitialized())
-		imageReconstruction.CheckBackendFeatures(pAdapter);
+	imageReconstruction.CheckBackendFeatures(pAdapter);
 
 	// FLIP_DISCARD requires BufferCount >= 2 and a flip-model-compatible (non-sRGB) format.
 	pSwapChainDesc->SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
@@ -120,6 +120,8 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 		imageReconstruction.settings.upscaleMethod == static_cast<uint>(ImageReconstruction::UpscaleMethod::kDLSS) &&
 		imageReconstruction.streamline.neuralRenderingSupportedOnCurrentAdapter;
 	const bool frameGenerationRequested = imageReconstruction.settings.frameGenerationMode != 0;
+	imageReconstruction.frameGenerationConfiguredAtBoot = frameGenerationRequested;
+	imageReconstruction.frameGenerationBackendAtBoot = imageReconstruction.settings.frameGenerationBackend;
 	const bool refreshAllowsFrameGeneration = refreshRate >= 120 || imageReconstruction.settings.frameGenerationForceEnable;
 	DX12SwapChain::Presenter requestedPresenter = DX12SwapChain::Presenter::kNone;
 
@@ -614,11 +616,15 @@ void ImageReconstruction::DrawSettings()
 			Util::Text::Warning("Warning: Requires restart");
 
 		bool fgEnabled = settings.frameGenerationMode != 0;
+		ImGui::BeginDisabled(!IsSelectedFrameGenerationBackendSelectable() && !fgEnabled);
 		if (ImGui::Checkbox(T(TKEY("frame_generation"), "Frame Generation"), &fgEnabled)) {
 			settings.frameGenerationMode = fgEnabled ? 1 : 0;
 			if (fgEnabled)
 				settings.frameGenerationForceEnable = 1;
 		}
+		ImGui::EndDisabled();
+		if (!IsSelectedFrameGenerationBackendSelectable())
+			ImGui::TextWrapped("Selected frame-generation backend is unavailable. Choose an installed backend above before enabling it.");
 
 		switch (GetFrameGenerationState()) {
 		case FrameGenerationState::Active:
@@ -1896,6 +1902,10 @@ std::string ImageReconstruction::ToggleNeuralRenderingFromHotkey()
 
 std::string ImageReconstruction::ToggleFrameGenerationFromHotkey()
 {
+	if (!settings.frameGenerationMode && !IsSelectedFrameGenerationBackendSelectable())
+		return UsesDLSSGFrameGeneration()
+			? "DLSS Frame Generation unavailable on this GPU. RTX 30 needs the optional proxy; RTX 40 or newer uses the native runtime."
+			: "FSR Frame Generation runtime is unavailable. Check the installed PIXL Core files.";
 	settings.frameGenerationMode = settings.frameGenerationMode ? 0u : 1u;
 	if (settings.frameGenerationMode)
 		settings.frameGenerationForceEnable = 1;
@@ -1911,14 +1921,18 @@ ImageReconstruction::FrameGenerationState ImageReconstruction::GetFrameGeneratio
 	const bool requested = settings.frameGenerationMode != 0;
 	const bool pathActive = IsFrameGenerationDx12PathActive();
 
-	if (fidelityFX.frameGenerationRuntimeFault)
-		return FrameGenerationState::RuntimeFault;
 	if (!requested)
 		return frameGenerationRequestedAtBoot ? FrameGenerationState::RestartRequired : FrameGenerationState::Off;
-	if (!frameGenerationRequestedAtBoot)
+	if (!UsesDLSSGFrameGeneration() && fidelityFX.frameGenerationRuntimeFault)
+		return FrameGenerationState::RuntimeFault;
+	if (!IsSelectedFrameGenerationBackendSelectable())
+		return FrameGenerationState::Unavailable;
+	if (frameGenerationConfiguredAtBoot && frameGenerationBackendAtBoot != settings.frameGenerationBackend)
 		return FrameGenerationState::RestartRequired;
+	if (!frameGenerationRequestedAtBoot)
+		return frameGenerationConfiguredAtBoot ? FrameGenerationState::Unavailable : FrameGenerationState::RestartRequired;
 	if (!pathActive) {
-		if (!isWindowed || fidelityFXMissing || (lowRefreshRate && !settings.frameGenerationForceEnable))
+		if (!isWindowed || (!UsesDLSSGFrameGeneration() && fidelityFXMissing) || (lowRefreshRate && !settings.frameGenerationForceEnable))
 			return FrameGenerationState::Unavailable;
 		return FrameGenerationState::RestartRequired;
 	}
@@ -2008,6 +2022,10 @@ bool ImageReconstruction::IsBackendInitialized() const
 
 void ImageReconstruction::CheckBackendFeatures(IDXGIAdapter* adapter)
 {
+	dlssgNativeHardwareCandidate = streamline.IsRTX40SeriesOrNewer(adapter);
+	dlssgProxyHardwareCandidate = streamline.IsRTX30SeriesOrNewer(adapter) && !dlssgNativeHardwareCandidate;
+	if (!streamline.initialized)
+		return;
 	streamline.CheckFeatures(adapter);
 	if (!streamline.neuralRenderingSupportedOnCurrentAdapter) {
 		// Preserve ordinary DLSS availability, but never leave the experimental
@@ -2044,50 +2062,78 @@ bool ImageReconstruction::HasDLSSGModule() const
 	return streamlineDX12.featureDLSSG;
 }
 
+namespace
+{
+	bool HasDLSSGProxyFiles()
+	{
+		// Detect installation once; applying a newly installed proxy requires a restart.
+		static const bool present = [] {
+			wchar_t executable[32768]{};
+			const auto length = GetModuleFileNameW(nullptr, executable, _countof(executable));
+			if (!length || length >= _countof(executable))
+				return false;
+			const auto directory = std::filesystem::path(executable).parent_path();
+			std::error_code error;
+			if (!std::filesystem::is_regular_file(directory / L"dlssg_sm86.ini", error))
+				return false;
+			for (const auto* name : { L"version.dll", L"winmm.dll", L"dinput8.dll", L"winhttp.dll", L"dxgi.dll" }) {
+				error.clear();
+				if (std::filesystem::is_regular_file(directory / name, error))
+					return true;
+			}
+			return false;
+		}();
+		return present;
+	}
+}
+
+bool ImageReconstruction::IsDLSSGSelectable() const
+{
+	return HasDLSSGModule() || dlssgNativeHardwareCandidate ||
+		(dlssgProxyHardwareCandidate && HasDLSSGProxyFiles());
+}
+
+bool ImageReconstruction::IsSelectedFrameGenerationBackendSelectable() const
+{
+	return UsesDLSSGFrameGeneration() ? IsDLSSGSelectable() : HasFrameGenModule();
+}
+
 bool ImageReconstruction::DrawFrameGenerationBackendSelector()
 {
-	// Installation hint only, not a capability check. Do not load third-party DLLs
-	// just to populate the menu. A restart is required after installing a proxy.
-	static const bool proxyFilesPresent = [] {
-		wchar_t executable[32768]{};
-		const auto length = GetModuleFileNameW(nullptr, executable, _countof(executable));
-		if (!length || length >= _countof(executable))
-			return false;
-		const auto directory = std::filesystem::path(executable).parent_path();
-		std::error_code error;
-		if (!std::filesystem::is_regular_file(directory / L"dlssg_sm86.ini", error))
-			return false;
-		for (const auto* name : { L"version.dll", L"winmm.dll", L"dinput8.dll", L"winhttp.dll", L"dxgi.dll" }) {
-			error.clear();
-			if (std::filesystem::is_regular_file(directory / name, error))
-				return true;
-		}
-		return false;
-	}();
-	const bool available = HasDLSSGModule() || proxyFilesPresent;
-	const char* labels[] = { "FSR 3 Frame Generation", "DLSSG (optional mod)" };
+	const bool available = IsDLSSGSelectable();
+	const char* labels[] = { "FSR 3 Frame Generation", "NVIDIA DLSS Frame Generation" };
 	const auto selected = std::min<uint>(settings.frameGenerationBackend, 1u);
 	bool changed = false;
 	if (ImGui::BeginCombo("Frame generation backend", labels[selected])) {
 		for (uint index = 0; index < 2; ++index) {
-			ImGui::BeginDisabled(index == 1 && !available);
+			const bool disabled = (index == 0 && !HasFrameGenModule()) || (index == 1 && !available);
+			ImGui::BeginDisabled(disabled);
 			if (ImGui::Selectable(labels[index], selected == index)) {
 				settings.frameGenerationBackend = index;
 				changed = true;
 			}
 			ImGui::EndDisabled();
+			if (disabled && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+				ImGui::SetTooltip("%s", index == 0
+					? "FSR Frame Generation runtime files are unavailable."
+					: "Requires GeForce RTX 40-series or newer, or RTX 30-series with the optional SM86 proxy files.");
 		}
 		ImGui::EndCombo();
 	}
+	const bool backendHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
 	if (!available) {
-		ImGui::TextWrapped("DLSSG unavailable: optional mod not detected. Use FSR 3, or install DLSSG separately and restart Skyrim. Not bundled with PIXL.");
+		ImGui::TextWrapped(dlssgProxyHardwareCandidate
+			? "RTX 30-series: DLSS Frame Generation requires the optional SM86 proxy files beside SkyrimSE.exe. Install them and restart to unlock this backend."
+			: "DLSS Frame Generation requires a GeForce RTX 40-series GPU or newer. RTX 30-series can use the optional SM86 proxy. FSR 3 is available on supported systems.");
 	} else if (!HasDLSSGModule()) {
-		ImGui::TextWrapped("DLSSG files detected; runtime support is not yet confirmed. Select DLSSG and restart to check compatibility.");
+		ImGui::TextWrapped(dlssgNativeHardwareCandidate
+			? "GeForce RTX 40-series or newer detected. Select DLSS Frame Generation and restart; PIXL will verify the DX12 runtime when the device starts."
+			: "SM86 proxy files detected. Select DLSS Frame Generation and restart; PIXL will verify runtime support when the device starts.");
 	}
-	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+	if (backendHovered) {
 		ImGui::BeginTooltip();
 		ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
-		ImGui::TextUnformatted("Optional SM86 mod: github.com/sdli1995/dlssg_for_sm86\nFollow its installation instructions beside SkyrimSE.exe, not in Data. Do not overwrite an existing proxy DLL. See DLSSG_SM86_INTEGRATION.md in the PIXL package. File detection does not guarantee GPU/runtime compatibility.");
+		ImGui::TextUnformatted("GeForce RTX 40-series or newer uses native DLSS Frame Generation without the SM86 proxy. RTX 30-series requires the optional proxy files and a restart. Selecting a backend does not guarantee Streamline runtime support; PIXL verifies it on the DX12 device at launch.");
 		ImGui::PopTextWrapPos();
 		ImGui::EndTooltip();
 	}
@@ -2242,6 +2288,12 @@ void ImageReconstruction::Upscale()
 
 		ID3D11ComputeShader* shader = nullptr;
 		context->CSSetShader(shader, nullptr, 0);
+
+		// Moving/refractive bottle interiors are composited after opaque lighting.
+		// Mark their tight projected regions current-frame reactive so DLSS/FSR do
+		// not accumulate stale liquid/refraction history around the glass silhouette.
+		globals::pipeline::containedLiquids.MarkReconstructionReactive(
+			reactiveMaskTexture->uav.get(), renderWidth, renderHeight);
 
 		state->EndPerfEvent();
 		globals::profiler->EndPass();

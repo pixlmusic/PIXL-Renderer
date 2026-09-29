@@ -55,7 +55,11 @@ float GetPhysicalLocalLightAttenuation(float distance, float radius, float fadeZ
 {
 	float emitterRadius = max(SharedData::materialForgeSettings.LocalLightMinimumDistance, 1.0f);
 	float denominator = distance * distance + max(sizeBias, emitterRadius * emitterRadius);
-	float physicalAttenuation = (0.8f * METRES_TO_UNITS * METRES_TO_UNITS) / denominator;
+	// The source intensity is already carried by the light colour/fade payload.
+	// Keep the regularised inverse-square term as attenuation only: allowing it
+	// above one near the emitter amplified Skyrim's authored practical lights and
+	// made the inverse-square blend appear to restore blown-out vanilla lighting.
+	float physicalAttenuation = saturate((0.8f * METRES_TO_UNITS * METRES_TO_UNITS) / denominator);
 
 	float effectiveFadeZone = fadeZone > 0.0f ? fadeZone : rcp(max(radius * 0.2f, 1.0f));
 	float cutoff = saturate((radius - distance) * effectiveFadeZone);
@@ -64,14 +68,13 @@ float GetPhysicalLocalLightAttenuation(float distance, float radius, float fadeZ
 }
 
 /**
- * PIXL local-light attenuation. The final float in MaterialForge's stable
- * five-register block is named pad0 in SharedData for cache/ABI compatibility;
- * C++ owns it as PhysicalLocalLightFalloffStrength at the same byte offset.
+ * PIXL local-light attenuation. This field is the final float in
+ * MaterialForge's stable five-register block on both the CPU and GPU.
  */
 float GetPhysicalLocalLightFalloffStrength()
 {
 	return SharedData::materialForgeSettings.EnablePhysicalLocalLightFalloff != 0 ?
-		saturate(SharedData::materialForgeSettings.pad0) : 0.0f;
+		saturate(SharedData::materialForgeSettings.PhysicalLocalLightFalloffStrength) : 0.0f;
 }
 
 float GetLocalLightAttenuation(float distance, float radius, float fadeZone, float sizeBias)

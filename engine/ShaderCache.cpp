@@ -24,7 +24,7 @@ namespace SIE
 	// alone cannot safely invalidate these changes because FeatureData offsets are
 	// shared by shader families which do not enable the changed module's define.
 	static constexpr const char* kPipelineCacheLayout = "PIXL.StageShard.v1";
-	static constexpr const char* kSharedShaderABI = "PIXL.SharedBuffers.20260902.1";
+	static constexpr const char* kSharedShaderABI = "PIXL.SharedBuffers.20260926.RenderOrigin1";
 	// Global Lighting/PBR/glint shader semantics changed across the 1.0.4
 	// candidate. They reach shader families beyond one module's define, so a
 	// dedicated revision invalidates old compiled stages without mislabeling an

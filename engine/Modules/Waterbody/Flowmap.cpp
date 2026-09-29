@@ -1,5 +1,9 @@
 #include "Flowmap.h"
 
+// Community Shaders Unified Water-derived file, retained and integrated by
+// PIXL Renderer. SPDX-License-Identifier: GPL-3.0-or-later
+// Additional permissions are described in the repository EXCEPTIONS.md.
+
 #include <DDSTextureLoader.h>
 #include <DirectXTex.h>
 #include <array>

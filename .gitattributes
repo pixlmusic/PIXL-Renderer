@@ -12,6 +12,8 @@
 /PRIVATE_COMPONENTS.md export-ignore
 /tools/PixDiTEnhance export-ignore
 /tools/PixDiTEnhance/** export-ignore
+/tools/Discord export-ignore
+/tools/Discord/** export-ignore
 /PIXL_AUTONOMOUS export-ignore
 /PIXL_AUTONOMOUS/** export-ignore
 /docs/release_polish export-ignore

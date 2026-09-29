@@ -3,6 +3,7 @@
 #include "Utils/D3D.h"
 #include "State.h"
 #include "HybridGI.h"
+#include "CurvedSurfaceMapping.h"
 
 #define I18N_KEY_PREFIX "feature.material_layers."
 
@@ -330,6 +331,34 @@ void MaterialLayers::Prepass()
 		return;
 
 	try {
+		// CSPOM owns its configuration; b9 is only the collision-free GPU transport.
+		const auto& cspom = globals::pipeline::curvedSurfaceMapping.settings;
+		tuningSettings.CSPOMEnabled = cspom.Enabled ? 1u : 0u;
+		tuningSettings.CSPOMQuality = cspom.Quality;
+		tuningSettings.CSPOMCurvedSurface = cspom.CurvedSurface ? 1u : 0u;
+		tuningSettings.CSPOMSilhouetteClipping = cspom.SilhouetteClipping ? 1u : 0u;
+		tuningSettings.CSPOMSelfOcclusion = cspom.SelfOcclusion ? 1u : 0u;
+		tuningSettings.CSPOMSelfShadow = cspom.SelfShadow ? 1u : 0u;
+		tuningSettings.CSPOMDepthWrite = cspom.DepthWrite ? 1u : 0u;
+		tuningSettings.CSPOMDebugMode = cspom.DebugMode;
+		tuningSettings.CSPOMDepth = cspom.Depth;
+		tuningSettings.CSPOMHeightBias = cspom.HeightBias;
+		tuningSettings.CSPOMCurvatureStrength = cspom.CurvatureStrength;
+		tuningSettings.CSPOMSilhouetteStrength = cspom.SilhouetteStrength;
+		tuningSettings.CSPOMFullQualityDistance = cspom.FullQualityDistance;
+		tuningSettings.CSPOMMaxDistance = cspom.MaxDistance;
+		tuningSettings.CSPOMMaxTexelShift = cspom.MaxTexelShift;
+		tuningSettings.CSPOMNormalStrength = cspom.NormalStrength;
+		tuningSettings.CSPOMMinSteps = cspom.MinSteps;
+		tuningSettings.CSPOMMaxSteps = cspom.MaxSteps;
+		tuningSettings.CSPOMBinarySteps = cspom.BinarySteps;
+		tuningSettings.CSPOMShadowSteps = cspom.ShadowSteps;
+		tuningSettings.CSPOMStaticOpaque = cspom.StaticOpaque ? 1u : 0u;
+		tuningSettings.CSPOMTrees = cspom.Trees ? 1u : 0u;
+		tuningSettings.CSPOMTerrain = cspom.Terrain ? 1u : 0u;
+		tuningSettings.CSPOMOcclusionStrength = cspom.OcclusionStrength;
+		tuningSettings.CSPOMShadowStrength = cspom.ShadowStrength;
+		tuningSettings.CSPOMGrazingProtection = cspom.GrazingProtection;
 		// Signature/version are runtime guards for stale/unbound shader state.
 		tuningSettings.Magic = TuningMagic;
 		tuningSettings.Version = TuningVersion;

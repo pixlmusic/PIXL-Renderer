@@ -1,4 +1,7 @@
 #define LIGHTING
+#if defined(PIXL_CONTAINED_LIQUIDS) && defined(PSHADER) && !defined(DEFERRED) && !defined(SKINNED) && !defined(LANDSCAPE) && !defined(LODOBJECTS) && !defined(LODOBJECTSHD)
+#define PIXL_LIQUID_ACTIVE
+#endif
 
 #include "Common/Color.hlsli"
 #include "Common/FrameBuffer.hlsli"
@@ -10,6 +13,9 @@
 #include "Common/Random.hlsli"
 #include "Common/Shading.hlsli"
 #include "Common/SharedData.hlsli"
+#if defined(PIXL_LIQUID_ACTIVE)
+#include "ContainedLiquids/ContainedLiquids.hlsli"
+#endif
 #if defined(HAIR_RECONSTRUCTION) && defined(AUTO_HAIR) && !defined(HAIR)
 // Conservative runtime-classified mod hair uses the same proven card/material
 // path as Skyrim's native Hair technique.  Rejected candidates retain their
@@ -1014,6 +1020,7 @@ float GetSnowParameterY(float texProjTmp, float alpha)
 #	if defined(MATERIAL_LAYERS)
 #		include "MaterialLayers/MaterialLayersTuning.hlsli"
 #		include "MaterialLayers/MaterialDetail.hlsli"
+#		include "CSPOM/CSPOM.hlsli"
 #	endif
 
 #	if defined(FOLIAGE_DYNAMICS)
@@ -1682,6 +1689,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif  // LANDSCAPE
 	float sh0 = 0;
 	float pixelOffset = 0;
+	float cspomSurfaceWeight = 0.0f;
+	float cspomViewZ = 1.0f;
+	float2 cspomHeightGradient = 0.0f.xx;
 
 #	if defined(PIXL_AUTO_PARALLAX)
 	float autoParallaxMipLevel = 0.0;
@@ -1734,13 +1744,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #			else
 		// Objects: do not crush HeightScale (that flattens convex faces you are looking at).
 		// Only add FlattenAmount past the facing hemisphere (grazing > facing) and only if bent.
-		// Flat walls stay at bend ≈ 0. Flatten tracks UV stretch (÷ facing).
+		// Flat walls stay at bend approximately 0. Flatten tracks UV stretch divided by facing.
 		curvature = normalDelta;
 		float facing = saturate(dot(vertexNormal, viewDirection));
 		float grazing = 1.0 - facing;
 		float bend = saturate(normalSmoothness + curvature);
 		float silhouette = saturate(grazing - facing);
-		// Cap FlattenAmount: ÷facing tracks UV stretch but can explode at grazing (~14× at the 0.0625 floor).
+		// Cap FlattenAmount: dividing by facing tracks UV stretch but can explode at grazing (~14x at the 0.0625 floor).
 		displacementParams.FlattenAmount = saturate(silhouette * bend * rcp(max(facing, 0.0625)));
 #			endif
 	}
@@ -1902,6 +1912,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #	if defined(PIXL_WINDOW_LIFE_ACTIVE)
 	// PIXL WL2A AUTO-POM GLASS SUPPRESSION
+	float pixlWindowAutoPOMWeight = 1.0f;
 	// Window atlases may contain wood/stone and glass in one material. Suppress
 	// synthetic relief on pane pixels only, never on the complete draw/material.
 	[branch] if (autoParallaxAllowed && WindowLife::IsCandidate() && WindowLife::SuppressAutoPOM())
@@ -1916,7 +1927,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		}
 		float pixlWindowPrePane = WindowLife::PaneMask(
 			pixlWindowPreColor.rgb, pixlWindowPreNormal, pixlWindowPreGlowLuma, uv);
-		autoParallaxAllowed = pixlWindowPrePane < 0.34f;
+		// A binary cutoff switched UVs and virtual depth between flat glass and
+		// displaced paint under temporal jitter. Fade relief out before the pane
+		// owns the pixel, preserving full relief on opaque frame texels.
+		pixlWindowAutoPOMWeight = 1.0f - smoothstep(0.02f, 0.34f, pixlWindowPrePane);
+		autoParallaxAllowed = pixlWindowAutoPOMWeight > 1.0e-4f;
 	}
 #	endif
 	[branch] if (autoParallaxAllowed)
@@ -1979,6 +1994,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 				pixelOffset = 0.0f;
 			}
 #			endif
+#			if defined(PIXL_WINDOW_LIFE_ACTIVE)
+			autoParallaxCandidateUV = lerp(autoParallaxSourceUV, autoParallaxCandidateUV, pixlWindowAutoPOMWeight);
+			autoParallaxStrength *= pixlWindowAutoPOMWeight;
+			pixelOffset *= pixlWindowAutoPOMWeight;
+#			endif
 			uv = autoParallaxCandidateUV;
 			autoParallaxApplied = autoParallaxStrength > 1e-5f;
 		}
@@ -1998,6 +2018,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		#else
 		true;
 		#endif
+#	if defined(PIXL_CSPOM) && defined(MATERIAL_LAYERS)
+	pixlAllowDepthResolve = pixlAllowDepthResolve && (!CSPOM::Enabled() || PIXL_CSPOM_DepthWrite != 0u);
+#	endif
 #		if defined(MATERIAL_FORGE) && !defined(LODLANDSCAPE)
 	// Interlayer parallax describes refraction beneath a coat, not the outer geometric surface.
 	// It must never move the hardware depth buffer. Effects-only depth is a
@@ -2149,12 +2172,43 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		endif  // EMAT
 #	endif      // LANDSCAPE
 
+#	if defined(PIXL_CSPOM) && defined(MATERIAL_LAYERS) && !defined(MODELSPACENORMALS) && !defined(SKINNED)
+	// Recover the final traced height derivative in texture space. This executes
+	// after object and landscape displacement, so every supported source shares
+	// the same stable displaced-normal contract.
+	float3 cspomViewTS = normalize(mul(tbnTr, viewDirection));
+	cspomViewZ = abs(cspomViewTS.z);
+	float cspomMip = 0.0f;
+#		if defined(LANDSCAPE)
+	cspomMip = mipLevels[0];
+#		else
+	cspomMip = mipLevel;
+#		endif
+	cspomSurfaceWeight = CSPOM::Weight(viewPosition.z, cspomViewZ, cspomMip);
+	cspomSurfaceWeight *= smoothstep(1.0e-7f, 2.0e-5f, dot(uv - uvOriginal, uv - uvOriginal));
+	float2 cspomDuvDx = ddx(uvOriginal);
+	float2 cspomDuvDy = ddy(uvOriginal);
+	float cspomDhDx = ddx(pixelOffset);
+	float cspomDhDy = ddy(pixelOffset);
+	float cspomDet = cspomDuvDx.x * cspomDuvDy.y - cspomDuvDx.y * cspomDuvDy.x;
+	if (abs(cspomDet) > 1.0e-7f) {
+		float inverseDet = rcp(cspomDet);
+		cspomHeightGradient = float2(
+			(cspomDhDx * cspomDuvDy.y - cspomDhDy * cspomDuvDx.y) * inverseDet,
+			(cspomDhDy * cspomDuvDx.x - cspomDhDx * cspomDuvDy.x) * inverseDet);
+		cspomHeightGradient = clamp(cspomHeightGradient, -2.0f.xx, 2.0f.xx);
+	}
+#	endif
+
 #	if (defined(PIXL_PARALLAX_DEPTH) || defined(PIXL_PARALLAX_EFFECTS_DEPTH)) && defined(LANDSCAPE)
 	// Landscape POM happens after the generic object/material POM block. Resolve
 	// virtual hardware depth from the final displaced terrain UV here.
 	bool pixlAllowTerrainDepthResolve =
 		inWorld && !inReflection && !SharedData::InMapMenu &&
 		MaterialLayersTuning::TerrainVirtualDepthEnabled();
+#	if defined(PIXL_CSPOM) && defined(MATERIAL_LAYERS)
+	pixlAllowTerrainDepthResolve = pixlAllowTerrainDepthResolve && (!CSPOM::Enabled() || PIXL_CSPOM_DepthWrite != 0u);
+#	endif
 	float2 pixlTerrainDepthUvDelta = uv - uvOriginal;
 	[branch] if (pixlAllowTerrainDepthResolve &&
 		dot(pixlTerrainDepthUvDelta, pixlTerrainDepthUvDelta) > 1e-12f)
@@ -2480,6 +2534,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	glossiness = normal.w;
 #	else
 	normal.xyz = TransformNormal(normal.xyz);
+#		if defined(PIXL_CSPOM) && defined(MATERIAL_LAYERS)
+	if (cspomSurfaceWeight > 0.0f) {
+		float2 macroSlope = cspomHeightGradient *
+			(clamp(PIXL_CSPOM_NormalStrength, 0.0f, 1.5f) * cspomSurfaceWeight * 0.08f);
+		normal.xyz = normalize(float3(normal.xy - macroSlope, max(normal.z, 0.08f)));
+	}
+#		endif
 #		if defined(TREE_ANIM) && defined(FOLIAGE_DYNAMICS)
 	// TreeFlipNormalY only affects animated tree/leaf tangent-space normals -
 	// grass has its own independent flip controls in FoliageTuning (b13).
@@ -2814,6 +2875,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		pixlWindowGlowLuma = dot(max(pixlWindowGlowEvidence, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
 	}
 
+	// One coverage decision owns both the physical glass and its background.
+	// Reuse it rather than evaluating the border stencil again inside divergent
+	// surface/interior branches (which can disagree at quad boundaries).
+	float pixlWindowPane = 0.0f;
+	[branch] if (WindowLife::IsCandidate() && !SharedData::InMapMenu &&
+		abs(viewPosition.z) < max(WindowLife::GetSurface0().y, WindowLife::GetSurface0().x + 1.0f))
+		pixlWindowPane = WindowLife::PaneMask(rawBaseColor.rgb, normalColor, pixlWindowGlowLuma, uv);
 	WindowLife::SurfaceResult pixlWindowSurface = WindowLife::EvaluateSurface(
 		input.WorldPosition.xyz,
 		viewDirection,
@@ -2822,7 +2890,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		normalColor,
 		pixlWindowGlowLuma,
 		uv,
-		viewPosition.z);
+		viewPosition.z, pixlWindowPane);
 
 	[branch] if (pixlWindowSurface.glassWeight > 1.0e-4f)
 	{
@@ -2960,12 +3028,19 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			saturate(groundSample.freshness * groundMaterialActivation);
 		groundDeformationEdge =
 			saturate(groundSample.edge * groundMaterialActivation);
-		worldNormal =
-			normalize(
-				lerp(
-					worldNormal,
-					groundSample.normal,
-					groundMaterialActivation));
+		// The tessellated GroundResponse shell already rebuilt a filtered
+		// displacement normal from the derived world-space gradient. Replacing it
+		// here with DeformableGround's raw 4-unit gradient reintroduces one-cell
+		// edge noise and makes wet/specular response appear to trail vertically
+		// under temporal reconstruction. Keep the raw normal only for legacy
+		// non-geometric deformation, where no displaced shell normal exists.
+		if (!groundPixelUsesGeometricSurface)
+			worldNormal =
+				normalize(
+					lerp(
+						worldNormal,
+						groundSample.normal,
+						groundMaterialActivation));
 
 		// PIXL_GR_13Z_MICROSURFACE_EVALUATION_V1
 		groundAbsoluteXY =
@@ -3249,6 +3324,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	material.Roughness = clamp(rawRMAOS.x, PBR::Constants::MinRoughness, PBR::Constants::MaxRoughness);
 	material.Metallic = saturate(rawRMAOS.y);
 	material.AO = rawRMAOS.z;
+#		if defined(PIXL_CSPOM) && defined(MATERIAL_LAYERS)
+	material.AO *= CSPOM::Occlusion(pixelOffset, cspomViewZ, cspomSurfaceWeight);
+#		endif
 
 	// Apply vertex color to base color so PBR metals use it. On LANDSCAPE,
 	// honor DisableTerrainVertexColors (as the non-PBR path does) by
@@ -4071,7 +4149,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #		endif
 
-	// Minimum roughness prevents an extreme retroreflective peak (NdotH→1) for near-zero
+	// Minimum roughness prevents an extreme retroreflective peak (NdotH approaches 1) for near-zero
 	// roughness puddles. Real water has ripples and surface tension that keep it from being
 	// optically perfect; the ripple normal map adds micro-variation but GGX still peaks
 	// sharply without this floor.
@@ -4205,7 +4283,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif  // defined(EMAT) && (defined(SKINNED) || !defined(MODELSPACENORMALS))
 
 #	if defined(PIXL_AUTO_PARALLAX) && !defined(MODELSPACENORMALS)
-	[branch] if (MaterialLayersTuning::AutoPOMSelfShadowsEnabled() &&
+	[branch] if ((MaterialLayersTuning::AutoPOMSelfShadowsEnabled() || CSPOM::SelfShadowEnabled()) &&
 		autoParallaxApplied && inWorld &&
 		SharedData::materialLayerSettings.EnableShadows && dirLightAngle > 0.0f)
 	{
@@ -4741,6 +4819,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	{
 		// Input TexGlowSampler = linear by default, but Color::Glowmap returns in sRGB if LL disabled
 		float3 glowColor = Color::Glowmap(TexGlowSampler.Sample(SampGlowSampler, uv).xyz);
+		// WindowLife needs the native glow texture as pane evidence, but the
+		// vanilla glowmap must not drown the recessed room/occupant layer once a
+		// trusted pane has been identified. Scale only the pane-covered portion;
+		// ordinary emissive materials retain their authored brightness.
+#		if defined(PIXL_WINDOW_LIFE_ACTIVE)
+		if (WindowLife::IsCandidate() && pixlWindowPane > 1.0e-4f)
+			glowColor *= lerp(1.0f, 0.34f, saturate(pixlWindowPane));
+#		endif
 
 #		if defined(MATERIAL_FORGE)
 		float3 emitVertexColor = Color::SrgbToLinear(input.Color.xyz);
@@ -4779,7 +4865,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		uv,
 		viewPosition.z,
 		pixlWindowSurface.normalWarp,
-		complexMaterialParallax);
+		complexMaterialParallax, pixlWindowPane);
 
 	// PIXL WL5 authored recessed room back plane. Replace the source window's flat
 	// emissive fill with readable atlas detail while retaining a faint glass tint. The atlas
@@ -4918,7 +5004,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #	if defined(AMBIENT_PROBE)
 	if (SharedData::ambientProbeSettings.EnableAmbientProbe) {
-		if (SharedData::ambientProbeSettings.UseStaticAmbientProbe && !inWorld && !inReflection) {
+		if (SharedData::ambientProbeSettings.UseStaticAmbientProbe && !SharedData::InInterior && !inWorld && !inReflection) {
 			directionalAmbientColor = AmbientProbe::GetStaticDiffuseAmbient(ambientNormal, SampColorSampler);
 		}
 	}
@@ -5390,6 +5476,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #	endif
 
+#if defined(PIXL_LIQUID_ACTIVE)
+    if (inWorld && !inReflection && !SharedData::InMapMenu)
+        ContainedLiquids::Composite(input.WorldPosition.xyz, input.Position.xy,
+            directionalAmbientColor, dirLightColor * min(dirSoftShadow, dirDetailedShadow), DirLightDirection.xyz,
+            psout.Diffuse.xyz, psout.Diffuse.w);
+#endif
 	psout.MotionVectors.xy = screenMotionVector.xy;
 	psout.MotionVectors.zw = float2(0, psout.Diffuse.w);
 
@@ -5570,6 +5662,31 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		psout.Reflectance.xyz = 0.0f;
 #	endif
 	}
+
+#	if defined(PIXL_CSPOM) && defined(MATERIAL_LAYERS)
+	[branch] if (CSPOM::Enabled() && PIXL_CSPOM_DebugMode != 0u)
+	{
+		float3 cspomDebugColor = 0.0f.xxx;
+		if (PIXL_CSPOM_DebugMode == 1u)
+			cspomDebugColor = lerp(float3(0.10f, 0.10f, 0.10f), float3(0.05f, 0.85f, 1.0f), cspomSurfaceWeight);
+		else if (PIXL_CSPOM_DebugMode == 2u)
+			cspomDebugColor = saturate(pixelOffset).xxx;
+		else if (PIXL_CSPOM_DebugMode == 3u)
+			cspomDebugColor = float3(cspomSurfaceWeight, 1.0f - cspomViewZ, 0.05f);
+		else if (PIXL_CSPOM_DebugMode == 4u)
+			cspomDebugColor = float3(saturate(curvature * 4.0f), 0.12f, 0.02f);
+		else if (PIXL_CSPOM_DebugMode == 5u)
+			cspomDebugColor = float3(1.0f - saturate(length(uv - uvOriginal) * 64.0f), cspomSurfaceWeight, 0.12f);
+		else
+			cspomDebugColor = float3(CSPOM::DistanceWeight(viewPosition.z), 0.15f, 1.0f - CSPOM::DistanceWeight(viewPosition.z));
+		psout.Diffuse.xyz = cspomDebugColor;
+#		if defined(DEFERRED)
+		psout.Albedo.xyz = cspomDebugColor;
+		psout.Specular.xyz = 0.0f;
+		psout.Reflectance.xyz = 0.0f;
+#		endif
+	}
+#	endif
 
 #	if defined(GROUND_RESPONSE) && defined(LANDSCAPE)
 // v2.1 diagnostics fail closed. A stale/wrong b13 can no longer paint terrain

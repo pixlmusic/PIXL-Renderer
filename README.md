@@ -6,9 +6,24 @@ PIXL Renderer modernizes Skyrim's lighting, materials, characters, weather, terr
 
 Install one renderer, complete Quick Setup and play. An optional advanced tuning workspace provides deeper control over the image.
 
-> **Release:** PIXL Renderer 1.0.3. See installation requirements and validation limits below before installing. Optional DLSSG proxy and Neural Rendering paths remain experimental.
+> **Release candidate:** PIXL Renderer 1.0.4. See installation requirements and validation limits below before installing. Optional DLSSG proxy, Neural Rendering and Curved Surface Mapping paths remain experimental.
 
 > **DISCLAIMER: PIXL Renderer was HEAVILY created with AI assistance alongside testing; expect issues and bugs. This is an experimental branch, and we HIGHLY recommend Community Shaders' main branch for a consistent, well-tested and maintained playthrough.**
+
+## 1.0.4 renderer upgrade
+
+This source revision is the final integrated 1.0.4 release-candidate pass. It keeps the established Skyrim SE DirectX 11 renderer and shader-cache architecture while adding or substantially upgrading:
+
+- **Cinematic DOF 2.0** with one authoritative autofocus path, physical-lens controls, half-resolution adaptive bokeh, separate near/far treatment, foreground coverage, edge-aware reconstruction, sky protection and Director/Photo/Video integration;
+- **Contained Liquids** with effect-first potion classification, cached bottle-profile fitting, profile-aware volume fill, viscosity-aware slosh and bounded glass/liquid optics while preserving Skyrim's original bottle draw;
+- **Distant Life** for restrained, depth-aware distant settlement light activity that remains compatible with atmosphere, HDR and camera bokeh;
+- **Ground Response and water refinements** covering stable snow/mud deformation edges, material-specific response, flow, refraction, foam and temporal behavior;
+- **Window Life, Material Forge, directional SSS and character rendering updates** with safer classification, more stable projection/material response and live-tested skin-lighting defaults;
+- **PIXL Render Origin groundwork** for explicit large-world coordinate handling and validation without replacing Skyrim's camera-relative DX11 pipeline;
+- **reconstruction-aware camera and post processing** for TAA, DLSS/DLAA and FSR paths, with sharper UI separation and explicit history invalidation; and
+- **public-source provenance and release tooling** with preserved upstream notices, module-level attribution, third-party notices, reproducible audits and package hygiene checks.
+
+The release changelog and validation limits are documented in [docs/CHANGELOG-1.0.4.md](docs/CHANGELOG-1.0.4.md) and [docs/RELEASE_1.0.4_AUDIT.md](docs/RELEASE_1.0.4_AUDIT.md).
 
 ## What makes PIXL different?
 
@@ -27,7 +42,7 @@ The release includes a preloaded pipeline library. Additional or invalidated sha
 
 ## Renderer features
 
-PIXL currently ships **37 integrated rendering modules**, plus renderer-level systems for dialogue focus, quality orchestration, benchmarking, tuning and capture. One retired Hair Reconstruction source record remains solely for shared-shader ABI auditability and is not a runtime module.
+PIXL currently contains **40 integrated rendering modules**, plus renderer-level systems for dialogue focus, Director/Photo/Video workflows, quality orchestration, benchmarking, tuning and capture. Individual experimental modules can remain disabled by default. One retired Hair Reconstruction source record remains solely for shared-shader ABI auditability and is not a runtime module.
 
 ### Lighting and atmosphere
 
@@ -53,8 +68,9 @@ PIXL currently ships **37 integrated rendering modules**, plus renderer-level sy
 - **Strand Shading** gives hair the stable legacy PIXL directional, tangent-based specular response and controllable highlight shift. The experimental Hair Reconstruction module has been retired from the shipping pipeline in favour of this known-good path.
 - **Thin Surface** supports directional transmission and multiple translucent fabric/surface models.
 - **Actor Surface Effects** adds bounded, contact-driven snow, mud and wetness accumulation to the player and nearby NPCs. Effects evolve over time, remain anchored in actor/model space, and share Ground Response and weather state rather than painting a fixed biome-height band onto every character.
-- **Foliage Dynamics** improves grass and vegetation lighting, directional screen-space shadow reception, GGX-style specular response, subsurface transmission, UV-safe complex-grass normal handling and natural material controls.
+- **Foliage Dynamics** improves grass and vegetation lighting, Hybrid GI reception through stable two-sided macro normals, directional screen-space shadow reception, GGX-style specular response, subsurface transmission, UV-safe complex-grass normal handling and natural material controls.
 - **Rain Response** coordinates world-stable rain, gust layers, impact splashes, wet materials, puddles, ripples, roof-edge runoff and rain mist.
+- **Contained Liquids** classifies supported potions by their dominant effects, fits and caches bottle profiles, resolves volume-correct fill levels and renders damped family-specific slosh, absorption, scattering, refraction, Fresnel response, meniscus and bubbles. Ambiguous containers retain normal Skyrim rendering.
 
 ### Terrain, snow, mud and water
 
@@ -66,6 +82,7 @@ PIXL currently ships **37 integrated rendering modules**, plus renderer-level sy
 - **Terrain Seam** blends terrain and intersecting objects more naturally.
 - **Terrain Occlusion** derives terrain shadowing from height data and current sun direction.
 - **Distance Blend** smooths the visual transition between full-detail objects and LOD.
+- **Distant Life** adds restrained settlement and structure activity into distant scenery, with distance-scaled softness and intensity designed to read through atmosphere and cinematic depth of field without becoming a second bloom pass.
 - **Water Optics** adds surface-derived caustic bounce, underwater lighting, multi-scale flow response and high-resolution world-space contact/whitewater foam without a camera-following player decal.
 - **Waterbody** unifies close and distant water geometry/lighting to reduce the familiar water-LOD mismatch.
 - **Horizon Blend** cooperates with the separate HorizonBlend plugin when present and leaves vanilla far-water behaviour untouched when it is not.
@@ -73,7 +90,7 @@ PIXL currently ships **37 integrated rendering modules**, plus renderer-level sy
 ### Display, performance and creation tools
 
 - **Image Reconstruction** integrates TAA, NVIDIA DLSS/DLAA, AMD FidelityFX Super Resolution and supported frame-generation paths. The optional DX11/DX12 interop Neural Rendering path keeps depth, motion and UI resources synchronized through Present, exposes the installed runtime's legitimate quality/tuning controls, and provides a truthful DLSS/NR scene-input quality selector. NVIDIA does not expose a safe application-side INT4/FP8 switch or transformer-layer count through the validated Feature 18 contract, so PIXL does not present invented controls.
-- **Camera Suite** supports HDR10 output, 16-bit intermediate rendering, histogram exposure, highlight protection, local adaptation and optional experimental lens/sensor behaviour.
+- **Camera Suite** supports HDR10 output, 16-bit intermediate rendering, histogram exposure, highlight protection, local adaptation and Cinematic DOF 2.0. The DOF path uses physical lens parameters, unified actor/depth autofocus, adaptive bokeh, foreground coverage and reconstruction-aware temporal handling across gameplay, Photo, Video and Director modes.
 - **Pixel Capture** provides asynchronous lossless screenshots, HDR PNG output and a Director Photo Finish path with locked camera/input, temporary native/DLAA reconstruction and optional offline-quality Neural Rendering before the final composite is captured. Its 8/16/24-frame neural convergence modes run complete fresh model evaluations with valid depth, motion, jitter and history, then use a robust offline resolve to reject isolated temporal outliers without recursively feeding processed RGB back into a temporal model.
 - **Pulse Profiler** exposes frame timing, FPS, draw calls, VRAM, shader timing and repeatable A/B performance comparisons.
 - **PIXL World Benchmark** runs repeatable scene fly-throughs, records samples/settings and captures reference frames for performance and visual-fidelity comparison.
@@ -209,13 +226,13 @@ For the detailed upstream-to-PIXL module map, modification notice and attributio
 
 ## Licence
 
-The covered PIXL Renderer source is distributed under the **GNU General Public License version 3**, with the retained Community Shaders modding/linking additional permission in [EXCEPTIONS.md](EXCEPTIONS.md). The full GPL text is in [COPYING](COPYING).
+Unless a component says otherwise, the covered PIXL Renderer source is distributed under **GPL-3.0-or-later**, with the retained Community Shaders Modding Exception and GPL-3.0 Linking Exception (with Corresponding Source) in [EXCEPTIONS.md](EXCEPTIONS.md). The full GPL text is in [COPYING](COPYING).
 
 If you distribute a PIXL Renderer binary or a modified build, you must also provide the corresponding covered source under the applicable GPL-3.0 terms, preserve upstream and third-party notices, identify your modifications, and comply with the licences of bundled dependencies. Please read the actual licence files rather than treating this paragraph as legal advice.
 
 Public source packages include the renderer source, shaders, build configuration and required notices. They intentionally omit generated build output, local shader caches, credentials, machine configuration, training data and unrelated private research that is not compiled, linked, loaded or packaged with the renderer. If something is used to build a public PIXL Renderer binary, it belongs on the corresponding-source side of that line—no creative hide-and-seek with the GPL.
 
-Skyrim and related marks belong to Bethesda Softworks LLC. PIXL Renderer branding and PIXL-authored assets belong to PIXL Studio; upstream and third-party material retains its own copyright and licence.
+Skyrim and related marks belong to their respective owners. Source-code licensing is separate from project identity; see [TRADEMARKS.md](TRADEMARKS.md). Upstream and third-party material retains its own copyright and licence.
 
 ## Music and everything else
 

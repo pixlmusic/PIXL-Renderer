@@ -1,3 +1,9 @@
+// Community Shaders Wetness Effects-derived file.
+// Modified for PIXL Renderer, 2026: weather response, precipitation, runoff,
+// shore wetness and PIXL runtime/UI integration.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Additional permissions are described in the repository EXCEPTIONS.md.
+
 #include "RainResponse.h"
 #include "I18n/I18n.h"
 #include "State.h"
@@ -88,7 +94,7 @@ namespace
 		float MaxDistance = 5200.0f;
 		float NearSizeDistance = 1700.0f;
 		float EmitterSpacing = 56.0f;
-		float pad0 = 0.0f;
+		float DeltaTime = 0.0f;
 
 		float2 RenderSize = { 1.0f, 1.0f };
 		float2 InvRenderSize = { 1.0f, 1.0f };
@@ -108,6 +114,7 @@ namespace
 	std::unique_ptr<Texture2D> g_roofRunoffStateB;
 	std::unique_ptr<Texture2D> g_roofRunoffDropMask;
 	bool g_roofRunoffStateFlip = false;
+	bool g_roofRunoffHistoryValid = false;
 
 	winrt::com_ptr<ID3D11ComputeShader> g_roofRunoffGenerateCS;
 	winrt::com_ptr<ID3D11ComputeShader> g_roofRunoffCompositeCS;
@@ -1477,6 +1484,13 @@ void RainResponse::EnsureRoofRunoffResources(uint32_t a_width, uint32_t a_height
 		"RainResponse::RoofRunoffDropMask");
 
 	g_roofRunoffStateFlip = false;
+	g_roofRunoffHistoryValid = false;
+	if (!roofRunoffEdgeMask || !g_roofRunoffStateA || !g_roofRunoffStateB || !g_roofRunoffDropMask ||
+		!roofRunoffEdgeMask->uav || !g_roofRunoffStateA->uav ||
+		!g_roofRunoffStateB->uav || !g_roofRunoffDropMask->uav) {
+		logger::error("[RainResponse] Roof runoff resource creation failed; pass disabled until resources are rebuilt");
+		return;
+	}
 
 	const float clearFloat[4]{ 0.0f, 0.0f, 0.0f, 0.0f };
 	const UINT clearUint[4]{ 0u, 0u, 0u, 0u };
@@ -1543,6 +1557,7 @@ void RainResponse::ClearShaderCache()
 	g_roofRunoffCompositeCS = nullptr;
 	g_roofRunoffGenerateAttempted = false;
 	g_roofRunoffCompositeAttempted = false;
+	g_roofRunoffHistoryValid = false;
 
 	logger::info("[RainResponse] Released direct roof-runoff kernels for selective hot reload");
 }
@@ -1554,12 +1569,15 @@ void RainResponse::DrawRoofRunoff()
 		!settings.EnableRainParticleEnhancement ||
 		settings.RainRunoffStrength <= 0.0f ||
 		Util::IsInterior()) {
+		g_roofRunoffHistoryValid = false;
 		return;
 	}
 
 	const float rain = GetLiveRainIntensity();
-	if (rain <= 0.015f)
+	if (rain <= 0.015f) {
+		g_roofRunoffHistoryValid = false;
 		return;
+	}
 
 	auto* renderer = globals::game::renderer;
 	auto* context = globals::d3d::context;
@@ -1567,17 +1585,23 @@ void RainResponse::DrawRoofRunoff()
 	auto* deferred = globals::deferred;
 	if (!renderer || !context || !state || !deferred ||
 		!state->sharedDataCB || !state->featureDataCB ||
-		!*globals::game::perFrame.get())
+		!*globals::game::perFrame.get()) {
+		g_roofRunoffHistoryValid = false;
 		return;
+	}
 
 	auto& main = renderer->GetRuntimeData().renderTargets[deferred->forwardRenderTargets[0]];
-	if (!main.texture || !main.UAV)
+	if (!main.texture || !main.UAV) {
+		g_roofRunoffHistoryValid = false;
 		return;
+	}
 
 	D3D11_TEXTURE2D_DESC mainDesc{};
 	main.texture->GetDesc(&mainDesc);
-	if (mainDesc.Width == 0 || mainDesc.Height == 0)
+	if (mainDesc.Width == 0 || mainDesc.Height == 0) {
+		g_roofRunoffHistoryValid = false;
 		return;
+	}
 
 	// Detection and temporal state stay at active resolution for cost, while the
 	// final droplet mask is display-sized so droplets remain crisp under DLSS/FSR.
@@ -1595,8 +1619,10 @@ void RainResponse::DrawRoofRunoff()
 		!roofRunoffEdgeMask->srv || !roofRunoffEdgeMask->uav ||
 		!g_roofRunoffStateA->srv || !g_roofRunoffStateA->uav ||
 		!g_roofRunoffStateB->srv || !g_roofRunoffStateB->uav ||
-		!g_roofRunoffDropMask->srv || !g_roofRunoffDropMask->uav)
+		!g_roofRunoffDropMask->srv || !g_roofRunoffDropMask->uav) {
+		g_roofRunoffHistoryValid = false;
 		return;
+	}
 
 	auto& precipDepth =
 		renderer->GetDepthStencilData().depthStencils[
@@ -1604,15 +1630,28 @@ void RainResponse::DrawRoofRunoff()
 
 	ID3D11ShaderResourceView* sceneDepth = Util::GetCurrentSceneDepthSRV(false);
 	ID3D11ShaderResourceView* precipitationDepth = precipDepth.depthSRV;
-	if (!sceneDepth || !precipitationDepth)
+	if (!sceneDepth || !precipitationDepth) {
+		g_roofRunoffHistoryValid = false;
 		return;
+	}
 
 	ID3D11ComputeShader* detectCS = GetRoofRunoffDetectCS();
 	ID3D11ComputeShader* accumulateCS = GetRoofRunoffResolveCS();
 	ID3D11ComputeShader* generateCS = GetRoofRunoffGenerateCS();
 	ID3D11ComputeShader* compositeCS = GetRoofRunoffCompositeCS();
-	if (!detectCS || !accumulateCS || !generateCS || !compositeCS)
+	if (!detectCS || !accumulateCS || !generateCS || !compositeCS) {
+		g_roofRunoffHistoryValid = false;
 		return;
+	}
+
+	// The pass does not run while rain is absent or the world is ineligible.
+	// Clear its reservoirs on re-entry so old water cannot reappear.
+	if (!g_roofRunoffHistoryValid) {
+		const float clear[4]{ 0.0f, 0.0f, 0.0f, 0.0f };
+		context->ClearUnorderedAccessViewFloat(g_roofRunoffStateA->uav.get(), clear);
+		context->ClearUnorderedAccessViewFloat(g_roofRunoffStateB->uav.get(), clear);
+		g_roofRunoffStateFlip = false;
+	}
 
 	if (!g_roofRunoffTuningCB) {
 		g_roofRunoffTuningCB = std::make_unique<ConstantBuffer>(
@@ -1624,6 +1663,7 @@ void RainResponse::DrawRoofRunoff()
 	runoffTuning.MaxDistance = std::clamp(g_roofRunoffDistance, 600.0f, 16000.0f);
 	runoffTuning.NearSizeDistance = std::clamp(runoffTuning.MaxDistance * 0.34f, 850.0f, 2200.0f);
 	runoffTuning.EmitterSpacing = 56.0f;
+	runoffTuning.DeltaTime = std::clamp(static_cast<float>(RE::GetSecondsSinceLastFrame()), 0.0f, 1.0f / 15.0f);
 	runoffTuning.RenderSize = {
 		static_cast<float>(activeWidth),
 		static_cast<float>(activeHeight)
@@ -1753,6 +1793,7 @@ void RainResponse::DrawRoofRunoff()
 	}
 
 	g_roofRunoffStateFlip = !g_roofRunoffStateFlip;
+	g_roofRunoffHistoryValid = true;
 }
 
 void RainResponse::LoadSettings(json& o_json)

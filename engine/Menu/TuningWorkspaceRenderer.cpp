@@ -3,6 +3,7 @@
 #include "Director/DirectorCameraPath.h"
 
 #include <RE/C/CrosshairPickData.h>
+#include <RE/C/Calendar.h>
 #include <RE/F/FreeCameraState.h>
 #include <RE/H/HUDMenu.h>
 #include <SKSE/InputMap.h>
@@ -19,6 +20,7 @@
 #include <format>
 #include <imgui.h>
 #include <numbers>
+#include <optional>
 #include <ranges>
 #include <unordered_map>
 #include <unordered_set>
@@ -49,6 +51,9 @@
 #include "Modules/StrandShading.h"
 #include "Modules/ThinSurface.h"
 #include "Modules/CameraSuite.h"
+#include "Modules/ContainedLiquids.h"
+#include "Modules/CurvedSurfaceMapping.h"
+#include "Modules/DistantLife.h"
 #include "Modules/ImageReconstruction.h"
 #include "Modules/PixelCapture.h"
 #include "Modules/PulseProfiler.h"
@@ -69,7 +74,9 @@
 #include "SceneSettingsManager.h"
 #include "SettingsOverrideManager.h"
 #include "State.h"
+#include "Renderer/ExternalPostProcessing.h"
 #include "Renderer/QualityProfiles.h"
+#include "Renderer/RenderOrigin.h"
 #include "Util.h"
 #include "Utils/UI.h"
 #include "Utils/FileSystem.h"
@@ -78,6 +85,13 @@
 
 namespace
 {
+	constexpr std::string_view kExperimentalCategory = "EXPERIMENTAL";
+	constexpr std::string_view kRenderOriginTool = "RenderOrigin";
+	constexpr std::string_view kENBTranslatorTool = "ENBTranslator";
+	std::optional<size_t> g_pendingExperimentalMenu;
+	bool g_openExperimentalWarning = false;
+	bool g_dismissExperimentalWarning = false;
+
 	// Core built-in menu names that always appear first in the menu list
 	// These are canonical identifiers used for logic — NOT translated
 	// Color for the [ALPHA]/[BETA] stage marker. Alpha (less stable) reads as an error,
@@ -165,6 +179,8 @@ namespace
 
 		float originalHour = 12.0f;
 		float photoHour = 12.0f;
+		float originalTimescale = 20.0f;
+		bool timescaleSnapshotValid = false;
 		bool fovSnapshotValid = false;
 		float originalWorldFov = 75.0f;
 		float photoWorldFov = 75.0f;
@@ -233,6 +249,18 @@ namespace
 	};
 
 	DirectorVideoState g_directorVideo{};
+
+	void SetDirectorGameTimePaused(bool paused)
+	{
+		auto* calendar = RE::Calendar::GetSingleton();
+		if (!calendar || !calendar->timeScale)
+			return;
+		if (!g_directorPhotoMode.timescaleSnapshotValid) {
+			g_directorPhotoMode.originalTimescale = calendar->GetTimescale();
+			g_directorPhotoMode.timescaleSnapshotValid = true;
+		}
+		calendar->timeScale->value = paused ? 0.0f : std::max(g_directorPhotoMode.originalTimescale, 0.01f);
+	}
 	std::atomic_bool g_directorExitRequested{ false };
 	std::atomic_bool g_directorExitTaskScheduled{ false };
 	std::atomic_bool g_directorExitTaskComplete{ false };
@@ -599,6 +627,8 @@ namespace
 		logger::info("[PIXL Director] Cleared working Video route: {}", reason);
 	}
 
+	void RefreshDirectorVideoPathList();
+
 	void UpdateDirectorVideoCellBoundary()
 	{
 		auto* player = RE::PlayerCharacter::GetSingleton();
@@ -610,10 +640,12 @@ namespace
 				g_directorPhotoMode.cameraMotionValid = false;
 				g_tunerInspectionMoving = false;
 				g_directorVideo.cellBound = false;
+				RefreshDirectorVideoPathList();
 			}
 			return;
 		}
 		const std::uint32_t currentCell = cell->GetFormID();
+		const bool cellChanged = !g_directorVideo.cellBound || g_directorVideo.cellFormID != currentCell;
 		if (g_directorVideo.cellBound && g_directorVideo.cellFormID != currentCell) {
 			ClearDirectorVideoWorkingPath("player entered a different cell");
 			g_directorPhotoMode.cameraAnchorValid = false;
@@ -622,11 +654,24 @@ namespace
 		}
 		g_directorVideo.cellFormID = currentCell;
 		g_directorVideo.cellBound = true;
+		if (cellChanged)
+			RefreshDirectorVideoPathList();
+	}
+
+	[[nodiscard]] std::filesystem::path GetDirectorVideoPathRoot()
+	{
+		return Util::PathHelpers::GetPluginPath() / "Director" / "Paths";
 	}
 
 	[[nodiscard]] std::filesystem::path GetDirectorVideoPathDirectory()
 	{
-		return Util::PathHelpers::GetPluginPath() / "Director" / "Paths";
+		return GetDirectorVideoPathRoot() / std::format("{:08X}", g_directorVideo.cellFormID);
+	}
+
+	[[nodiscard]] std::string DirectorSavedPathLabel(const std::filesystem::path& path)
+	{
+		return path.stem().string() +
+			(path.parent_path() == GetDirectorVideoPathRoot() ? "  (legacy / unbound)" : "");
 	}
 
 	[[nodiscard]] std::string SanitiseDirectorVideoPathName(std::string name)
@@ -643,16 +688,21 @@ namespace
 	void RefreshDirectorVideoPathList()
 	{
 		g_directorVideo.savedPaths.clear();
-		std::error_code error;
-		const auto directory = GetDirectorVideoPathDirectory();
-		if (!std::filesystem::is_directory(directory, error) || error)
+		if (!g_directorVideo.cellBound || g_directorVideo.cellFormID == 0)
 			return;
-		for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
-			if (error)
-				break;
-			if (entry.is_regular_file(error) && !error && entry.path().extension() == ".json")
-				g_directorVideo.savedPaths.push_back(entry.path());
-			error.clear();
+		std::error_code error;
+		for (const auto& directory : { GetDirectorVideoPathDirectory(), GetDirectorVideoPathRoot() }) {
+			if (!std::filesystem::is_directory(directory, error) || error) {
+				error.clear();
+				continue;
+			}
+			for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
+				if (error)
+					break;
+				if (entry.is_regular_file(error) && !error && entry.path().extension() == ".json")
+					g_directorVideo.savedPaths.push_back(entry.path());
+				error.clear();
+			}
 		}
 		std::ranges::sort(g_directorVideo.savedPaths);
 	}
@@ -660,7 +710,12 @@ namespace
 	bool SaveDirectorVideoPath()
 	{
 		try {
+			if (!g_directorVideo.cellBound || g_directorVideo.cellFormID == 0) {
+				logger::warn("[PIXL Director] Cannot save Video path without a current cell");
+				return false;
+			}
 			g_directorVideo.path.name = SanitiseDirectorVideoPathName(g_directorVideo.path.name);
+			g_directorVideo.path.cellFormID = g_directorVideo.cellFormID;
 			const auto directory = GetDirectorVideoPathDirectory();
 			std::error_code error;
 			std::filesystem::create_directories(directory, error);
@@ -668,7 +723,14 @@ namespace
 				logger::error("[PIXL Director] Cannot create Video path directory: {}", error.message());
 				return false;
 			}
-			const auto path = directory / (g_directorVideo.path.name + ".json");
+			// A new save must not silently replace a previously authored flythrough.
+			std::filesystem::path path = directory / (g_directorVideo.path.name + ".json");
+			for (std::uint32_t copy = 2; std::filesystem::exists(path, error) && !error && copy < 10000; ++copy)
+				path = directory / std::format("{}_{}.json", g_directorVideo.path.name, copy);
+			if (error || std::filesystem::exists(path)) {
+				logger::error("[PIXL Director] Cannot choose a unique Video path filename");
+				return false;
+			}
 			std::ofstream stream(path, std::ios::out | std::ios::trunc);
 			if (!stream) {
 				logger::error("[PIXL Director] Cannot save Video path '{}'", path.string());
@@ -705,6 +767,14 @@ namespace
 				logger::warn("[PIXL Director] Rejected Video path '{}': {}", path.string(), error);
 				return false;
 			}
+			if (!g_directorVideo.cellBound || g_directorVideo.cellFormID == 0 ||
+				(loaded->cellFormID != 0 && loaded->cellFormID != g_directorVideo.cellFormID)) {
+				logger::warn("[PIXL Director] Rejected Video path '{}' for a different or unavailable cell", path.string());
+				return false;
+			}
+			// Older unbound files remain loadable by explicit selection. The working
+			// copy is bound to this cell before playback or a future save.
+			loaded->cellFormID = g_directorVideo.cellFormID;
 			g_directorVideo.path = std::move(*loaded);
 			g_directorVideo.selectedPoint = 0;
 			g_directorVideo.nextPointId = 1;
@@ -820,6 +890,41 @@ namespace
 		RebuildDirectorVideoPath();
 	}
 
+	void SaveDirectorVideoCameraComponentToSelectedPoint(bool position)
+	{
+		if (g_directorVideo.selectedPoint >= g_directorVideo.path.points.size())
+			return;
+		auto* playerCamera = RE::PlayerCamera::GetSingleton();
+		auto* freeCameraState = playerCamera && playerCamera->IsInFreeCameraMode()
+			? static_cast<RE::FreeCameraState*>(playerCamera->currentState.get())
+			: nullptr;
+		if (!freeCameraState)
+			return;
+
+		g_directorVideo.playback = DirectorVideoPlaybackState::Paused;
+		auto& point = g_directorVideo.path.points[g_directorVideo.selectedPoint];
+		if (position) {
+			point.worldPosition = {
+				freeCameraState->translation.x,
+				freeCameraState->translation.y,
+				freeCameraState->translation.z
+			};
+		} else {
+			point.worldRotation = DirectorCameraRotation(
+				freeCameraState->rotation.x, freeCameraState->rotation.y);
+			point.useLookAt = false;
+			point.followPathDirection = false;
+			const auto forward = DirectorCameraForward(
+				freeCameraState->rotation.x, freeCameraState->rotation.y);
+			point.lookAtPosition = {
+				point.worldPosition.x + forward.x * 512.0f,
+				point.worldPosition.y + forward.y * 512.0f,
+				point.worldPosition.z + forward.z * 512.0f
+			};
+		}
+		RebuildDirectorVideoPath();
+	}
+
 	void MoveDirectorCameraToPoint(std::size_t index)
 	{
 		if (index >= g_directorVideo.path.points.size())
@@ -867,6 +972,7 @@ namespace
 		g_tunerInspectionMoving = false;
 		g_directorVideo.playbackStartPending = true;
 		g_directorVideo.playback = DirectorVideoPlaybackState::Playing;
+		SetDirectorGameTimePaused(false);
 		ApplyDirectorVideoTimeline(g_directorVideo.playbackTime);
 	}
 
@@ -947,6 +1053,7 @@ namespace
 			slider("Environment Lighting", &s.EnvironmentProbeScale, 0.0f, 2.0f);
 			slider("Sky Lighting", &s.SkyProbeScale, 0.0f, 2.0f);
 			slider("Environment Saturation", &s.EnvironmentProbeSaturation, 0.0f, 2.0f);
+			slider("Interior Ambient", &s.InteriorAmbientScale, 0.0f, 1.0f);
 		} else if (name == "Atmosphere") {
 			auto& s = globals::pipeline::atmosphere.settings;
 			toggle("Enabled", &s.enabled);
@@ -957,7 +1064,7 @@ namespace
 		} else if (name == "ContactShadows") {
 			auto& s = globals::pipeline::contactShadows.bendSettings;
 			toggle("Enabled", &s.Enable);
-			slider("Contact Strength", &s.Strength, 0.0f, 2.0f);
+			slider("Directional SSS Strength", &s.Strength, 0.0f, 2.0f);
 			slider("Surface Thickness", &s.SurfaceThickness, 0.0f, 0.2f);
 			slider("Shadow Contrast", &s.ShadowContrast, 0.0f, 2.0f);
 		} else if (name == "LinearLightCore") {
@@ -999,7 +1106,10 @@ namespace
 			slider("Ambient Occlusion", &s.VertexAOStrength, 0.0f, 2.0f);
 			slider("Specular Response", &s.LegacyPhysicalSpecularScale, 0.0f, 1.5f);
 			slider("Metalness Inference", &s.LegacyMetalInferenceStrength, 0.0f, 1.5f);
-			slider("Local Light Falloff", &s.PhysicalLocalLightFalloffStrength, 0.0f, 1.0f);
+			toggle("Inverse-Square Local Lights", &s.EnablePhysicalLocalLightFalloff);
+			ImGui::BeginDisabled(s.EnablePhysicalLocalLightFalloff == 0);
+			slider("Inverse-Square Blend", &s.PhysicalLocalLightFalloffStrength, 0.0f, 1.0f);
+			ImGui::EndDisabled();
 		} else if (name == "MaterialLayers") {
 			auto& s = globals::pipeline::materialLayers.settings;
 			toggle("Complex Materials", &s.EnableComplexMaterial);
@@ -1699,6 +1809,8 @@ namespace
 				g_directorVideo.freezeWorld;
 			nativeCamera->ToggleFreeCameraMode(freezeWorld);
 			const bool entered = nativeCamera->IsInFreeCameraMode();
+			if (entered)
+				SetDirectorGameTimePaused(true);
 			if (!entered && g_smoothCamLease) {
 				if (g_smoothCamCrosshairLease) {
 					g_smoothCam->ReleaseCrosshairControl(SKSE::GetPluginHandle());
@@ -1791,6 +1903,7 @@ namespace
 			g_directorPhotoMode.playerAlphaSnapshotValid = false;
 			g_directorPhotoMode.originalPlayerAlpha = 1.0f;
 			g_directorPhotoMode.fovSnapshotValid = false;
+			g_directorPhotoMode.timescaleSnapshotValid = false;
 			g_directorPhotoMode.originalWorldFov = 75.0f;
 			g_directorPhotoMode.photoWorldFov = 75.0f;
 			WeatherManager::GetSingleton()->SetTemporaryWeatherSource(
@@ -1833,6 +1946,10 @@ namespace
 					g_directorPhotoMode.originalWorldFov) > 0.001f;
 			const float originalFov =
 				g_directorPhotoMode.originalWorldFov;
+			const bool restoreTimescale =
+				g_directorPhotoMode.timescaleSnapshotValid;
+			const float originalTimescale =
+				g_directorPhotoMode.originalTimescale;
 
 			auto* taskInterface =
 				SKSE::GetTaskInterface();
@@ -1857,7 +1974,9 @@ namespace
 				 originalHour,
 				 originalWeather,
 				 restoreFov,
-				 originalFov]() {
+				 originalFov,
+				 restoreTimescale,
+				 originalTimescale]() {
 					logger::info(
 						"[PIXL Director] Exit stage 1/4: releasing native free camera");
 					auto* camera =
@@ -1887,6 +2006,10 @@ namespace
 						"[PIXL Director] Exit stage 2/4: restoring changed world state");
 					if (restoreTime)
 						ApplyDirectorHour(originalHour, false);
+					if (restoreTimescale) {
+						if (auto* calendar = RE::Calendar::GetSingleton(); calendar && calendar->timeScale)
+							calendar->timeScale->value = std::max(originalTimescale, 0.01f);
+					}
 					if (restoreWeather) {
 						if (auto* sky = RE::Sky::GetSingleton()) {
 							sky->ReleaseWeatherOverride();
@@ -2323,8 +2446,9 @@ namespace
 		if (!enabled)
 			return;
 
-		// Focus targeting only records the desired offline focal plane. Director
-		// intentionally keeps realtime PIXL + vanilla DOF disabled while framing.
+		// The active target is consumed by Camera Suite on the next HDR update. The
+		// target remains a Director concern so photo/video framing does not fight
+		// gameplay autofocus or dialogue tracking.
 	}
 
 	bool UpdateDirectorFocusTarget()
@@ -3297,8 +3421,12 @@ namespace
 		RE::FreeCameraState* freeCameraState)
 	{
 		if (!IsDirectorVideoMode() ||
-			g_directorVideo.playback != DirectorVideoPlaybackState::Playing)
+			g_directorVideo.playback != DirectorVideoPlaybackState::Playing) {
+			if (IsDirectorVideoMode())
+				SetDirectorGameTimePaused(true);
 			return false;
+		}
+		SetDirectorGameTimePaused(false);
 
 		// Director playback is authoritative only while the author is not moving
 		// the native free camera. Holding the existing Tuner fly-camera modifier
@@ -3322,10 +3450,13 @@ namespace
 			return false;
 		}
 
+		// A shader compile or streaming hitch must not skip a quarter-second of
+		// authored camera motion in one displayed frame. Let the preview clock
+		// slow during a stall and resume smoothly on the next frame.
 		const float delta = g_directorVideo.playbackStartPending ? 0.0f : std::clamp(
 			static_cast<float>(RE::GetSecondsSinceLastFrame()),
 			0.0f,
-			0.25f);
+			1.0f / 30.0f);
 		g_directorVideo.playbackStartPending = false;
 		g_directorVideo.playbackTime += delta * std::clamp(g_directorVideo.previewRate, 0.1f, 4.0f);
 		if (g_directorVideo.loop) {
@@ -3829,23 +3960,27 @@ namespace
 			width - 30.0f * scale);
 	}
 
-	void DrawDirectorBottomBar(
+	void DrawPIXLStatusIsland(
 		ImDrawList* draw,
 		const ImVec2& displaySize,
-		float scale)
+		float scale,
+		bool tunerMode = false)
 	{
 		if (!draw || displaySize.x <= 0.0f || displaySize.y <= 0.0f)
 			return;
 
-		// This panel is deliberately wide: it is a composition aid, not another
-		// tiny tooltip. The effect rail uses the available screen width while the
-		// short commands remain legible at narrower resolutions.
-		const float margin = 24.0f * scale;
-		const float width = std::max(0.0f, displaySize.x - margin * 2.0f);
+		// Two visual rows: identity and valid commands above, live lens/effect
+		// state below. Keep the scene visible; the viewfinder is the main canvas.
+		const float margin = 20.0f * scale;
+		const float leftClearance = tunerMode ? 84.0f * scale : margin;
+		const float width = std::min(1040.0f * scale,
+			std::max(0.0f, displaySize.x - leftClearance - margin));
 		if (width < 260.0f * scale)
 			return;
-		const float height = 86.0f * scale;
-		const ImVec2 min(margin, displaySize.y - height - 19.0f * scale);
+		const float height = 54.0f * scale;
+		const bool compact = width < 780.0f * scale;
+		const ImVec2 min(tunerMode ? displaySize.x - margin - width : (displaySize.x - width) * 0.5f,
+			displaySize.y - height - 13.0f * scale);
 		const ImVec2 max(min.x + width, min.y + height);
 
 		draw->AddRectFilled(min, max, IM_COL32(5, 8, 11, 222), 4.0f * scale);
@@ -3854,61 +3989,157 @@ namespace
 			ImVec2(min.x + std::min(width * 0.18f, 118.0f * scale), min.y + 1.0f * scale),
 			PIXLUI::Colors::CyanBright, 1.5f * scale);
 
-		CameraSuite::Settings cameraSettings{};
-		{
-			std::lock_guard<std::mutex> lock(globals::pipeline::cameraSuite.settingsMutex);
-			cameraSettings = globals::pipeline::cameraSuite.settings;
+		auto& reconstruction = globals::pipeline::imageReconstruction;
+		const bool nrRequested = reconstruction.settings.neuralRenderingEnabled ||
+			reconstruction.IsPhotoNeuralRenderingActive();
+		const bool nrReady = (reconstruction.IsNeuralRenderingConfiguredForSession() &&
+			reconstruction.CanUsePhotoNeuralRendering()) ||
+			reconstruction.IsPhotoNeuralRenderingActive();
+		const auto fgState = reconstruction.GetFrameGenerationState();
+		const bool fgRequested = reconstruction.settings.frameGenerationMode != 0;
+		const bool fgReady = fgState == ImageReconstruction::FrameGenerationState::Active;
+		const bool limiter = reconstruction.settings.frameLimitMode != 0;
+		const bool vsync = globals::game::renderer &&
+			globals::game::renderer->GetRuntimeData().presentInterval != 0;
+		const auto method = reconstruction.GetUpscaleMethod();
+		const unsigned quality = std::min(reconstruction.GetEffectiveQualityMode(), 4u);
+		constexpr const char* qualitySuffix[] = { "AA", "Q", "B", "P", "UP" };
+		char upscalerLabel[32]{};
+		switch (method) {
+		case ImageReconstruction::UpscaleMethod::kDLSS:
+			if (quality == 0)
+				std::snprintf(upscalerLabel, sizeof(upscalerLabel), "DLAA");
+			else
+				std::snprintf(upscalerLabel, sizeof(upscalerLabel), "DLSS %s", qualitySuffix[quality]);
+			break;
+		case ImageReconstruction::UpscaleMethod::kFSR:
+			std::snprintf(upscalerLabel, sizeof(upscalerLabel), "FSR 3 %s", qualitySuffix[quality]);
+			break;
+		case ImageReconstruction::UpscaleMethod::kTAA:
+			std::snprintf(upscalerLabel, sizeof(upscalerLabel), "TAA");
+			break;
+		default:
+			std::snprintf(upscalerLabel, sizeof(upscalerLabel), "OFF");
+			break;
 		}
-		auto* capture = GetDirectorCapture();
-		const bool graded = cameraSettings.lookOpacity > 0.001f;
-		const bool toneAdjusted = std::abs(cameraSettings.cameraExposureCompensationEV) > 0.01f ||
-			std::abs(cameraSettings.cameraContrast - 1.0f) > 0.01f ||
-			std::abs(cameraSettings.cameraSaturation - 1.0f) > 0.01f;
-		struct EffectSegment { const char* label; bool enabled; };
-		const std::array<EffectSegment, 8> effects{{
-			{ "FRAME", true },
-			{ "LENS", true },
-			{ "LOOK", graded },
-			{ "TONE", toneAdjusted },
-			{ "BLOOM", cameraSettings.enableBloom && cameraSettings.bloomStrength > 0.001f },
-			{ "FINISH", capture && capture->photoFinishEnabled },
-			{ "NEURAL", capture && capture->photoFinishNeuralEnabled },
-			{ "PIXL", capture && capture->photoWatermarkEnabled }
+		char limiterLabel[32]{};
+		if (limiter)
+			std::snprintf(limiterLabel, sizeof(limiterLabel), "FL %.0f", reconstruction.settings.frameLimitFPS);
+		else
+			std::snprintf(limiterLabel, sizeof(limiterLabel), "FL OFF");
+		const char* nrLabel = nrReady ? "NR ON" : nrRequested ? "NR SETUP" : "NR OFF";
+		const char* fgLabel = fgReady ? "FG ON" :
+			fgState == ImageReconstruction::FrameGenerationState::TemporarilySuspended ? "FG PAUSE" :
+			fgRequested ? "FG WAIT" : "FG OFF";
+		const char* vsyncLabel = compact ? (vsync ? "VS ON" : "VS OFF") :
+			(vsync ? "V-SYNC ON" : "V-SYNC OFF");
+		struct DashboardIndicator { const char* label; bool enabled; bool pending; };
+		const std::array<DashboardIndicator, 5> indicators{{
+			{ nrLabel, nrReady, nrRequested && !nrReady },
+			{ fgLabel, fgReady, fgRequested && !fgReady },
+			{ limiterLabel, limiter, false },
+			{ vsyncLabel, vsync, false },
+			{ upscalerLabel, method != ImageReconstruction::UpscaleMethod::kNONE, false }
 		}};
 
-		char lensText[128]{};
-		std::snprintf(lensText, sizeof(lensText), "LENS %.0f DEG   MOVE %.0f%%   SHIFT FOR FAST MOVE",
-			GetDirectorWorldFov(), GetDirectorCameraMoveSpeed() * 100.0f);
-		const char* commands = "HOME EXIT   END CAPTURE   INSERT EFFECTS   DELETE HIDE UI   SHIFT+ENTER PIXL";
-		PIXLUI::DrawClippedOverlayText(draw, ImVec2(min.x + 14.0f * scale, min.y + 9.0f * scale),
-			PIXLUI::Colors::TextMuted, commands, width - 28.0f * scale);
-		PIXLUI::DrawClippedOverlayText(draw, ImVec2(min.x + 14.0f * scale, min.y + 28.0f * scale),
-			PIXLUI::Colors::CyanSoft, lensText, width - 28.0f * scale);
+		const auto* menu = globals::menu;
+		const std::string photoKey = menu ? Util::Input::KeyIdToString(menu->GetSettings().PhotoModeKey) : "HOME";
+		const std::string closeKey = menu ? Util::Input::KeyIdToString(menu->GetSettings().ToggleKey) : "PAGE DOWN";
+		const std::string videoKey = menu ? Util::Input::KeyIdToString(menu->GetSettings().VideoModeKey) : "CTRL + HOME";
+		const std::string commands = tunerMode
+			? std::format("{} CLOSE   {} PHOTO   {} VIDEO",
+				closeKey.empty() ? "PAGE DOWN" : closeKey,
+				photoKey.empty() ? "HOME" : photoKey,
+				videoKey.empty() ? "CTRL + HOME" : videoKey)
+			: (compact
+				? std::format("{} EXIT   END CAPTURE   INS PANEL   DEL CLEAN   {} PIXL",
+					photoKey.empty() ? "HOME" : photoKey,
+					closeKey.empty() ? "PAGE DOWN" : closeKey)
+				: std::format("{} EXIT   END CAPTURE   INSERT {}   DELETE CLEAN VIEW   {} PIXL",
+					photoKey.empty() ? "HOME" : photoKey,
+					g_directorPhotoMode.quickPanelVisible ? "HIDE PANEL" : "SHOW PANEL",
+					closeKey.empty() ? "PAGE DOWN" : closeKey));
+		const float titleX = min.x + 14.0f * scale;
+		const float commandX = titleX + 148.0f * scale;
+		PIXLUI::DrawClippedOverlayText(draw, ImVec2(titleX, min.y + 8.0f * scale),
+			PIXLUI::Colors::CyanBright, tunerMode ? "PIXL / TUNER" : "PIXL / PHOTO", 136.0f * scale);
+		PIXLUI::DrawClippedOverlayText(draw, ImVec2(commandX, min.y + 8.0f * scale),
+			PIXLUI::Colors::TextMuted, commands.c_str(), max.x - commandX - 14.0f * scale);
 
-		const float railMinX = min.x + 14.0f * scale;
+		char lensText[96]{};
+		if (tunerMode)
+			std::snprintf(lensText, sizeof(lensText), "%s",
+				g_directorPhotoMode.active ? "CAMERA INSPECTION" : "LIVE SCENE");
+		else
+			std::snprintf(lensText, sizeof(lensText), "FOV %.0f  |  SPEED %.0f%%",
+				GetDirectorWorldFov(), GetDirectorCameraMoveSpeed() * 100.0f);
+		PIXLUI::DrawClippedOverlayText(draw, ImVec2(titleX, min.y + 31.0f * scale),
+			PIXLUI::Colors::Warning,
+			tunerMode ? (compact ? "SHIFT INSPECT" : "HOLD SHIFT TO INSPECT") :
+				(compact ? "SHIFT BOOST" : "SHIFT  FAST MOVE"),
+			(compact ? 99.0f : 167.0f) * scale);
+		const float lensX = titleX + (compact ? 106.0f : 174.0f) * scale;
+		PIXLUI::DrawClippedOverlayText(draw, ImVec2(lensX, min.y + 31.0f * scale),
+			PIXLUI::Colors::TextMuted, lensText,
+			std::max(0.0f, std::min((compact ? 105.0f : 180.0f) * scale,
+				max.x - lensX - 14.0f * scale)));
+
+		const float railMinX = lensX + (compact ? 112.0f : 190.0f) * scale;
 		const float railMaxX = max.x - 14.0f * scale;
+		if (railMaxX <= railMinX + 40.0f * scale)
+			return;
 		const float segmentGap = 3.0f * scale;
-		const float segmentWidth = (railMaxX - railMinX - segmentGap * static_cast<float>(effects.size() - 1)) /
-			static_cast<float>(effects.size());
-		const float segmentTop = min.y + 55.0f * scale;
-		const float segmentBottom = max.y - 11.0f * scale;
-		for (std::size_t index = 0; index < effects.size(); ++index) {
+		const float segmentWidth = (railMaxX - railMinX - segmentGap * static_cast<float>(indicators.size() - 1)) /
+			static_cast<float>(indicators.size());
+		if (segmentWidth < 24.0f * scale)
+			return;
+		const float segmentTop = min.y + 29.0f * scale;
+		const float segmentBottom = max.y - 8.0f * scale;
+		for (std::size_t index = 0; index < indicators.size(); ++index) {
 			const float x0 = railMinX + static_cast<float>(index) * (segmentWidth + segmentGap);
 			const ImVec2 segmentMin(x0, segmentTop);
 			const ImVec2 segmentMax(x0 + segmentWidth, segmentBottom);
-			const ImU32 fill = effects[index].enabled ? IM_COL32(27, 105, 111, 225) : IM_COL32(20, 26, 29, 210);
-			const ImU32 border = effects[index].enabled ? PIXLUI::Colors::CyanSoft : PIXLUI::Colors::BorderSoft;
+			const auto& indicator = indicators[index];
+			const ImU32 tone = indicator.enabled ? PIXLUI::Colors::CyanBright :
+				indicator.pending ? PIXLUI::Colors::Warning : PIXLUI::Colors::TextDim;
+			const ImU32 fill = indicator.enabled ? IM_COL32(27, 72, 77, 225) : IM_COL32(20, 26, 29, 210);
+			const ImU32 border = indicator.enabled ? PIXLUI::Colors::CyanSoft :
+				indicator.pending ? PIXLUI::Colors::Warning : PIXLUI::Colors::BorderSoft;
 			draw->AddRectFilled(segmentMin, segmentMax, fill, 2.0f * scale);
 			draw->AddRect(segmentMin, segmentMax, border, 2.0f * scale, 0, 1.0f * scale);
-			if (effects[index].enabled)
+			if (indicator.enabled)
 				draw->AddLine(ImVec2(segmentMin.x + 2.0f * scale, segmentMin.y + 1.0f * scale),
 					ImVec2(segmentMax.x - 2.0f * scale, segmentMin.y + 1.0f * scale), PIXLUI::Colors::CyanBright, 1.0f * scale);
-			const ImVec2 labelSize = ImGui::CalcTextSize(effects[index].label);
-			if (labelSize.x + 8.0f * scale < segmentWidth)
-				draw->AddText(ImVec2(segmentMin.x + (segmentWidth - labelSize.x) * 0.5f,
+			const ImVec2 icon(segmentMin.x + 11.0f * scale,
+				(segmentTop + segmentBottom) * 0.5f);
+			if (index == 0) {
+				draw->AddQuad(ImVec2(icon.x, icon.y - 4.0f * scale),
+					ImVec2(icon.x + 4.0f * scale, icon.y),
+					ImVec2(icon.x, icon.y + 4.0f * scale),
+					ImVec2(icon.x - 4.0f * scale, icon.y), tone, 1.0f * scale);
+			} else if (index == 1) {
+				draw->AddRect(ImVec2(icon.x - 4.0f * scale, icon.y - 4.0f * scale),
+					ImVec2(icon.x + 2.0f * scale, icon.y + 2.0f * scale), tone, 0, 0, 1.0f * scale);
+				draw->AddRect(ImVec2(icon.x - 1.0f * scale, icon.y - 1.0f * scale),
+					ImVec2(icon.x + 5.0f * scale, icon.y + 5.0f * scale), tone, 0, 0, 1.0f * scale);
+			} else if (index == 2) {
+				draw->AddCircle(icon, 4.5f * scale, tone, 10, 1.0f * scale);
+				draw->AddLine(icon, ImVec2(icon.x + 2.5f * scale, icon.y - 2.0f * scale), tone, 1.0f * scale);
+			} else if (index == 3) {
+				draw->AddLine(ImVec2(icon.x - 4.0f * scale, icon.y - 3.0f * scale),
+					ImVec2(icon.x + 4.0f * scale, icon.y - 3.0f * scale), tone, 1.0f * scale);
+				draw->AddLine(ImVec2(icon.x - 4.0f * scale, icon.y + 3.0f * scale),
+					ImVec2(icon.x + 4.0f * scale, icon.y + 3.0f * scale), tone, 1.0f * scale);
+			} else {
+				draw->AddLine(ImVec2(icon.x - 4.0f * scale, icon.y + 3.0f * scale),
+					ImVec2(icon.x + 4.0f * scale, icon.y - 3.0f * scale), tone, 1.0f * scale);
+				draw->AddCircle(icon, 4.5f * scale, tone, 10, 1.0f * scale);
+			}
+			const ImVec2 labelSize = ImGui::CalcTextSize(indicator.label);
+			if (labelSize.x + 24.0f * scale < segmentWidth)
+				draw->AddText(ImVec2(segmentMin.x + (segmentWidth - labelSize.x + 12.0f * scale) * 0.5f,
 					segmentMin.y + (segmentBottom - segmentTop - labelSize.y) * 0.5f),
-					effects[index].enabled ? PIXLUI::Colors::CyanBright : PIXLUI::Colors::TextDim,
-					effects[index].label);
+					tone, indicator.label);
 		}
 	}
 
@@ -4288,7 +4519,7 @@ namespace
 			displaySize,
 			scale);
 
-		DrawDirectorBottomBar(
+		DrawPIXLStatusIsland(
 			draw,
 			displaySize,
 			scale);
@@ -4976,83 +5207,8 @@ namespace
 		const ImVec2 display = ImGui::GetIO().DisplaySize;
 		if (display.x <= 0.0f || display.y <= 0.0f)
 			return;
-
-		const float scale = Util::GetUIScale();
-		const float appear = PIXLUI::Animate01("##PIXL_TunerControlReminder", true, 10.0f);
-		const std::string closeKey = Util::Input::KeyIdToString(globals::menu->GetSettings().ToggleKey);
-		const char* inspectHint = g_directorPhotoMode.active
-			? "HOLD SHIFT + WASD    MOVE INSPECTION CAMERA"
-			: "HOLD SHIFT + WASD    INSPECT CAMERA";
-		const std::string photoKey = Util::Input::KeyIdToString(globals::menu->GetSettings().PhotoModeKey);
-		const std::string videoKey = Util::Input::KeyIdToString(globals::menu->GetSettings().VideoModeKey);
-		const std::string modeHint = TuningWorkspaceRenderer::IsDirectorVideoModeActive()
-			? "VIDEO MODE    PATH PREVIEW / DIRECTOR CAMERA"
-			: std::format("{}  PHOTO MODE    {}  VIDEO MODE    END  CAPTURE",
-				photoKey.empty() ? "HOME" : photoKey,
-				videoKey.empty() ? "CTRL + HOME" : videoKey);
-		const std::string footerHint = std::format("{}    {}  CLOSE TUNER",
-			modeHint, closeKey.empty() ? "PAGE DOWN" : closeKey);
-
-		const float margin = 22.0f * scale;
-		// The footer is a viewport overlay. Keep its full information rail, but
-		// reserve the category pillar at the lower left so it never obscures a
-		// navigation target on compact displays.
-		const float pillarClearance = 84.0f * scale;
-		const float minX = std::max(margin, pillarClearance);
-		const float width = std::min(1040.0f * scale,
-			std::max(0.0f, display.x - minX - margin));
-		if (width < 260.0f * scale)
-			return;
-		const float height = 64.0f * scale;
-		const ImVec2 min(std::max(minX, display.x - margin - width),
-			display.y - height - (16.0f + (1.0f - appear) * 8.0f) * scale);
-		const ImVec2 max(min.x + width, min.y + height);
-		auto* draw = ImGui::GetForegroundDrawList();
-		const ImU32 background = IM_COL32(5, 9, 12, static_cast<int>(205.0f * appear));
-		const ImU32 border = ImGui::ColorConvertFloat4ToU32(
-			ImVec4(0.22f, 0.70f, 0.75f, 0.55f * appear));
-		draw->AddRectFilled(min, max, background, 5.0f * scale);
-		draw->AddRect(min, max, border, 5.0f * scale, 0, 1.0f * scale);
-		draw->AddLine(ImVec2(min.x + 8.0f * scale, min.y + 1.0f * scale),
-			ImVec2(min.x + std::min(width * 0.18f, 118.0f * scale), min.y + 1.0f * scale),
-			PIXLUI::Colors::CyanBright, 1.4f * scale);
-		PIXLUI::DrawClippedOverlayText(draw, ImVec2(min.x + 15.0f * scale, min.y + 8.0f * scale),
-			PIXLUI::Colors::CyanSoft, inspectHint, width - 30.0f * scale);
-		PIXLUI::DrawClippedOverlayText(draw, ImVec2(min.x + 15.0f * scale, min.y + 26.0f * scale),
-			PIXLUI::Colors::TextDim, footerHint.c_str(), width - 30.0f * scale);
-
-		struct FooterSegment { const char* label; bool active; };
-		auto* capture = GetDirectorCapture();
-		const std::array<FooterSegment, 5> segments{{
-			{ "TUNER", true },
-			{ "INSPECT", g_tunerInspectionMoving },
-			{ "PHOTO", TuningWorkspaceRenderer::IsDirectorPhotoModeActive() },
-			{ "VIDEO", IsDirectorVideoMode() },
-			{ "CAPTURE", capture && capture->IsPhotoFinishBusy() }
-		}};
-		const float railMinX = min.x + 15.0f * scale;
-		const float railMaxX = max.x - 15.0f * scale;
-		const float gap = 3.0f * scale;
-		const float segmentWidth = (railMaxX - railMinX - gap * static_cast<float>(segments.size() - 1)) /
-			static_cast<float>(segments.size());
-		const float top = min.y + 45.0f * scale;
-		const float bottom = max.y - 8.0f * scale;
-		for (std::size_t index = 0; index < segments.size(); ++index) {
-			const float x = railMinX + static_cast<float>(index) * (segmentWidth + gap);
-			const ImVec2 segmentMin(x, top);
-			const ImVec2 segmentMax(x + segmentWidth, bottom);
-			const ImU32 fill = segments[index].active ? IM_COL32(22, 93, 99, 216) : IM_COL32(18, 23, 27, 208);
-			draw->AddRectFilled(segmentMin, segmentMax, fill, 2.0f * scale);
-			draw->AddRect(segmentMin, segmentMax,
-				segments[index].active ? PIXLUI::Colors::CyanSoft : PIXLUI::Colors::BorderSoft,
-				2.0f * scale, 0, 1.0f * scale);
-			const ImVec2 label = ImGui::CalcTextSize(segments[index].label);
-			if (label.x + 8.0f * scale < segmentWidth)
-				draw->AddText(ImVec2(segmentMin.x + (segmentWidth - label.x) * 0.5f,
-					segmentMin.y + (bottom - top - label.y) * 0.5f),
-					segments[index].active ? PIXLUI::Colors::CyanBright : PIXLUI::Colors::TextDim,
-					segments[index].label);
-		}
+		DrawPIXLStatusIsland(ImGui::GetForegroundDrawList(), display,
+			Util::GetUIScale(), true);
 	}
 
 	void DrawCharacterOrbitControls()
@@ -5129,6 +5285,18 @@ bool TuningWorkspaceRenderer::IsDirectorPhotoModeActive()
 {
 	return
 		g_directorPhotoMode.active;
+}
+
+std::optional<float> TuningWorkspaceRenderer::GetDirectorFocusDistance()
+{
+	if (!g_directorPhotoMode.active ||
+		!g_directorPhotoMode.focusTargetMode ||
+		!g_directorPhotoMode.focusTargetValid ||
+		!std::isfinite(g_directorPhotoMode.focusTargetDistance)) {
+		return std::nullopt;
+	}
+
+	return std::clamp(g_directorPhotoMode.focusTargetDistance, 100.0f, 20000.0f);
 }
 
 void TuningWorkspaceRenderer::ResetWorkspaceHistory()
@@ -5212,6 +5380,7 @@ bool TuningWorkspaceRenderer::OpenDirectorPhotoMode()
 			// A Video preview must not resume unexpectedly after returning from Photo.
 			g_directorVideo.playback = DirectorVideoPlaybackState::Stopped;
 			g_directorMode = DirectorMode::Photo;
+			SetDirectorGameTimePaused(true);
 			g_directorPhotoMode.hudVisible = true;
 			logger::info("[PIXL Director] Switched active session from Video to Photo Mode");
 		}
@@ -5231,6 +5400,16 @@ bool TuningWorkspaceRenderer::OpenDirectorPhotoMode()
 	if (globals::menu)
 		globals::menu->IsEnabled = false;
 	return true;
+}
+
+bool TuningWorkspaceRenderer::ToggleDirectorPhotoMode()
+{
+	if (g_directorMode == DirectorMode::Photo &&
+		(g_directorPhotoMode.active || g_directorEntryPending.load(std::memory_order_acquire))) {
+		ExitDirectorPhotoMode();
+		return true;
+	}
+	return OpenDirectorPhotoMode();
 }
 
 bool TuningWorkspaceRenderer::OpenDirectorVideoMode()
@@ -5470,10 +5649,7 @@ bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
 	}
 
 	if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoModeKey, virtualKey)) {
-		if (g_directorPhotoMode.active && g_directorMode == DirectorMode::Photo)
-			ExitDirectorPhotoMode();
-		else
-			TuningWorkspaceRenderer::OpenDirectorPhotoMode();
+		TuningWorkspaceRenderer::ToggleDirectorPhotoMode();
 
 		return true;
 	}
@@ -5781,11 +5957,14 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 	if (selectedMenu < menuList.size() &&
 		std::holds_alternative<CategoryPage>(menuList[selectedMenu])) {
 		const auto& page = std::get<CategoryPage>(menuList[selectedMenu]);
-		const bool stillVisible = std::ranges::any_of(
+		const bool experimentalTool = page.name == kExperimentalCategory &&
+			(g_tunerSelectedFeature == kRenderOriginTool || g_tunerSelectedFeature == kENBTranslatorTool);
+		const bool stillVisible = experimentalTool || std::ranges::any_of(
 			page.features,
 			[](RenderModule* feature) { return feature && feature->GetShortName() == g_tunerSelectedFeature; });
-		if (!stillVisible && !page.features.empty())
-			g_tunerSelectedFeature = page.features.front()->GetShortName();
+		if (!stillVisible)
+			g_tunerSelectedFeature = page.name == kExperimentalCategory ? std::string(kRenderOriginTool) :
+				(page.features.empty() ? "" : page.features.front()->GetShortName());
 	}
 	const bool characterCategorySelected = selectedMenu < menuList.size() &&
 		std::holds_alternative<CategoryPage>(menuList[selectedMenu]) &&
@@ -5836,25 +6015,30 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 		if (rail) {
 			const ImVec2 railMin = ImGui::GetWindowPos();
 			const float width = ImGui::GetWindowSize().x;
-			const std::array<std::string_view, 5> railLabels{
+			const std::array<std::string_view, 6> railLabels{
 				PIXLRendererPage::CategoryOrder[0], PIXLRendererPage::CategoryOrder[1],
-				PIXLRendererPage::CategoryOrder[2], PIXLRendererPage::CategoryOrder[3], "PIXL Renderer" };
-			const char* railHints[] = { "LIGHT", "WORLD", "CHAR", "CAM", "PIXL" };
+				PIXLRendererPage::CategoryOrder[2], PIXLRendererPage::CategoryOrder[3], "PIXL Renderer", kExperimentalCategory };
+			const char* railHints[] = { "LIGHT", "WORLD", "CHAR", "CAM", "PIXL", "LAB" };
 			const Menu::UIIcon* railIcons[] = {
 				&globals::menu->uiIcons.tunerLighting,
 				&globals::menu->uiIcons.tunerWorld,
 				&globals::menu->uiIcons.tunerCharacter,
 				&globals::menu->uiIcons.tunerCamera,
-				&globals::menu->uiIcons.tunerRenderer
+				&globals::menu->uiIcons.tunerRenderer,
+				nullptr
 			};
 			for (size_t i = 0; i < std::size(railLabels); ++i) {
-				const float y = PIXLUI::Ref(58.0f + static_cast<float>(i) * 82.0f);
+				// The laboratory entry is deliberately separated from release areas and
+				// sits immediately above the return-to-simple action.
+				const bool experimentalEntry = i == 5;
+				const bool categoryEntry = i < 4 || experimentalEntry;
+				const float y = PIXLUI::Ref(experimentalEntry ? 688.0f : 58.0f + static_cast<float>(i) * 82.0f);
 				const float iconSize = PIXLUI::Ref(i == 4 ? 48.0f : 50.0f);
 				ImGui::PushID(static_cast<int>(i));
 				ImGui::SetCursorScreenPos(ImVec2(railMin.x + PIXLUI::Ref(3.0f), railMin.y + y - PIXLUI::Ref(5.0f)));
 				const bool clicked = ImGui::InvisibleButton("##TunerRailButton", ImVec2(width - PIXLUI::Ref(6.0f), PIXLUI::Ref(57.0f)), ImGuiButtonFlags_EnableNav);
 				const bool hovered = ImGui::IsItemHovered();
-					const bool selected = (i < 4 && selectedMenu < menuList.size() &&
+					const bool selected = (categoryEntry && selectedMenu < menuList.size() &&
 					std::holds_alternative<CategoryPage>(menuList[selectedMenu]) &&
 					std::get<CategoryPage>(menuList[selectedMenu]).name == railLabels[i]) ||
 					(i == 4 && selectedMenu < menuList.size() &&
@@ -5865,23 +6049,32 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 					ImGui::GetWindowDrawList()->AddLine(
 						ImVec2(railMin.x + width - PIXLUI::Ref(2.0f), railMin.y + y),
 						ImVec2(railMin.x + width - PIXLUI::Ref(2.0f), railMin.y + y + PIXLUI::Ref(48.0f)),
-						PIXLUI::Colors::CyanBright, PIXLUI::Ref(2.0f));
+						experimentalEntry ? PIXLUI::Colors::Warning : PIXLUI::Colors::CyanBright, PIXLUI::Ref(2.0f));
 					if (clicked) {
 						const std::string_view target = railLabels[i];
 						// The PIXL rail represents the whole built-in group, but its
 						// icon click returns specifically to the public PIXL page when
 						// a sibling such as Hotkeys is selected.
-						const bool wasSelected = i < 4 ? selected :
+						const bool wasSelected = categoryEntry ? selected :
 							(selectedMenu < menuList.size() && std::holds_alternative<BuiltInMenu>(menuList[selectedMenu]) &&
 							 std::get<BuiltInMenu>(menuList[selectedMenu]).name == "PIXL Renderer");
 						bool selectedTarget = false;
+						bool deferredByWarning = false;
 						for (size_t menuIndex = 0; menuIndex < menuList.size(); ++menuIndex) {
-							if (i < 4 && std::holds_alternative<CategoryPage>(menuList[menuIndex]) &&
+							if (categoryEntry && std::holds_alternative<CategoryPage>(menuList[menuIndex]) &&
 								std::get<CategoryPage>(menuList[menuIndex]).name == target) {
 								if (!wasSelected) {
-									selectedMenu = menuIndex;
-									const auto& page = std::get<CategoryPage>(menuList[menuIndex]);
-									g_tunerSelectedFeature = page.features.empty() ? "" : page.features.front()->GetShortName();
+									if (experimentalEntry && !globals::menu->GetSettings().SkipExperimentalWarning) {
+										g_pendingExperimentalMenu = menuIndex;
+										g_dismissExperimentalWarning = false;
+										g_openExperimentalWarning = true;
+										deferredByWarning = true;
+									} else {
+										selectedMenu = menuIndex;
+										const auto& page = std::get<CategoryPage>(menuList[menuIndex]);
+										g_tunerSelectedFeature = experimentalEntry ? std::string(kRenderOriginTool) :
+											(page.features.empty() ? "" : page.features.front()->GetShortName());
+									}
 								}
 								selectedTarget = true;
 								break;
@@ -5894,7 +6087,7 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 								break;
 							}
 						}
-						if (selectedTarget) {
+						if (selectedTarget && !deferredByWarning) {
 							if (!wasSelected) {
 								g_tunerPanelCollapsed = false;
 								g_tunerDrawerCollapsed = false;
@@ -5914,11 +6107,15 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 						SetCharacterOrbitEnabled(false);
 					}
 				}
-					const ImU32 glow = selected || hovered ? PIXLUI::Colors::CyanBright : PIXLUI::Colors::BorderSoft;
+					const ImU32 glow = experimentalEntry ?
+						(selected || hovered ? PIXLUI::Colors::Warning : PIXLUI::Colors::TextDim) :
+						(selected || hovered ? PIXLUI::Colors::CyanBright : PIXLUI::Colors::BorderSoft);
 				ImGui::GetWindowDrawList()->AddRectFilled(
 					ImVec2(railMin.x + PIXLUI::Ref(4.0f), railMin.y + y - PIXLUI::Ref(4.0f)),
 					ImVec2(railMin.x + width - PIXLUI::Ref(4.0f), railMin.y + y + PIXLUI::Ref(53.0f)),
-					selected ? IM_COL32(21, 45, 50, 220) : (hovered ? IM_COL32(18, 32, 37, 220) : IM_COL32(0, 0, 0, 0)),
+					experimentalEntry ?
+						(selected ? IM_COL32(61, 43, 22, 220) : (hovered ? IM_COL32(48, 37, 25, 210) : IM_COL32(0, 0, 0, 0))) :
+						(selected ? IM_COL32(21, 45, 50, 220) : (hovered ? IM_COL32(18, 32, 37, 220) : IM_COL32(0, 0, 0, 0))),
 					PIXLUI::Ref(4.0f));
 				ImGui::GetWindowDrawList()->AddRect(
 					ImVec2(railMin.x + PIXLUI::Ref(4.0f), railMin.y + y - PIXLUI::Ref(4.0f)),
@@ -5927,7 +6124,20 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 					PIXLUI::Ref(4.0f),
 					0,
 					PIXLUI::Ref(selected || hovered ? 1.5f : 0.7f));
-				if (railIcons[i]->texture && railIcons[i]->size.y > 0.0f) {
+				if (experimentalEntry) {
+					// Procedural laboratory flask: theme-native, resolution independent and
+					// intentionally grey until hover/selection turns it warning orange.
+					const ImVec2 center(railMin.x + width * 0.5f, railMin.y + y + PIXLUI::Ref(19.0f));
+					const float s = PIXLUI::Ref(1.0f);
+					auto* draw = ImGui::GetWindowDrawList();
+					draw->AddLine({center.x - 6*s, center.y - 17*s}, {center.x + 6*s, center.y - 17*s}, glow, 1.7f*s);
+					draw->AddLine({center.x - 4*s, center.y - 17*s}, {center.x - 4*s, center.y - 5*s}, glow, 1.7f*s);
+					draw->AddLine({center.x + 4*s, center.y - 17*s}, {center.x + 4*s, center.y - 5*s}, glow, 1.7f*s);
+					draw->AddLine({center.x - 4*s, center.y - 5*s}, {center.x - 14*s, center.y + 14*s}, glow, 1.7f*s);
+					draw->AddLine({center.x + 4*s, center.y - 5*s}, {center.x + 14*s, center.y + 14*s}, glow, 1.7f*s);
+					draw->AddLine({center.x - 14*s, center.y + 14*s}, {center.x + 14*s, center.y + 14*s}, glow, 1.7f*s);
+					draw->AddLine({center.x - 10*s, center.y + 6*s}, {center.x + 10*s, center.y + 6*s}, glow, 1.2f*s);
+				} else if (railIcons[i] && railIcons[i]->texture && railIcons[i]->size.y > 0.0f) {
 					const float aspect = railIcons[i]->size.x / railIcons[i]->size.y;
 					const float imageWidth = std::min(iconSize * aspect, width - PIXLUI::Ref(10.0f));
 					const float imageHeight = imageWidth / aspect;
@@ -5976,6 +6186,42 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 				globals::state->Save();
 			}
 		}
+	}
+
+	if (g_openExperimentalWarning) {
+		ImGui::OpenPopup("EXPERIMENTAL MODULES | WARNING");
+		g_openExperimentalWarning = false;
+	}
+	ImGui::SetNextWindowSize(ImVec2(PIXLUI::Ref(520.0f), 0.0f), ImGuiCond_Appearing);
+	if (ImGui::BeginPopupModal("EXPERIMENTAL MODULES | WARNING", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::Warning), "TESTING PIPELINE");
+		ImGui::Separator();
+		ImGui::TextWrapped("These modules are under active development. They may cause visual artifacts, temporal instability, compatibility problems, or reduced performance.");
+		ImGui::Spacing();
+		ImGui::TextWrapped("Experimental modules start disabled in release defaults. Enable one system at a time, keep a reproducible test location, and disable the system first if the scene becomes unstable.");
+		ImGui::Spacing();
+		ImGui::Checkbox("Do not show this warning again", &g_dismissExperimentalWarning);
+		ImGui::Spacing();
+		if (PIXLUI::ActionButton("ENTER EXPERIMENTAL", ImVec2(PIXLUI::Ref(190.0f), PIXLUI::Ref(30.0f)), true)) {
+			if (g_pendingExperimentalMenu) {
+				selectedMenu = *g_pendingExperimentalMenu;
+				g_tunerSelectedFeature = std::string(kRenderOriginTool);
+				g_tunerPanelCollapsed = false;
+				g_tunerDrawerCollapsed = false;
+			}
+			if (g_dismissExperimentalWarning) {
+				globals::menu->GetSettings().SkipExperimentalWarning = true;
+				globals::state->Save();
+			}
+			g_pendingExperimentalMenu.reset();
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::SameLine();
+		if (PIXLUI::ActionButton("CANCEL", ImVec2(PIXLUI::Ref(110.0f), PIXLUI::Ref(30.0f)), false)) {
+			g_pendingExperimentalMenu.reset();
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::EndPopup();
 	}
 
 		static size_t previousCategory = static_cast<size_t>(-1);
@@ -6208,6 +6454,26 @@ void TuningWorkspaceRenderer::DrawHotkeysSettings()
 		drawBinding("Video Mode", settings.VideoModeKey, "VideoMode");
 		ImGui::TreePop();
 	}
+	struct ActionBinding { const char* name; const std::vector<InputCombo>* keys; };
+	const std::array<ActionBinding, 5> actionBindings{{
+		{ "PIXL menu", &settings.ToggleKey },
+		{ "Photo Mode", &settings.PhotoModeKey },
+		{ "Video Mode", &settings.VideoModeKey },
+		{ "Neural Rendering", &settings.NeuralRenderingKey },
+		{ "Frame Generation", &settings.FrameGenerationKey }
+	}};
+	for (std::size_t i = 0; i < actionBindings.size(); ++i) {
+		if (actionBindings[i].keys->empty())
+			continue;
+		for (std::size_t j = i + 1; j < actionBindings.size(); ++j) {
+			if (*actionBindings[i].keys != *actionBindings[j].keys)
+				continue;
+			ImGui::PushStyleColor(ImGuiCol_Text, PIXLUI::ToVec4(PIXLUI::Colors::Warning));
+			ImGui::TextWrapped("%s and %s share a shortcut. Rebind one to make both actions reachable.",
+				actionBindings[i].name, actionBindings[j].name);
+			ImGui::PopStyleColor();
+		}
+	}
 	if (ImGui::TreeNodeEx("Photo camera", ImGuiTreeNodeFlags_DefaultOpen)) {
 		drawBinding("Zoom in", settings.PhotoZoomInKey, "PhotoZoomIn");
 		drawBinding("Zoom out", settings.PhotoZoomOutKey, "PhotoZoomOut");
@@ -6310,6 +6576,14 @@ std::vector<TuningWorkspaceRenderer::MenuFuncInfo> TuningWorkspaceRenderer::Buil
 			if (!features.empty())
 				menuList.push_back(CategoryPage{ std::string(category), features });
 		}
+		// Experimental systems stay outside release categories until their
+		// visual, temporal and compatibility validation is complete.
+		std::vector<RenderModule*> experimentalFeatures;
+		if (globals::pipeline::distantLife.installed || globals::pipeline::distantLife.loaded)
+			experimentalFeatures.push_back(&globals::pipeline::distantLife);
+		if (globals::pipeline::containedLiquids.installed || globals::pipeline::containedLiquids.loaded)
+			experimentalFeatures.push_back(&globals::pipeline::containedLiquids);
+		menuList.push_back(CategoryPage{ std::string(kExperimentalCategory), std::move(experimentalFeatures) });
 	} else {
 		for (const auto category : PIXLRendererPage::CategoryOrder)
 			std::ranges::copy(categorizedFeatures[std::string(category)], std::back_inserter(menuList));
@@ -6485,6 +6759,48 @@ void TuningWorkspaceRenderer::RenderLeftColumn(
 		if (g_tunerNavigationView == TunerNavigationView::All &&
 			selectedMenu < menuList.size() && std::holds_alternative<CategoryPage>(menuList[selectedMenu])) {
 			const auto& page = std::get<CategoryPage>(menuList[selectedMenu]);
+			if (page.name == kExperimentalCategory) {
+				ImGui::PushStyleColor(ImGuiCol_Text, PIXLUI::ToVec4(PIXLUI::Colors::Warning));
+				ImGui::TextUnformatted("TEST PIPELINE");
+				ImGui::PopStyleColor();
+				ImGui::TextWrapped("Disabled by default. Test one system at a time.");
+				ImGui::Dummy(ImVec2(0.0f, PIXLUI::Ref(8.0f)));
+
+				auto experimentalItem = [&](const char* id, const char* label) {
+					const bool selected = selectedFeatureName == id;
+					ImGui::PushStyleColor(ImGuiCol_Text, selected ? PIXLUI::ToVec4(PIXLUI::Colors::Warning) : PIXLUI::ToVec4(PIXLUI::Colors::TextMuted));
+					if (PIXLUI::NavItem(id, label, selected, PIXLUI::Ref(38.0f))) {
+						SelectTunerPanel(selected);
+						selectedFeatureName = id;
+					}
+					ImGui::PopStyleColor();
+				};
+				auto group = [&](const char* id, const char* label, const std::function<void()>& contents) {
+					const std::string stateKey = std::format("EXPERIMENTAL/{}", id);
+					if (!categoryExpansionStates.contains(stateKey))
+						categoryExpansionStates[stateKey] = true;
+					bool& open = categoryExpansionStates[stateKey];
+					ImGui::SetNextItemOpen(open, ImGuiCond_Always);
+					const bool visible = ImGui::TreeNodeEx(id, ImGuiTreeNodeFlags_SpanAvailWidth, "%s", label);
+					open = visible;
+					if (visible) {
+						contents();
+						ImGui::TreePop();
+					}
+				};
+
+				group("ExperimentalWorld", "WORLD", [&] {
+					experimentalItem(kRenderOriginTool.data(), "RENDER ORIGIN  [EXPERIMENTAL]");
+					experimentalItem("DistantLife", "DISTANT LIFE  [EXPERIMENTAL]");
+				});
+				group("ExperimentalMaterials", "MATERIALS", [&] {
+					experimentalItem("CurvedSurfaceMapping", "CURVED SURFACE MAPPING  [EXPERIMENTAL]");
+					experimentalItem("ContainedLiquids", "CONTAINED LIQUIDS  [EXPERIMENTAL]");
+				});
+				group("ExperimentalMisc", "MISC", [&] {
+					experimentalItem(kENBTranslatorTool.data(), "ENB PRESET TRANSLATOR  [EXPERIMENTAL]");
+				});
+			} else {
 				for (RenderModule* feature : page.features) {
 					if (!feature)
 						continue;
@@ -6501,6 +6817,7 @@ void TuningWorkspaceRenderer::RenderLeftColumn(
 					ImGui::SetTooltip("%s", selected
 						? (g_tunerPanelCollapsed ? "Show this module's settings" : "Hide this module's settings")
 						: "Open this module's settings");
+			}
 			}
 
 		} else if (g_tunerNavigationView != TunerNavigationView::All) {
@@ -6586,6 +6903,30 @@ void TuningWorkspaceRenderer::RenderRightColumn(
 			const auto& page = std::get<CategoryPage>(menuList[selectedMenu]);
 			if (page.name == "CHARACTER")
 				DrawCharacterOrbitControls();
+			if (page.name == kExperimentalCategory &&
+				(selectedFeatureName == kRenderOriginTool || selectedFeatureName == kENBTranslatorTool)) {
+				ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+				if (ImGui::BeginChild("##PIXLExperimentalCanvas", { 0, 0 }, ImGuiChildFlags_None, ImGuiWindowFlags_None)) {
+					PIXLUI::PageTitle("EXPERIMENTAL", "Controlled access to renderer systems that are still being validated for visual stability, compatibility, and performance.");
+					ImGui::Dummy(ImVec2(0.0f, PIXLUI::Ref(8.0f)));
+					PIXLUI::StateChip("DISABLED BY DEFAULT", PIXLUI::Colors::Warning);
+					ImGui::SameLine();
+					PIXLUI::StateChip("LIVE TESTING", PIXLUI::Colors::TextDim);
+					ImGui::Dummy(ImVec2(0.0f, PIXLUI::Ref(10.0f)));
+					PIXLUI::ChromeScope surface("##PIXLExperimentalSurface", ImVec2(0.0f, 0.0f), PIXLUI::ChromeStyle::Dark, true,
+						ImGuiWindowFlags_None, PIXLUI::Ref(12.0f));
+					if (surface) {
+						PIXLUI::EngineeringStyleScope style;
+						if (selectedFeatureName == kRenderOriginTool)
+							PIXL::RenderOrigin::DrawExperimentalPanel();
+						else
+							ExternalPostProcessing::DrawSettings();
+					}
+				}
+				ImGui::EndChild();
+				ImGui::PopStyleColor();
+				return;
+			}
 			for (RenderModule* feature : page.features) {
 				if (feature && feature->GetShortName() == selectedFeatureName) {
 					RememberRecentFeature(selectedFeatureName);
@@ -7534,6 +7875,25 @@ namespace
 				if (ImGui::SliderFloat("Speed at selected POI", &point.speed, 8.0f, 1600.0f,
 					"%.0f units/s", ImGuiSliderFlags_AlwaysClamp))
 					RebuildDirectorVideoPath();
+				if (ImGui::CollapsingHeader("POI FRAMING")) {
+					ImGui::TextDisabled("Hold Shift to reframe; release to edit this point.");
+					ImGui::SetNextItemWidth(-1.0f);
+					if (ImGui::SliderFloat("Lens FOV", &point.fieldOfView, 20.0f, 110.0f,
+						"%.0f deg", ImGuiSliderFlags_AlwaysClamp)) {
+						g_directorVideo.playback = DirectorVideoPlaybackState::Paused;
+						ApplyDirectorWorldFov(point.fieldOfView);
+						RebuildDirectorVideoPath();
+					}
+					ImGui::BeginDisabled(g_directorVideo.playback == DirectorVideoPlaybackState::Playing);
+					if (PIXLUI::ActionButton("SET POSITION", ImVec2(PIXLUI::Ref(140.0f), PIXLUI::Ref(30.0f)), false))
+						SaveDirectorVideoCameraComponentToSelectedPoint(true);
+					ImGui::SameLine();
+					if (PIXLUI::ActionButton("SET ROTATION", ImVec2(PIXLUI::Ref(140.0f), PIXLUI::Ref(30.0f)), false))
+						SaveDirectorVideoCameraComponentToSelectedPoint(false);
+					if (auto tooltip = Util::HoverTooltipWrapper())
+						ImGui::TextWrapped("Stores this camera angle at the selected point and uses captured framing during playback.");
+					ImGui::EndDisabled();
+				}
 				if (PIXLUI::ActionButton("SAVE CAMERA TO POI", ImVec2(PIXLUI::Ref(185.0f), PIXLUI::Ref(30.0f)), false))
 					SaveDirectorVideoCameraToSelectedPoint();
 				ImGui::SameLine();
@@ -7554,6 +7914,7 @@ namespace
 			ImGui::SliderFloat("Preview rate", &g_directorVideo.previewRate, 0.10f, 4.0f,
 				"%.2fx", ImGuiSliderFlags_AlwaysClamp);
 			if (ImGui::CollapsingHeader("SAVE / LOAD / ADVANCED")) {
+				ImGui::TextDisabled("Routes save to this cell. Older unbound routes are labelled legacy.");
 				if (!g_directorVideo.nameBufferInitialized) {
 					std::snprintf(g_directorVideo.nameBuffer.data(), g_directorVideo.nameBuffer.size(),
 						"%s", g_directorVideo.path.name.c_str());
@@ -7579,7 +7940,7 @@ namespace
 				}
 				if (!g_directorVideo.savedPaths.empty() && ImGui::BeginCombo("Load saved path", "Select a path")) {
 					for (const auto& path : g_directorVideo.savedPaths) {
-						const std::string label = path.stem().string();
+						const std::string label = DirectorSavedPathLabel(path);
 						if (ImGui::Selectable(label.c_str()))
 							LoadDirectorVideoPath(path);
 					}
@@ -7612,9 +7973,7 @@ namespace
 		if (!g_directorPhotoMode.active) {
 			PIXLUI::SectionBanner("START A SHOT");
 			ImGui::TextWrapped("Enter Video Mode, frame the first shot with the normal Director fly camera, then use Capture Point. Every point stores its exact camera location, lens and pitch/yaw framing.");
-			ImGui::Checkbox("Freeze world on entry", &g_directorVideo.freezeWorld);
-			if (auto tooltip = Util::HoverTooltipWrapper())
-				ImGui::TextUnformatted("Off keeps Skyrim simulation running for a live preview. Photo Mode remains frozen regardless of this setting.");
+			ImGui::TextDisabled("World time is paused on entry. Press PLAY after authoring the route to run the shot.");
 			ImGui::BeginDisabled(!available);
 			if (PIXLUI::ActionButton("ENTER VIDEO MODE", commandButton, true))
 				TuningWorkspaceRenderer::OpenDirectorVideoMode();
@@ -7631,7 +7990,8 @@ namespace
 			return;
 		}
 
-		PIXLUI::StatusPill(g_directorVideo.freezeWorld ? "FROZEN / VIDEO PREVIEW" : "LIVE WORLD / VIDEO PREVIEW", PIXLUI::Colors::CyanBright);
+		PIXLUI::StatusPill(g_directorVideo.playback == DirectorVideoPlaybackState::Playing
+			? "PLAYING / VIDEO PREVIEW" : "PAUSED / VIDEO PREVIEW", PIXLUI::Colors::CyanBright);
 		ImGui::SameLine();
 		if (PIXLUI::ActionButton("PHOTO", ImVec2(PIXLUI::Ref(96.0f), PIXLUI::Ref(28.0f)), false))
 			TuningWorkspaceRenderer::OpenDirectorPhotoMode();
@@ -7656,6 +8016,7 @@ namespace
 
 		ImGui::Spacing();
 		PIXLUI::SectionBanner("CAMERA PATH");
+		ImGui::TextDisabled("Saved flythroughs belong to the current cell; legacy routes can be imported here.");
 		if (!g_directorVideo.nameBufferInitialized) {
 			std::snprintf(g_directorVideo.nameBuffer.data(), g_directorVideo.nameBuffer.size(), "%s", g_directorVideo.path.name.c_str());
 			g_directorVideo.nameBufferInitialized = true;
@@ -7692,7 +8053,7 @@ namespace
 		if (!g_directorVideo.savedPaths.empty()) {
 			if (ImGui::BeginCombo("Load saved path", "Select a saved path")) {
 				for (const auto& saved : g_directorVideo.savedPaths) {
-					const auto label = saved.stem().string();
+					const auto label = DirectorSavedPathLabel(saved);
 					if (ImGui::Selectable(label.c_str()))
 						LoadDirectorVideoPath(saved);
 				}

@@ -1,5 +1,21 @@
 # PIXL Renderer third-party notices
 
+## PIXL contribution scope
+
+Git history supports PIXL-specific attribution for WindowLife, DistantLife,
+Contained Liquids, Curved Surface Mapping, Render Origin, Director camera-path
+work, CameraSuite physical-camera/DOF additions, and the snow/mud terrain part
+of Ground Response. Some of those systems connect through upstream-derived
+infrastructure and therefore remain mixed works at repository level.
+
+MaterialForge, CameraSuite, Directional SSS/Contact Shadows, Rain Response,
+Water Optics, Waterbody/Flowmap, SkyBounce, Image Reconstruction, the grass
+collision part of Ground Response, and the main GUI/framework are upstream-
+derived or mixed systems with substantial PIXL modifications. They must not be
+described as wholly original PIXL modules. This is an attribution statement,
+not an additional restriction: GPL-3.0-or-later rights and the retained
+exceptions remain available, and third-party portions retain their notices.
+
 PIXL Renderer includes or builds against third-party software and shader
 material. This summary does not replace the complete licence text stored beside
 each component. Copyright and licence headers in individual files remain
@@ -58,13 +74,13 @@ apply.
 
 ## Release packaging rule
 
-A binary package must include `COPYING`, `EXCEPTIONS.md`, `ATTRIBUTION.md`, this
-notice, and every component licence copied with a distributed third-party
-binary or asset. The release publisher must separately confirm compliance with
-the NVIDIA SDK/DLSS terms and any required pre-release notification; this is a
-publisher/legal review item, not a claim that those terms have been satisfied
-by source inspection alone.
-# Optional ReShade API bridge
+A binary package must include `COPYING`, `EXCEPTIONS.md`, `NOTICE.md`,
+`ATTRIBUTION.md`, this notice, `TRADEMARKS.md`, and every component licence
+required for a distributed third-party binary or asset. The release publisher
+must separately confirm compliance with NVIDIA SDK/DLSS terms and any required
+pre-release notification; source inspection alone cannot confirm that step.
+
+## Optional ReShade API bridge
 
 The API declarations in `extern/ReShade/include` are Copyright (C) Patrick Mours,
 licensed BSD-3-Clause OR MIT. See `extern/ReShade/LICENSE.md` and provenance in
