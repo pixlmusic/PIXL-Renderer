@@ -44,9 +44,9 @@ namespace
 	}
 
 	constexpr std::array<const char*, 4> kProfileNames{
-		"FAST",
-		"BALANCED",
-		"ENHANCED",
+		"LOW",
+		"MEDIUM",
+		"HIGH",
 		"CINEMATIC"
 	};
 
@@ -54,14 +54,14 @@ namespace
 		"LOW",
 		"MEDIUM",
 		"HIGH",
-		"ULTRA"
+		"CINEMATIC"
 	};
 
 	constexpr std::array<const char*, 4> kProfileDescriptions{
-		"Responsive PIXL lighting and materials with the leanest coordinated effects budget.",
-		"The release baseline: stable image quality, balanced reconstruction and sensible GPU cost.",
-		"Higher lighting, atmosphere and surface fidelity for modern mid-range and high-end GPUs.",
-		"Maximum coordinated fidelity for screenshots, powerful GPUs and demanding visual testing."
+		"The PIXL baseline with core lighting, materials and atmosphere intact, tuned aggressively for performance.",
+		"A balanced version of every major PIXL system with reduced rays, froxels, geometry and distant foliage cost.",
+		"The former Cinematic presentation: the complete release look and recommended target for powerful gameplay systems.",
+		"An intentionally extreme capture/high-end tier with up to three-times ray, bokeh and surface budgets."
 	};
 
 	using QualityGroup =
@@ -70,7 +70,7 @@ namespace
 	struct QualityPreviewSelection
 	{
 		const char* assetKey = "Profile";
-		const char* title = "ENHANCED";
+		const char* title = "HIGH";
 		const char* description = kProfileDescriptions[2];
 		int tier = 2;
 	};
@@ -92,6 +92,14 @@ namespace
 				tier,
 				0,
 				3)];
+	}
+
+	const char* QualityPreviewAssetTierName(int tier)
+	{
+		// Preserve the existing authored top-tier artwork. The public tier was
+		// renamed from Ultra to Cinematic in the v2 quality contract, but preview
+		// assets remain *_ULTRA.png until replacement captures are authored.
+		return std::clamp(tier, 0, 3) == 3 ? "ULTRA" : QualityTierName(tier);
 	}
 
 	QualityPreviewTexture* GetQualityPreviewTexture(
@@ -161,10 +169,10 @@ namespace
 							assetKey)) +
 				L"_" +
 				std::wstring(
-					QualityTierName(tier),
-					QualityTierName(tier) +
+					QualityPreviewAssetTierName(tier),
+					QualityPreviewAssetTierName(tier) +
 						std::char_traits<char>::length(
-							QualityTierName(tier))) +
+							QualityPreviewAssetTierName(tier))) +
 				L".png");
 
 		// Cache misses as well as successes. Missing optional art must not cause
@@ -787,13 +795,13 @@ namespace
 				"Water",
 				&settings.WaterQuality,
 				QualityGroup::Water,
-				"Water-reflection trace budget, edge stability and caustic dispersion." },
+				"Water-reflection ray count, hit refinement, reach and edge stability. Caustic colour remains user-authored." },
 			Row{
 				"Terrain & Vegetation",
 				"TerrainVegetation",
 				&settings.TerrainVegetationQuality,
 				QualityGroup::TerrainVegetation,
-				"Raised snow/mud distance and tessellation quality; vegetation appearance stays user-authored." },
+				"Snow/mud tessellation and history plus grass density, projected-size LOD, mesh LOD and collision range." },
 			Row{
 				"Characters",
 				"Characters",
@@ -805,7 +813,7 @@ namespace
 				"Camera",
 				&settings.CameraQuality,
 				QualityGroup::Camera,
-				"Bloom, processed motion finish and lens-effect sampling quality; camera exposure and Skyrim DOF stay user-authored." }
+				"Exposure metering, local adaptation, physical DOF bokeh and motion-blur sample budgets; the authored camera look is unchanged." }
 		};
 
 		std::array<int, static_cast<size_t>(QualityGroup::Count)>
@@ -924,6 +932,7 @@ namespace
 						kProfileNames[profile]);
 				}
 			}
+			ImGui::TextWrapped("Advanced changes remain as CUSTOM until their selected contract is reapplied. A global profile replaces all seven workload groups, but never artistic strength or colour controls.");
 
 			ImGui::Dummy(
 				ImVec2(
@@ -964,9 +973,16 @@ namespace
 						"CUSTOM");
 					if (ImGui::IsItemHovered()) {
 						ImGui::SetTooltip(
-							"Advanced values differ from the selected %s contract. Move the tier or use RESTORE PROFILE to reapply it.",
+							"Advanced workload values differ from the selected %s contract.",
 							QualityTierName(*row.value));
 					}
+					ImGui::SameLine(0.0f, PIXLUI::Ref(7.0f));
+					if (ImGui::SmallButton("REAPPLY")) {
+						PIXLRenderer::QualityProfiles::Apply(row.group, *row.value);
+						QueueDeferredStateSave();
+					}
+					if (ImGui::IsItemHovered())
+						ImGui::SetTooltip("Restore only this system to its selected %s workload contract.", QualityTierName(*row.value));
 				}
 
 				ImGui::PopID();
@@ -1628,68 +1644,71 @@ namespace
 		auto& camera = globals::pipeline::cameraSuite;
 		bool changed = false;
 
-		SectionHeading("COLOUR & STYLE PRESETS");
-		const float columnWidth = std::max(1.0f, ImGui::GetContentRegionAvail().x * 0.5f -
-													 2.0f * (ImGui::GetStyle().WindowPadding.x + ImGui::GetStyle().CellPadding.x));
-		const float controlsHeight = PIXLUI::ControlRow::Height("Colour grade", columnWidth) +
-		                             PIXLUI::ControlRow::Height("LUT strength", columnWidth);
-		const float presetHeight = ImGui::GetTextLineHeightWithSpacing() +
-		                           std::max(controlsHeight, 3.0f * ImGui::GetFrameHeightWithSpacing()) +
-		                           2.0f * ImGui::GetStyle().WindowPadding.y;
-		if (ImGui::BeginTable(
-				"##CameraPresetStrip",
-				2,
-				ImGuiTableFlags_SizingStretchSame |
-					ImGuiTableFlags_NoSavedSettings)) {
-			ImGui::TableNextColumn();
-			{
-				PIXLUI::PanelScope colourPanel("##CameraColourPresets", ImVec2(0, presetHeight), true);
-				if (colourPanel) {
-					ImGui::TextColored(
-						PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
-						"COLOUR GRADE");
+		SectionHeading("COMPLETE LOOK PRESETS");
+		ImGui::TextWrapped("Start with a complete exposure, tone, bloom and colour treatment. Every value remains editable under Post Processing.");
+		changed |= ExternalPostProcessing::DrawENBQuickStylePalette();
+		ImGui::Dummy(ImVec2(0.0f, PIXLUI::Ref(10.0f)));
 
-					const char* looks[] = {
-						"Original", "Nordic Neutral", "Saga", "Dramatic", "Hearthfire", "Bleak",
-						"Bleach", "Winter", "Sunset", "Fantasy Green", "Nightfall", "Cinematic"
-					};
-					const int previousLook = std::clamp(static_cast<int>(camera.settings.lookPreset), 0, static_cast<int>(std::size(looks)) - 1);
-					int look = previousLook;
-					if (CycleControl("Colour grade", &look, looks, static_cast<int>(std::size(looks)),
-							"Applies a PIXL-authored LUT after the physical camera. Original is a neutral bypass.")) {
-						camera.settings.lookPreset = static_cast<uint>(look);
-						// Cinematic is intentionally subtle by default. Users can still choose a
-						// stronger blend below after selecting it.
-						if (look == 11 && previousLook != 11)
-							camera.settings.lookOpacity = 0.07f;
-						camera.LoadLookTexture();
-						changed = true;
-					}
+		SectionHeading("PIXL COLOUR GRADES");
+		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
+			"SELECT A GRADE, THEN SET ITS STRENGTH. ORIGINAL IS A CLEAN BYPASS.");
+		ImGui::Dummy(ImVec2(0.0f, PIXLUI::Ref(4.0f)));
 
-					ImGui::BeginDisabled(camera.settings.lookPreset == 0);
-					float lookPercent = std::clamp(camera.settings.lookOpacity * 100.0f, 0.0f, 100.0f);
-					if (SliderControl("LUT strength", &lookPercent, 0.0f, 100.0f, "%.0f%%", false)) {
-						camera.settings.lookOpacity = lookPercent * 0.01f;
-						changed = true;
-					}
-					ImGui::EndDisabled();
-				}
+		const char* looks[] = {
+			"ORIGINAL", "NORDIC NEUTRAL", "SAGA", "DRAMATIC", "HEARTHFIRE", "BLEAK",
+			"BLEACH", "WINTER", "SUNSET", "FANTASY GREEN", "NIGHTFALL", "CINEMATIC"
+		};
+		const char* lookDescriptions[] = {
+			"Neutral output with no PIXL colour LUT.",
+			"Clean cool-neutral grade designed for Skyrim's natural palette.",
+			"Measured Nordic contrast with restrained colour separation.",
+			"Deeper contrast and firmer highlights for strong compositions.",
+			"Warm interior and firelight response without excessive saturation.",
+			"Cool, desaturated northern atmosphere.",
+			"High-key low-colour treatment for stylised scenes.",
+			"Cold daylight and snow-biased colour separation.",
+			"Warm dusk response for amber skies and firelight.",
+			"Green-biased fantasy treatment for forests and alchemy scenes.",
+			"Cool low-light treatment with protected highlights.",
+			"Subtle filmic finishing intended for Photo and Director modes."
+		};
+		const int previousLook = std::clamp(static_cast<int>(camera.settings.lookPreset), 0,
+			static_cast<int>(std::size(looks)) - 1);
+		const float gradeGap = PIXLUI::Ref(7.0f);
+		const int columns = ImGui::GetContentRegionAvail().x >= PIXLUI::Ref(780.0f) ? 4 : 3;
+		const float gradeWidth = std::max(PIXLUI::Ref(118.0f),
+			(ImGui::GetContentRegionAvail().x - gradeGap * static_cast<float>(columns - 1)) /
+				static_cast<float>(columns));
+		for (int look = 0; look < static_cast<int>(std::size(looks)); ++look) {
+			if (look % columns != 0)
+				ImGui::SameLine(0.0f, gradeGap);
+			ImGui::PushID(look);
+			if (PIXLUI::ActionButton(looks[look], ImVec2(gradeWidth, PIXLUI::Ref(38.0f)), look == previousLook)) {
+				camera.settings.lookPreset = static_cast<uint>(look);
+				if (look == 11 && previousLook != 11)
+					camera.settings.lookOpacity = 0.07f;
+				else if (look != 0 && previousLook == 0 && camera.settings.lookOpacity <= 0.001f)
+					camera.settings.lookOpacity = 0.20f;
+				camera.LoadLookTexture();
+				changed = true;
 			}
-
-			ImGui::TableNextColumn();
-			{
-				PIXLUI::PanelScope stylePanel("##CameraQuickStyles", ImVec2(0, presetHeight), true);
-				if (stylePanel) {
-					ImGui::TextColored(
-						PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
-						"QUICK STYLES");
-					changed |= ExternalPostProcessing::DrawENBQuickStylePalette();
-				}
-			}
-			ImGui::EndTable();
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("%s", lookDescriptions[look]);
+			ImGui::PopID();
 		}
 
+		ImGui::Dummy(ImVec2(0.0f, PIXLUI::Ref(5.0f)));
+		ImGui::BeginDisabled(camera.settings.lookPreset == 0);
+		float lookPercent = std::clamp(camera.settings.lookOpacity * 100.0f, 0.0f, 100.0f);
+		if (SliderControl("Colour grade strength", &lookPercent, 0.0f, 100.0f, "%.0f%%", false,
+				"Blends the selected grade after physical-camera exposure and tone response.")) {
+			camera.settings.lookOpacity = lookPercent * 0.01f;
+			changed = true;
+		}
+		ImGui::EndDisabled();
+
 		if (changed) {
+			camera.UpdateHDRData();
 			globals::state->UpdateFeatureData(globals::state->inWorld);
 			QueueDeferredStateSave();
 		}
@@ -2075,6 +2094,293 @@ namespace
 			QueueDeferredStateSave();
 	}
 
+	void ApplyPublicDofPreset(int preset)
+	{
+		auto& settings = globals::pipeline::cameraSuite.settings;
+		settings.enableEnhancedDepthOfField = true;
+		settings.preferCinematicDoF = false;
+		settings.enableSkyrimDepthOfField = false;
+		settings.dofPhysicalLens = true;
+		settings.dofAutoFocus = true;
+		settings.dofActorTracking = true;
+
+		switch (preset) {
+		case 0:  // Gameplay: readable movement with restrained separation.
+			settings.dofStrength = 0.72f;
+			settings.dofFocalLengthMm = 28.0f;
+			settings.dofFStop = 4.0f;
+			settings.dofMaxBokehPixels = 5.0f;
+			settings.dofNearBlurIntensity = 0.0f;
+			settings.dofFarBlurIntensity = 0.72f;
+			settings.dofFarBlurDistance = 30000.0f;
+			settings.dofFocusRange = 15000.0f;
+			break;
+		case 1:  // Balanced: the release camera baseline.
+			settings.dofStrength = 1.0f;
+			settings.dofFocalLengthMm = 30.0f;
+			settings.dofFStop = 3.4f;
+			settings.dofMaxBokehPixels = 6.0f;
+			settings.dofNearBlurIntensity = 0.12f;
+			settings.dofFarBlurIntensity = 0.90f;
+			settings.dofFarBlurDistance = 26000.0f;
+			settings.dofFocusRange = 12000.0f;
+			break;
+		case 2:  // Portrait: stronger near/far separation for subjects.
+			settings.dofStrength = 1.0f;
+			settings.dofFocalLengthMm = 50.0f;
+			settings.dofFStop = 2.2f;
+			settings.dofMaxBokehPixels = 12.0f;
+			settings.dofNearBlurIntensity = 0.55f;
+			settings.dofFarBlurIntensity = 1.05f;
+			settings.dofFarBlurDistance = 18000.0f;
+			settings.dofFocusRange = 7000.0f;
+			break;
+		default:  // Cinema: expressive but still bounded for stable DX11 use.
+			settings.dofStrength = 1.0f;
+			settings.dofFocalLengthMm = 40.0f;
+			settings.dofFStop = 1.8f;
+			settings.dofMaxBokehPixels = 18.0f;
+			settings.dofNearBlurIntensity = 0.75f;
+			settings.dofFarBlurIntensity = 1.20f;
+			settings.dofFarBlurDistance = 22000.0f;
+			settings.dofFocusRange = 9000.0f;
+			break;
+		}
+	}
+
+	void DrawDepthOfFieldControls()
+	{
+		auto& camera = globals::pipeline::cameraSuite;
+		auto& settings = camera.settings;
+		bool changed = false;
+
+		SectionHeading("CINEMATIC DEPTH OF FIELD");
+		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
+			"PHYSICAL LENS  /  STABLE AUTOFOCUS  /  NATIVE PIXL DEPTH");
+		ImGui::TextWrapped("Shape focus for gameplay, portraits and Director shots. These are the same lens parameters exposed by the Advanced CameraSuite page.");
+		ImGui::Dummy(ImVec2(0.0f, PIXLUI::Ref(5.0f)));
+
+		if (camera.IsCinematicDoFLoaded()) {
+			changed |= ToggleControl("Use external Cinematic DoF", &settings.preferCinematicDoF,
+				"Hands depth of field to Cinematic DoF Standalone. Turn this off to use PIXL's native physical lens and the controls below.");
+		}
+		ImGui::BeginDisabled(camera.UsesCinematicDoF());
+		changed |= ToggleControl("PIXL cinematic depth of field", &settings.enableEnhancedDepthOfField,
+			"Runs PIXL's depth-aware near/far bokeh before UI composition. This is the recommended native path.");
+
+		ImGui::BeginDisabled(!settings.enableEnhancedDepthOfField);
+		SectionHeading("LENS PRESETS");
+		const char* presetLabels[] = { "GAMEPLAY", "BALANCED", "PORTRAIT", "CINEMA" };
+		const char* presetHelp[] = {
+			"Restrained separation and a long focus transition for normal movement.",
+			"A versatile physical-camera baseline for exploration and dialogue.",
+			"A 50 mm shallow lens with stronger subject separation.",
+			"A wide-aperture Director look with larger, bounded bokeh."
+		};
+		const float presetGap = PIXLUI::Ref(7.0f);
+		const float presetWidth = std::max(PIXLUI::Ref(92.0f),
+			(ImGui::GetContentRegionAvail().x - presetGap * 3.0f) / 4.0f);
+		for (int preset = 0; preset < 4; ++preset) {
+			if (preset > 0)
+				ImGui::SameLine(0.0f, presetGap);
+			ImGui::PushID(preset);
+			if (PIXLUI::ActionButton(presetLabels[preset], ImVec2(presetWidth, PIXLUI::Ref(38.0f)), false)) {
+				ApplyPublicDofPreset(preset);
+				changed = true;
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("%s", presetHelp[preset]);
+			ImGui::PopID();
+		}
+
+		ImGui::Dummy(ImVec2(0.0f, PIXLUI::Ref(4.0f)));
+		if (ImGui::BeginTable("##PublicDofCore", 2,
+				ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_BordersInnerV)) {
+			ImGui::TableNextColumn();
+			ImGui::PushID("DofFocus");
+			SectionHeading("FOCUS");
+			changed |= ToggleControl("Scene autofocus", &settings.dofAutoFocus,
+				"Resolves a robust centre depth once per frame, then racks focus smoothly in diopters.");
+			changed |= ToggleControl("Track dialogue / subjects", &settings.dofActorTracking,
+				"Prioritises dialogue actors and tracked third-person subjects before screen-depth autofocus.");
+			changed |= SliderControl("Focus speed", &settings.dofFocusSpeed, 0.25f, 20.0f, "%.2fx", true,
+				"Controls rack-focus response. Lower values settle slowly; higher values acquire a new subject quickly.");
+			changed |= SliderControl("Focus transition", &settings.dofFocusRange, 240.0f, 20000.0f, "%.0f units", true,
+				"Widens the naturally sharp region and softens the transition into blur.");
+			if (!settings.dofAutoFocus)
+				changed |= SliderControl("Manual focus", &settings.dofFocusDistance, 100.0f, 20000.0f, "%.0f units", true);
+			ImGui::PopID();
+
+			ImGui::TableNextColumn();
+			ImGui::PushID("DofLens");
+			SectionHeading("PHYSICAL LENS");
+			changed |= ToggleControl("Physical thin lens", &settings.dofPhysicalLens,
+				"Derives signed, resolution-aware blur from focal length, aperture, sensor height and focus distance.");
+			changed |= SliderControl("Focal length", &settings.dofFocalLengthMm, 18.0f, 200.0f, "%.0f mm", true,
+				"Longer focal lengths increase subject separation and narrow the photographic field of view response.");
+			changed |= SliderControl("Aperture", &settings.dofFStop, 0.7f, 32.0f, "f/%.1f", true,
+				"Lower f-stops create stronger blur and larger bokeh; higher values retain more depth in focus.");
+			changed |= SliderControl("Maximum bokeh", &settings.dofMaxBokehPixels, 4.0f, 96.0f, "%.0f px", true,
+				"Bounds the half-resolution adaptive gather. Very large values cost more GPU time.");
+			changed |= SliderControl("Overall presence", &settings.dofStrength, 0.0f, 1.0f, "%.2f", false);
+			ImGui::PopID();
+			ImGui::EndTable();
+		}
+
+		SectionHeading("NEAR & DISTANCE SEPARATION");
+		if (ImGui::BeginTable("##PublicDofSeparation", 2,
+				ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_BordersInnerV)) {
+			ImGui::TableNextColumn();
+			changed |= SliderControl("Near blur", &settings.dofNearBlurIntensity, 0.0f, 2.0f, "%.2fx", false,
+				"Expands out-of-focus foreground coverage over the background. Keep restrained for first-person gameplay.");
+			changed |= SliderControl("Foreground coverage", &settings.dofForegroundCoverage, 0.0f, 1.5f, "%.2f", false,
+				"Controls near-layer opacity and hole filling around silhouettes.");
+			ImGui::TableNextColumn();
+			changed |= SliderControl("Distance blur", &settings.dofFarBlurIntensity, 0.0f, 2.0f, "%.2fx", false,
+				"Adds a stable far-field component over physical autofocus to soften distant detail and LOD transitions.");
+			changed |= SliderControl("Distance blur start", &settings.dofFarBlurDistance, 500.0f, 50000.0f, "%.0f units", true,
+				"Sets where additional distance blur begins; autofocus remains physically resolved.");
+			ImGui::EndTable();
+		}
+
+		if (ImGui::CollapsingHeader("ADVANCED BOKEH & EDGE CONTROL", ImGuiTreeNodeFlags_None)) {
+			if (ImGui::BeginTable("##PublicDofAdvanced", 2,
+					ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_BordersInnerV)) {
+				ImGui::TableNextColumn();
+				changed |= SliderControl("Highlight response", &settings.dofHighlightResponse, 0.0f, 1.0f, "%.2f", false);
+				changed |= SliderControl("Edge protection", &settings.dofFocusEdgeProtection, 0.0f, 2.0f, "%.2f", false);
+				changed |= SliderControl("Focus deadband", &settings.dofFocusDeadband, 0.0f, 0.25f, "%.3f", false);
+				changed |= SliderControl("Sensor height", &settings.dofSensorHeightMm, 10.0f, 40.0f, "%.1f mm", false);
+				ImGui::TableNextColumn();
+				int blades = static_cast<int>(settings.dofApertureBlades);
+				if (ImGui::SliderInt("Aperture blades", &blades, 3, 12)) {
+					settings.dofApertureBlades = static_cast<uint>(blades);
+					changed = true;
+				}
+				changed |= SliderControl("Blade curvature", &settings.dofBladeCurvature, 0.0f, 1.0f, "%.2f", false);
+				changed |= SliderControl("Cat-eye", &settings.dofCatEye, 0.0f, 1.0f, "%.2f", false);
+				changed |= SliderControl("Anamorphic ratio", &settings.dofAnamorphicRatio, 0.5f, 2.0f, "%.2f", false);
+				changed |= ImGui::SliderAngle("Aperture rotation", &settings.dofApertureRotation, -180.0f, 180.0f);
+				ImGui::EndTable();
+			}
+		}
+		ImGui::EndDisabled();
+		ImGui::EndDisabled();
+
+		ImGui::BeginDisabled(settings.enableEnhancedDepthOfField || camera.UsesCinematicDoF());
+		changed |= ToggleControl("Legacy Skyrim depth of field", &settings.enableSkyrimDepthOfField,
+			"Fallback to Skyrim's authored image-space DOF when neither PIXL nor Cinematic DoF owns the effect.");
+		ImGui::EndDisabled();
+
+		if (changed) {
+			camera.UpdateHDRData();
+			QueueDeferredStateSave();
+		}
+	}
+
+	void DrawPublicCameraEffects()
+	{
+		auto& camera = globals::pipeline::cameraSuite;
+		auto& settings = camera.settings;
+		auto& gi = globals::pipeline::hybridGI.settings;
+		auto& water = globals::pipeline::waterOptics.settings;
+		auto& probes = globals::pipeline::worldProbes.settings;
+		bool changed = false;
+		bool lightingChanged = false;
+
+		SectionHeading("PHYSICAL CAMERA & FINISHING");
+		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
+			"LIVE CONTROLS  /  UI REMAINS SHARP  /  SETTINGS SAVE AUTOMATICALLY");
+		ImGui::Dummy(ImVec2(0.0f, PIXLUI::Ref(4.0f)));
+
+		if (ImGui::BeginTable("##PublicCameraEffects", 3,
+				ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_BordersInnerV)) {
+			ImGui::TableNextColumn();
+			ImGui::PushID("PublicExposure");
+			SectionHeading("EXPOSURE & TONE");
+			changed |= ToggleControl("Physical camera", &settings.enablePhysicalCamera);
+			changed |= ToggleControl("Automatic exposure", &settings.cameraAutoExposure);
+			changed |= SliderControl("Exposure", &settings.cameraExposureCompensationEV, -2.0f, 2.0f, "%+.2f EV", false);
+			changed |= SliderControl("Camera influence", &settings.cameraInfluence, 0.0f, 1.0f, "%.2f", false);
+			changed |= SliderControl("Local exposure", &settings.cameraLocalExposure, 0.0f, 0.5f, "%.2f", false);
+			changed |= SliderControl("Highlight protection", &settings.cameraHighlightProtection, 0.0f, 1.0f, "%.2f", false);
+			changed |= SliderControl("Shadow detail", &settings.cameraShadowDetail, 0.0f, 0.5f, "%.2f", false);
+			changed |= SliderControl("Contrast", &settings.cameraContrast, 0.75f, 1.30f, "%.2f", false);
+			changed |= SliderControl("Colour", &settings.cameraSaturation, 0.70f, 1.25f, "%.2f", false);
+			if (ImGui::CollapsingHeader("ADAPTATION CURVE")) {
+				changed |= SliderControl("Bright to dark", &settings.cameraAdaptBrightToDark, 0.05f, 4.0f, "%.2f s", true);
+				changed |= SliderControl("Dark to bright", &settings.cameraAdaptDarkToBright, 0.03f, 2.0f, "%.2f s", true);
+				changed |= SliderControl("Black toe", &settings.cameraToe, 0.0f, 0.5f, "%.2f", false);
+				changed |= SliderControl("Highlight shoulder", &settings.cameraShoulder, 0.2f, 1.5f, "%.2f", false);
+			}
+			ImGui::PopID();
+
+			ImGui::TableNextColumn();
+			ImGui::PushID("PublicOptics");
+			SectionHeading("BLOOM & MOTION");
+			changed |= ToggleControl("Scene-linear bloom", &settings.enableBloom);
+			ImGui::BeginDisabled(!settings.enableBloom);
+			changed |= SliderControl("Bloom strength", &settings.bloomStrength, 0.0f, 2.0f, "%.2f", false);
+			changed |= SliderControl("Bloom threshold", &settings.bloomThreshold, 0.0f, 4.0f, "%.2f", false);
+			changed |= SliderControl("Bloom radius", &settings.bloomRadius, 0.1f, 4.0f, "%.2fx", false);
+			ImGui::EndDisabled();
+			changed |= ToggleControl("Camera motion blur", &settings.enableModernMotionBlur);
+			ImGui::BeginDisabled(!settings.enableModernMotionBlur);
+			changed |= SliderControl("Motion presence", &settings.motionBlurStrength, 0.0f, 1.0f, "%.2f", false);
+			changed |= SliderControl("Shutter", &settings.motionBlurShutter, 0.10f, 1.0f, "%.2fx", false);
+			changed |= SliderControl("Maximum motion", &settings.motionBlurMaxPixels, 4.0f, 48.0f, "%.0f px", false);
+			ImGui::EndDisabled();
+			SectionHeading("WEATHER LENS");
+			changed |= ToggleControl("Stormglass rain lens", &settings.enableStormglass);
+			ImGui::BeginDisabled(!settings.enableStormglass);
+			changed |= SliderControl("Rain lens presence", &settings.stormglassStrength, 0.0f, 1.0f, "%.2f", false);
+			ImGui::EndDisabled();
+			changed |= ToggleControl("Submerged optics", &settings.enableSubmergedOptics);
+			changed |= ToggleControl("Cold environment edges", &settings.enableColdLens);
+			changed |= ToggleControl("Elemental hit optics", &settings.enableElementalDamageLens);
+			ImGui::PopID();
+
+			ImGui::TableNextColumn();
+			ImGui::PushID("PublicScreenSpace");
+			SectionHeading("DEPTH & REFLECTIONS");
+			lightingChanged |= ToggleControl("Ambient occlusion", &gi.EnableDirectionalOcclusion);
+			ImGui::BeginDisabled(!gi.EnableDirectionalOcclusion);
+			lightingChanged |= SliderControl("AO presence", &gi.AOPower, 0.0f, 2.0f, "%.2fx", false);
+			lightingChanged |= SliderControl("AO reach", &gi.AORadius, 32.0f, 512.0f, "%.0f units", true);
+			ImGui::EndDisabled();
+			lightingChanged |= ToggleControl("Scene reflections", &gi.EnableExperimentalSpecularGI);
+			ImGui::BeginDisabled(!gi.EnableExperimentalSpecularGI);
+			lightingChanged |= SliderControl("Reflection presence", &gi.ReflectionIntensity, 0.0f, 1.5f, "%.2fx", false);
+			ImGui::EndDisabled();
+			bool materialSsr = probes.EnabledSSR != 0u;
+			if (ToggleControl("Material screen reflections", &materialSsr)) {
+				probes.EnabledSSR = materialSsr ? 1u : 0u;
+				globals::pipeline::worldProbes.recompileFlag = true;
+				lightingChanged = true;
+			}
+			bool waterSsr = water.EnableEnhancedSSR != 0u;
+			if (ToggleControl("Water screen reflections", &waterSsr)) {
+				water.EnableEnhancedSSR = waterSsr ? 1u : 0u;
+				lightingChanged = true;
+			}
+			SectionHeading("UTILITY");
+			changed |= SliderControl("Menu model visibility", &settings.menuSceneBrightness, 0.75f, 3.0f, "%.2fx", false,
+				"Affects menu, loading and lockpicking models without changing gameplay exposure.");
+			ImGui::PopID();
+			ImGui::EndTable();
+		}
+
+		changed |= lightingChanged;
+		if (changed)
+			camera.UpdateHDRData();
+		if (lightingChanged) {
+			globals::pipeline::hybridGI.queuedResetHistory = true;
+			globals::state->UpdateFeatureData(globals::state->inWorld);
+		}
+		if (changed)
+			QueueDeferredStateSave();
+	}
+
 	void DrawFeatureControls()
 	{
 		auto& gi =
@@ -2295,24 +2601,32 @@ namespace
 			return;
 		}
 
-		const float subWidth = std::min(PIXLUI::Ref(190.0f),
-			std::max(PIXLUI::Ref(92.0f), (availableWidth - gap) * 0.5f));
+		const float subWidth = std::min(PIXLUI::Ref(220.0f),
+			std::max(PIXLUI::Ref(108.0f), (availableWidth - gap * 2.0f) / 3.0f));
 		ImGui::PushID("PostProcessingViews");
-		if (PIXLUI::ActionButton("CAMERA", ImVec2(subWidth, PIXLUI::Ref(32.0f)),
+		if (PIXLUI::ActionButton("POST PROCESSING", ImVec2(subWidth, PIXLUI::Ref(32.0f)),
 			postWorkspace == 0)) {
 			postWorkspace = 0;
 			ImGui::SetScrollY(0.0f);
 		}
 		ImGui::SameLine(0.0f, gap);
-		if (PIXLUI::ActionButton("LOOKS & PRESETS", ImVec2(subWidth, PIXLUI::Ref(32.0f)),
+		if (PIXLUI::ActionButton("DEPTH OF FIELD", ImVec2(subWidth, PIXLUI::Ref(32.0f)),
 			postWorkspace == 1)) {
 			postWorkspace = 1;
+			ImGui::SetScrollY(0.0f);
+		}
+		ImGui::SameLine(0.0f, gap);
+		if (PIXLUI::ActionButton("LOOKS & PRESETS", ImVec2(subWidth, PIXLUI::Ref(32.0f)),
+			postWorkspace == 2)) {
+			postWorkspace = 2;
 			ImGui::SetScrollY(0.0f);
 		}
 		ImGui::PopID();
 		ImGui::Dummy(ImVec2(0, PIXLUI::Ref(5.0f)));
 		if (postWorkspace == 0) {
-			DrawFinishingControls();
+			DrawPublicCameraEffects();
+		} else if (postWorkspace == 1) {
+			DrawDepthOfFieldControls();
 		} else {
 			DrawColourPresetControls();
 			ImGui::Dummy(ImVec2(0, PIXLUI::Ref(8.0f)));

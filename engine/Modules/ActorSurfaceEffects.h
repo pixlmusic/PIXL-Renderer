@@ -48,7 +48,7 @@ struct ActorSurfaceEffects : RenderModule
 		bool Enable = true;
 		bool EnableSnow = true;
 		bool EnableMud = true;
-		std::uint32_t EffectQuality = 3;  // Low/Medium/High/Ultra
+		std::uint32_t EffectQuality = 2;  // Low/Medium/High/Cinematic
 		float Persistence = 0.68f;
 		float AccumulationStrength = 1.0f;
 

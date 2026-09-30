@@ -195,6 +195,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	DeveloperMode,
 	SkipExperimentalWarning,
 	ExperimentalRenderOriginEnabled,
+	QualityContractVersion,
 	RendererQuality,
 	LightingQuality,
 	MaterialsQuality,
@@ -203,6 +204,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	TerrainVegetationQuality,
 	CharactersQuality,
 	CameraQuality,
+	DirectorPhotoFov,
+	DirectorCameraMoveSpeed,
+	DirectorCameraProfile,
 	TunerFavoriteFeatures,
 	TunerRecentFeatures,
 	TunerFocusScrim,
@@ -446,6 +450,24 @@ void Menu::Load(json& o_json)
 		settings = std::move(previousSettings);
 		return;
 	}
+	// v2 promotes the former Cinematic workload to High and introduces a new,
+	// intentionally much heavier Cinematic tier. Preserve existing installations
+	// instead of silently tripling work for users who previously selected tier 3.
+	if (o_json.value("QualityContractVersion", 1) < 2) {
+		auto migrateLegacyCinematic = [](int& tier) {
+			if (tier == 3)
+				tier = 2;
+		};
+		migrateLegacyCinematic(settings.RendererQuality);
+		migrateLegacyCinematic(settings.LightingQuality);
+		migrateLegacyCinematic(settings.MaterialsQuality);
+		migrateLegacyCinematic(settings.AtmosphereQuality);
+		migrateLegacyCinematic(settings.WaterQuality);
+		migrateLegacyCinematic(settings.TerrainVegetationQuality);
+		migrateLegacyCinematic(settings.CharactersQuality);
+		migrateLegacyCinematic(settings.CameraQuality);
+		settings.QualityContractVersion = 2;
+	}
 	// Quality values are persisted user input and may come from older or
 	// hand-edited JSON. Keep every array-indexed tier inside the public contract.
 	settings.RendererQuality = std::clamp(settings.RendererQuality, 0, 3);
@@ -456,6 +478,15 @@ void Menu::Load(json& o_json)
 	settings.TerrainVegetationQuality = std::clamp(settings.TerrainVegetationQuality, 0, 3);
 	settings.CharactersQuality = std::clamp(settings.CharactersQuality, 0, 3);
 	settings.CameraQuality = std::clamp(settings.CameraQuality, 0, 3);
+	settings.DirectorPhotoFov = std::isfinite(settings.DirectorPhotoFov) ?
+		std::clamp(settings.DirectorPhotoFov, 0.0f, 110.0f) : 0.0f;
+	if (settings.DirectorPhotoFov > 0.0f)
+		settings.DirectorPhotoFov = std::max(settings.DirectorPhotoFov, 20.0f);
+	settings.DirectorCameraMoveSpeed = std::clamp(
+		std::isfinite(settings.DirectorCameraMoveSpeed) ? settings.DirectorCameraMoveSpeed : 1.0f,
+		0.25f, 2.0f);
+	if (!settings.DirectorCameraProfile.is_object())
+		settings.DirectorCameraProfile = json::object();
 	// Keep the workspace state small and resilient to old/hand-edited configs.
 	// Feature IDs are validated by the tuner before use, so stale IDs from a
 	// removed module simply disappear from the visible list.

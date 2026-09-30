@@ -164,7 +164,7 @@ function Invoke-Package([string]$kind,[string]$mode) {
     if($mode -eq 'Production' -and $dirty -and -not $AllowDirtyRelease){throw 'Production packaging requires a clean worktree. Use Development or explicitly pass -AllowDirtyRelease for a private checkpoint.'}
     $stamp=Get-Date -Format 'yyyyMMdd-HHmmss'
     $label=if($mode -eq 'Production'){'Production'}else{'Dev'}
-    $stage=Join-Path $repo "dist\PIXL-Renderer-v1.0.4-$label-Core-$stamp"
+    $stage=Join-Path $repo "dist\PIXL-Renderer-v1.0.5-$label-Core-$stamp"
     $zip="$stage.zip";$compression=if($mode -eq 'Production'){9}else{1}
     $channel=if($mode -eq 'Production'){'RELEASE'}else{'RELEASE-CANDIDATE'}
     $arguments=@('-OutputDirectory',$stage,'-ArchivePath',$zip,'-Channel',$channel,'-CompressionLevel',$compression)
@@ -176,7 +176,7 @@ function Invoke-Package([string]$kind,[string]$mode) {
     if($kind -in @('FOMOD','Both')){
         $surface=if($env:PIXL_SURFACETIDES_SOURCE){$env:PIXL_SURFACETIDES_SOURCE}else{Join-Path $repo 'build\SurfaceTides-FOMOD-Input-20260925'}
         if(-not (Test-Path $surface)){throw 'SurfaceTides source was not found. Set PIXL_SURFACETIDES_SOURCE.'}
-        $fomod=Join-Path $repo "dist\PIXL-Renderer-v1.0.4-$label-FOMOD-$stamp"
+        $fomod=Join-Path $repo "dist\PIXL-Renderer-v1.0.5-$label-FOMOD-$stamp"
         Write-Step "Building $label FOMOD"
         & (Join-Path $PSScriptRoot 'BuildPixlFomod.ps1') -BasePackageDirectory $stage -SurfaceTidesSource $surface -OutputDirectory $fomod -ArchivePath "$fomod.zip" -CompressionLevel $compression
         if($LASTEXITCODE){throw 'FOMOD build failed.'}
@@ -251,7 +251,7 @@ function Invoke-Menu {
 }
 
 Set-Location $repo
-Write-Host 'PIXL RENDERER 1.0.4 | DEVELOPMENT CONSOLE' -ForegroundColor Cyan
+Write-Host 'PIXL RENDERER 1.0.5 | DEVELOPMENT CONSOLE' -ForegroundColor Cyan
 Write-Host "Repository: $repo"
 try {
     if($Action -eq 'Menu'){Invoke-Menu;$Action=$script:requested;if($Action -eq 'Exit'){exit 0}}

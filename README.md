@@ -6,13 +6,13 @@ PIXL Renderer modernizes Skyrim's lighting, materials, characters, weather, terr
 
 Install one renderer, complete Quick Setup and play. An optional advanced tuning workspace provides deeper control over the image.
 
-> **Release candidate:** PIXL Renderer 1.0.4. See installation requirements and validation limits below before installing. Optional DLSSG proxy, Neural Rendering and Curved Surface Mapping paths remain experimental.
+> **Release candidate:** PIXL Renderer 1.0.5. See installation requirements and validation limits below before installing. Optional DLSSG proxy, Neural Rendering and Curved Surface Mapping paths remain experimental.
 
 > **DISCLAIMER: PIXL Renderer was HEAVILY created with AI assistance alongside testing; expect issues and bugs. This is an experimental branch, and we HIGHLY recommend Community Shaders' main branch for a consistent, well-tested and maintained playthrough.**
 
-## 1.0.4 renderer upgrade
+## 1.0.5 renderer upgrade
 
-This source revision is the final integrated 1.0.4 release-candidate pass. It keeps the established Skyrim SE DirectX 11 renderer and shader-cache architecture while adding or substantially upgrading:
+This source revision builds on the 1.0.4 baseline with final renderer integration, stability and quality-control work while retaining the established Skyrim SE DirectX 11 and shader-cache architecture:
 
 - **Cinematic DOF 2.0** with one authoritative autofocus path, physical-lens controls, half-resolution adaptive bokeh, separate near/far treatment, foreground coverage, edge-aware reconstruction, sky protection and Director/Photo/Video integration;
 - **Contained Liquids** with effect-first potion classification, cached bottle-profile fitting, profile-aware volume fill, viscosity-aware slosh and bounded glass/liquid optics while preserving Skyrim's original bottle draw;
@@ -23,7 +23,7 @@ This source revision is the final integrated 1.0.4 release-candidate pass. It ke
 - **reconstruction-aware camera and post processing** for TAA, DLSS/DLAA and FSR paths, with sharper UI separation and explicit history invalidation; and
 - **public-source provenance and release tooling** with preserved upstream notices, module-level attribution, third-party notices, reproducible audits and package hygiene checks.
 
-The release changelog and validation limits are documented in [docs/CHANGELOG-1.0.4.md](docs/CHANGELOG-1.0.4.md) and [docs/RELEASE_1.0.4_AUDIT.md](docs/RELEASE_1.0.4_AUDIT.md).
+The concise changes since 1.0.4 are documented in [docs/CHANGELOG.md](docs/CHANGELOG.md); the earlier baseline audit remains in [docs/RELEASE_1.0.4_AUDIT.md](docs/RELEASE_1.0.4_AUDIT.md).
 
 ## What makes PIXL different?
 
@@ -94,7 +94,7 @@ PIXL currently contains **40 integrated rendering modules**, plus renderer-level
 - **Pixel Capture** provides asynchronous lossless screenshots, HDR PNG output and a Director Photo Finish path with locked camera/input, temporary native/DLAA reconstruction and optional offline-quality Neural Rendering before the final composite is captured. Its 8/16/24-frame neural convergence modes run complete fresh model evaluations with valid depth, motion, jitter and history, then use a robust offline resolve to reject isolated temporal outliers without recursively feeding processed RGB back into a temporal model.
 - **Pulse Profiler** exposes frame timing, FPS, draw calls, VRAM, shader timing and repeatable A/B performance comparisons.
 - **PIXL World Benchmark** runs repeatable scene fly-throughs, records samples/settings and captures reference frames for performance and visual-fidelity comparison.
-- **Quality Profiles** apply real Low/Medium/High/Ultra changes across renderer groups; a preset that does nothing is treated as a bug, not a feature.
+- **Quality Profiles** apply real Low/Medium/High/Cinematic workload contracts across renderer groups. High preserves the former Cinematic presentation; the new Cinematic tier uses genuinely larger ray, froxel, bokeh and surface budgets for exceptional GPUs and capture work.
 - **Dialogue Focus** adds a character-only presentation layer during conversations so the NPC in front of you remains the visual priority.
 - **PIXL Workshop and Tuning Workspace** expose the deeper controls and diagnostics without making them mandatory for normal play.
 

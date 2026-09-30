@@ -56,7 +56,7 @@ private:
         std::uintptr_t key{};
         std::uint32_t reference{}, frame{};
         float time{};
-        RE::NiPoint3 position{}, velocity{};
+        RE::NiPoint3 position{}, velocity{}, angularVelocity{};
         std::array<RE::NiPoint3,3> basis{};
         float tilt[2]{}, speed[2]{};
         std::array<float,kProfileSamples> radialProfile{};

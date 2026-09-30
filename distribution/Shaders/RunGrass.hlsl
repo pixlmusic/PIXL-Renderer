@@ -44,6 +44,11 @@ struct VS_OUTPUT
 	float4 WorldPosition: POSITION1;
 	float4 PreviousWorldPosition: POSITION2;
 	float4 VertexNormal: POSITION4;
+#	if defined(FOLIAGE_OPTIMIZER)
+	nointerpolation float IsComplex: TEXCOORD8;
+	nointerpolation float IsFar: TEXCOORD9;
+	nointerpolation float LodTier: TEXCOORD10;
+#	endif
 };
 #else
 struct VS_OUTPUT
@@ -59,6 +64,11 @@ struct VS_OUTPUT
 #	endif  // RENDER_DEPTH
 	float4 WorldPosition: POSITION1;
 	float4 PreviousWorldPosition: POSITION2;
+#	if defined(FOLIAGE_OPTIMIZER)
+	nointerpolation float IsComplex: TEXCOORD8;
+	nointerpolation float IsFar: TEXCOORD9;
+	nointerpolation float LodTier: TEXCOORD10;
+#	endif
 };
 #endif
 
@@ -93,6 +103,13 @@ cbuffer PerGeometry : register(
 #		include "GroundResponse\\GroundResponse.hlsli"
 #	endif  // GROUND_RESPONSE
 
+#	if defined(FOLIAGE_OPTIMIZER)
+// GPU culling emits two records per surviving instance. Keeping this private to
+// the optimized permutation leaves Skyrim's cb7/cb8 fade ABI untouched.
+StructuredBuffer<float4> InstanceExtras : register(t2);
+#	endif
+// Retained in optimized permutations for unsupported/cold-start grass shapes.
+// The draw hook unbinds t2 before delegating to Skyrim, selecting this path.
 cbuffer cb7 : register(b7)
 {
 	float4 cb7[1];
@@ -221,6 +238,60 @@ void CalculateWindDisplacementPair(
 		input, PreviousWindTimer, context, enhancedWind);
 }
 
+#	if defined(FOLIAGE_OPTIMIZER)
+float3 CalculateOptimizedWindDisplacement(
+	VS_INPUT input,
+	float legacyScalar,
+	float windTimer,
+	float2 absoluteAnchor)
+{
+	float tip = saturate(input.Color.w);
+	float tip2 = tip * tip;
+	float weatherEnergy = max(abs(WindVector.z), 0.08f);
+	float3 legacy = float3(WindVector.xy, 0.0f) *
+		(WindVector.z * legacyScalar * (0.5f * tip2));
+	if (SharedData::foliageDynamicsSettings.EnableEnhancedWind == 0)
+		return legacy;
+
+	GrassWindContext context;
+	context.WindDirection = FoliageWind::SafeDirection(
+		WindVector.xy, float2(0.8192319f, 0.5734624f));
+	context.CrossWind = float2(-context.WindDirection.y, context.WindDirection.x);
+	context.AbsoluteAnchor = absoluteAnchor;
+	context.InstanceSeed = FoliageWind::Hash12(floor(absoluteAnchor * 0.015625f));
+
+	FoliageWind::GrassGustField windField = FoliageWind::SampleGrassGust(
+		context.AbsoluteAnchor,
+		windTimer,
+		context.WindDirection,
+		SharedData::foliageDynamicsSettings.WindSpatialScale,
+		SharedData::foliageDynamicsSettings.GustSpeed,
+		SharedData::foliageDynamicsSettings.FlutterSpeed,
+		context.InstanceSeed);
+
+	float rootLock = smoothstep(0.04f, 0.32f, tip);
+	float stemResponse = rootLock * tip2;
+	float tipResponse = stemResponse * tip2;
+	float gustAmount = min(max(SharedData::foliageDynamicsSettings.GustStrength, 0.0f), 1.5f);
+	float flutterAmount = min(max(SharedData::foliageDynamicsSettings.FlutterStrength, 0.0f), 1.0f);
+	float legacyEnvelope = 1.0f + (windField.Gust - 0.35f) * (0.24f * gustAmount);
+	float3 delta = legacy * (legacyEnvelope - 1.0f);
+	delta += float3(context.WindDirection, 0.0f) *
+		(weatherEnergy * stemResponse * windField.Gust * 0.105f * gustAmount);
+	delta += float3(context.CrossWind, 0.0f) *
+		(weatherEnergy * stemResponse * windField.Crosswind * 0.026f * gustAmount);
+	delta += float3(context.CrossWind, 0.0f) *
+		(weatherEnergy * tipResponse * windField.Flutter * 0.038f * flutterAmount);
+
+	float maxDelta = weatherEnergy * stemResponse * (0.14f + 0.08f * gustAmount);
+	float deltaLengthSq = dot(delta, delta);
+	if (deltaLengthSq > maxDelta * maxDelta && maxDelta > 1e-5f)
+		delta *= maxDelta * rsqrt(deltaLengthSq);
+	return legacy + delta * clamp(
+		SharedData::foliageDynamicsSettings.WindStrength, 0.0f, 2.0f);
+}
+#	endif
+
 #	ifdef FOLIAGE_DYNAMICS
 float4 GetMSPosition(VS_INPUT input, float3x3 world3x3)
 #	else
@@ -248,7 +319,144 @@ float4 GetMSPosition(VS_INPUT input)
 	return msPosition;
 }
 
-#	ifdef FOLIAGE_DYNAMICS
+#	if defined(FOLIAGE_OPTIMIZER)
+VS_OUTPUT PixlVanillaGrassVertex(VS_INPUT input)
+{
+	VS_OUTPUT vsout = (VS_OUTPUT)0;
+#		ifdef FOLIAGE_DYNAMICS
+	float3x3 world3x3 = float3x3(
+		input.InstanceData2.xyz,
+		input.InstanceData3.xyz,
+		float3(input.InstanceData4.x, input.InstanceData2.w, input.InstanceData3.w));
+	float4 msPosition = GetMSPosition(input, world3x3);
+#		else
+	float4 msPosition = GetMSPosition(input);
+#		endif
+
+	float3 windDisplacement, previousWindDisplacement;
+	CalculateWindDisplacementPair(input, windDisplacement, previousWindDisplacement);
+#		ifdef GROUND_RESPONSE
+	float3 displacement, previousDisplacement;
+	GroundResponse::GetDisplacedPosition(input, msPosition.xyz, displacement, previousDisplacement);
+	msPosition.xyz += displacement;
+#		endif
+	msPosition.xyz += windDisplacement;
+
+	float4 projSpacePosition = mul(WorldViewProj, msPosition);
+	vsout.HPosition = projSpacePosition;
+#		if defined(RENDER_DEPTH)
+	vsout.Depth = projSpacePosition.zw;
+#		endif
+	float perInstanceFade = dot(
+		cb8[(asuint(cb7[0].x) >> 2)].xyzw,
+		Math::IdentityMatrix[(asint(cb7[0].x) & 3)].xyzw);
+	float distanceFade = 1.0f - saturate(
+		(length(projSpacePosition.xyz) - AlphaParam1) / AlphaParam2);
+	vsout.Color = float4(input.Color.xyz, distanceFade * perInstanceFade);
+	vsout.VertexMult = input.InstanceData1.w;
+	vsout.TexCoord = float3(input.TexCoord.xy, FogNearColor.w);
+	vsout.ViewSpacePosition = mul(WorldView, msPosition).xyz;
+	vsout.WorldPosition = mul(World, msPosition);
+
+#		ifdef FOLIAGE_DYNAMICS
+	float4 previousMsPosition = GetMSPosition(input, world3x3);
+#		else
+	float4 previousMsPosition = GetMSPosition(input);
+#		endif
+#		ifdef GROUND_RESPONSE
+	previousMsPosition.xyz += previousDisplacement;
+#		endif
+	previousMsPosition.xyz += previousWindDisplacement;
+	vsout.PreviousWorldPosition = mul(PreviousWorld, previousMsPosition);
+
+#		ifdef FOLIAGE_DYNAMICS
+	vsout.VertexNormal.xyz = mul(world3x3, input.Normal.xyz * 2.0f - 1.0f);
+	vsout.VertexNormal.w = input.Color.w;
+#		else
+	vsout.AmbientColor.xyz = input.InstanceData1.www * (AmbientColor.xyz * input.Color.xyz);
+	vsout.AmbientColor.w = ShadowClampValue;
+#		endif
+	return vsout;
+}
+
+VS_OUTPUT main(VS_INPUT input, uint instanceID : SV_InstanceID)
+{
+	uint extrasCount, extrasStride;
+	InstanceExtras.GetDimensions(extrasCount, extrasStride);
+	if (instanceID * 2u + 1u >= extrasCount)
+		return PixlVanillaGrassVertex(input);
+
+	VS_OUTPUT vsout = (VS_OUTPUT)0;
+	const float4 e0 = InstanceExtras[instanceID * 2 + 0];
+	const float4 e1 = InstanceExtras[instanceID * 2 + 1];
+	const float lodTier = floor(e1.w * 0.25f);
+	const float packedFlags = e1.w - lodTier * 4.0f;
+	const float isFar = packedFlags >= 2.0f ? 1.0f : 0.0f;
+	const float collisionFlag = packedFlags - isFar * 2.0f;
+
+#		ifdef FOLIAGE_DYNAMICS
+	float3x3 world3x3 = float3x3(
+		input.InstanceData2.xyz,
+		input.InstanceData3.xyz,
+		float3(input.InstanceData4.x, input.InstanceData2.w, input.InstanceData3.w));
+	float4 msPosition = GetMSPosition(input, world3x3);
+#		else
+	float4 msPosition = GetMSPosition(input);
+#		endif
+	msPosition.xyz += e0.xyz;
+	float4 previousMsPosition = msPosition;
+
+#		ifdef GROUND_RESPONSE
+	[branch] if (collisionFlag > 0.5f)
+	{
+		float3 displacement, previousDisplacement;
+		GroundResponse::GetDisplacedWorldPosition(
+			input,
+			msPosition.xyz - FrameBuffer::CameraPosAdjust.xyz,
+			input.InstanceData1.xyz + e0.xyz - FrameBuffer::CameraPosAdjust.xyz,
+			displacement,
+			previousDisplacement);
+		msPosition.xyz += displacement;
+		previousMsPosition.xyz += previousDisplacement;
+	}
+#		endif
+
+	const float2 absoluteAnchor = input.InstanceData1.xy + e0.xy;
+	msPosition.xyz += CalculateOptimizedWindDisplacement(
+		input, e1.x, WindTimer, absoluteAnchor);
+	previousMsPosition.xyz += CalculateOptimizedWindDisplacement(
+		input, e1.y, PreviousWindTimer, absoluteAnchor);
+
+	float4 worldPosition = float4(msPosition.xyz - FrameBuffer::CameraPosAdjust.xyz, 1.0f);
+	float4 previousWorldPosition = float4(
+		previousMsPosition.xyz - FrameBuffer::CameraPreviousPosAdjust.xyz, 1.0f);
+	float4 projSpacePosition = mul(FrameBuffer::CameraViewProj, worldPosition);
+	vsout.HPosition = projSpacePosition;
+#		if defined(RENDER_DEPTH)
+	vsout.Depth = projSpacePosition.zw;
+#		endif
+
+	vsout.Color.xyz = input.Color.xyz;
+	vsout.Color.w = e1.z;
+	vsout.VertexMult = input.InstanceData1.w;
+	vsout.TexCoord = float3(input.TexCoord.xy, FogNearColor.w);
+	vsout.ViewSpacePosition = mul(FrameBuffer::CameraView, worldPosition).xyz;
+	vsout.WorldPosition = worldPosition;
+	vsout.PreviousWorldPosition = previousWorldPosition;
+	vsout.IsComplex = e0.w;
+	vsout.IsFar = isFar;
+	vsout.LodTier = lodTier;
+#		ifdef FOLIAGE_DYNAMICS
+	vsout.VertexNormal.xyz = mul(world3x3, input.Normal.xyz * 2.0f - 1.0f);
+	vsout.VertexNormal.w = input.Color.w;
+#		else
+	float3 instanceNormal = float3(input.InstanceData2.z, input.InstanceData3.zw);
+	vsout.AmbientColor.xyz = input.InstanceData1.www * (AmbientColor.xyz * input.Color.xyz);
+	vsout.AmbientColor.w = ShadowClampValue;
+#		endif
+	return vsout;
+}
+#	elif defined(FOLIAGE_DYNAMICS)
 VS_OUTPUT main(VS_INPUT input)
 {
 	VS_OUTPUT vsout;
@@ -657,9 +865,15 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	const bool grassAlphaControl = FoliageTuning::AlphaControlEnabled();
 
 	const uint complexMode = min(SharedData::foliageDynamicsSettings.ComplexGrassMode, 3u);
-	bool complex = false;
-	bool flipComplexNormalY = false;
+	bool complex =
+#		if defined(FOLIAGE_OPTIMIZER)
+		complexMode != 1u && input.IsComplex > 0.5f;
+#		else
+		false;
+#		endif
+	bool flipComplexNormalY = complex && complexMode == 3u;
 
+#		if !defined(FOLIAGE_OPTIMIZER)
 	[branch] if (complexMode != 1u)
 	{
 		// Safe packed-layout detection is mandatory even when the user overrides
@@ -699,6 +913,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		// Modes 2/3 override only the Y convention after layout validation.
 		flipComplexNormalY = complexMode == 3u;
 	}
+#		endif
 
 	float2 foliageDiffuseUV = complex
 		? float2(input.TexCoord.x, input.TexCoord.y * 0.5f)
@@ -744,7 +959,15 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	psout.MotionVectors = MotionBlur::GetSSMotionVector(input.WorldPosition, input.PreviousWorldPosition);
 
 	float3 viewDirection = -normalize(input.WorldPosition.xyz);
-	float3 normal = normalize(input.VertexNormal.xyz);
+	// Ordinary Skyrim grass frequently carries a zero/near-zero vertex normal;
+	// complex-grass assets generally do not. normalize(0) poisoned the normal MRT
+	// with NaNs, so Hybrid GI could shade complex grass while silently losing the
+	// much larger ordinary-grass population. Use a stable vegetation-volume
+	// fallback and retain every valid authored normal.
+	float vertexNormalLengthSq = dot(input.VertexNormal.xyz, input.VertexNormal.xyz);
+	float3 normal = vertexNormalLengthSq > 1.0e-10f
+		? input.VertexNormal.xyz * rsqrt(vertexNormalLengthSq)
+		: float3(0.0f, 0.0f, 1.0f);
 
 	float3 viewPosition = mul(FrameBuffer::CameraView, float4(input.WorldPosition.xyz, 1)).xyz;
 	float grassViewDistance = length(viewPosition);
@@ -773,6 +996,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float foliageShadingLOD = enhancedVegetation
 		? saturate(max(projectedDetailLOD, distanceDetailLOD))
 		: 0.0f;
+#		if defined(FOLIAGE_OPTIMIZER)
+	// The compute classifier knows the projected instance footprint before the
+	// pixel stage. Use it as a conservative floor while retaining derivative LOD,
+	// so distant cards simplify consistently across DLSS/TAA render resolutions.
+	foliageShadingLOD = max(
+		foliageShadingLOD,
+		max(input.IsFar * 0.72f, saturate(input.LodTier * 0.5f)));
+#		endif
 	float foliageFarLOD = smoothstep(0.55f, 1.0f, foliageShadingLOD);
 	float foliageLocalDetailWeight = 1.0f - foliageFarLOD;
 	float packedNormalMipBias = SharedData::MipBias + foliageShadingLOD * 1.50f;

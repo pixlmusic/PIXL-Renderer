@@ -19,7 +19,7 @@ namespace PIXLRenderer::QualityProfiles
 	inline constexpr int Low = 0;
 	inline constexpr int Medium = 1;
 	inline constexpr int High = 2;
-	inline constexpr int Ultra = 3;
+	inline constexpr int Ultra = 3;  // Internal compatibility name; public label is Cinematic.
 
 	/** Applies one renderer-owned quality contract, synchronises its menu tier and performs required invalidation. */
 	void Apply(Group group, int quality);

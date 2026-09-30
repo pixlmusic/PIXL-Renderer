@@ -118,23 +118,23 @@ public:
 		bool EnableAdaptiveDenoiser = true;
 		float DepthDisocclusion = .1f;
 		float NormalDisocclusion = .1f;
-		uint MaxAccumFrames = 16;
+		uint MaxAccumFrames = 24;
 		float BlurRadius = 2.f;
 		float DistanceNormalisation = 2.f;
 		// PIXL hybrid world-radiance cache. This augments, rather than replaces,
 		// the horizon-bitmask screen-space result.
 		bool EnableWorldCache = true;
-		uint WorldCacheMaxAge = 48;
-		uint WorldCacheSampleCount = 6;
-		float WorldCacheStrength = 0.35f;
-		float WorldCacheCellSizeNear = 128.f;
+		uint WorldCacheMaxAge = 72;
+		uint WorldCacheSampleCount = 8;
+		float WorldCacheStrength = 0.60f;
+		float WorldCacheCellSizeNear = 96.f;
 		float WorldCacheCellSizeFar = 512.f;
 		float WorldCacheRadius = 1536.f;
-		float WorldCacheLeakReduction = 0.75f;
-		float WorldCacheTemporalResponse = 0.12f;
+		float WorldCacheLeakReduction = 0.82f;
+		float WorldCacheTemporalResponse = 0.07f;
 		bool EnableWorldCacheSecondBounce = true;
-		float WorldCacheSecondBounceStrength = 0.18f;
-		uint WorldCacheInjectionStride = 4;
+		float WorldCacheSecondBounceStrength = 0.20f;
+		uint WorldCacheInjectionStride = 2;
 		uint WorldCacheTraceSteps = 4;
 		bool EnableDirectionalOcclusion = true;
 		float DirectionalOcclusionStrength = 0.30f;

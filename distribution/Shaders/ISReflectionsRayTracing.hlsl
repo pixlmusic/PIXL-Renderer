@@ -135,13 +135,14 @@ float4 GetReflectionColorLegacy(
 #if USE_PIXL_ENHANCED_SSR
 float4 GetReflectionColorEnhanced(float3 projReflectionDirection, float3 projPosition, float3 viewReflectionDirection)
 {
-	static const int refineIterations = 6;
 	float traceScale = clamp(SharedData::waterOpticsSettings.SSRDistanceScale, 0.25f, 1.5f);
-	// Trace Distance is also the public SSR workload control used by the Water
-	// quality profile.  The shipped Ultra value (1.29) retains the original
-	// 48-step trace exactly, while lower tiers reduce real texture/depth work
-	// instead of only changing the length of an otherwise fixed-cost ray.
-	int coarseIterations = (int)round(lerp(24.0f, 48.0f, saturate((traceScale - 0.65f) / 0.64f)));
+	int traceQuality = clamp((int)round(SharedData::waterOpticsSettings.SSRTraceQuality), 0, 3);
+	// High preserves the former 48+6 sample Cinematic trace. Cinematic is a
+	// deliberate offline/high-end option with three times the coarse ray budget.
+	static const int coarseBudgets[4] = { 16, 28, 48, 144 };
+	static const int refinementBudgets[4] = { 3, 4, 6, 10 };
+	int coarseIterations = coarseBudgets[traceQuality];
+	int refineIterations = refinementBudgets[traceQuality];
 	float3 rayDirection = projReflectionDirection * traceScale;
 	float3 previousRaySample = projPosition;
 	float previousSceneDepth = DepthTex.SampleLevel(DepthSampler, ConvertRaySample(projPosition.xy), 0).x;
@@ -170,7 +171,7 @@ float4 GetReflectionColorEnhanced(float3 projReflectionDirection, float3 projPos
 			float3 binarySample = raySample;
 			float hitT = warpedT;
 
-			[unroll] for (int k = 0; k < refineIterations; ++k) {
+			[loop] for (int k = 0; k < refineIterations; ++k) {
 				binarySample = 0.5f * (binaryMin + binaryMax);
 				sceneDepth = DepthTex.SampleLevel(DepthSampler, ConvertRaySample(binarySample.xy), 0).x;
 				if (sceneDepth < binarySample.z)

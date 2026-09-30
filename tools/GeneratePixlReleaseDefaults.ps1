@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
-    [string]$BaselinePath
+    [string]$BaselinePath,
+    [switch]$PresetsOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -47,9 +48,11 @@ function Set-MenuTier([object]$Config, [int]$Tier) {
     }
 }
 
-function Apply-EnhancedContract([object]$Config) {
-    # Keep the approved live image and reduce only real workload controls. These
-    # values mirror engine/Renderer/QualityProfiles.cpp exactly.
+function Apply-QualityContract([object]$Config, [int]$Tier) {
+    # Windows PowerShell 5.1 targets a framework without Math.Clamp.
+    $Tier = [Math]::Min(3, [Math]::Max(0, $Tier))
+    # These arrays mirror engine/Renderer/QualityProfiles.cpp. Keep artistic
+    # appearance controls out of this function: profiles own workload only.
     $gi = $Config.'Hybrid GI'
     $gi.Enabled = $true
     $gi.EnableGI = $true
@@ -61,76 +64,106 @@ function Apply-EnhancedContract([object]$Config) {
     $gi.EnableSpecularOcclusion = $true
     $gi.EnableAdaptiveDenoiser = $true
     $gi.ResolutionMode = 0
-    $gi.NumSlices = 5
-    $gi.NumSteps = 10
-    $gi.WorldCacheSampleCount = 6
-    $gi.WorldCacheTraceSteps = 4
-    $gi.WorldCacheInjectionStride = 3
-    $gi.EnableWorldCacheSecondBounce = $true
-    $gi.ReflectionSteps = 32
-    $gi.MaxAccumFrames = 20
-    $gi.BlurRadius = 2.2
-    $gi.RadianceFireflyClamp = 6.0
-    $gi.ReflectionFireflyClamp = 8.0
-    $gi.WorldCacheTemporalResponse = 0.12
-    $Config.'Contact Shadows'.SampleCount = 2
-    $Config.'Material Forge'.LocalContactShadowLightCount = 1
-    $Config.'Light Volumes'.ExteriorQuality = 2
-    $Config.'Light Volumes'.InteriorQuality = 2
+    $gi.NumSlices = @(2, 4, 6, 10)[$Tier]
+    $gi.NumSteps = @(4, 8, 12, 20)[$Tier]
+    $gi.WorldCacheSampleCount = @(2, 4, 8, 8)[$Tier]
+    $gi.WorldCacheTraceSteps = @(2, 3, 4, 6)[$Tier]
+    $gi.WorldCacheInjectionStride = @(8, 4, 2, 1)[$Tier]
+    $gi.EnableWorldCacheSecondBounce = $Tier -ge 1
+    $gi.ReflectionSteps = @(12, 24, 48, 64)[$Tier]
+    $gi.MaxAccumFrames = @(16, 24, 24, 36)[$Tier]
+    $gi.BlurRadius = @(3.0, 2.5, 2.0, 1.6)[$Tier]
+    $gi.RadianceFireflyClamp = @(4.0, 5.0, 8.0, 12.0)[$Tier]
+    $gi.ReflectionFireflyClamp = @(4.0, 6.0, 10.0, 16.0)[$Tier]
+    # Higher tiers inject more cache samples, so they can use a slower replacement
+    # rate for a steadier world-space anchor without sacrificing convergence.
+    $gi.WorldCacheTemporalResponse = @(0.08, 0.075, 0.07, 0.06)[$Tier]
+    $Config.'Contact Shadows'.SampleCount = @(1, 1, 4, 12)[$Tier]
+    $Config.'Material Forge'.LocalContactShadowLightCount = @(1, 1, 2, 2)[$Tier]
+    $Config.'Light Volumes'.ExteriorQuality = [Math]::Min($Tier, 2)
+    $Config.'Light Volumes'.InteriorQuality = [Math]::Min($Tier, 2)
 
     $forge = $Config.'Material Forge'
     $forge.EnableSpecularAA = 1
-    $forge.SpecularAAStrength = 1.00
+    $forge.SpecularAAStrength = @(0.50, 0.75, 1.34, 1.50)[$Tier]
     $forge.EnableGGXMultiScatter = 1
-    $forge.GGXMultiScatterStrength = 1.00
+    $forge.GGXMultiScatterStrength = @(0.55, 0.75, 1.00, 1.00)[$Tier]
 
     $layers = $Config.'Material Layers'
     $layers.EnableComplexMaterial = 1
-    $layers.EnableParallax = 1
-    $layers.EnableHeightBlending = 1
-    $layers.EnableShadows = 1
+    $layers.EnableParallax = [int]($Tier -ge 1)
+    $layers.EnableHeightBlending = [int]($Tier -ge 2)
+    $layers.EnableShadows = [int]($Tier -ge 1)
     $tuning = $layers.'PIXL Tuning'
-    $tuning.ObjectNearSteps = 9
-    $tuning.ObjectMaxSteps = 18
-    $tuning.ObjectRefinementSteps = 6
-    $tuning.TerrainNearSteps = 8
-    $tuning.TerrainMaxSteps = 22
-    $tuning.TerrainRefinementSteps = 6
-    $tuning.EnableDetailReconstruction = 1
-    $tuning.DetailQuality = 2
+    $tuning.ObjectNearSteps = @(4, 6, 12, 24)[$Tier]
+    $tuning.ObjectMaxSteps = @(8, 12, 24, 32)[$Tier]
+    $tuning.ObjectRefinementSteps = @(4, 4, 8, 12)[$Tier]
+    $tuning.TerrainNearSteps = @(4, 6, 10, 30)[$Tier]
+    $tuning.TerrainMaxSteps = @(8, 14, 30, 64)[$Tier]
+    $tuning.TerrainRefinementSteps = @(4, 4, 8, 16)[$Tier]
+    $tuning.EnableDetailReconstruction = [int]($Tier -ge 1)
+    $tuning.DetailQuality = @(0, 1, 2, 2)[$Tier]
 
-    $Config.Atmosphere.volumetricGridPixelSize = 24
-    $Config.Atmosphere.volumetricGridSizeZ = 64
-    $Config.Atmosphere.volumetricHistoryMissSampleCount = 4
+    $Config.Atmosphere.volumetricGridPixelSize = @(64, 40, 24, 16)[$Tier]
+    $Config.Atmosphere.volumetricGridSizeZ = @(24, 36, 64, 80)[$Tier]
+    $Config.Atmosphere.volumetricHistoryMissSampleCount = @(1, 2, 4, 8)[$Tier]
 
     $water = $Config.'Water Optics'
     $water.EnableEnhancedSSR = 1
     $water.EnableEnhancedCaustics = 1
-    $water.SSRDistanceScale = 1.20
-    $water.SSREdgeFade = 0.60
-    $water.CausticsDispersion = 0.65
+    $water.SSRDistanceScale = @(0.65, 0.90, 1.20, 1.50)[$Tier]
+    $water.SSREdgeFade = @(1.35, 1.00, 0.60, 0.25)[$Tier]
+    if ($water.PSObject.Properties.Name -contains 'SSRTraceQuality') {
+        $water.SSRTraceQuality = [double]$Tier
+    } else {
+        $water | Add-Member -NotePropertyName SSRTraceQuality -NotePropertyValue ([double]$Tier)
+    }
 
     # Ground Response's authored coverage/depth/distance/material behavior is
     # immutable across release tiers. Only geometric subdivision is scalable.
     $ground = $Config.'Ground Response'
-    $ground.GeometryTessellationNear = 10.0
-    $ground.GeometryTessellationFar = 2.5
-    # Slightly soften the snow coverage/deformation onset on the raised hull
-    # without changing its authored depth, resistance, or tessellation.
-    $ground.SnowCoverageFeather = 0.35
+    $ground.GeometryTessellationNear = @(4.0, 7.0, 10.0, 16.0)[$Tier]
+    $ground.GeometryTessellationFar = @(1.25, 2.0, 2.5, 6.0)[$Tier]
+    $ground.SessionSurfaceHistoryTileBudget = @(48, 96, 192, 512)[$Tier]
     $Config.'Terrain Detail'.enableLODTerrainTilingFix = 1
+
+    $foliage = $Config.'Foliage Optimizer'
+    $foliage.EnableOcclusionCulling = $true
+    $foliage.EnableMidLOD = $true
+    $foliage.EnableFarLOD = $true
+    $foliage.MinPixelSize = @(6.0, 3.5, 2.0, 1.0)[$Tier]
+    $foliage.FullDetailPixelSize = @(48.0, 28.0, 16.0, 8.0)[$Tier]
+    $foliage.MinDensity = @(0.01, 0.02, 0.03, 0.08)[$Tier]
+    $foliage.SimpleShadingPixelSize = @(16.0, 9.0, 0.0, 0.0)[$Tier]
+    $foliage.MeshCostBias = @(0.85, 0.60, 0.40, 0.0)[$Tier]
+    $foliage.CostBiasStartDistance = @(3000.0, 5000.0, 6000.0, 20000.0)[$Tier]
+    $foliage.CollisionDistance = @(1024.0, 1536.0, 2048.0, 4096.0)[$Tier]
+    $foliage.EnableMeshLOD = $Tier -le 1
 
     $skin = $Config.'Skin Optics'
     $skin.EnableSkin = $true
-    $skin.EnableSkinDetail = $true
+    $skin.EnableSkinDetail = $Tier -ge 1
     $skin.UseSSS = $true
-    $Config.'Tissue Diffusion'.BurleySamples = 18
+    $Config.'Tissue Diffusion'.BurleySamples = @(6, 12, 24, 64)[$Tier]
     $Config.'Strand Shading'.Enabled = 1
-    $Config.'Strand Shading'.HairMode = 1
-    $Config.'Strand Shading'.EnableSelfShadow = 1
-    $Config.'Actor Surface Effects'.EffectQuality = 2
+    $Config.'Strand Shading'.HairMode = [int]($Tier -ge 2)
+    $Config.'Strand Shading'.EnableSelfShadow = [int]($Tier -ge 1)
+    $actor = $Config.'Actor Surface Effects'
+    $actor.EffectQuality = $Tier
+    $actor.MaximumAffectedNPCs = @(8, 16, 48, 64)[$Tier]
+    $actor.EffectDistance = @(2000.0, 3200.0, 4800.0, 8000.0)[$Tier]
+    if ($actor.PSObject.Properties.Name -contains 'QualityContractVersion') {
+        $actor.QualityContractVersion = 2
+    } else {
+        $actor | Add-Member -NotePropertyName QualityContractVersion -NotePropertyValue 2
+    }
 
-    Set-MenuTier $Config 2
+    Set-MenuTier $Config $Tier
+    if ($Config.Menu.PSObject.Properties.Name -contains 'QualityContractVersion') {
+        $Config.Menu.QualityContractVersion = 2
+    } else {
+        $Config.Menu | Add-Member -NotePropertyName QualityContractVersion -NotePropertyValue 2
+    }
 
     # Hardware-neutral release default: native PIXL TAA, no sidecar features.
     $reconstruction = $Config.ImageReconstruction
@@ -161,32 +194,45 @@ function Flatten([object]$Node, [string]$Path = '') {
     [pscustomobject]@{ Path=$Path; Value=($Node | ConvertTo-Json -Compress) }
 }
 
-$ultraPath = Join-Path $presetDirectory 'PIXL-Renderer-Ultra.json'
-$ultra = Read-Baseline
-Remove-RetiredCompatibilityKeys $ultra
-Write-Config $ultra $ultraPath
-
-$enhanced = Read-Baseline
-Remove-RetiredCompatibilityKeys $enhanced
-Apply-EnhancedContract $enhanced
+$high = Read-Baseline
+Remove-RetiredCompatibilityKeys $high
+Apply-QualityContract $high 2
 $defaultPath = Join-Path $distribution 'SettingsDefault.json'
 $enhancedPath = Join-Path $presetDirectory 'PIXL-Renderer-Enhanced.json'
+$ultraPath = Join-Path $presetDirectory 'PIXL-Renderer-Ultra.json'
 $liveTestedPath = Join-Path $presetDirectory 'PIXL-Renderer-Live-Tested.json'
-Write-Config $enhanced $defaultPath
-Write-Config $enhanced $enhancedPath
-# The live-tested/golden profile remains the user's approved Ultra image. A
-# fresh installation starts on the coherent Enhanced tier and native TAA.
-Write-Config $ultra $liveTestedPath
+if (-not $PresetsOnly) {
+    Write-Config $high $defaultPath
+}
+Write-Config $high $enhancedPath
+Write-Config $high $ultraPath
+Write-Config $high $liveTestedPath
+
+$low = Read-Baseline
+Remove-RetiredCompatibilityKeys $low
+Apply-QualityContract $low 0
+Write-Config $low (Join-Path $presetDirectory 'PIXL-Renderer-Low.json')
+
+$medium = Read-Baseline
+Remove-RetiredCompatibilityKeys $medium
+Apply-QualityContract $medium 1
+Write-Config $medium (Join-Path $presetDirectory 'PIXL-Renderer-Medium.json')
+
+$cinematic = Read-Baseline
+Remove-RetiredCompatibilityKeys $cinematic
+Apply-QualityContract $cinematic 3
+Write-Config $cinematic (Join-Path $presetDirectory 'PIXL-Renderer-Ultimate.json')
 
 # Ensure no Ground Response visual/behavioral control was accidentally changed.
 $baseline = Read-Baseline
 $groundBefore = @(Flatten $baseline.'Ground Response' 'Ground Response')
-$groundAfter = @(Flatten $enhanced.'Ground Response' 'Ground Response')
+$groundAfter = @(Flatten $high.'Ground Response' 'Ground Response')
 $groundBeforeMap = @{}; $groundBefore | ForEach-Object { $groundBeforeMap[$_.Path] = $_.Value }
 $groundChanges = @($groundAfter | Where-Object { $groundBeforeMap[$_.Path] -ne $_.Value } | ForEach-Object Path)
 $allowedGroundChanges = @(
     'Ground Response.GeometryTessellationNear',
     'Ground Response.GeometryTessellationFar',
+    'Ground Response.SessionSurfaceHistoryTileBudget',
     'Ground Response.SnowCoverageFeather'
 )
 $unexpectedGround = @($groundChanges | Where-Object { $_ -notin $allowedGroundChanges })
@@ -201,8 +247,8 @@ if ((Get-FileHash -Algorithm SHA256 -LiteralPath $baselineResolved).Hash -ne $ba
 [pscustomobject]@{
     Baseline = $baselineResolved
     BaselineSHA256 = $baselineHash
-    Ultra = $ultraPath
-    EnhancedDefault = $defaultPath
+    High = $ultraPath
+    HighDefault = $defaultPath
     EnhancedPreset = $enhancedPath
     GroundChanges = ($groundChanges -join ', ')
 } | Format-List

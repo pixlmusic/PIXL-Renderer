@@ -501,7 +501,8 @@ public:
 		bool DeveloperMode = false;                                                         // Enables diagnostics, debug compilation, and engineering tools
 		bool SkipExperimentalWarning = false;                                               // Acknowledged the Experimental workspace entry warning
 		bool ExperimentalRenderOriginEnabled = false;                                       // Opt-in renderer-only origin rebasing; release default stays off
-		int RendererQuality = 2;                                                           // 0 Low, 1 Medium, 2 High, 3 Ultra
+		int QualityContractVersion = 2;                                                    // v2 moves the former Cinematic workload to High
+		int RendererQuality = 2;                                                           // 0 Low, 1 Medium, 2 High, 3 Cinematic
 		int LightingQuality = 2;
 		int MaterialsQuality = 2;
 		int AtmosphereQuality = 2;
@@ -509,6 +510,9 @@ public:
 		int TerrainVegetationQuality = 2;
 		int CharactersQuality = 2;
 		int CameraQuality = 2;
+		float DirectorPhotoFov = 0.0f;                                                   // 0 adopts gameplay FOV once; then persists the shared Photo/Video lens framing
+		float DirectorCameraMoveSpeed = 1.0f;                                            // Shared Photo/Video free-camera speed
+		json DirectorCameraProfile = json::object();                                     // Photo/Video-only look and lens values; gameplay CameraSuite settings stay independent
 		// Presentation-only tuner workspace preferences. These never alter a
 		// module's JSON schema, profile semantics, or renderer state.
 		std::vector<std::string> TunerFavoriteFeatures{};

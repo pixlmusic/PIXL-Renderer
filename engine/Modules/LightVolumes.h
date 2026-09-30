@@ -104,7 +104,7 @@ public:
 	/** Recreates the active volumetric targets after a coordinated renderer profile changes quality. */
 	void ApplyRendererQualityChange();
 	/** Applies a PIXL Lighting tier to Skyrim's native volumetric-lighting quality ladder.
-	 *  Low/Medium/High map directly; Ultra currently uses native High without
+	 *  Low/Medium/High map directly; Cinematic currently uses native High without
 	 *  consuming the user's Custom slot.
 	 */
 	void ApplyRendererQualityTier(int32_t quality);

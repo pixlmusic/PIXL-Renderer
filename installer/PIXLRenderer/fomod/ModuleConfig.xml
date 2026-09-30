@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>PIXL Renderer 1.0.4</moduleName>
+  <moduleName>PIXL Renderer 1.0.5</moduleName>
   <moduleImage path="fomod\images\pixl-hero.jpg" showImage="true" showFade="true" height="240" />
   <requiredInstallFiles>
     <folder source="PIXL-Core" destination="" priority="0" />
@@ -11,7 +11,7 @@
         <group name="PIXL Renderer setup" type="SelectExactlyOne">
           <plugins order="Explicit">
             <plugin name="Install PIXL Renderer">
-              <description>Welcome to PIXL Renderer 1.0.4.
+              <description>Welcome to PIXL Renderer 1.0.5.
 
 FIRST LAUNCH
 1. Start Skyrim through SKSE and let shader compilation finish.
@@ -69,23 +69,21 @@ EXACT SURFACETIDES VERSION ONLY: this replaces SurfaceTides.dll, Shaders/Surface
         </group>
       </optionalFileGroups>
     </installStep>
-    <installStep name="What's new in 1.0.4">
+    <installStep name="What's new in 1.0.5">
       <optionalFileGroups order="Explicit">
         <group name="Release notes" type="SelectExactlyOne">
           <plugins order="Explicit">
-            <plugin name="Review 1.0.4 changes">
-              <description>HIGHLIGHTS THROUGH 1.0.4
+            <plugin name="Review 1.0.5 changes">
+              <description>HIGHLIGHTS SINCE 1.0.4
 
-- Authored Complex Material, PBR and POM height information is restored and preferred, with synthetic parallax retained as a fallback for ordinary textures.
-- GGX highlight stability and authored-material filtering are improved.
-- WindowLife handles replacement window textures more carefully, rejects false roof openings and adds clearer rain droplets and streaks.
-- Rain runoff is more visible, while bright square micro-splash artefacts are reduced.
-- Ground Response gains stronger mud response and wetter behavior near water.
-- Weather, fog, night exposure, wetness and horizon blending received compatibility and visual polish.
-- Photo Mode/external-camera interaction and contact/screen-space shadow transitions received compatibility fixes.
-- The PIXL interface, Photo Mode and Video Mode gained clearer camera and path controls.
-- The Extensions panel now distinguishes a detected SurfaceTides DLL from a confirmed active water-draw bridge.
-- Optional SurfaceTides 1.0.2 integration combines its tessellated geometry with PIXL water optics, projected rapid-water detail and calmer city/interior displacement.
+- Cinematic DOF gains physical close-focus recovery, stable autofocus, improved foreground coverage and reconstruction-aware edges.
+- Ground Response uses the proven direct terrain reconstruction path and ships the new live-tested snow/deformation defaults.
+- Contained Liquids gains profile-aware fill, effect-first classification, steadier slosh, bubbles and improved glass/liquid optics.
+- Foliage receives PIXL-native optimization infrastructure, improved quality scaling and corrected ordinary-grass SSGI normals.
+- Quality tiers now scale real GI, atmosphere, POM, water, camera, vegetation and character workloads.
+- Image Reconstruction improves DOF, vegetation, ground-response and reactive/disocclusion hand-off.
+- Director, Photo Mode and Video Mode gain tighter camera, focus, vegetation and capture integration.
+- Source provenance, licensing, packaging and rollback-safe deployment tooling received a complete release pass.
 
 Allow shader compilation to finish before judging visuals or performance. Existing user configuration remains in place.</description>
               <image path="fomod\images\pixl-hero.jpg" />

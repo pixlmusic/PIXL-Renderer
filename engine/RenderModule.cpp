@@ -10,6 +10,7 @@
 #include "Modules/GroundResponse.h"
 #include "Modules/ActorSurfaceEffects.h"
 #include "Modules/FoliageDynamics.h"
+#include "Modules/FoliageOptimizer.h"
 #include "Modules/CameraSuite.h"
 #include "Modules/StrandShading.h"
 #include "Modules/HairReconstruction.h"
@@ -230,6 +231,7 @@ const std::vector<RenderModule*>& RenderModule::GetModuleList()
 		&globals::pipeline::materialForge,
 		&globals::pipeline::volumeOcclusion,
 		&globals::pipeline::foliageDynamics,
+		&globals::pipeline::foliageOptimizer,
 		&globals::pipeline::groundResponse,
 		&globals::pipeline::actorSurfaceEffects,
 		&globals::pipeline::contactShadows,

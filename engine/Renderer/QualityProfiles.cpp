@@ -10,6 +10,7 @@
 #include "Modules/GroundResponse.h"
 #include "Modules/ActorSurfaceEffects.h"
 #include "Modules/FoliageDynamics.h"
+#include "Modules/FoliageOptimizer.h"
 #include "Modules/CameraSuite.h"
 #include "Modules/StrandShading.h"
 #include "Modules/HairReconstruction.h"
@@ -50,16 +51,90 @@ namespace PIXLRenderer::QualityProfiles
 			float cacheResponse;
 		};
 
-		// Ultra is byte-for-value aligned with the shipped PIXL live-tested
-		// configuration. Lower tiers reduce only workload/stability quality; the
-		// renderer's authored GI strength, colour, radius and experimental feature
-		// switches remain user-owned.
+		// High is byte-for-value aligned with the former Cinematic contract. The
+		// new Cinematic tier is deliberately expensive and spends roughly three
+		// times the dominant screen-space ray budget where the implementation has
+		// safe headroom. Artistic strength/colour/radius controls remain user-owned.
 		constexpr std::array<LightingContract, 4> kLightingContracts{
-			LightingContract{ 0, 3, 6, 3, 2, 6, false, 16, 1, 1, 20, 2.8f, 4.0f, 4.0f, 0.08f },
-			LightingContract{ 0, 4, 8, 4, 3, 4, true, 24, 1, 1, 20, 2.5f, 5.0f, 6.0f, 0.10f },
-			LightingContract{ 0, 5, 10, 6, 4, 3, true, 32, 2, 1, 20, 2.2f, 6.0f, 8.0f, 0.12f },
-			LightingContract{ 0, 6, 12, 8, 4, 2, true, 48, 4, 2, 18, 2.0f, 8.0f, 10.0f, 0.14f }
+			LightingContract{ 0, 2, 4, 2, 2, 8, false, 12, 1, 1, 16, 3.0f, 4.0f, 4.0f, 0.08f },
+			LightingContract{ 0, 4, 8, 4, 3, 4, true, 24, 1, 1, 24, 2.5f, 5.0f, 6.0f, 0.075f },
+			LightingContract{ 0, 6, 12, 8, 4, 2, true, 48, 4, 2, 24, 2.0f, 8.0f, 10.0f, 0.07f },
+			LightingContract{ 0, 10, 20, 8, 6, 1, true, 64, 12, 2, 36, 1.6f, 12.0f, 16.0f, 0.06f }
 		};
+
+		struct MaterialsContract
+		{
+			float specularAA;
+			float multiscatter;
+			std::uint32_t objectNearSteps;
+			std::uint32_t objectMaxSteps;
+			std::uint32_t objectRefinementSteps;
+			std::uint32_t terrainNearSteps;
+			std::uint32_t terrainMaxSteps;
+			std::uint32_t terrainRefinementSteps;
+			std::uint32_t detailQuality;
+		};
+
+		constexpr std::array<MaterialsContract, 4> kMaterialsContracts{
+			MaterialsContract{ 0.50f, 0.55f, 4, 8, 4, 4, 8, 4, 0 },
+			MaterialsContract{ 0.75f, 0.75f, 6, 12, 4, 6, 14, 4, 1 },
+			MaterialsContract{ 1.34f, 1.00f, 12, 24, 8, 10, 30, 8, 2 },
+			MaterialsContract{ 1.50f, 1.00f, 24, 32, 12, 30, 64, 16, 2 }
+		};
+
+		struct AtmosphereContract
+		{
+			std::uint32_t gridPixelSize;
+			std::uint32_t gridDepth;
+			std::uint32_t historyMissSamples;
+		};
+
+		constexpr std::array<AtmosphereContract, 4> kAtmosphereContracts{
+			AtmosphereContract{ 64, 24, 1 },
+			AtmosphereContract{ 40, 36, 2 },
+			AtmosphereContract{ 24, 64, 4 },
+			AtmosphereContract{ 16, 80, 8 }
+		};
+
+		struct WaterContract
+		{
+			float traceDistance;
+			float edgeFade;
+			float traceQuality;
+		};
+
+		constexpr std::array<WaterContract, 4> kWaterContracts{
+			WaterContract{ 0.65f, 1.35f, 0.0f },
+			WaterContract{ 0.90f, 1.00f, 1.0f },
+			WaterContract{ 1.20f, 0.60f, 2.0f },
+			WaterContract{ 1.50f, 0.25f, 3.0f }
+		};
+
+		struct TerrainVegetationContract
+		{
+			float tessellationNear;
+			float tessellationFar;
+			std::uint32_t historyTiles;
+			float minPixelSize;
+			float fullDetailPixelSize;
+			float minDensity;
+			float simpleShadingPixelSize;
+			float meshCostBias;
+			float costBiasStartDistance;
+			float collisionDistance;
+			bool meshLod;
+		};
+
+		constexpr std::array<TerrainVegetationContract, 4> kTerrainVegetationContracts{
+			TerrainVegetationContract{ 4.0f, 1.25f, 48u, 6.0f, 48.0f, 0.010f, 16.0f, 0.85f, 3000.0f, 1024.0f, true },
+			TerrainVegetationContract{ 7.0f, 2.0f, 96u, 3.5f, 28.0f, 0.020f, 9.0f, 0.60f, 5000.0f, 1536.0f, true },
+			TerrainVegetationContract{ 10.0f, 2.5f, 192u, 2.0f, 16.0f, 0.030f, 0.0f, 0.40f, 6000.0f, 2048.0f, false },
+			TerrainVegetationContract{ 16.0f, 6.0f, 512u, 1.0f, 8.0f, 0.080f, 0.0f, 0.0f, 20000.0f, 4096.0f, false }
+		};
+
+		constexpr std::array<std::uint32_t, 4> kCharacterBurleySamples{ 6u, 12u, 24u, 64u };
+		constexpr std::array<std::uint32_t, 4> kCharacterActorCaps{ 8u, 16u, 48u, 64u };
+		constexpr std::array<float, 4> kCharacterEffectDistances{ 2000.0f, 3200.0f, 4800.0f, 8000.0f };
 
 		bool NearlyEqual(float left, float right)
 		{
@@ -95,7 +170,7 @@ namespace PIXLRenderer::QualityProfiles
 			auto& volumes = globals::pipeline::lightVolumes;
 
 			// Q1 UNIFIED LIGHTING QUALITY
-			// Ultra is intentionally the shipped PIXL known-good baseline. Quality
+			// High is intentionally the shipped PIXL known-good baseline. Quality
 			// profiles change workload/stability controls only; artistic controls such
 			// as GI strength, saturation, AO power and radii remain user-owned.
 			//
@@ -131,13 +206,12 @@ namespace PIXLRenderer::QualityProfiles
 			gi.settings.WorldCacheTemporalResponse = contract.cacheResponse;
 
 			// Contact Shadows + local-light contact rays are part of Lighting, not
-			// Materials. Ultra exactly preserves the live-tested sample counts.
+			// Materials. High exactly preserves the live-tested sample counts.
 			shadows.bendSettings.SampleCount = contract.shadowSamples;
 			pbr.settings.LocalContactShadowLightCount = contract.localShadowLights;
 
-			// Skyrim exposes three native volumetric-lighting grids. Q1 maps Ultra
-			// to native High for now instead of abusing the user Custom slot. The
-			// module owns this translation so a true Ultra grid can be added later.
+			// Skyrim exposes three native volumetric-lighting grids. Both renderer
+			// top tiers map to native High rather than abusing the user Custom slot.
 			volumes.ApplyRendererQualityTier(quality);
 
 			// Sampling/permutation changes must invalidate both shader state and the
@@ -168,36 +242,24 @@ namespace PIXLRenderer::QualityProfiles
 			auto& pbr = globals::pipeline::materialForge.settings;
 			auto& materials = globals::pipeline::materialLayers.settings;
 			auto& tuning = globals::pipeline::materialLayers.tuningSettings;
-			// 1.34 is the accepted live-tested Ultra value. Keep this contract in
-			// lockstep with DetectMaterialsTier() so selecting Ultra never changes
-			// the approved baseline appearance or immediately reports Custom.
-			constexpr std::array<float, 4> specularAA{ 0.50f, 0.75f, 1.00f, 1.34f };
-			constexpr std::array<float, 4> multiscatter{ 0.55f, 0.75f, 1.00f, 1.00f };
-			constexpr std::array<std::uint32_t, 4> objectNearSteps{ 4, 6, 9, 12 };
-			constexpr std::array<std::uint32_t, 4> objectMaxSteps{ 8, 12, 18, 24 };
-			constexpr std::array<std::uint32_t, 4> objectRefinementSteps{ 2, 4, 6, 8 };
-			constexpr std::array<std::uint32_t, 4> terrainNearSteps{ 4, 6, 8, 10 };
-			constexpr std::array<std::uint32_t, 4> terrainMaxSteps{ 8, 14, 22, 30 };
-			constexpr std::array<std::uint32_t, 4> terrainRefinementSteps{ 2, 4, 6, 8 };
-			constexpr std::array<std::uint32_t, 4> detailQuality{ 0, 1, 2, 2 };
+			const auto& contract = kMaterialsContracts[quality];
 			pbr.EnableSpecularAA = 1;
-			pbr.SpecularAAStrength = specularAA[quality];
+			pbr.SpecularAAStrength = contract.specularAA;
 			pbr.EnableGGXMultiScatter = 1;
-			pbr.GGXMultiScatterStrength = multiscatter[quality];
+			pbr.GGXMultiScatterStrength = contract.multiscatter;
 			materials.EnableComplexMaterial = 1;
 			materials.EnableParallax = quality >= Medium;
 			materials.EnableHeightBlending = quality >= High;
 			materials.EnableShadows = quality >= Medium;
-			// Scale the actual POM ray loops and detail reconstruction modes. Ultra
-			// exactly matches the shipped live tuning block.
-			tuning.ObjectNearSteps = objectNearSteps[quality];
-			tuning.ObjectMaxSteps = objectMaxSteps[quality];
-			tuning.ObjectRefinementSteps = objectRefinementSteps[quality];
-			tuning.TerrainNearSteps = terrainNearSteps[quality];
-			tuning.TerrainMaxSteps = terrainMaxSteps[quality];
-			tuning.TerrainRefinementSteps = terrainRefinementSteps[quality];
+			// Scale the actual POM ray loops and detail reconstruction modes.
+			tuning.ObjectNearSteps = contract.objectNearSteps;
+			tuning.ObjectMaxSteps = contract.objectMaxSteps;
+			tuning.ObjectRefinementSteps = contract.objectRefinementSteps;
+			tuning.TerrainNearSteps = contract.terrainNearSteps;
+			tuning.TerrainMaxSteps = contract.terrainMaxSteps;
+			tuning.TerrainRefinementSteps = contract.terrainRefinementSteps;
 			tuning.EnableDetailReconstruction = quality >= Medium;
-			tuning.DetailQuality = detailQuality[quality];
+			tuning.DetailQuality = contract.detailQuality;
 		}
 
 		void ApplyAtmosphere(int quality)
@@ -206,13 +268,14 @@ namespace PIXLRenderer::QualityProfiles
 			auto& fog = globals::pipeline::atmosphere.settings;
 			// Cloud presence and its authored look remain user-owned. The quality
 			// contract scales the real volumetric grid cost without silently enabling
-			// clouds in the approved Ultra configuration, where they are intentionally off.
+			// clouds, which remain an authored choice.
 			static_cast<void>(clouds);
 			// Smaller XY footprints and deeper Z grids increase froxel count. The
 			// Atmosphere prepass detects these changes and recreates its resources.
-			fog.volumetricGridPixelSize = std::array<std::uint32_t, 4>{ 48, 36, 30, 24 }[quality];
-			fog.volumetricGridSizeZ = std::array<std::uint32_t, 4>{ 32, 40, 52, 64 }[quality];
-			fog.volumetricHistoryMissSampleCount = std::array<std::uint32_t, 4>{ 1, 2, 3, 4 }[quality];
+			const auto& contract = kAtmosphereContracts[quality];
+			fog.volumetricGridPixelSize = contract.gridPixelSize;
+			fog.volumetricGridSizeZ = contract.gridDepth;
+			fog.volumetricHistoryMissSampleCount = contract.historyMissSamples;
 			// Light Volumes are owned by the Lighting quality group. Atmosphere must
 			// not silently overwrite their tier after Lighting has been selected.
 		}
@@ -220,14 +283,15 @@ namespace PIXLRenderer::QualityProfiles
 		void ApplyWater(int quality)
 		{
 			auto& water = globals::pipeline::waterOptics.settings;
+			const auto& contract = kWaterContracts[quality];
 			// Keep the signature PIXL reflection/caustic path present at every tier;
-			// distance and dispersion scale its cost/clarity instead of reverting Low
+			// distance and trace sampling scale its cost/clarity instead of reverting Low
 			// to a visibly different vanilla water material.
 			water.EnableEnhancedSSR = true;
 			water.EnableEnhancedCaustics = true;
-			water.SSRDistanceScale = std::array{ 0.65f, 0.90f, 1.20f, 1.50f }[quality];
-			water.SSREdgeFade = std::array{ 1.35f, 1.00f, 0.60f, 0.25f }[quality];
-			water.CausticsDispersion = std::array{ 0.25f, 0.45f, 0.65f, 0.88f }[quality];
+			water.SSRDistanceScale = contract.traceDistance;
+			water.SSREdgeFade = contract.edgeFade;
+			water.SSRTraceQuality = contract.traceQuality;
 			globals::pipeline::hybridGI.recompileFlag = true;
 			globals::pipeline::hybridGI.queuedResetHistory = true;
 		}
@@ -235,23 +299,34 @@ namespace PIXLRenderer::QualityProfiles
 		void ApplyTerrainVegetation(int quality)
 		{
 			auto& ground = globals::pipeline::groundResponse.settings;
+			auto& foliage = globals::pipeline::foliageOptimizer.settings;
+			const auto& contract = kTerrainVegetationContracts[quality];
 			// Vegetation material response and wind character are artistic controls,
 			// not workload controls. Preserve them at every quality tier. Scale the
 			// expensive raised snow/mud tessellation factors instead. Coverage, depth,
 			// classification and distance are deliberately left untouched: lowering a
 			// quality preset must never change where Ground Response exists or how it
 			// behaves, only how finely its generated surface is subdivided.
-			constexpr std::array<float, 4> tessellationNear{ 4.0f, 7.0f, 10.0f, 14.0f };
-			constexpr std::array<float, 4> tessellationFar{ 1.5f, 2.0f, 2.5f, 3.0f };
-			constexpr std::array<std::uint32_t, 4> historyTiles{ 48u, 96u, 192u, 256u };
-			ground.GeometryTessellationNear = tessellationNear[quality];
-			ground.GeometryTessellationFar = tessellationFar[quality];
+			ground.GeometryTessellationNear = contract.tessellationNear;
+			ground.GeometryTessellationFar = contract.tessellationFar;
 			// Ground Response keeps interaction coverage at every tier.  The preset
 			// only changes geometric density and the bounded session-history budget;
 			// it never disables snow, mud, marks, or environmental state behind the
 			// user's back.
-			ground.SessionSurfaceHistoryTileBudget = historyTiles[quality];
+			ground.SessionSurfaceHistoryTileBudget = contract.historyTiles;
 			globals::pipeline::terrainDetail.settings.enableLODTerrainTilingFix = 1;
+
+			// Scale only GPU-culling workload controls. Authored wind, vegetation
+			// material response and the user's grass range remain untouched.
+			foliage.MinPixelSize = contract.minPixelSize;
+			foliage.FullDetailPixelSize = contract.fullDetailPixelSize;
+			foliage.MinDensity = contract.minDensity;
+			foliage.SimpleShadingPixelSize = contract.simpleShadingPixelSize;
+			foliage.MeshCostBias = contract.meshCostBias;
+			foliage.CostBiasStartDistance = contract.costBiasStartDistance;
+			foliage.CollisionDistance = contract.collisionDistance;
+			foliage.EnableMeshLOD = contract.meshLod;
+			foliage.EnableOcclusionCulling = true;
 		}
 
 		void ApplyCharacters(int quality)
@@ -264,12 +339,16 @@ namespace PIXLRenderer::QualityProfiles
 			// Dialogue faces must retain the PIXL skin identity even on Low; tiers
 			// reduce Burley samples/detail rather than disabling scattering outright.
 			skin.UseSSS = true;
-			sss.settings.BurleySamples = std::array<uint, 4>{ 8, 12, 18, 24 }[quality];
+			sss.settings.BurleySamples = kCharacterBurleySamples[quality];
 			sss.updateKernels = true;
 			hair.Enabled = true;
 			hair.HairMode = quality >= High ? 1u : 0u;
 			hair.EnableSelfShadow = quality >= Medium;
-			globals::pipeline::actorSurfaceEffects.ApplyQualityTier(static_cast<std::uint32_t>(quality));
+			auto& actorEffects = globals::pipeline::actorSurfaceEffects;
+			actorEffects.ApplyQualityTier(static_cast<std::uint32_t>(quality));
+			actorEffects.settings.MaximumAffectedNPCs = kCharacterActorCaps[quality];
+			actorEffects.settings.EffectDistance = kCharacterEffectDistances[quality];
+			globals::pipeline::hairReconstruction.ApplyQualityTier(static_cast<std::uint32_t>(quality));
 		}
 
 		void ApplyCamera(int quality)
@@ -298,33 +377,25 @@ namespace PIXLRenderer::QualityProfiles
 			const auto& pbr = globals::pipeline::materialForge.settings;
 			const auto& materials = globals::pipeline::materialLayers.settings;
 			const auto& tuning = globals::pipeline::materialLayers.tuningSettings;
-			constexpr std::array<float, 4> specularAA{ 0.50f, 0.75f, 1.00f, 1.34f };
-			constexpr std::array<float, 4> multiscatter{ 0.55f, 0.75f, 1.00f, 1.00f };
-			constexpr std::array<std::uint32_t, 4> objectNearSteps{ 4, 6, 9, 12 };
-			constexpr std::array<std::uint32_t, 4> objectMaxSteps{ 8, 12, 18, 24 };
-			constexpr std::array<std::uint32_t, 4> objectRefinementSteps{ 2, 4, 6, 8 };
-			constexpr std::array<std::uint32_t, 4> terrainNearSteps{ 4, 6, 8, 10 };
-			constexpr std::array<std::uint32_t, 4> terrainMaxSteps{ 8, 14, 22, 30 };
-			constexpr std::array<std::uint32_t, 4> terrainRefinementSteps{ 2, 4, 6, 8 };
-			constexpr std::array<std::uint32_t, 4> detailQuality{ 0, 1, 2, 2 };
 
 			for (int quality = Low; quality <= Ultra; ++quality) {
+				const auto& contract = kMaterialsContracts[quality];
 				if (pbr.EnableSpecularAA == 1 &&
-				    NearlyEqual(pbr.SpecularAAStrength, specularAA[quality]) &&
+				    NearlyEqual(pbr.SpecularAAStrength, contract.specularAA) &&
 				    pbr.EnableGGXMultiScatter == 1 &&
-				    NearlyEqual(pbr.GGXMultiScatterStrength, multiscatter[quality]) &&
+				    NearlyEqual(pbr.GGXMultiScatterStrength, contract.multiscatter) &&
 				    materials.EnableComplexMaterial == 1 &&
 				    (materials.EnableParallax != 0) == (quality >= Medium) &&
 				    (materials.EnableHeightBlending != 0) == (quality >= High) &&
 				    (materials.EnableShadows != 0) == (quality >= Medium) &&
-				    tuning.ObjectNearSteps == objectNearSteps[quality] &&
-				    tuning.ObjectMaxSteps == objectMaxSteps[quality] &&
-				    tuning.ObjectRefinementSteps == objectRefinementSteps[quality] &&
-				    tuning.TerrainNearSteps == terrainNearSteps[quality] &&
-				    tuning.TerrainMaxSteps == terrainMaxSteps[quality] &&
-				    tuning.TerrainRefinementSteps == terrainRefinementSteps[quality] &&
+				    tuning.ObjectNearSteps == contract.objectNearSteps &&
+				    tuning.ObjectMaxSteps == contract.objectMaxSteps &&
+				    tuning.ObjectRefinementSteps == contract.objectRefinementSteps &&
+				    tuning.TerrainNearSteps == contract.terrainNearSteps &&
+				    tuning.TerrainMaxSteps == contract.terrainMaxSteps &&
+				    tuning.TerrainRefinementSteps == contract.terrainRefinementSteps &&
 				    (tuning.EnableDetailReconstruction != 0) == (quality >= Medium) &&
-				    tuning.DetailQuality == detailQuality[quality]) {
+				    tuning.DetailQuality == contract.detailQuality) {
 					return quality;
 				}
 			}
@@ -334,14 +405,12 @@ namespace PIXLRenderer::QualityProfiles
 		int DetectAtmosphereTier()
 		{
 			const auto& fog = globals::pipeline::atmosphere.settings;
-			constexpr std::array<std::uint32_t, 4> gridXY{ 48, 36, 30, 24 };
-			constexpr std::array<std::uint32_t, 4> gridZ{ 32, 40, 52, 64 };
-			constexpr std::array<std::uint32_t, 4> historyMiss{ 1, 2, 3, 4 };
 
 			for (int quality = Low; quality <= Ultra; ++quality) {
-				if (fog.volumetricGridPixelSize == gridXY[quality] &&
-				    fog.volumetricGridSizeZ == gridZ[quality] &&
-				    fog.volumetricHistoryMissSampleCount == historyMiss[quality]) {
+				const auto& contract = kAtmosphereContracts[quality];
+				if (fog.volumetricGridPixelSize == contract.gridPixelSize &&
+				    fog.volumetricGridSizeZ == contract.gridDepth &&
+				    fog.volumetricHistoryMissSampleCount == contract.historyMissSamples) {
 					return quality;
 				}
 			}
@@ -351,16 +420,14 @@ namespace PIXLRenderer::QualityProfiles
 		int DetectWaterTier()
 		{
 			const auto& water = globals::pipeline::waterOptics.settings;
-			constexpr std::array<float, 4> distance{ 0.65f, 0.90f, 1.20f, 1.50f };
-			constexpr std::array<float, 4> edgeFade{ 1.35f, 1.00f, 0.60f, 0.25f };
-			constexpr std::array<float, 4> dispersion{ 0.25f, 0.45f, 0.65f, 0.88f };
 
 			for (int quality = Low; quality <= Ultra; ++quality) {
+				const auto& contract = kWaterContracts[quality];
 				if (water.EnableEnhancedSSR != 0 &&
 				    water.EnableEnhancedCaustics != 0 &&
-				    NearlyEqual(water.SSRDistanceScale, distance[quality]) &&
-				    NearlyEqual(water.SSREdgeFade, edgeFade[quality]) &&
-				    NearlyEqual(water.CausticsDispersion, dispersion[quality])) {
+				    NearlyEqual(water.SSRDistanceScale, contract.traceDistance) &&
+				    NearlyEqual(water.SSREdgeFade, contract.edgeFade) &&
+				    NearlyEqual(water.SSRTraceQuality, contract.traceQuality)) {
 					return quality;
 				}
 			}
@@ -371,15 +438,22 @@ namespace PIXLRenderer::QualityProfiles
 		{
 			const auto& ground = globals::pipeline::groundResponse.settings;
 			const auto& terrain = globals::pipeline::terrainDetail.settings;
-			constexpr std::array<float, 4> tessellationNear{ 4.0f, 7.0f, 10.0f, 14.0f };
-			constexpr std::array<float, 4> tessellationFar{ 1.5f, 2.0f, 2.5f, 3.0f };
-			constexpr std::array<std::uint32_t, 4> historyTiles{ 48u, 96u, 192u, 256u };
-
+			const auto& foliage = globals::pipeline::foliageOptimizer.settings;
 			for (int quality = Low; quality <= Ultra; ++quality) {
-				if (NearlyEqual(ground.GeometryTessellationNear, tessellationNear[quality]) &&
-				    NearlyEqual(ground.GeometryTessellationFar, tessellationFar[quality]) &&
-				    ground.SessionSurfaceHistoryTileBudget == historyTiles[quality] &&
-				    terrain.enableLODTerrainTilingFix == 1) {
+				const auto& contract = kTerrainVegetationContracts[quality];
+				if (NearlyEqual(ground.GeometryTessellationNear, contract.tessellationNear) &&
+				    NearlyEqual(ground.GeometryTessellationFar, contract.tessellationFar) &&
+				    ground.SessionSurfaceHistoryTileBudget == contract.historyTiles &&
+				    terrain.enableLODTerrainTilingFix == 1 &&
+				    NearlyEqual(foliage.MinPixelSize, contract.minPixelSize) &&
+				    NearlyEqual(foliage.FullDetailPixelSize, contract.fullDetailPixelSize) &&
+				    NearlyEqual(foliage.MinDensity, contract.minDensity) &&
+				    NearlyEqual(foliage.SimpleShadingPixelSize, contract.simpleShadingPixelSize) &&
+				    NearlyEqual(foliage.MeshCostBias, contract.meshCostBias) &&
+				    NearlyEqual(foliage.CostBiasStartDistance, contract.costBiasStartDistance) &&
+				    NearlyEqual(foliage.CollisionDistance, contract.collisionDistance) &&
+				    foliage.EnableMeshLOD == contract.meshLod &&
+				    foliage.EnableOcclusionCulling) {
 					return quality;
 				}
 			}
@@ -391,18 +465,22 @@ namespace PIXLRenderer::QualityProfiles
 			const auto& skin = globals::pipeline::skinOptics.settings;
 			const auto& sss = globals::pipeline::tissueDiffusion.settings;
 			const auto& hair = globals::pipeline::strandShading.settings;
-			constexpr std::array<uint, 4> samples{ 8, 12, 18, 24 };
+			const auto& reconstruction = globals::pipeline::hairReconstruction.settings;
 
 			for (int quality = Low; quality <= Ultra; ++quality) {
 				if (skin.EnableSkin &&
 				    skin.EnableSkinDetail == (quality >= Medium) &&
 				    skin.UseSSS &&
-				    sss.BurleySamples == samples[quality] &&
+				    sss.BurleySamples == kCharacterBurleySamples[quality] &&
 				    hair.Enabled &&
 				    hair.HairMode == (quality >= High ? 1u : 0u) &&
 				    (hair.EnableSelfShadow != 0) == (quality >= Medium) &&
 				    (!globals::pipeline::actorSurfaceEffects.loaded ||
-				     globals::pipeline::actorSurfaceEffects.settings.EffectQuality == static_cast<std::uint32_t>(quality))) {
+				     (globals::pipeline::actorSurfaceEffects.settings.EffectQuality == static_cast<std::uint32_t>(quality) &&
+				      globals::pipeline::actorSurfaceEffects.settings.MaximumAffectedNPCs == kCharacterActorCaps[quality] &&
+				      NearlyEqual(globals::pipeline::actorSurfaceEffects.settings.EffectDistance, kCharacterEffectDistances[quality]))) &&
+				    (!globals::pipeline::hairReconstruction.loaded ||
+				     reconstruction.Quality == static_cast<std::uint32_t>(quality))) {
 					return quality;
 				}
 			}

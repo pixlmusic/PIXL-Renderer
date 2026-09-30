@@ -37,6 +37,8 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     float weight = 0.0f;
     float nearestDepth = 1.0e20f;
     float centreDepth = 0.0f;
+	float worldWeightedDepth = 0.0f;
+	float worldWeight = 0.0f;
     float validDepths[13];
     [unroll]
     for (uint i = 0; i < 13; ++i) {
@@ -45,11 +47,6 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
         validDepths[i] = 0.0f;
         if (!valid || depth <= 1.0f || depth >= 2000000.0f)
             continue;
-		// First-person arms, weapons and spell geometry occupy the near camera
-		// volume and must neither steal autofocus nor pull a rack focus away from
-		// the world-space subject under the crosshair.
-		if (DofFirstPersonView() && depth < 220.0f)
-			continue;
 		// Reject the player back inside the third-person camera boom without
 		// suppressing genuine close world targets beyond the character.
 		if (DofThirdPersonView() && depth < 520.0f)
@@ -60,11 +57,18 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 		float sampleWeight = i == 0 ? 3.0f : (i < 5 ? 1.5f : 1.0f);
         weightedDepth += depth * sampleWeight;
         weight += sampleWeight;
+		// Keep a hand-safe fallback, but do not discard the near samples yet: a
+		// genuinely close object should be allowed to own focus when it forms a
+		// coherent centre cluster rather than a single weapon/hand fragment.
+		if (!DofFirstPersonView() || depth >= 220.0f) {
+			worldWeightedDepth += depth * sampleWeight;
+			worldWeight += sampleWeight;
+		}
         nearestDepth = min(nearestDepth, depth);
     }
     float target = weight > 0.0f ? weightedDepth / weight : dofControlFocusDistance;
     // Resolve a compact cluster around the nearest hit. This lets a thin tree,
-    // weapon or fence under the crosshair win against the distant background,
+    // close prop or fence under the crosshair win against the distant background,
     // but requires either the centre sample or multiple nearby supporting hits.
     float clusterSum = 0.0f;
     float clusterWeight = 0.0f;
@@ -79,9 +83,23 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     }
     bool centredSubject = centreDepth > 0.0f && centreDepth < target * 0.92f;
     bool supportedThinSubject = clusterWeight >= 2.5f && nearestDepth < target * 0.80f;
+	bool closeFirstPersonCandidate = DofFirstPersonView() && nearestDepth < 220.0f;
+	bool supportedCloseSubject = centreDepth > 0.0f && centreDepth <= clusterLimit &&
+		clusterWeight >= 6.0f;
+	bool rejectedNearCameraFragment = closeFirstPersonCandidate && !supportedCloseSubject;
+	if (rejectedNearCameraFragment) {
+		// A hand or weapon crossing one or two ROI taps must not steal focus. A
+		// close inspection target covering the centre plus neighbouring taps is
+		// retained and receives the full physical close-focus response.
+		target = worldWeight > 0.0f
+			? worldWeightedDepth / worldWeight
+			: dofControlFocusDistance;
+		centredSubject = false;
+		supportedThinSubject = false;
+	}
     if (centredSubject || supportedThinSubject)
         target = clusterSum / max(clusterWeight, 1.0f);
-    else if (nearestDepth < target * 0.72f)
+    else if (!rejectedNearCameraFragment && nearestDepth < target * 0.72f)
         target = lerp(target, nearestDepth, 0.30f);
 
     float previousDistance = PreviousFocus.Load(int3(0, 0, 0)).x;

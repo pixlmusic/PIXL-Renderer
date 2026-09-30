@@ -92,12 +92,18 @@ float FirstPersonHandProtection(float2 uv, float depth)
 {
 	// Skyrim has no reliable weapon stencil at this stage. Protect only the
 	// characteristic near-camera, lower-side hand zones and feather both the
-	// screen and depth boundaries. Unlike the old blanket depth cut, nearby
-	// ground in the centre and upper frame keeps its natural near-field blur.
+	// screen and depth boundaries. Protection also requires the surface to sit
+	// clearly in front of the resolved focus plane. When autofocus intentionally
+	// resolves a close prop, face, or inspection target, its depth approaches the
+	// focus plane and the protection releases instead of suppressing macro DOF.
 	float nearCamera = 1.0f - smoothstep(105.0f, 285.0f, depth);
+	float resolvedFocus = max(dofControlFocusDistance, 1.0f);
+	if (dofControlFocusMode >= 3.0f)
+		resolvedFocus = max(FocusTex.Load(int3(0, 0, 0)).x, 1.0f);
+	float separatedFromFocus = 1.0f - smoothstep(0.48f, 0.78f, depth / resolvedFocus);
 	float lowerFrame = smoothstep(0.48f, 0.80f, uv.y);
 	float sideRegion = smoothstep(0.09f, 0.27f, abs(uv.x - 0.5f));
-	return saturate(nearCamera * lowerFrame * sideRegion);
+	return saturate(nearCamera * separatedFromFocus * lowerFrame * sideRegion);
 }
 
 float ThirdPersonSubjectProtection(float2 uv, float depth)

@@ -453,12 +453,12 @@ float3 PixlApplyCameraMotionBlur(float2 uv, uint2 dim, float3 sharpScene)
 		return sharpScene;
 
 	uint quality = PixlCameraQualityTier();
-	uint sampleCount = quality == 3u ? 11u : (quality == 2u ? 9u : (quality == 1u ? 7u : 5u));
+	uint sampleCount = quality == 3u ? 24u : (quality == 2u ? 11u : (quality == 1u ? 7u : 5u));
 	float2 span = velocity * saturate(motionBlurStrength) * clamp(motionBlurShutter, 0.10f, 1.0f);
 	float3 accumulated = sharpScene * 2.0f;
 	float accumulatedWeight = 2.0f;
 	[loop]
-	for (uint i = 0u; i < 11u; ++i) {
+	for (uint i = 0u; i < 24u; ++i) {
 		if (i >= sampleCount)
 			break;
 		float t = ((float)i + 0.5f) / (float)sampleCount - 0.5f;

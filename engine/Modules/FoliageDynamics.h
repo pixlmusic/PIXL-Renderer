@@ -36,28 +36,28 @@ public:
 
 	struct alignas(16) Settings
 	{
-		float Glossiness = 20.0f;
-		float SpecularStrength = 0.5f;
-		float TissueDiffusionAmount = 1.0f;
-		uint OverrideComplexGrassSettings = false;
-		float BasicGrassBrightness = 1.0f;
-		float ComplexGrassThreshold = 0.03f;
+		float Glossiness = 65.3f;
+		float SpecularStrength = 0.23f;
+		float TissueDiffusionAmount = 0.8f;
+		uint OverrideComplexGrassSettings = true;
+		float BasicGrassBrightness = 0.67f;
+		float ComplexGrassThreshold = 0.1f;
 		uint TreeFlipNormalY = false;  // c1.z, replaces padding; no ABI growth
-		float GrassMacroSpecular = 0.85f;  // c1.w, replaces padding; 0=detail normal, 1=card plane
+		float GrassMacroSpecular = 0.59f;  // c1.w, replaces padding; 0=detail normal, 1=card plane
 
 		uint EnableEnhancedVegetation = true;
 		uint EnableEnhancedWind = true;
-		float LeafTransmission = 0.8f;
-		float LeafDiffuseWrap = 0.35f;
+		float LeafTransmission = 1.09f;
+		float LeafDiffuseWrap = 0.55f;
 
-		float WindStrength = 1.0f;
-		float GustStrength = 0.35f;
-		float FlutterStrength = 0.22f;
-		float WindSpatialScale = 1.0f;
+		float WindStrength = 2.0f;
+		float GustStrength = 1.5f;
+		float FlutterStrength = 1.0f;
+		float WindSpatialScale = 1.36f;
 
-		float GustSpeed = 1.0f;
-		float FlutterSpeed = 1.0f;
-		float SpecularAA = 0.65f;
+		float GustSpeed = 1.7f;
+		float FlutterSpeed = 1.56f;
+		float SpecularAA = 0.83f;
 		// 0 Auto Safe, 1 Basic/Vanilla, 2 Auto layout + DX Y, 3 Auto layout + Flip-Y.
 		uint ComplexGrassMode = 0;  // c4.w; replaces padding without changing FeatureData ABI
 	};
@@ -77,32 +77,32 @@ public:
 		// c0
 		uint Magic = TuningMagic;
 		uint Version = TuningVersion;
-		uint EnableGrassAlphaControl = 0;
+		uint EnableGrassAlphaControl = 1;
 		uint GrassFlipNormalX = 0;
 
 		// c1
 		uint GrassFlipNormalY = 0;
-		float GrassNormalStrength = 1.0f;
-		float GrassCardNormalBlend = 0.0f;
+		float GrassNormalStrength = 1.01f;
+		float GrassCardNormalBlend = 0.53f;
 		float GrassAlphaCoverage = 1.0f;
 
 		// c2
-		float GrassCutoutBias = 0.0f;
-		float GrassAlphaPower = 1.0f;
-		float GrassEdgeDither = 0.0f;
-		float GrassSaturation = 1.0f;
+		float GrassCutoutBias = 0.022f;
+		float GrassAlphaPower = 1.13f;
+		float GrassEdgeDither = 0.08f;
+		float GrassSaturation = 0.61f;
 
 		// c3
-		float GrassContrast = 1.0f;
-		float GrassWetSpecularBoost = 1.0f;
-		float GrassTransmissionBoost = 1.0f;
+		float GrassContrast = 1.01f;
+		float GrassWetSpecularBoost = 0.22f;
+		float GrassTransmissionBoost = 1.05f;
 		float GrassLocalLightBoost = 1.0f;
 
 		// c4 -- dedicated b13 extension; FeatureData b6 remains unchanged.
-		float GrassDetailDistanceScale = 1.35f;
-		float GrassDetailTransitionSoftness = 1.0f;
-		float GrassSpecularNormalization = 1.0f;
-		float GrassComplexSpecularMapInfluence = 0.15f;
+		float GrassDetailDistanceScale = 0.89f;
+		float GrassDetailTransitionSoftness = 1.26f;
+		float GrassSpecularNormalization = 0.85f;
+		float GrassComplexSpecularMapInfluence = 1.0f;
 
 		// c5 -- complex-grass specular-only mirrored tangent-Y lobe.
 		uint GrassMirrorSpecularY = 0;

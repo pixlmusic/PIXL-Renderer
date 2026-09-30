@@ -297,10 +297,10 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	}
 
 	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "QUALITY PROFILE");
-	const char* qualityNames[] = { "Fast", "Balanced", "Enhanced", "Cinematic" };
+	const char* qualityNames[] = { "Low", "Medium", "High", "Cinematic" };
 	ImGui::SetNextItemWidth(-1.0f);
 	ImGui::Combo("##PIXLSetupQuality", &setupQuality, qualityNames, IM_ARRAYSIZE(qualityNames));
-	Util::AddTooltip("Enhanced is the recommended default: higher lighting and material fidelity with a controlled performance budget. Cinematic is intended for powerful systems and photo work.");
+	Util::AddTooltip("High preserves the previous Cinematic look and is the recommended powerful-gameplay target. Cinematic spends up to three times the dominant ray and reconstruction budgets and is intended for exceptional GPUs or capture work.");
 
 	ImGui::TextWrapped(
 		"Use the buttons below to choose your PIXL Renderer and Photo Mode hotkeys. These choices are saved with setup and remain available in PIXL Renderer > Hotkeys.");

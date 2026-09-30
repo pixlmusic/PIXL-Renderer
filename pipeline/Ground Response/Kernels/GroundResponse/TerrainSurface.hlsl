@@ -734,6 +734,14 @@ float GroundRawCompaction(float2 absoluteXY)
                 absoluteXY).x);
 }
 
+float GroundStableCompactionDemand(float2 absoluteXY)
+{
+    float filtered = GroundResponseRuntime::LegacyTerrainSurfaceEnabled()
+        ? GroundRawCompaction(absoluteXY)
+        : GroundDerivedSampleAbsolute(GroundDerivedResponseField, absoluteXY).x;
+    return GroundVerticalCompressionProfile(saturate(filtered));
+}
+
 float2 GroundSearchTrenchOutward(float2 absoluteXY)
 {
     // Directions from this destination toward candidate trench texels.
@@ -1140,10 +1148,18 @@ float PatchTessellation(
             max(tess, detailTess),
             adaptiveWeight);
 
-    // Integer factors keep the generated vertex pattern stable while the
-    // camera crosses a deformation edge. Shared-edge factors are derived from
-    // the same endpoints, so adjacent terrain triangles remain crack-free.
-    return clamp(ceil(tess), 1.0f, 16.0f);
+    // Use a small set of integer topology bands. Fractional-odd tessellation
+    // continuously relocates generated vertices whenever a camera-derived
+    // factor changes; sampling the persistent height field at those moving
+    // locations makes steep track shoulders appear to cascade down the slope.
+    // Coarse integer bands keep vertices fixed for long camera intervals while
+    // retaining enough levels for distant terrain performance.
+    if (tess <= 1.25f) return 1.0f;
+    if (tess <= 2.50f) return 2.0f;
+    if (tess <= 5.50f) return 4.0f;
+    if (tess <= 10.0f) return 8.0f;
+    if (tess <= 14.0f) return 12.0f;
+    return 16.0f;
 }
 
 PATCH_CONSTANTS PatchConstants(
@@ -1202,6 +1218,23 @@ PATCH_CONSTANTS PatchConstants(
     float2 absE1 = e1.xy + FrameBuffer::CameraPosAdjust.xy;
     float2 absE2 = e2.xy + FrameBuffer::CameraPosAdjust.xy;
 
+    float2 absP0 = p0.xy + FrameBuffer::CameraPosAdjust.xy;
+    float2 absP1 = p1.xy + FrameBuffer::CameraPosAdjust.xy;
+    float2 absP2 = p2.xy + FrameBuffer::CameraPosAdjust.xy;
+
+    // An active track pins every touched shared edge to one fixed topology.
+    // Each edge uses only its own endpoints and midpoint, so adjacent terrain
+    // triangles derive the same factor and remain crack-free.
+    float trackEdge0 = max(
+        GroundStableCompactionDemand(absE0),
+        max(GroundStableCompactionDemand(absP1), GroundStableCompactionDemand(absP2)));
+    float trackEdge1 = max(
+        GroundStableCompactionDemand(absE1),
+        max(GroundStableCompactionDemand(absP2), GroundStableCompactionDemand(absP0)));
+    float trackEdge2 = max(
+        GroundStableCompactionDemand(absE2),
+        max(GroundStableCompactionDemand(absP0), GroundStableCompactionDemand(absP1)));
+
     float detail0 =
         GroundSnowAdaptiveTessDemand(absE0) *
         snowEdge0;
@@ -1229,6 +1262,11 @@ PATCH_CONSTANTS PatchConstants(
         edgeMask2 > 1e-4f && d2 < renderDistance
             ? PatchTessellation(d2, detail2, length(p0 - p1))
             : 1.0f;
+
+    const float stableTrackTess = 16.0f;
+    if (trackEdge0 > 0.015f) output.Edge[0] = stableTrackTess;
+    if (trackEdge1 > 0.015f) output.Edge[1] = stableTrackTess;
+    if (trackEdge2 > 0.015f) output.Edge[2] = stableTrackTess;
     output.Inside = max(output.Edge[0], max(output.Edge[1], output.Edge[2]));
     return output;
 }

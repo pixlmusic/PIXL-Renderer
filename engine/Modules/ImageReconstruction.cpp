@@ -2238,9 +2238,10 @@ void ImageReconstruction::Upscale()
 	}
 	auto& temporalAAMask = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kTEMPORAL_AA_MASK];
 	auto& normals = renderer->GetRuntimeData().renderTargets[deferred->forwardRenderTargets[2]];
+	auto& materialMasks = renderer->GetRuntimeData().renderTargets[MASKS];
 	auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 	auto* encodeShader = GetEncodeTexturesCS();
-	if (!temporalAAMask.SRV || !normals.SRV || !depth.depthSRV || !encodeShader)
+	if (!temporalAAMask.SRV || !normals.SRV || !materialMasks.SRV || !depth.depthSRV || !encodeShader)
 		return;
 	if (upscaleMethod == UpscaleMethod::kDLSS && (!motionVectorCopyTexture || !motionVectorCopyTexture->uav))
 		return;
@@ -2256,7 +2257,13 @@ void ImageReconstruction::Upscale()
 		uint32_t renderWidth = (uint32_t)renderSize.x;
 		uint32_t renderHeight = (uint32_t)renderSize.y;
 
-		ID3D11ShaderResourceView* views[4] = { temporalAAMask.SRV, normals.SRV, motionVector.SRV, depth.depthSRV };
+		ID3D11ShaderResourceView* views[5] = {
+			temporalAAMask.SRV,
+			normals.SRV,
+			motionVector.SRV,
+			depth.depthSRV,
+			materialMasks.SRV
+		};
 		context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 		context->CSSetShader(encodeShader, nullptr, 0);
 
@@ -2277,7 +2284,7 @@ void ImageReconstruction::Upscale()
 
 		context->Dispatch((renderWidth + 7) / 8, (renderHeight + 7) / 8, 1);
 
-		ID3D11ShaderResourceView* nullViews[4] = { nullptr, nullptr, nullptr, nullptr };
+		ID3D11ShaderResourceView* nullViews[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
 		context->CSSetShaderResources(0, ARRAYSIZE(nullViews), nullViews);
 
 		ID3D11UnorderedAccessView* nullUAVs[4] = { nullptr, nullptr, nullptr, nullptr };

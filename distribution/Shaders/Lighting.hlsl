@@ -1719,9 +1719,26 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	float curvature = 0;
 	float normalSmoothness = 0;
+	// The GroundResponse hull is a real displaced height field. Its steep cut
+	// faces must not inherit a second, tangent-space terrain POM displacement:
+	// landscape UVs are planar in XY, so doing so stretches relief vertically
+	// down a footprint wall and reads as a continuously falling texture.
+	float groundHullWallProtection = 0.0f;
 
 #	if !defined(MODELSPACENORMALS)
 	float3 vertexNormal = tbnTr[2];
+#		if defined(GROUND_RESPONSE) && defined(LANDSCAPE)
+	if (GroundResponseRuntime::IsGeometryPass()) {
+		const float groundShellRaise = max(
+			input.WorldPosition.z - input.GroundBaseWorldPosition.z,
+			0.0f);
+		const float groundShellPresent = smoothstep(0.20f, 1.50f, groundShellRaise);
+		const float groundHullSteepness =
+			1.0f - smoothstep(0.48f, 0.80f, abs(vertexNormal.z));
+		groundHullWallProtection =
+			saturate(groundShellPresent * groundHullSteepness);
+	}
+#		endif
 #		if defined(EMAT)
 
 	if (SharedData::materialLayerSettings.EnableParallaxWarpingFix
@@ -2136,10 +2153,17 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			MaterialLayers::TerrainEffectivePomScale(
 				input.LandBlendWeights1, input.LandBlendWeights2.xy, displacementParams);
 		const bool doTerrainPom =
-			MaterialLayers::TerrainHasAnyDisplacement() && terrainEffectivePomScale > 0.01f;
+			MaterialLayers::TerrainHasAnyDisplacement() &&
+			terrainEffectivePomScale > 0.01f &&
+			groundHullWallProtection < 0.995f;
 		[branch] if (doTerrainPom)
 		{
 			uv = MaterialLayers::GetParallaxCoords(input, viewPosition.z, uv, mipLevels, terrainMaxTexDim, viewDirection, tbnTr, screenNoise, displacementParams, sharedOffset, pixelOffset, weights);
+			// Fade POM continuously before the hull becomes vertical. This keeps the
+			// authored/Auto-POM relief on the flat track floor and untouched terrain,
+			// while the physical hull alone describes the compressed side wall.
+			uv = lerp(uv, uvOriginal, groundHullWallProtection);
+			pixelOffset *= 1.0f - groundHullWallProtection;
 		}
 		else if (SharedData::materialLayerSettings.EnableHeightBlending)
 		{
@@ -2158,7 +2182,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		hasTerrainParallaxShadow =
 			viewPosition.z < MaterialLayers::ParallaxCheapDistance &&
 			MaterialLayers::TerrainHasAnyDisplacement() &&
-			terrainEffectivePomScale > 0.01f;
+			terrainEffectivePomScale > 0.01f &&
+			groundHullWallProtection < 0.50f;
 		// sh0 feeds point-light terrain shadows (hasTerrainParallaxShadow), not only POM.
 		if ((doTerrainPom || hasTerrainParallaxShadow) && SharedData::materialLayerSettings.EnableShadows && terrainDirectionalShadowQuality > 0.0) {
 			hasCachedTerrainShadowBaseHeight = COMPUTE_TERRAIN_SHADOW_BASE(sh0);
@@ -2185,6 +2210,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	cspomMip = mipLevel;
 #		endif
 	cspomSurfaceWeight = CSPOM::Weight(viewPosition.z, cspomViewZ, cspomMip);
+	cspomSurfaceWeight *= 1.0f - groundHullWallProtection;
 	cspomSurfaceWeight *= smoothstep(1.0e-7f, 2.0e-5f, dot(uv - uvOriginal, uv - uvOriginal));
 	float2 cspomDuvDx = ddx(uvOriginal);
 	float2 cspomDuvDy = ddy(uvOriginal);
@@ -2322,6 +2348,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 				viewPosition.z,
 				detailMip,
 				MaterialLayersTuning::DetailTerrainStrength() * dominantWeight);
+			detailVisibility *= 1.0f - groundHullWallProtection;
 
 			if (detailVisibility > 1e-4f)
 			{
@@ -3028,6 +3055,25 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			saturate(groundSample.freshness * groundMaterialActivation);
 		groundDeformationEdge =
 			saturate(groundSample.edge * groundMaterialActivation);
+		// A height-field trench can turn a few terrain texels into a steep wall.
+		// Reprojecting the landscape tangent normal and XY snow microsurface over
+		// that wall stretches tiny detail into long vertical bands (the apparent
+		// "waterfall" around tracks). The domain shader already supplies a smooth
+		// displaced geometry normal in vertexNormal, so progressively prefer it
+		// only on steep, actively deformed edges. Flat compacted floors and the
+		// surrounding authored terrain retain their full normal-map response.
+		float groundGeometricWall =
+			groundPixelUsesGeometricSurface
+				? max(
+					groundHullWallProtection,
+					1.0f - smoothstep(0.42f, 0.78f, abs(vertexNormal.z)))
+				: 0.0f;
+		float groundWallStabilization =
+			max(
+				groundHullWallProtection,
+				saturate(groundDeformationEdge * 2.4f) * groundGeometricWall);
+		worldNormal = normalize(
+			lerp(worldNormal, normalize(vertexNormal), groundWallStabilization * 0.92f));
 		// The tessellated GroundResponse shell already rebuilt a filtered
 		// displacement normal from the derived world-space gradient. Replacing it
 		// here with DeformableGround's raw 4-unit gradient reintroduces one-cell
@@ -3081,6 +3127,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 				groundMaterialActivation *
 				localSnowWeight *
 				groundMicroDistanceFade *
+				(1.0f - groundWallStabilization) *
 				(1.0f - groundDeformationAmount * 0.52f) *
 				// The visual mark only removes fluffy microsurface inside the
 				// already-physical footprint. It never substitutes for t101 depth.
@@ -4259,7 +4306,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	{
 		float3 dirLightDirectionTS = mul(refractedDirLightDirection, tbn).xyz;
 #		if defined(LANDSCAPE)
-		if (LANDSCAPE_PARALLAX_ENABLED && dirLightAngle > 0.0) {
+		if (LANDSCAPE_PARALLAX_ENABLED &&
+			groundHullWallProtection < 0.50f &&
+			dirLightAngle > 0.0) {
 			if (hasCachedDirectionalTerrainParallaxShadow) {
 				dirDetailedShadow *= cachedDirectionalTerrainParallaxShadow;
 			} else {
@@ -5555,6 +5604,18 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	psout.Masks = float4(pixlDialogueSSSMask, !(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsBeastRace), masksZ, psout.Diffuse.w);
 #		else
 	psout.Masks = float4(0, 0, masksZ, psout.Diffuse.w);
+#		endif
+
+#		if defined(GROUND_RESPONSE) && defined(LANDSCAPE)
+	// Masks.y is the HumanProfile selector only when Masks.x contains a tissue
+	// diffusion amount. Landscape always writes x=0, so the channel is available
+	// after TissueDiffusion as a robust reconstruction activity tag. Unlike the
+	// game motion target, PIXL's Masks target is guaranteed RGB on every setup.
+	if (GroundResponseRuntime::IsGeometryPass())
+	{
+		psout.Masks.y =
+			saturate(max(groundDeformationAmount, groundDeformationFreshness * 0.65f));
+	}
 #		endif
 
 	// Stored as 1 - vertexAO so the cleared default (0) means no occlusion

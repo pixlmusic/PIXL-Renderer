@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$ReleaseDirectory,
-    [string]$Version = '1.0.4'
+    [string]$Version = '1.0.5'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -57,6 +57,6 @@ $shaderCount = @(Get-ChildItem -LiteralPath (Join-Path $core 'Shaders') -File -R
     manualTestsRequired = $true
 } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $release 'RELEASE_MANIFEST.json') -Encoding UTF8
 $checksums | Set-Content -LiteralPath (Join-Path $release 'SHA256SUMS.txt') -Encoding ASCII
-Copy-Item -LiteralPath (Join-Path $repo 'docs\CHANGELOG-1.0.4.md') -Destination (Join-Path $release 'CHANGELOG-1.0.4.md') -Force
-Copy-Item -LiteralPath (Join-Path $repo 'docs\RELEASE_CHECKLIST_1.0.4.md') -Destination (Join-Path $release 'RELEASE_CHECKLIST_1.0.4.md') -Force
+Copy-Item -LiteralPath (Join-Path $repo 'docs\CHANGELOG.md') -Destination (Join-Path $release 'CHANGELOG.md') -Force
+Copy-Item -LiteralPath (Join-Path $repo 'docs\RELEASE_CHECKLIST_1.0.5.md') -Destination (Join-Path $release 'RELEASE_CHECKLIST_1.0.5.md') -Force
 Write-Host "PASS: release manifest, four archive hashes, $shaderCount shader files, and checklist at $release"

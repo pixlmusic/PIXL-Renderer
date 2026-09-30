@@ -10,6 +10,9 @@ Texture2D<float2> TAAMask : register(t0);
 Texture2D<float4> NormalsWaterMask : register(t1);
 Texture2D<float2> MotionVectorMask : register(t2);
 Texture2D<float> DepthMask : register(t3);
+// Deferred material masks: x is tissue amount, y is the profile selector on
+// tissue and PIXL reconstruction activity when x is zero, z is ambient luma.
+Texture2D<float3> MaterialMasks : register(t4);
 
 RWTexture2D<float> ReactiveMask : register(u0);
 RWTexture2D<float> TransparencyCompositionMask : register(u1);
@@ -30,6 +33,33 @@ RWTexture2D<float> DepthOutput : register(u3);
 	// at the point where reconstruction runs.
 	float transparencyCompositionMask = saturate(NormalsWaterMask[dispatchID.xy].z);
 	float reactiveMask = saturate(taaMask.x * 0.1 + taaMask.y);
+	float3 materialMask = MaterialMasks[dispatchID.xy];
+	float reconstructionActivity =
+		materialMask.x <= 1.0e-5f ? saturate(materialMask.y) : 0.0f;
+	float neighborhoodActivity = reconstructionActivity;
+
+	// One-pixel coverage expansion catches the immediate disocclusion fringe of
+	// a tessellated footprint without making broad, static terrain reactive.
+	[unroll] for (int activityY = -1; activityY <= 1; activityY++)
+	{
+		[unroll] for (int activityX = -1; activityX <= 1; activityX++)
+		{
+			int2 activityPos = int2(dispatchID.xy) + int2(activityX, activityY);
+			if (all(activityPos >= 0) && all(activityPos < int2(TrueSamplingDim)))
+				neighborhoodActivity = max(
+					neighborhoodActivity,
+					(MaterialMasks[activityPos].x <= 1.0e-5f
+						? saturate(MaterialMasks[activityPos].y)
+						: 0.0f));
+		}
+	}
+
+	// Current-frame weighting for changing displaced terrain.  This applies to
+	// both DLSS/DLAA and FSR; only motion-vector conditioning below is DLSS-only.
+	float groundResponseReactive = max(
+		reconstructionActivity * 0.82f,
+		neighborhoodActivity * 0.42f);
+	reactiveMask = max(reactiveMask, groundResponseReactive);
 
 #if defined(DLSS)
 	float depth = DepthMask[dispatchID.xy];
@@ -67,7 +97,7 @@ RWTexture2D<float> DepthOutput : register(u3);
 			// pixel in a full-screen pass while retaining world-space validation.
 			if (neighborDepth < closestDeviceDepth) {
 				closestDeviceDepth = neighborDepth;
-				dilatedMotionVector = MotionVectorMask[samplePos];
+				dilatedMotionVector = MotionVectorMask[samplePos].xy;
 				foundCandidate = true;
 			}
 		}
@@ -88,6 +118,9 @@ RWTexture2D<float> DepthOutput : register(u3);
 		}
 	}
 
+	// The displaced surface already owns a physically matched previous position.
+	// Never replace that vector with a neighbor selected from the steep track wall.
+	dilationWeight *= 1.0f - reconstructionActivity;
 	float2 conditionedMotion = lerp(motionVector, dilatedMotionVector, dilationWeight);
 	MotionVectorOutput[dispatchID.xy] = conditionedMotion;
 

@@ -53,19 +53,20 @@ void main(uint2 dispatchID : SV_DispatchThreadID)
 
     // A sparse bilateral luminance kernel produces local adaptation without
     // bleeding a torch or bright sky across a silhouette.
-    static const int2 offsets[8] = {
+    static const int2 offsets[24] = {
         int2(-12, 0), int2(12, 0), int2(0, -12), int2(0, 12),
-        int2(-8, -8), int2(8, -8), int2(-8, 8), int2(8, 8)
+        int2(-8, -8), int2(8, -8), int2(-8, 8), int2(8, 8),
+        int2(-20, -5), int2(20, 5), int2(5, -20), int2(-5, 20),
+        int2(-17, 11), int2(17, -11), int2(-11, -17), int2(11, 17),
+        int2(-28, 0), int2(28, 0), int2(0, -28), int2(0, 28),
+        int2(-20, -20), int2(20, -20), int2(-20, 20), int2(20, 20)
     };
 	float weightedLogLum = centerLogLum * 2.0f;
 	float weightSum = 2.0f;
-	uint sampleCount = min(PixlCameraLocalExposureSamples(), 8u);
+	uint sampleCount = min(PixlCameraLocalExposureSamples(), 24u);
 	[loop]
 	for (uint i = 0u; i < sampleCount; ++i) {
-		// Six-sample High uses an opposed diagonal pair; Ultra preserves all
-		// eight samples and their original order.
-		uint offsetIndex = sampleCount == 6u && i == 5u ? 7u : i;
-		float sampleLogLum = LoadLogLuminance(centerPixel + offsets[offsetIndex], sceneDimensions);
+		float sampleLogLum = LoadLogLuminance(centerPixel + offsets[i], sceneDimensions);
         float edgeWeight = exp2(-abs(sampleLogLum - centerLogLum) * 3.0f);
         weightedLogLum += sampleLogLum * edgeWeight;
         weightSum += edgeWeight;

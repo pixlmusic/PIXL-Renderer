@@ -3,6 +3,7 @@
 #include "../Globals.h"
 #include "../State.h"
 #include "../Modules/CameraSuite.h"
+#include "../Menu/PIXLStyle.h"
 #include "../../extern/ReShade/include/reshade_events.hpp"
 #include <psapi.h>
 #include <fstream>
@@ -55,6 +56,7 @@ namespace
 	std::string enbStatus;
 	std::optional<QuickStyle> enbImportBaseline;
 	std::array<QuickStyle, 5> quickStyles{};
+	int activeQuickStyle = -1;
 	bool quickStylesInitialized = false;
 
 	QuickStyle CaptureCurrentStyle(std::string_view defaultName);
@@ -716,15 +718,17 @@ bool ExternalPostProcessing::DrawENBQuickStylePalette()
 	InitializeQuickStyles();
 	bool changed = false;
 
-	const float gap = ImGui::GetStyle().ItemSpacing.x;
+	const float gap = PIXLUI::Ref(7.0f);
 	const float buttonWidth = std::max(1.0f, (ImGui::GetContentRegionAvail().x - gap) * 0.5f);
 	for (std::size_t i = 0; i < quickStyles.size(); ++i) {
 		ImGui::PushID(static_cast<int>(i));
 		auto& style = quickStyles[i];
 		const bool canApply = style.valid;
 		ImGui::BeginDisabled(!canApply);
-		if (ImGui::Button(style.name.data(), ImVec2(buttonWidth, 0.0f))) {
+		if (PIXLUI::ActionButton(style.name.data(), ImVec2(buttonWidth, PIXLUI::Ref(38.0f)),
+				activeQuickStyle == static_cast<int>(i))) {
 			ApplyQuickStyle(style);
+			activeQuickStyle = static_cast<int>(i);
 			changed = true;
 		}
 		ImGui::EndDisabled();

@@ -143,7 +143,6 @@ namespace
 		bool active = false;
 		bool snapshotValid = false;
 		bool restoreWorldOnExit = true;
-		bool restoreLookOnExit = true;
 
 		// Photo-mode presentation state.
 		bool hudVisible = true;
@@ -1653,6 +1652,68 @@ namespace
 			camera->GetRuntimeData2().worldFOV = g_directorPhotoMode.photoWorldFov;
 	}
 
+	json CaptureDirectorCameraProfile(const CameraSuite::Settings& settings)
+	{
+		return {
+			{ "cameraExposureCompensationEV", settings.cameraExposureCompensationEV },
+			{ "cameraContrast", settings.cameraContrast },
+			{ "cameraSaturation", settings.cameraSaturation },
+			{ "cameraHighlightProtection", settings.cameraHighlightProtection },
+			{ "cameraShadowDetail", settings.cameraShadowDetail },
+			{ "lookPreset", settings.lookPreset },
+			{ "lookOpacity", settings.lookOpacity },
+			{ "enableBloom", settings.enableBloom },
+			{ "bloomStrength", settings.bloomStrength },
+			{ "enableEnhancedDepthOfField", settings.enableEnhancedDepthOfField },
+			{ "dofAutoFocus", settings.dofAutoFocus },
+			{ "dofPhysicalLens", settings.dofPhysicalLens },
+			{ "dofFStop", settings.dofFStop },
+			{ "dofFocalLengthMm", settings.dofFocalLengthMm }
+		};
+	}
+
+	void ApplyDirectorCameraProfile(const json& profile, CameraSuite::Settings& settings)
+	{
+		if (!profile.is_object() || profile.empty())
+			return;
+		const auto finiteFloat = [&profile](const char* key, float fallback, float minimum, float maximum) {
+			const float value = profile.value(key, fallback);
+			return std::clamp(std::isfinite(value) ? value : fallback, minimum, maximum);
+		};
+		settings.cameraExposureCompensationEV = finiteFloat(
+			"cameraExposureCompensationEV", settings.cameraExposureCompensationEV, -2.0f, 2.0f);
+		settings.cameraContrast = finiteFloat("cameraContrast", settings.cameraContrast, 0.75f, 1.25f);
+		settings.cameraSaturation = finiteFloat("cameraSaturation", settings.cameraSaturation, 0.75f, 1.25f);
+		settings.cameraHighlightProtection = finiteFloat(
+			"cameraHighlightProtection", settings.cameraHighlightProtection, 0.0f, 1.0f);
+		settings.cameraShadowDetail = finiteFloat("cameraShadowDetail", settings.cameraShadowDetail, 0.0f, 0.4f);
+		settings.lookPreset = std::min(profile.value("lookPreset", settings.lookPreset), 11u);
+		settings.lookOpacity = finiteFloat("lookOpacity", settings.lookOpacity, 0.0f, 1.0f);
+		settings.enableBloom = profile.value("enableBloom", settings.enableBloom);
+		settings.bloomStrength = finiteFloat("bloomStrength", settings.bloomStrength, 0.0f, 2.0f);
+		settings.enableEnhancedDepthOfField = profile.value(
+			"enableEnhancedDepthOfField", settings.enableEnhancedDepthOfField);
+		settings.dofAutoFocus = profile.value("dofAutoFocus", settings.dofAutoFocus);
+		settings.dofPhysicalLens = profile.value("dofPhysicalLens", settings.dofPhysicalLens);
+		settings.dofFStop = finiteFloat("dofFStop", settings.dofFStop, 0.7f, 16.0f);
+		settings.dofFocalLengthMm = finiteFloat("dofFocalLengthMm", settings.dofFocalLengthMm, 18.0f, 200.0f);
+	}
+
+	void PersistDirectorPresentationSettings()
+	{
+		// Director has its own authored camera profile. Keep it in Menu state while
+		// the session is active; State::Save runs only after gameplay CameraSuite
+		// values have been restored on exit, so temporary Photo/Video values can
+		// never leak into the normal gameplay profile.
+		if (auto* menu = globals::menu) {
+			menu->GetSettings().DirectorPhotoFov = GetDirectorWorldFov();
+			menu->GetSettings().DirectorCameraMoveSpeed = GetDirectorCameraMoveSpeed();
+			auto& camera = globals::pipeline::cameraSuite;
+			std::lock_guard<std::mutex> lock(camera.settingsMutex);
+			menu->GetSettings().DirectorCameraProfile = CaptureDirectorCameraProfile(camera.settings);
+		}
+	}
+
 	void ExitDirectorPhotoMode();
 	bool ProcessDirectorPhotoModeExit();
 	PixelCapture* GetDirectorCapture();
@@ -1722,8 +1783,11 @@ namespace
 			DirectorWeatherPreset::Original;
 		g_directorPhotoMode.originalWorldFov =
 			camera->GetRuntimeData2().worldFOV;
+		const float savedDirectorFov = globals::menu ?
+			globals::menu->GetSettings().DirectorPhotoFov : 0.0f;
 		g_directorPhotoMode.photoWorldFov =
-			g_directorPhotoMode.originalWorldFov;
+			savedDirectorFov >= 20.0f && savedDirectorFov <= 110.0f ?
+				savedDirectorFov : g_directorPhotoMode.originalWorldFov;
 		g_directorPhotoMode.fovSnapshotValid = true;
 
 		{
@@ -1735,7 +1799,24 @@ namespace
 			g_directorPhotoMode
 				.originalCamera =
 					cameraSuite.settings;
+
+			if (auto* menu = globals::menu) {
+				auto& profile = menu->GetSettings().DirectorCameraProfile;
+				if (profile.is_object() && !profile.empty()) {
+					try {
+						ApplyDirectorCameraProfile(profile, cameraSuite.settings);
+					} catch (const std::exception& e) {
+						logger::warn("[PIXL Director] Invalid saved camera profile ({}); using gameplay look as the Director baseline", e.what());
+						profile = CaptureDirectorCameraProfile(cameraSuite.settings);
+					}
+				} else {
+					profile = CaptureDirectorCameraProfile(cameraSuite.settings);
+				}
+			}
 		}
+		cameraSuite.BeginTransientSettings(g_directorPhotoMode.originalCamera);
+		cameraSuite.LoadLookTexture();
+		cameraSuite.UpdateHDRData();
 
 		g_directorPhotoMode.snapshotValid =
 			true;
@@ -1752,7 +1833,7 @@ namespace
 		g_directorPhotoMode.hudVisible = true;
 		// The quick effects panel is the first-run Photo control surface. Opening
 		// it on entry makes capture, lens and movement controls discoverable.
-		g_directorPhotoMode.quickPanelVisible = g_directorMode == DirectorMode::Photo;
+		g_directorPhotoMode.quickPanelVisible = true;
 		g_directorPhotoMode.focusTargetMode = false;
 		g_directorPhotoMode.focusTargetValid = false;
 		g_directorPhotoMode.focusTargetDistance = 0.0f;
@@ -1764,7 +1845,8 @@ namespace
 		g_directorPhotoMode.cameraMotionValid = false;
 		g_directorPhotoMode.cameraMotionPosition = {};
 		g_directorPhotoMode.cameraMotionVelocity = {};
-		g_directorPhotoMode.cameraMoveSpeed = 1.0f;
+		g_directorPhotoMode.cameraMoveSpeed = globals::menu ?
+			std::clamp(globals::menu->GetSettings().DirectorCameraMoveSpeed, 0.25f, 2.0f) : 1.0f;
 		g_directorPhotoMode.captureDelayFrames = 0;
 		g_directorPhotoMode.captureHideFrames = 0;
 		g_directorPhotoMode.capturePoseValid = false;
@@ -1855,8 +1937,7 @@ namespace
 			auto& cameraSuite =
 				globals::pipeline::cameraSuite;
 
-			if (g_directorPhotoMode.snapshotValid &&
-				g_directorPhotoMode.restoreLookOnExit) {
+			if (g_directorPhotoMode.snapshotValid) {
 				{
 					std::lock_guard<std::mutex> lock(
 						cameraSuite.settingsMutex);
@@ -1868,6 +1949,11 @@ namespace
 				cameraSuite.LoadLookTexture();
 				cameraSuite.UpdateHDRData();
 			}
+			cameraSuite.EndTransientSettings();
+			// Save only after the gameplay camera snapshot is back in CameraSuite.
+			// Menu owns the separate DirectorCameraProfile captured during editing.
+			if (globals::state)
+				globals::state->Save();
 
 			g_directorPhotoMode.active = false;
 			g_directorMode = DirectorMode::Photo;
@@ -2063,6 +2149,10 @@ namespace
 
 		bool bloomEnabled = false;
 		float bloomStrength = 0.0f;
+		bool dofEnabled = false;
+		bool dofAutoFocus = true;
+		float dofFStop = 2.8f;
+		float dofFocalLength = 35.0f;
 		float lookOpacity = 0.35f;
 		float fieldOfView = GetDirectorWorldFov();
 		float cameraMoveSpeed = GetDirectorCameraMoveSpeed();
@@ -2096,6 +2186,10 @@ namespace
 			bloomStrength =
 				camera.settings
 					.bloomStrength;
+			dofEnabled = camera.settings.enableEnhancedDepthOfField;
+			dofAutoFocus = camera.settings.dofAutoFocus;
+			dofFStop = camera.settings.dofFStop;
+			dofFocalLength = camera.settings.dofFocalLengthMm;
 			lookOpacity = camera.settings.lookOpacity;
 
 			lookPreset =
@@ -2141,6 +2235,23 @@ namespace
 				20.0f,
 				110.0f,
 				"%.0f deg");
+
+		changed |= PIXLUI::LabeledToggle("Depth of field", &dofEnabled);
+		ImGui::BeginDisabled(!dofEnabled);
+		changed |= PIXLUI::LabeledToggle("Depth autofocus", &dofAutoFocus);
+		changed |= PIXLUI::SliderFloatField(
+			"Aperture",
+			&dofFStop,
+			0.7f,
+			16.0f,
+			"f/%.1f");
+		changed |= PIXLUI::SliderFloatField(
+			"Physical focal length",
+			&dofFocalLength,
+			18.0f,
+			200.0f,
+			"%.0f mm");
+		ImGui::EndDisabled();
 
 		changed |=
 			PIXLUI::SliderFloatField(
@@ -2239,6 +2350,11 @@ namespace
 					bloomEnabled;
 				camera.settings.bloomStrength =
 					bloomStrength;
+				camera.settings.enableEnhancedDepthOfField = dofEnabled;
+				camera.settings.dofAutoFocus = dofAutoFocus;
+				camera.settings.dofPhysicalLens = true;
+				camera.settings.dofFStop = std::clamp(dofFStop, 0.7f, 16.0f);
+				camera.settings.dofFocalLengthMm = std::clamp(dofFocalLength, 18.0f, 200.0f);
 				camera.settings.lookOpacity = lookOpacity;
 				camera.settings.lookPreset =
 					static_cast<uint>(
@@ -2249,6 +2365,7 @@ namespace
 			camera.UpdateHDRData();
 			ApplyDirectorWorldFov(fieldOfView);
 			ApplyDirectorCameraMoveSpeed(cameraMoveSpeed);
+			PersistDirectorPresentationSettings();
 		}
 
 		if (capture) {
@@ -2272,8 +2389,7 @@ namespace
 					preset.motionStrength = capture->photoFinishMotionStrength;
 					preset.motionAngleDegrees = capture->photoFinishMotionAngleDegrees;
 					preset.neuralPhotoEnabled = capture->photoFinishNeuralEnabled;
-					if (globals::state)
-						globals::state->Save();
+					PersistDirectorPresentationSettings();
 				}
 				ImGui::SameLine();
 				ImGui::BeginDisabled(!preset.valid);
@@ -2301,6 +2417,7 @@ namespace
 					ApplyDirectorWorldFov(preset.fieldOfView);
 					camera.LoadLookTexture();
 					camera.UpdateHDRData();
+					PersistDirectorPresentationSettings();
 				}
 				ImGui::EndDisabled();
 				if (index + 1 < capture->directorPhotoPresets.size())
@@ -2368,11 +2485,7 @@ namespace
 			"Restore world on exit",
 			&g_directorPhotoMode
 				 .restoreWorldOnExit);
-
-		PIXLUI::LabeledToggle(
-			"Restore look on exit",
-			&g_directorPhotoMode
-				 .restoreLookOnExit);
+		ImGui::TextDisabled("Gameplay camera settings are always restored on exit.");
 	}
 
 	enum class DirectorQuickOption : int
@@ -2383,6 +2496,10 @@ namespace
 		ColourGrade,
 		LutIntensity,
 		CameraLens,
+		DepthOfField,
+		DepthAutoFocus,
+		DofAperture,
+		DofFocalLength,
 		Bloom,
 		Contrast,
 		Colour,
@@ -2727,6 +2844,42 @@ namespace
 			ApplyDirectorWorldFov(GetDirectorWorldFov() + 2.0f * static_cast<float>(direction));
 			break;
 
+		case DirectorQuickOption::DepthOfField:
+		{
+			std::lock_guard<std::mutex> lock(camera.settingsMutex);
+			camera.settings.enableEnhancedDepthOfField = !camera.settings.enableEnhancedDepthOfField;
+			cameraChanged = true;
+			break;
+		}
+
+		case DirectorQuickOption::DepthAutoFocus:
+		{
+			std::lock_guard<std::mutex> lock(camera.settingsMutex);
+			camera.settings.dofAutoFocus = !camera.settings.dofAutoFocus;
+			cameraChanged = true;
+			break;
+		}
+
+		case DirectorQuickOption::DofAperture:
+		{
+			std::lock_guard<std::mutex> lock(camera.settingsMutex);
+			camera.settings.dofPhysicalLens = true;
+			camera.settings.dofFStop = std::clamp(
+				camera.settings.dofFStop + 0.2f * static_cast<float>(direction), 0.7f, 16.0f);
+			cameraChanged = true;
+			break;
+		}
+
+		case DirectorQuickOption::DofFocalLength:
+		{
+			std::lock_guard<std::mutex> lock(camera.settingsMutex);
+			camera.settings.dofPhysicalLens = true;
+			camera.settings.dofFocalLengthMm = std::clamp(
+				camera.settings.dofFocalLengthMm + 2.0f * static_cast<float>(direction), 18.0f, 200.0f);
+			cameraChanged = true;
+			break;
+		}
+
 		case DirectorQuickOption::Bloom:
 		{
 			std::lock_guard<std::mutex>
@@ -2976,8 +3129,6 @@ namespace
 		case DirectorQuickOption::PhotoSignature:
 			if (capture) {
 				capture->photoWatermarkEnabled = !capture->photoWatermarkEnabled;
-				if (globals::state)
-					globals::state->Save();
 			}
 			break;
 
@@ -2989,6 +3140,8 @@ namespace
 			camera.LoadLookTexture();
 		if (cameraChanged)
 			camera.UpdateHDRData();
+		if (option != DirectorQuickOption::Weather && option != DirectorQuickOption::TimeOfDay)
+			PersistDirectorPresentationSettings();
 	}
 
 	DirectorQuickReadout GetDirectorQuickReadout(
@@ -3087,6 +3240,30 @@ namespace
 			result.normalized = (fov - 20.0f) / 90.0f;
 			break;
 		}
+
+		case DirectorQuickOption::DepthOfField:
+			result.label = "Depth of Field";
+			result.value = settingsCopy.enableEnhancedDepthOfField ? "ON" : "OFF";
+			result.normalized = settingsCopy.enableEnhancedDepthOfField ? 1.0f : 0.0f;
+			break;
+
+		case DirectorQuickOption::DepthAutoFocus:
+			result.label = "DOF Autofocus";
+			result.value = settingsCopy.dofAutoFocus ? "ON" : "OFF";
+			result.normalized = settingsCopy.dofAutoFocus ? 1.0f : 0.0f;
+			break;
+
+		case DirectorQuickOption::DofAperture:
+			result.label = "DOF Aperture";
+			result.value = std::format("f/{:.1f}", settingsCopy.dofFStop);
+			result.normalized = 1.0f - std::clamp((settingsCopy.dofFStop - 0.7f) / 15.3f, 0.0f, 1.0f);
+			break;
+
+		case DirectorQuickOption::DofFocalLength:
+			result.label = "DOF Focal Length";
+			result.value = std::format("{:.0f} mm", settingsCopy.dofFocalLengthMm);
+			result.normalized = std::clamp((settingsCopy.dofFocalLengthMm - 18.0f) / 182.0f, 0.0f, 1.0f);
+			break;
 
 		case DirectorQuickOption::Bloom:
 			result.label = "Bloom";
@@ -3723,8 +3900,7 @@ namespace
 				 .quickPanelVisible)
 			return;
 
-		const float x =
-			34.0f * scale;
+		const float panelMargin = 34.0f * scale;
 		const float y =
 			std::max(
 				54.0f * scale,
@@ -3735,6 +3911,12 @@ namespace
 			std::max(0.0f, displaySize.x - 40.0f * scale));
 		if (width < 220.0f * scale)
 			return;
+		// Photo keeps the compact lens controls clear of the status readout on the
+		// right, while Video/Director keeps them beside the director workspace.
+		const bool alignRight = g_directorMode == DirectorMode::Video;
+		const float x = alignRight ?
+			std::max(20.0f * scale, displaySize.x - width - panelMargin) :
+			panelMargin;
 		const float headerHeight =
 			70.0f * scale;
 		const float rowHeight =
@@ -3799,7 +3981,7 @@ namespace
 				x + 15.0f * scale,
 				y + 10.0f * scale),
 			PIXLUI::Colors::Text,
-			"PHOTO MODE");
+			g_directorMode == DirectorMode::Video ? "DIRECTOR / VIDEO" : "PHOTO MODE");
 
 		draw->AddText(
 			ImVec2(
@@ -4232,6 +4414,7 @@ namespace
 			g_directorVideo.compositionGuide);
 		DrawDirectorCinematographyReticle(draw, displaySize, scale, true);
 		DrawDirectorWorldPathOverlay(draw, displaySize, scale);
+		DrawDirectorQuickPanel(draw, displaySize, scale);
 		const float cinemaAmount = PIXLUI::Animate01("##DirectorVideoCinemaBars", g_directorVideo.cinemaBars, 8.0f);
 		const float cinemaHeight = displaySize.y * 0.075f * cinemaAmount;
 		if (cinemaHeight > 0.5f) {
@@ -5419,6 +5602,7 @@ bool TuningWorkspaceRenderer::OpenDirectorVideoMode()
 	const auto openEditor = [] {
 		g_directorVideo.editorVisible = true;
 		g_directorPhotoMode.hudVisible = true;
+		g_directorPhotoMode.quickPanelVisible = true;
 		if (auto* menu = globals::menu) {
 			menu->IsEnabled = false;
 			g_tunerOwnsInspection = false;
@@ -5485,7 +5669,9 @@ void TuningWorkspaceRenderer::UpdateTunerInspection()
 			return;
 		g_directorPhotoMode.active = result > 0;
 		g_directorEntryPending.store(false, std::memory_order_release);
-		if (result < 0)
+		if (result > 0)
+			ApplyDirectorWorldFov(g_directorPhotoMode.photoWorldFov);
+		else
 			ExitDirectorPhotoMode();
 	}
 	if (g_directorPhotoMode.active) {
@@ -5661,22 +5847,46 @@ bool TuningWorkspaceRenderer::HandleDirectorKeyboardInput(
 	// hidden, so a clean composition never requires reopening a settings panel.
 	if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoZoomInKey, virtualKey)) {
 		ApplyDirectorWorldFov(GetDirectorWorldFov() + 2.0f);
+		PersistDirectorPresentationSettings();
 		return true;
 	}
 	if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoZoomOutKey, virtualKey)) {
 		ApplyDirectorWorldFov(GetDirectorWorldFov() - 2.0f);
+		PersistDirectorPresentationSettings();
 		return true;
 	}
 	if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoSpeedDownKey, virtualKey)) {
 		ApplyDirectorCameraMoveSpeed(GetDirectorCameraMoveSpeed() - 0.10f);
+		PersistDirectorPresentationSettings();
 		return true;
 	}
 	if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoSpeedUpKey, virtualKey)) {
 		ApplyDirectorCameraMoveSpeed(GetDirectorCameraMoveSpeed() + 0.10f);
+		PersistDirectorPresentationSettings();
 		return true;
 	}
 
 	if (IsDirectorVideoMode()) {
+		if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoQuickPreviousKey, virtualKey)) {
+			g_directorPhotoMode.quickPanelVisible = true;
+			g_directorPhotoMode.selectedQuickOption =
+				(g_directorPhotoMode.selectedQuickOption + kDirectorQuickOptionCount - 1) % kDirectorQuickOptionCount;
+			return true;
+		}
+		if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoQuickNextKey, virtualKey)) {
+			g_directorPhotoMode.quickPanelVisible = true;
+			g_directorPhotoMode.selectedQuickOption =
+				(g_directorPhotoMode.selectedQuickOption + 1) % kDirectorQuickOptionCount;
+			return true;
+		}
+		if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoQuickDecreaseKey, virtualKey)) {
+			AdjustDirectorQuickOption(-1);
+			return true;
+		}
+		if (InputCombo::MatchesKeyboardCombo(hotkeys.PhotoQuickIncreaseKey, virtualKey)) {
+			AdjustDirectorQuickOption(1);
+			return true;
+		}
 		// VIDEO is a sibling workspace. Do not let PHOTO-only capture/effect
 		// shortcuts arm a still transaction while a path is being authored.
 		if (virtualKey == VK_RETURN) {
@@ -5831,8 +6041,25 @@ bool TuningWorkspaceRenderer::HandleDirectorGamepadInput(
 			g_directorPhotoMode.hudVisible = !g_directorPhotoMode.hudVisible;
 			return true;
 		}
-		// Retain native stick flight; PHOTO-only capture and quick-panel buttons
-		// are deliberately inert in the Video workspace.
+		if (gamepadKeyCode == SKSE::InputMap::kGamepadButtonOffset_Y) {
+			g_directorPhotoMode.quickPanelVisible = !g_directorPhotoMode.quickPanelVisible;
+			return true;
+		}
+		if (gamepadKeyCode == SKSE::InputMap::kGamepadButtonOffset_DPAD_UP ||
+			gamepadKeyCode == SKSE::InputMap::kGamepadButtonOffset_DPAD_DOWN) {
+			const int delta = gamepadKeyCode == SKSE::InputMap::kGamepadButtonOffset_DPAD_UP ? -1 : 1;
+			g_directorPhotoMode.quickPanelVisible = true;
+			g_directorPhotoMode.selectedQuickOption =
+				(g_directorPhotoMode.selectedQuickOption + delta + kDirectorQuickOptionCount) % kDirectorQuickOptionCount;
+			return true;
+		}
+		if (gamepadKeyCode == SKSE::InputMap::kGamepadButtonOffset_DPAD_LEFT ||
+			gamepadKeyCode == SKSE::InputMap::kGamepadButtonOffset_DPAD_RIGHT) {
+			AdjustDirectorQuickOption(
+				gamepadKeyCode == SKSE::InputMap::kGamepadButtonOffset_DPAD_LEFT ? -1 : 1);
+			return true;
+		}
+		// Retain native stick flight and keep still-capture actions Photo-only.
 		return false;
 	}
 
@@ -8490,33 +8717,18 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 
 						camera.LoadLookTexture();
 						camera.UpdateHDRData();
+						PersistDirectorPresentationSettings();
 					}
 
 					ImGui::SameLine();
 
 					if (PIXLUI::ActionButton(
-							"KEEP LOOK",
+							"SAVE DIRECTOR LOOK",
 							ImVec2(
-								PIXLUI::Ref(126.0f),
+								PIXLUI::Ref(176.0f),
 								PIXLUI::Ref(30.0f)),
 							false)) {
-						auto& camera =
-							globals::pipeline::
-								cameraSuite;
-
-						{
-							std::lock_guard<std::mutex>
-								lock(
-									camera
-										.settingsMutex);
-
-							g_directorPhotoMode
-								.originalCamera =
-									camera.settings;
-						}
-
-						if (globals::state)
-							globals::state->Save();
+						PersistDirectorPresentationSettings();
 					}
 				}
 
@@ -8545,8 +8757,7 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 				if (PIXLUI::LabeledToggle(
 						"PIXL logo on saved photo",
 						&capture->photoWatermarkEnabled)) {
-					if (globals::state)
-						globals::state->Save();
+					PersistDirectorPresentationSettings();
 				}
 				if (auto tooltip = Util::HoverTooltipWrapper())
 					ImGui::TextUnformatted("Adds the white PIXL mark to the bottom-right of Director captures. Off by default.");

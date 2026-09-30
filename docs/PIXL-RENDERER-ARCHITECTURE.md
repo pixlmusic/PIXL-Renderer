@@ -54,15 +54,15 @@ The existing directory names are runtime contracts in several places. Shader inc
 
 ## Player quality contract
 
-| Group | Low | Medium | High (default) | Ultra | Apply path |
+| Group | Low | Medium | High (default) | Cinematic | Apply path |
 |---|---|---|---|---|---|
-| Lighting | Quarter GI, 3x6 horizon tracing, 20 reflection steps | Half GI, 4x8, 28 steps | Half GI, 5x10, 36 steps, two contact samples | Full GI, 6x12, 48 steps, maximum contact sampling | Recompile HybridGI/reflection permutations, invalidate contact raymarch, reset history |
-| Materials | Physical BRDF with conservative specular AA | Adds parallax and material shadows | Adds height blending and authored GGX compensation | Maximum stable specular filtering | Shared feature constants; restart only when the underlying feature was boot-disabled |
-| Atmosphere | Low volumetric target, reduced cloud detail | Medium targets and cloud body | High targets and full self-shadowing | High targets plus maximum procedural cloud detail | Recreate active volumetric targets; cloud constants are live |
-| Water | Base renderer path | Enhanced SSR and caustics at bounded range | Authored reflection reach and dispersion | Extended ray reach and caustic dispersion | Reset reflection history; a boot-disabled Water Optics hook requires restart |
-| Terrain & Vegetation | Enhanced leaf response without costly interaction | Wind, snow deformation | Adds mud deformation and authored specular response | Maximum stable flutter/specular detail | Shared constants are live; first installation requires shader-cache build |
-| Characters | Physical skin/hair base layer | Detail skin, SSS, hair self-shadow | 16-tap Burley and Marschner hair | 21-tap Burley maximum | Refresh SSS kernels; feature boot changes require restart |
-| Camera | Physical exposure without enhanced DOF | Adds depth-aware DOF | Authored local exposure and edge protection | Maximum local exposure and bokeh edge protection | Camera constants are live; display-mode changes may require restart |
+| Lighting | 2x4 horizon rays, sparse cache, 12 reflection steps | 4x8 horizon rays, balanced cache, 24 reflections | Former Cinematic 6x12 rays, 48 reflections, 4x directional shadows | 10x20 rays, 64 reflections, 12x directional shadows and maximum cache cadence | Recompile HybridGI/reflection permutations, invalidate contact raymarch, reset history |
+| Materials | Physical BRDF; expensive POM disabled | 6/12 object and 6/14 terrain POM | Former Cinematic 12/24 object and 10/30 terrain POM | Bounded 24/32 object and 30/64 terrain POM plus maximum refinement | Shared feature constants; restart only when the underlying feature was boot-disabled |
+| Atmosphere | 64 px x 24-slice froxels | 40 px x 36 slices | Former Cinematic 24 px x 64 slices | 16 px x 80 slices and 8 history-miss samples | Recreate active volumetric targets; appearance controls are live and independent |
+| Water | 16-step enhanced SSR | 28-step enhanced SSR | Former Cinematic 48-step enhanced SSR | 144-step SSR with 10 hit-refinement steps | Reset reflection history; boot-disabled Water Optics still requires restart |
+| Terrain & Vegetation | Aggressive size/density/mesh LOD plus 4x ground tessellation | Balanced culling and 7x ground tessellation | Release foliage density plus 10x/2.5x ground tessellation | Maximum retained grass and 16x/6x bounded tessellation | Shared constants are live; initial shader integration requires cache build |
+| Characters | 6-tap Burley, 8 nearby actors | 12-tap Burley, 16 actors | 24-tap Burley, 48 actor capacity and former maximum hair | 64-tap Burley, 64 actors and extended reconstruction distance | Refresh SSS kernels; feature boot changes require restart |
+| Camera | Sparse metering, 6-tap DOF | Balanced metering, 10-tap DOF | Former Cinematic metering and 16-tap DOF | 4x histogram density, 24 local-exposure and 48 DOF taps | Camera constants are live; display-mode changes may require restart |
 
 Changing Global applies the selected quality to all seven groups. Changing an individual group produces a Custom global state without altering the other categories. Low changes cost, not the fundamental PIXL colour/lighting identity.
 
@@ -93,7 +93,7 @@ The standalone bundle includes every active graphical renderer component present
 
 ## Preview images
 
-Essentials mode reserves a comparison-preview area. Future Low/Medium/High/Ultra images should be authored below `distribution/Interface/PIXLRenderer/Previews/<group>/` and selected by the persisted group quality. Preview assets are illustrative only; the renderer policy in `engine/Renderer/QualityProfiles.cpp` remains authoritative.
+Essentials mode reserves a comparison-preview area. Future Low/Medium/High/Cinematic images should be authored below `distribution/Interface/PIXLRenderer/Previews/<group>/` and selected by the persisted group quality. Preview assets are illustrative only; the renderer policy in `engine/Renderer/QualityProfiles.cpp` remains authoritative.
 # Future: PIXL Distant World
 
 GPU-driven static-world rendering is a viable future subsystem, but it is not enabled in PIXL Renderer 1.0. Skyrim exposes Direct3D 11 LOD-object and distant-tree passes; it does not provide a general indirect-instance pipeline that a shader define can simply enable.

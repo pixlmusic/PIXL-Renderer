@@ -45,20 +45,20 @@ public:
 	{
 		// c0 - feature and conservative classifier thresholds
 		uint Enabled = true;
-		uint Quality = 1;  // 0 Low, 1 Medium, 2 High, 3 Ultra
+		uint Quality = 2;  // 0 Low, 1 Medium, 2 High, 3 Cinematic
 		float DetectionThreshold = 0.82f;
 		float ReconstructionThreshold = 0.92f;
 
 		// c1 - appearance and direction reconstruction
 		uint AnisotropicLighting = true;
 		float DirectionBlend = 0.78f;
-		float StrandDetail = 0.35f;
+		float StrandDetail = 0.75f;
 		float Transmission = 1.0f;
 
 		// c2 - deterministic secondary motion
 		uint SecondaryMotion = true;
 		float WindResponse = 0.30f;
-		float MotionStrength = 0.14f;
+		float MotionStrength = 0.22f;
 		float Damping = 0.82f;
 
 		// c3 - rain/water response
@@ -69,12 +69,12 @@ public:
 
 		// c4 - high-quality virtual fibres and snow participation
 		uint SnowResponse = true;
-		uint ProceduralStrands = false;
-		float StrandDensity = 0.20f;
-		float SilhouetteDetail = 0.06f;
+		uint ProceduralStrands = true;
+		float StrandDensity = 0.38f;
+		float SilhouetteDetail = 0.09f;
 
 		// c5 - runtime bounds and diagnostics
-		float SimulationDistance = 3000.0f;
+		float SimulationDistance = 6500.0f;
 		uint DebugMode = 0;
 		float FrameDelta = 1.0f / 60.0f;
 		uint Padding0 = 0;

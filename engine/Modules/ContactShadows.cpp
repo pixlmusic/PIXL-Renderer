@@ -35,9 +35,9 @@ void ContactShadows::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("enable_tooltip"), "Refines the active Skyrim sun or moon directional shadow. The source is read every frame; PBR Local Contact Shadows remains separate for point and clustered lights."));
 
-		Util::UIntSlider(T(TKEY("sample_count"), "Directional Ray Quality"), &bendSettings.SampleCount, 1, 4);
+		Util::UIntSlider(T(TKEY("sample_count"), "Directional Ray Quality"), &bendSettings.SampleCount, 1, 12);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text("%s", T(TKEY("sample_count_tooltip"), "Multiplier for shadow ray sample count. Higher values increase shadow reach at the cost of performance. Adapts to render resolution and automatically rebuilds the ray-march shader when needed."));
+			ImGui::Text("%s", T(TKEY("sample_count_tooltip"), "Multiplier for directional ray samples. High uses 4; Cinematic uses 12 and is intentionally about three times heavier. Adapts to render resolution and rebuilds the ray-march shader when needed."));
 
 		ImGui::SliderFloat(T(TKEY("surface_thickness"), "Surface Thickness"), &bendSettings.SurfaceThickness, 0.005f, 0.05f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
@@ -324,7 +324,7 @@ void ContactShadows::LoadSettings(json& o_json)
 {
 	bendSettings = o_json;
 	bendSettings.Enable = bendSettings.Enable ? 1u : 0u;
-	bendSettings.SampleCount = std::clamp(bendSettings.SampleCount, 1u, 4u);
+	bendSettings.SampleCount = std::clamp(bendSettings.SampleCount, 1u, 12u);
 	bendSettings.SurfaceThickness = std::clamp(bendSettings.SurfaceThickness, 0.005f, 0.05f);
 	bendSettings.BilinearThreshold = std::clamp(bendSettings.BilinearThreshold, 0.02f, 1.0f);
 	bendSettings.ShadowContrast = std::clamp(bendSettings.ShadowContrast, 1.0f, 4.0f);

@@ -13,6 +13,7 @@
 #include <dxgi.h>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 
 struct CameraSuite : public RenderModule
@@ -120,31 +121,31 @@ public:
 		bool dofActorTracking = true;
 		float dofStrength = 1.0f;
 		float dofFocusDistance = 2200.0f;
-		float dofFocusRange = 11605.0f;
+		float dofFocusRange = 20000.0f;
 		float dofBokehRadius = 1.0f;
 		float dofHighlightResponse = 0.30f;
 		float dofFocusEdgeProtection = 0.95f;
 		float dofForegroundCoverage = 0.55f;
 		float dofNearBlurIntensity = 0.0f;
-		float dofFarBlurIntensity = 1.03f;
-		float dofFarBlurDistance = 25598.0f;
+		float dofFarBlurIntensity = 0.81f;
+		float dofFarBlurDistance = 30000.0f;
 		float dofCatEye = 0.12f;
 		float dofAnamorphicRatio = 1.0f;
 		// DOF 2.0 lens controls. Defaults retain the restrained gameplay look;
 		// Director/Photo/Video modes may opt into the physical lens model.
 		bool dofPhysicalLens = true;
-		float dofFocalLengthMm = 18.0f;
-		float dofFStop = 1.8f;
-		float dofSensorHeightMm = 14.9f;
+		float dofFocalLengthMm = 30.0f;
+		float dofFStop = 3.4f;
+		float dofSensorHeightMm = 21.9f;
 		float dofFocusSpeed = 8.81f;
 		float dofFocusDeadband = 0.055f;
-		float dofMaxBokehPixels = 5.0f;
+		float dofMaxBokehPixels = 4.0f;
 		uint dofApertureBlades = 6;
 		float dofBladeCurvature = 0.63f;
 		float dofApertureRotation = 0.06981317f;
 
 		// Depth-aware camera motion blur. This is deliberately opt-in so the
-		// accepted PIXL Ultra presentation remains unchanged until requested.
+		// accepted PIXL High presentation remains unchanged until requested.
 		// The final CameraSuite pass reconstructs camera motion from scene depth;
 		// UI is composited afterwards and therefore remains perfectly sharp.
 		bool enableModernMotionBlur = false;
@@ -173,8 +174,11 @@ public:
 	static constexpr float kHdrMenuSceneMainOrLoading = 1.f;
 
 	Settings settings;
-	uint32_t cameraQuality = 3;  // Runtime cost tier; never changes the authored camera look.
+	uint32_t cameraQuality = 2;  // 0 Low .. 3 Cinematic; never changes the authored camera look.
 	std::mutex settingsMutex;
+	// While Director applies a temporary camera profile, all ordinary State saves
+	// must continue serialising the gameplay profile captured at entry.
+	std::optional<Settings> persistentSettingsOverride;
 
 	struct alignas(16) PostProcessSettings
 	{
@@ -196,6 +200,8 @@ public:
 	virtual void LoadSettings(json& o_json) override;
 	/** @brief Saves HDR settings to JSON (thread-safe). */
 	virtual void SaveSettings(json& o_json) override;
+	void BeginTransientSettings(const Settings& persistentBaseline);
+	void EndTransientSettings();
 	/** @brief Draws the HDR output and PIXL Physical Camera settings UI. */
 	virtual void DrawSettings() override;
 
@@ -395,7 +401,7 @@ public:
 		float submergedBlur;
 		float submergedRefraction;
 		float submergedFogAmount;
-		float cameraQuality;              ///< 0 Low .. 3 Ultra; reuses c15.w without changing the CB layout
+		float cameraQuality;              ///< 0 Low .. 3 Cinematic; reuses c15.w without changing the CB layout
 
 		float4 submergedWaterTint;
 
@@ -635,6 +641,7 @@ public:
 	mutable bool dofViewStateValid = false;
 	mutable bool dofWasFirstPerson = false;
 	mutable bool dofWasEnabled = false;
+	mutable bool dofWasDirectorPresentation = false;
 
 	// Saved state for UI rendering redirection
 	bool renderingUI = false;

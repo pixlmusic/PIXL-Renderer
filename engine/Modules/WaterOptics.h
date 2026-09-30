@@ -35,9 +35,9 @@ public:
 		uint32_t EnableDynamicFoam = true;
 		float FoamStrength = 0.78f;
 		float FoamScale = 1.0f;
-		// Retained as a zeroed compatibility lane; player-projected wake foam was
-		// removed in favour of water-owned flow and geometry contact.
-		float PlayerWakeStrength = 0.0f;
+		// Reuses the retired player-wake lane. 0 Low, 1 Medium, 2 High, 3 Cinematic.
+		// This is a workload control; it does not alter the authored water balance.
+		float SSRTraceQuality = 2.0f;
 	};
 	STATIC_ASSERT_ALIGNAS_16(Settings);
 	static_assert(sizeof(Settings) == 64, "WaterOptics settings must match the four-register FeatureData block.");

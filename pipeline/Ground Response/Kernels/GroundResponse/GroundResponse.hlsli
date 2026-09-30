@@ -209,9 +209,10 @@ namespace GroundResponse
 			previousAmount;
 	}
 
-	void GetDisplacedPosition(
+	void GetDisplacedWorldPosition(
 		VS_INPUT input,
-		float3 position,
+		float3 worldPosition,
+		float3 worldPositionCentre,
 		out float3 displacement,
 		out float3 previousDisplacement)
 	{
@@ -223,16 +224,11 @@ namespace GroundResponse
 		if (input.Color.w <= 0.0f)
 			return;
 
-		float3 worldPosition =
-			mul(World, float4(position.xyz, 1.0f)).xyz;
-
 		float nearFactor =
 			1.0f - smoothstep(0.0f, 2048.0f, length(worldPosition));
 		if (nearFactor <= 0.0f)
 			return;
 
-		float3 worldPositionCentre =
-			mul(World, float4(input.InstanceData1.xyz, 1.0f)).xyz;
 		float3 remappedWorldPosition =
 			lerp(
 				worldPosition,
@@ -268,6 +264,20 @@ namespace GroundResponse
 
 		displacement = collision * scale;
 		previousDisplacement = previousCollision * scale;
+	}
+
+	void GetDisplacedPosition(
+		VS_INPUT input,
+		float3 position,
+		out float3 displacement,
+		out float3 previousDisplacement)
+	{
+		GetDisplacedWorldPosition(
+			input,
+			mul(World, float4(position.xyz, 1.0f)).xyz,
+			mul(World, float4(input.InstanceData1.xyz, 1.0f)).xyz,
+			displacement,
+			previousDisplacement);
 	}
 }
 

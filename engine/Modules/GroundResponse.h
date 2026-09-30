@@ -52,6 +52,8 @@ public:
 		float a_strength);
 	/** Keeps the normal third-person camera above PIXL's shader-raised snow shell. */
 	void ApplyCameraSurfaceClearance(RE::NiPoint3& a_translation) const;
+	/** Removes every temporary movement modifier owned by Ground Response. */
+	void ClearMovementResistance();
 
 	struct Settings
 	{
@@ -63,32 +65,35 @@ public:
 		bool EnableGeometricSnow = true;
 		bool EnableMudDeformation = true;
 		bool MudRequiresWetness = true;
-		float SnowMaximumDepth = 18.0f;
-		float SnowSurfaceThickness = 10.0f;
+		// Keep maximum compression comfortably below the pristine shell height.
+		// Inverting that relationship creates cliff-like height-field walls which
+		// are visually harsh and poorly conditioned for planar landscape UVs.
+		float SnowMaximumDepth = 35.0f;
+		float SnowSurfaceThickness = 16.7f;
 		bool EnableWeatherSnowAccumulation = true;
 		// Keeps the slow environmental mass/moisture state active. Existing weather
 		// snow settings retain their meaning; this only lets new snow conceal old
 		// compaction progressively instead of preserving every historic track.
 		bool EnableEnvironmentalSurfaceState = true;
-		float WeatherSnowMaximumRaise = 14.0f;
-		float WeatherSnowAccumulationRate = 0.060f;
+		float WeatherSnowMaximumRaise = 3.7f;
+		float WeatherSnowAccumulationRate = 0.093f;
 		float WeatherSnowMeltRate = 0.035f;
 		float GeometryRenderDistance = 4000.0f; // PIXL_GR_13Y_DEFAULTS_V1
-		float GeometryFadeStart = 3400.0f;
+		float GeometryFadeStart = 4000.0f;
 		float GeometryMinimumSlopeZ = 0.42f;
 		float GeometryTessellationNear = 12.0f;
 		float GeometryTessellationFar = 6.0f;
-		float GeometryTessellationNearDistance = 768.0f;
-		float GeometryTessellationFarDistance = 2048.0f;
-		float SnowCoverageThreshold = 0.06f;
-		float SnowCoverageFeather = 0.20f;
+		float GeometryTessellationNearDistance = 998.0f;
+		float GeometryTessellationFarDistance = 2123.0f;
+		float SnowCoverageThreshold = 0.26f;
+		float SnowCoverageFeather = 0.34f;
 		float MudMaximumDepth = 36.0f;
-		float GroundNormalStrength = 1.0f;
-		float SnowCompactionDarkening = 0.28f;
+		float GroundNormalStrength = 0.60f;
+		float SnowCompactionDarkening = 0.22f;
 		float MudDarkening = 0.48f;
 		float MudRoughness = 0.24f;
 		float MudWetnessThreshold = 0.15f;
-		float GroundResponseStrength = 1.0f;
+		float GroundResponseStrength = 0.71f;
 		bool DebugInteractionField = false;
 		bool GeometrySelfTest = false;
 		// Developer safety valve for Phase 2 tile scheduling. Kept serialized so a
@@ -98,7 +103,7 @@ public:
 		bool DebugSurfaceTiles = false;
 		// Phase 3 safety valve. The derived interaction field is the normal path;
 		// this retains the proven Domain Shader reconstruction for comparison.
-		bool ForceLegacyTerrainSurface = false;
+		bool ForceLegacyTerrainSurface = true;
 		bool EnableGroundMarks = true;
 		bool DebugGroundMarks = false;
 		// Session-only history is a bounded CPU stamp journal.  It restores recent
@@ -688,6 +693,19 @@ public:
 		RE::BSEventNotifyControl ProcessEvent(
 			const RE::TESSpellCastEvent* a_event,
 			RE::BSTEventSource<RE::TESSpellCastEvent>* a_source) override;
+	};
+
+	struct DeathEventSink : RE::BSTEventSink<RE::TESDeathEvent>
+	{
+		static DeathEventSink* GetSingleton()
+		{
+			static DeathEventSink singleton;
+			return &singleton;
+		}
+
+		RE::BSEventNotifyControl ProcessEvent(
+			const RE::TESDeathEvent* a_event,
+			RE::BSTEventSource<RE::TESDeathEvent>* a_source) override;
 	};
 
 	struct Hooks

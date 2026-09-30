@@ -200,11 +200,13 @@ namespace ContainedLiquids
             d.axisZ.xyz*profileNormalLocal.z);
         float meniscus=0.0f;
         if (surface) {
-            float3 p=origin+ray*surfaceT;
-            float2 waves=float2(cos(dot(p.xy,float2(1.7f,0.8f))+d.dynamics.x*5.2f),
-                cos(dot(p.xy,float2(-0.6f,2.1f))-d.dynamics.x*6.7f));
-            n=normalize(n+float3(waves*d.dynamics.y*0.014f,0));
+            // Keep ripple phase in fitted bottle-local coordinates. Using the
+            // camera-relative surface position made a stationary liquid crawl
+            // through its glass whenever the camera moved.
             float3 surfaceLocal=o+v*surfaceT;
+            float2 waves=float2(cos(dot(surfaceLocal.xy,float2(1.7f,0.8f))+d.dynamics.x*5.2f),
+                cos(dot(surfaceLocal.xy,float2(-0.6f,2.1f))-d.dynamics.x*6.7f));
+            n=normalize(n+float3(waves*d.dynamics.y*0.014f,0));
             float wallRadius=max(ProfileRadius(surfaceLocal.z,d),0.02f);
             meniscus=smoothstep(0.72f,0.98f,length(surfaceLocal.xy)/wallRadius);
             n=normalize(lerp(n,profileNormal,meniscus*0.22f));
@@ -228,10 +230,13 @@ namespace ContainedLiquids
             liquidDirection=reflect(glassDirection,opticalNormal);
         float3 viewRay=mul((float3x3)FrameBuffer::CameraView,ray);
         float3 viewRefracted=mul((float3x3)FrameBuffer::CameraView,normalize(liquidDirection));
-        float2 incidentSlope=viewRay.xy/max(abs(viewRay.z),0.25f);
-        float2 refractedSlope=viewRefracted.xy/max(abs(viewRefracted.z),0.25f);
-        float2 offset=clamp((refractedSlope-incidentSlope)*d.optics.y*(1.2f+thickness*0.32f),
-            -3.0f.xx,3.0f.xx)*edge;
+        // Direction-space displacement stays well-conditioned at grazing
+        // angles. Dividing both rays by view Z produced multi-pixel jumps as a
+        // fitted profile segment crossed the camera, making the liquid appear
+        // detached from the glass. Keep Snell bending, but bound it to the
+        // subtle scale supported by this screen-space scene capture.
+        float2 offset=clamp((viewRefracted.xy-viewRay.xy)*
+            d.optics.y*(3.0f+thickness*0.35f),-1.25f.xx,1.25f.xx)*edge;
         // Preserve the original material response before the replay replaces
         // the volume. The first draw owns opaque ink, labels, cork and glass.
         float3 originalBottle=max(bottle,0);
@@ -301,13 +306,19 @@ namespace ContainedLiquids
         // slowly but retain an object-stable layout and contribute only a small
         // reflective rim, avoiding noisy per-frame sparkle.
         float bubbleMask=0.0f;
-        [unroll] for (int bubbleIndex=0;bubbleIndex<4;++bubbleIndex) {
+        [unroll] for (int bubbleIndex=0;bubbleIndex<6;++bubbleIndex) {
             float key=d.detail.z+bubbleIndex*1.731f;
-            float3 bubbleCenter=float3(
-                (Hash11(key)-0.5f)*0.85f,
-                (Hash11(key+2.7f)-0.5f)*0.85f,
-                frac(Hash11(key+5.1f)+d.dynamics.x*(0.018f+0.006f*bubbleIndex))*1.55f-0.78f);
-            float bubbleRadius=lerp(0.025f,0.065f,Hash11(key+8.4f));
+            float bubbleZ=frac(Hash11(key+5.1f)+
+                d.dynamics.x*(0.014f+0.004f*bubbleIndex))*1.55f-0.78f;
+            // Fit every bubble to the local bottle section. The former fixed
+            // XY cylinder put most bubbles outside narrow potion profiles, so
+            // even a maximum UI setting often produced no visible intersection.
+            float localWall=max(ProfileRadius(bubbleZ,d),0.04f);
+            float angle=Hash11(key+2.7f)*6.28318530718f;
+            float radial=sqrt(Hash11(key+4.9f))*localWall*0.62f;
+            float3 bubbleCenter=float3(cos(angle)*radial,sin(angle)*radial,bubbleZ);
+            float bubbleRadius=lerp(0.035f,0.085f,Hash11(key+8.4f)) *
+                saturate(localWall/0.28f);
             float3 bubbleOrigin=o-bubbleCenter;
             float bubbleA=dot(v,v);
             float bubbleB=dot(bubbleOrigin,v);
@@ -339,6 +350,11 @@ namespace ContainedLiquids
         // wine/beer bottles read like opaque tinted plastic.
         float outerRetention=lerp(0.74f,0.92f,saturate(d.appearance.z));
         float3 containedLayer=lerp(liquid+originalBottle*0.06f,originalBottle,outerRetention);
+        // Bubble rims remain behind the authored glass but must not be erased
+        // by high label/glass retention. This is bounded scene-light response,
+        // not emission, so ordinary liquids remain plausible in darkness.
+        containedLayer += bubbleMask *
+            (max(lightColor,0.0f)*0.12f+max(ambient,0.0f)*0.08f);
         bottle=lerp(originalBottle,containedLayer,coverage);
         alpha=lerp(alpha,1.0f,coverage);
     }

@@ -1,4 +1,4 @@
-# PIXL Renderer 1.0.4 installer notice
+# PIXL Renderer 1.0.5 installer notice
 
 Neural Rendering is optional and its runtime DLL is not bundled. Select Neural
 Rendering in Quick Setup for the illustrated manual-install guide, or open NR

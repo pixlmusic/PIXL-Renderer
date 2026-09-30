@@ -9,6 +9,7 @@ struct MaterialLayers;
 struct GroundResponse;
 struct ActorSurfaceEffects;
 struct FoliageDynamics;
+struct FoliageOptimizer;
 struct StrandShading;
 struct HairReconstruction;
 struct HorizonBlend;
@@ -100,6 +101,7 @@ namespace globals
 		extern GroundResponse groundResponse;
 		extern ActorSurfaceEffects actorSurfaceEffects;
 		extern FoliageDynamics foliageDynamics;
+		extern FoliageOptimizer foliageOptimizer;
 		extern StrandShading strandShading;
 		extern HairReconstruction hairReconstruction;
 		extern HorizonBlend horizonBlend;

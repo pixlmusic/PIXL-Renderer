@@ -123,6 +123,13 @@ static constexpr uint TERRAIN_DEBUG_FOCUS_DIRECTIONAL_SHADOW = 1u << 3;
 static constexpr uint TERRAIN_DEBUG_LEGACY_SURFACE = 1u << 4;
 static constexpr uint TERRAIN_DEBUG_GROUND_MARKS = 1u << 5;
 
+// The direct domain-shader reconstruction is the last validated artifact-free
+// terrain path (and matches the pre-derived-field release baseline). Keep the
+// September dirty-tile derived resources compiled in source for later diagnosis,
+// but do not consume or update them in the shipping path until their toroidal
+// history/normal stability has been proven under motion and reconstruction.
+static constexpr bool ENABLE_EXPERIMENTAL_DERIVED_TERRAIN_SURFACE = false;
+
 static float ResolveGroundSnowIntensity()
 {
 	const auto& weather = WeatherManager::GetSingleton()->GetContext();
@@ -1906,6 +1913,8 @@ GroundResistanceSample ResistanceEvaluateActor(
 		return nullptr;
 	}
 
+	bool ResistanceRestoreTrack(GroundMovementResistanceTrack& a_track);
+
 	GroundMovementResistanceTrack& ResistanceGetOrCreateTrack(
 		RE::Actor* a_actor)
 	{
@@ -1920,6 +1929,11 @@ GroundResistanceSample ResistanceEvaluateActor(
 			// makes its normal speed look like a stale positive modifier.
 			auto previousActor = existing->handle.get();
 			if (!previousActor || previousActor.get() != a_actor) {
+				// If the old instance still exists, remove PIXL's contribution from
+				// that owner before transferring the form-ID track. Previously the
+				// bookkeeping was zeroed first, permanently losing the exact delta.
+				if (previousActor)
+					ResistanceRestoreTrack(*existing);
 				existing->filteredSpeedScale = 1.0f;
 				existing->appliedSpeedDelta = 0.0f;
 				existing->carryWeightRefreshTimer = 0.0f;
@@ -3865,9 +3879,15 @@ void GroundResponse::DrawSettings()
 			ImGui::BeginDisabled(!settings.EnableSessionSurfaceHistory);
 			changed |= ImGui::SliderFloat("History Duration", &settings.SessionSurfaceHistorySeconds, 15.0f, 900.0f, "%.0f s", ImGuiSliderFlags_AlwaysClamp);
 			ImGui::EndDisabled();
-			changed |= ImGui::Checkbox("Force Legacy Terrain Surface", &settings.ForceLegacyTerrainSurface);
-			if (auto _tt = Util::HoverTooltipWrapper())
-				ImGui::TextWrapped("Phase 3 comparison fallback. Reconstructs deformation in the Domain Shader instead of consuming the derived dirty-tile field.");
+			if constexpr (ENABLE_EXPERIMENTAL_DERIVED_TERRAIN_SURFACE) {
+				changed |= ImGui::Checkbox("Force Legacy Terrain Surface", &settings.ForceLegacyTerrainSurface);
+				if (auto _tt = Util::HoverTooltipWrapper())
+					ImGui::TextWrapped("Phase 3 comparison fallback. Reconstructs deformation in the Domain Shader instead of consuming the derived dirty-tile field.");
+			} else {
+				ImGui::TextDisabled("Stable direct terrain reconstruction active");
+				if (auto _tt = Util::HoverTooltipWrapper())
+					ImGui::TextWrapped("The experimental derived terrain cache is quarantined for release stability. Deformation is reconstructed directly in the Domain Shader using the proven surface data path.");
+			}
 			ImGui::Text("Surface tiles: %u dispatches, %u stamp references, max %u/tile, full fallbacks %u", static_cast<uint>(queuedSurfaceTileDispatches.size()), surfaceTileStampReferences, surfaceMaximumStampsPerTile, surfaceFullFieldFallbackCount);
 			ImGui::Text("Session history: %zu tiles, %u restored stamps, %u evictions", sessionSurfaceHistory.size(), sessionSurfaceHistoryRestoredStamps, sessionSurfaceHistoryEvictedTiles);
 		}
@@ -5393,6 +5413,11 @@ void GroundResponse::EarlyPrepass()
 void GroundResponse::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	if constexpr (!ENABLE_EXPERIMENTAL_DERIVED_TERRAIN_SURFACE) {
+		// Keep the persisted/debug state truthful while the derived terrain cache is
+		// quarantined. This does not discard the setting or its migration path.
+		settings.ForceLegacyTerrainSurface = true;
+	}
 	// The nlohmann member macro has a deliberately finite argument ceiling. Keep
 	// Phase 6 additions explicit so old configs migrate cleanly without relying on
 	// a wider third-party serialization macro.
@@ -6390,6 +6415,44 @@ RE::BSEventNotifyControl GroundResponse::SpellCastEventSink::ProcessEvent(
 	return RE::BSEventNotifyControl::kContinue;
 }
 
+RE::BSEventNotifyControl GroundResponse::DeathEventSink::ProcessEvent(
+	const RE::TESDeathEvent* a_event,
+	RE::BSTEventSource<RE::TESDeathEvent>*)
+{
+	if (!a_event || !a_event->dead || !a_event->actorDying)
+		return RE::BSEventNotifyControl::kContinue;
+
+	auto* actor = a_event->actorDying->As<RE::Actor>();
+	if (!actor)
+		return RE::BSEventNotifyControl::kContinue;
+
+	// Restore while the dying actor handle is still authoritative. Waiting for
+	// the periodic terrain scan can lose that handle during death-menu reload,
+	// leaving PIXL's temporary SpeedMult delta attached to the persistent player.
+	if (actor == RE::PlayerCharacter::GetSingleton()) {
+		globals::pipeline::groundResponse.ClearMovementResistance();
+	} else if (auto* track = ResistanceFindTrack(actor->GetFormID())) {
+		ResistanceRestoreTrack(*track);
+	}
+
+	return RE::BSEventNotifyControl::kContinue;
+}
+
+void GroundResponse::ClearMovementResistance()
+{
+	g_groundResistanceAccumulator = 0.0f;
+	ResistanceRestoreAll();
+	g_lastPlayerResistanceSurface = GroundResistanceSurface::kNone;
+	g_lastPlayerResistanceDepth = 0.0f;
+	g_lastPlayerResistanceTargetScale = 1.0f;
+	g_lastPlayerResistanceFilteredScale = 1.0f;
+	g_lastPlayerSnowClassifier = GroundSnowClassifier::kNone;
+	g_lastPlayerObservedSpeedMult = 0.0f;
+	g_lastPlayerAppliedSpeedDelta = 0.0f;
+	g_lastPlayerSnowCoverage = 0.0f;
+	g_lastPlayerSnowActivation = 0.0f;
+}
+
 void GroundResponse::DataLoaded()
 {
 	static bool registered = false;
@@ -6397,6 +6460,8 @@ void GroundResponse::DataLoaded()
 		if (auto* holder = RE::ScriptEventSourceHolder::GetSingleton()) {
 			holder->AddEventSink<RE::TESSpellCastEvent>(
 				SpellCastEventSink::GetSingleton());
+			holder->AddEventSink<RE::TESDeathEvent>(
+				DeathEventSink::GetSingleton());
 			registered = true;
 		}
 	}
@@ -6404,7 +6469,7 @@ void GroundResponse::DataLoaded()
 	GroundRebuildShoutSpellCache();
 	GroundResolveCompatibilityOverrides(*this);
 	logger::info(
-		"[GroundResponse] interaction data loaded: spellSink={} shouts={} alwaysCompress={} neverDeform={}",
+		"[GroundResponse] interaction data loaded: spell/death sinks={} shouts={} alwaysCompress={} neverDeform={}",
 		registered ? 1 : 0,
 		g_shoutSpellCache.size(),
 		g_alwaysCompressForms.size(),
@@ -7572,8 +7637,11 @@ void GroundResponse::PrepareTerrainPass(RE::BSRenderPass* a_pass)
 	activeTerrainRuntime.TerrainDebug &=
 		~(TERRAIN_DEBUG_RAW_DIRECTIONAL_SHADOW |
 			TERRAIN_DEBUG_FOCUS_DIRECTIONAL_SHADOW);
-	if (!surfaceDerivedDataValid)
+	if constexpr (!ENABLE_EXPERIMENTAL_DERIVED_TERRAIN_SURFACE) {
 		activeTerrainRuntime.TerrainDebug |= TERRAIN_DEBUG_LEGACY_SURFACE;
+	} else if (settings.ForceLegacyTerrainSurface || !surfaceDerivedDataValid) {
+		activeTerrainRuntime.TerrainDebug |= TERRAIN_DEBUG_LEGACY_SURFACE;
+	}
 	if (directionalShadowAtlasCaptured &&
 		globals::state &&
 		globals::state->HasDirectionalShadows()) {
@@ -7825,12 +7893,15 @@ void GroundResponse::TerrainPassShaderHacks()
 		bloodStainBuffer ? bloodStainBuffer->srv.get() : nullptr;
 	context->DSSetShaderResources(104, 1, &bloodStainSRV);
 	ID3D11ShaderResourceView* derivedResponseSRV =
+		ENABLE_EXPERIMENTAL_DERIVED_TERRAIN_SURFACE &&
 		!settings.ForceLegacyTerrainSurface && surfaceDerivedDataValid && surfaceDerivedResponseTexture
 			? surfaceDerivedResponseTexture->srv.get() : nullptr;
 	ID3D11ShaderResourceView* derivedSlumpSRV =
+		ENABLE_EXPERIMENTAL_DERIVED_TERRAIN_SURFACE &&
 		!settings.ForceLegacyTerrainSurface && surfaceDerivedDataValid && surfaceDerivedSlumpTexture
 			? surfaceDerivedSlumpTexture->srv.get() : nullptr;
 	ID3D11ShaderResourceView* derivedGradientSRV =
+		ENABLE_EXPERIMENTAL_DERIVED_TERRAIN_SURFACE &&
 		!settings.ForceLegacyTerrainSurface && surfaceDerivedDataValid && surfaceDerivedGradientTexture
 			? surfaceDerivedGradientTexture->srv.get() : nullptr;
 	context->DSSetShaderResources(105, 1, &derivedResponseSRV);
@@ -8696,6 +8767,14 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 		nullptr, nullptr, nullptr
 	};
 	context->CSSetUnorderedAccessViews(0, 3, nullUAVs, nullptr);
+
+	if constexpr (!ENABLE_EXPERIMENTAL_DERIVED_TERRAIN_SURFACE) {
+		// The base persistent fields are authoritative. Avoid spending a second
+		// dirty-tile pass on caches that the stable terrain path deliberately does
+		// not sample.
+		surfaceDerivedDataValid = false;
+		return;
+	}
 
 	// The base surface update is complete. Reconstruct expensive filtered
 	// compaction/slump data once per dirty tile for the terrain DS. If shader

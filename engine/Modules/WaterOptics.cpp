@@ -8,6 +8,8 @@
 #include <DDSTextureLoader.h>
 #include <WICTextureLoader.h>
 
+#include <cmath>
+
 #include "I18n/I18n.h"
 #include "State.h"
 
@@ -30,7 +32,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	EnableDynamicFoam,
 	FoamStrength,
 	FoamScale,
-	PlayerWakeStrength)
+	SSRTraceQuality)
 
 void WaterOptics::DrawSettings()
 {
@@ -68,6 +70,14 @@ void WaterOptics::DrawSettings()
 		changed |= ImGui::SliderFloat(T(TKEY("ssr_distance"), "Trace Distance"), &settings.SSRDistanceScale, 0.25f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("ssr_distance_tooltip"), "Maximum screen-space ray reach. Long traces cover more of the screen but can expose off-screen gaps."));
+		int traceQuality = static_cast<int>(std::round(settings.SSRTraceQuality));
+		static constexpr const char* traceQualityNames[] = { "Low", "Medium", "High", "Cinematic" };
+		if (ImGui::Combo("Trace Sampling", &traceQuality, traceQualityNames, static_cast<int>(std::size(traceQualityNames)))) {
+			settings.SSRTraceQuality = static_cast<float>(std::clamp(traceQuality, 0, 3));
+			changed = true;
+		}
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Controls the real depth-ray and hit-refinement budget. High preserves the previous Cinematic trace; Cinematic is an intentionally expensive three-times ray budget.");
 		changed |= ImGui::SliderFloat(T(TKEY("ssr_edge_fade"), "Edge Fade"), &settings.SSREdgeFade, 0.25f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("ssr_edge_fade_tooltip"), "Width of the confidence fade near screen borders and invalid reflection regions."));
@@ -127,9 +137,7 @@ void WaterOptics::LoadSettings(json& o_json)
 	settings.EnableDynamicFoam = settings.EnableDynamicFoam ? 1u : 0u;
 	settings.FoamStrength = std::clamp(settings.FoamStrength, 0.0f, 2.0f);
 	settings.FoamScale = std::clamp(settings.FoamScale, 0.5f, 2.0f);
-	// Retain the serialized lane for ABI/config compatibility, but player-centred
-	// wake projection is intentionally retired. Contact foam is water-owned.
-	settings.PlayerWakeStrength = 0.0f;
+	settings.SSRTraceQuality = std::clamp(std::round(settings.SSRTraceQuality), 0.0f, 3.0f);
 }
 void WaterOptics::SaveSettings(json& o_json) { o_json = settings; }
 void WaterOptics::RestoreDefaultSettings() { settings = {}; }

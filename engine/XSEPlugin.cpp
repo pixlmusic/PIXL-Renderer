@@ -1,4 +1,5 @@
 #include "Deferred.h"
+#include "Modules/GroundResponse.h"
 #include "Modules/ImageReconstruction.h"
 #include "FrameAnnotations.h"
 #include "Globals.h"
@@ -231,6 +232,10 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 	case SKSE::MessagingInterface::kPreLoadGame:
 		// A save can be selected while startup work is still pending. Release the
 		// presentation gate before loading discovers new shader combinations.
+		// Ground Response owns a temporary SpeedMult contribution. Remove it while
+		// the current player handle is still valid so death/reload cannot serialize
+		// or carry the slowdown into the replacement game state.
+		globals::pipeline::groundResponse.ClearMovementResistance();
 		if (globals::shaderCache)
 			globals::shaderCache->backgroundCompilation = true;
 		break;

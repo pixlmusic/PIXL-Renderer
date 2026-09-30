@@ -136,12 +136,13 @@ uint PixlCameraQualityTier()
 uint PixlCameraHistogramStride()
 {
     const uint tier = PixlCameraQualityTier();
-    return tier == 3u ? 4u : (tier == 2u ? 5u : (tier == 1u ? 6u : 8u));
+    return tier == 3u ? 2u : (tier == 2u ? 4u : (tier == 1u ? 7u : 10u));
 }
 
 uint PixlCameraLocalExposureSamples()
 {
-    return 2u + PixlCameraQualityTier() * 2u;
+    const uint tier = PixlCameraQualityTier();
+    return tier == 3u ? 24u : (tier == 2u ? 8u : (tier == 1u ? 4u : 2u));
 }
 
 float PixlLuminance(float3 c)

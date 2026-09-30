@@ -41,6 +41,15 @@ foreach ($case in $cases) {
         $defines = @('WINPC', 'DX11', $(if ($stage -eq 'vs') { 'VSHADER' } else { 'PSHADER' })) + $case.Defines
         $prefix = Join-Path $output ($caseIndex.ToString('D2') + '-' + $stage)
         $arguments = @('/nologo', '/WX', '/Ges', '/O3', '/T', ($stage + '_5_0'), '/E', 'main', '/I', $root)
+		# Runtime deployment overlays every module Kernel root beside the base
+		# distribution shaders. Mirror that include search contract in source-tree
+		# validation instead of requiring a staged copy first.
+		Get-ChildItem -LiteralPath (Join-Path $repo 'pipeline') -Directory | ForEach-Object {
+			$kernelRoot = Join-Path $_.FullName 'Kernels'
+			if (Test-Path -LiteralPath $kernelRoot) {
+				$arguments += @('/I', $kernelRoot)
+			}
+		}
         foreach ($define in $defines) { $arguments += @('/D', $define) }
         $source = if ($case.File -eq 'Lighting.hlsl') { $lighting } else { Join-Path $root $case.File }
         $arguments += @('/Fo', ($prefix + '.cso'), $source)
@@ -56,7 +65,7 @@ foreach ($case in $cases) {
     ++$caseIndex
 }
 $results | Export-Csv -LiteralPath (Join-Path $output 'results.csv') -NoTypeInformation
-foreach ($path in @('Lighting.hlsl', 'Water.hlsl', 'TerrainDetail/TerrainDetail.hlsli', 'Common/SharedData.hlsli')) {
+foreach ($path in @('Lighting.hlsl', 'Water.hlsl', 'Common/SharedData.hlsli')) {
     $source = if ($path -eq 'Lighting.hlsl') { $lighting } else { Join-Path $root $path }
     Write-Host "$path SHA256: $((Get-FileHash -LiteralPath $source).Hash) ($source)"
 }

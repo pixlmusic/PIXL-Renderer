@@ -77,13 +77,13 @@ namespace
 
 	std::uint32_t QualityEventLimit(std::uint32_t a_quality)
 	{
-		constexpr std::array<std::uint32_t, 4> limits{ 4u, 6u, 8u, 12u };
+		constexpr std::array<std::uint32_t, 4> limits{ 4u, 6u, 12u, 24u };
 		return limits[std::min<std::uint32_t>(a_quality, 3u)];
 	}
 
 	std::uint32_t QualityActorLimit(std::uint32_t a_quality)
 	{
-		constexpr std::array<std::uint32_t, 4> limits{ 8u, 14u, 20u, 32u };
+		constexpr std::array<std::uint32_t, 4> limits{ 8u, 14u, 32u, 64u };
 		return limits[std::min<std::uint32_t>(a_quality, 3u)];
 	}
 
@@ -899,7 +899,7 @@ void ActorSurfaceEffects::DrawSettings()
 	changed |= ImGui::Checkbox("Snow Accumulation", &settings.EnableSnow);
 	changed |= ImGui::Checkbox("Mud Accumulation", &settings.EnableMud);
 
-	static constexpr const char* qualityNames[] = { "Low", "Medium", "High", "Ultra" };
+	static constexpr const char* qualityNames[] = { "Low", "Medium", "High", "Cinematic" };
 	int quality = static_cast<int>(std::min(settings.EffectQuality, 3u));
 	if (ImGui::Combo("Effect Quality", &quality, qualityNames, static_cast<int>(std::size(qualityNames)))) {
 		ApplyQualityTier(static_cast<std::uint32_t>(quality));
@@ -955,7 +955,9 @@ void ActorSurfaceEffects::LoadSettings(json& a_json)
 	settings.Enable = a_json.value("Enable", true);
 	settings.EnableSnow = a_json.value("EnableSnow", true);
 	settings.EnableMud = a_json.value("EnableMud", true);
-	settings.EffectQuality = std::clamp(a_json.value("EffectQuality", 3u), 0u, 3u);
+	settings.EffectQuality = std::clamp(a_json.value("EffectQuality", 2u), 0u, 3u);
+	if (a_json.value("QualityContractVersion", 1u) < 2u && settings.EffectQuality == 3u)
+		settings.EffectQuality = 2u;
 	settings.Persistence = Saturate(a_json.value("Persistence", 0.68f));
 	settings.AccumulationStrength = std::clamp(a_json.value("AccumulationStrength", 1.0f), 0.0f, 2.0f);
 	settings.SnowMeltRate = std::clamp(a_json.value("SnowMeltRate", 0.010f), 0.001f, 0.05f);
@@ -972,6 +974,7 @@ void ActorSurfaceEffects::LoadSettings(json& a_json)
 void ActorSurfaceEffects::SaveSettings(json& a_json)
 {
 	a_json = {
+		{ "QualityContractVersion", 2u },
 		{ "Enable", settings.Enable },
 		{ "EnableSnow", settings.EnableSnow },
 		{ "EnableMud", settings.EnableMud },

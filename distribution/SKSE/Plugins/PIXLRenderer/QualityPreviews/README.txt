@@ -10,6 +10,9 @@ Profile_HIGH.png
 Profile_ULTRA.png
 Neural_ULTRA.png
 
+The Cinematic tier intentionally reuses the existing *_ULTRA.png artwork until
+new Cinematic captures are authored. Do not rename or duplicate these files.
+
 Recommended:
 - same aspect ratio for every image
 - 16:9 or 3:2

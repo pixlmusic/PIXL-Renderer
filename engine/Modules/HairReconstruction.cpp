@@ -89,20 +89,20 @@ void HairReconstruction::ApplyQualityTier(std::uint32_t a_quality)
 	case 2:
 		settings.SecondaryMotion = true;
 		settings.ProceduralStrands = true;
-		settings.StrandDetail = 0.55f;
-		settings.StrandDensity = 0.22f;
-		settings.MotionStrength = 0.18f;
-		settings.SilhouetteDetail = 0.06f;
-		settings.SimulationDistance = 4600.0f;
-		break;
-	default:
-		settings.SecondaryMotion = true;
-		settings.ProceduralStrands = true;
 		settings.StrandDetail = 0.75f;
 		settings.StrandDensity = 0.38f;
 		settings.MotionStrength = 0.22f;
 		settings.SilhouetteDetail = 0.09f;
 		settings.SimulationDistance = 6500.0f;
+		break;
+	default:
+		settings.SecondaryMotion = true;
+		settings.ProceduralStrands = true;
+		settings.StrandDetail = 1.0f;
+		settings.StrandDensity = 0.72f;
+		settings.MotionStrength = 0.26f;
+		settings.SilhouetteDetail = 0.14f;
+		settings.SimulationDistance = 12000.0f;
 		break;
 	}
 	ClampSettings(settings);
@@ -117,7 +117,7 @@ void HairReconstruction::DrawSettings()
 
 	Util::UIntCheckbox("Enable Hair Reconstruction", &settings.Enabled);
 	int quality = static_cast<int>(settings.Quality);
-	if (ImGui::Combo("Effect Quality", &quality, "Low\0Medium\0High\0Ultra\0"))
+	if (ImGui::Combo("Effect Quality", &quality, "Low\0Medium\0High\0Cinematic\0"))
 		ApplyQualityTier(static_cast<std::uint32_t>(std::clamp(quality, 0, 3)));
 	tooltip("Scales virtual fibre detail, motion distance and simulation complexity. Low retains automatic detection and improved lighting.");
 

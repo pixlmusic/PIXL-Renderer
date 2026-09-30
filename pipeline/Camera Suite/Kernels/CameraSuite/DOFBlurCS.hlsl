@@ -130,6 +130,8 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 		float2(0.9239f, 0.3827f), float2(0.3827f, 0.9239f), float2(-0.3827f, 0.9239f), float2(-0.9239f, 0.3827f),
 		float2(-0.9239f, -0.3827f), float2(-0.3827f, -0.9239f), float2(0.3827f, -0.9239f), float2(0.9239f, -0.3827f)
 	};
+	uint qualityTier = min((uint)(clamp(dofControlQuality, 0.0f, 3.0f) + 0.5f), 3u);
+	uint sampleCount = qualityTier == 3u ? 48u : (qualityTier == 2u ? 16u : (qualityTier == 1u ? 10u : 6u));
 	// Keep a centre contribution for stability without allowing the original
 	// reconstructed pixel to dominate the far bokeh and retain card silhouettes.
 #if DOF_NEAR
@@ -144,12 +146,24 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 #endif
 	float weight = centerWeight;
 	float coverage = 0.0f;
-	[unroll]
-	for (uint i = 0; i < 16; ++i) {
+	[loop]
+	for (uint i = 0; i < 48; ++i) {
+		if (i >= sampleCount)
+			break;
 		// Two interleaved rings reduce the visible spoke/card pattern of the old
-		// eight-tap cross while keeping the blur gather deterministic.
-		float ringScale = i < 8 ? 0.48f : 1.0f;
-		float2 apertureOffset = taps[i] * ringScale;
+		// eight-tap cross while keeping the blur gather deterministic. Cinematic
+		// adds two rotated copies of the complete High kernel (48 vs 16 samples).
+		uint tapIndex = sampleCount < 16u ? (i * 16u) / sampleCount : i % 16u;
+		uint ringGroup = i / 16u;
+		float ringScale = tapIndex < 8u ? 0.48f : 1.0f;
+		float2 apertureOffset = taps[tapIndex] * ringScale;
+		float rotation = (float)ringGroup * 2.39996323f;
+		float rotationSin;
+		float rotationCos;
+		sincos(rotation, rotationSin, rotationCos);
+		apertureOffset = float2(
+			apertureOffset.x * rotationCos - apertureOffset.y * rotationSin,
+			apertureOffset.x * rotationSin + apertureOffset.y * rotationCos);
 		float apertureWeight = BokehApertureWeight(apertureOffset, uv);
 		float2 sampleUV = uv + float2(apertureOffset.x * max(dofControlAnamorphicRatio, 0.5f), apertureOffset.y) * pixel * radius;
 		float sampleCoC = CoCTex.SampleLevel(LinearClampSampler, saturate(sampleUV), 0.0f);
@@ -159,7 +173,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 #else
 		float support = saturate(sampleCoC / max(dofControlMaxCoCPixels, 1.0f));
 #endif
-		float tapWeight = smoothstep(0.02f, 0.35f, support) * apertureWeight * (i < 8 ? 0.82f : 0.68f);
+		float tapWeight = smoothstep(0.02f, 0.35f, support) * apertureWeight * (tapIndex < 8u ? 0.82f : 0.68f);
 #if DOF_NEAR
 		float depthWeight = DepthEdgeWeight(centerDepth, sampleDepth);
 		// A near layer must not import distant sky/mountains into a foreground

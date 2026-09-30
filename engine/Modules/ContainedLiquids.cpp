@@ -543,9 +543,23 @@ void ContainedLiquids::SetupGeometry(RE::BSRenderPass* pass)
     }
     if (state->frame!=frame) {
         if (!settings.Freeze && dt>0.0001f) {
-            const auto velocity=(tr.translate-state->position)*(1.0f/dt);
-            const auto accel=(velocity-state->velocity)*(1.0f/dt);
-            const auto angular=AngularVelocity(state->basis,axes,dt);
+            const auto rawVelocity=(tr.translate-state->position)*(1.0f/dt);
+            // Render transforms contain small animation/interpolation jitter.
+            // Differentiating the raw position twice amplified that jitter into
+            // a permanent slosh impulse, especially at high frame rates. Track
+            // a frame-rate-independent filtered velocity before deriving the
+            // acceleration that drives the liquid plane.
+            const float velocityBlend=1.0f-std::exp(-dt*14.0f);
+            const auto filteredVelocity=state->velocity+(
+                rawVelocity-state->velocity)*velocityBlend;
+            auto accel=(filteredVelocity-state->velocity)*(1.0f/dt);
+            if (Length(accel)<8.0f) accel={};
+
+            const auto rawAngular=AngularVelocity(state->basis,axes,dt);
+            const float angularBlend=1.0f-std::exp(-dt*16.0f);
+            auto angular=state->angularVelocity+(
+                rawAngular-state->angularVelocity)*angularBlend;
+            if (Length(angular)<0.01f) angular={};
             const float forcing=Length(accel)/784.0f+Length(angular)*0.08f;
             if (state->sleeping && forcing>0.012f) {state->sleeping=false;state->sleepTime=0.0f;}
             if (!state->sleeping) {
@@ -564,7 +578,8 @@ void ContainedLiquids::SetupGeometry(RE::BSRenderPass* pass)
                     state->tilt[0]=state->tilt[1]=state->speed[0]=state->speed[1]=0.0f;
                 }
             }
-            state->velocity=state->velocity*std::exp(-dt*20.0f)+velocity*(1.0f-std::exp(-dt*20.0f));
+            state->velocity=filteredVelocity;
+            state->angularVelocity=angular;
         }
         state->position=tr.translate;state->time=now;state->frame=frame;
         for (int i=0;i<3;++i) state->basis[i]=axes[i];

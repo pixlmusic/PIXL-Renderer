@@ -1035,15 +1035,28 @@ void CameraSuite::ApplyExternalLook(float exposureEV, float contrast, float satu
 void CameraSuite::SaveSettings(json& o_json)
 {
 	std::lock_guard<std::mutex> lock(settingsMutex);
-	o_json = settings;
+	const auto& settingsToSave = persistentSettingsOverride ? *persistentSettingsOverride : settings;
+	o_json = settingsToSave;
 	// Keep the core settings below nlohmann's non-intrusive macro arity limit;
 	// environmental lens additions remain normal, backward-compatible keys.
-	o_json["enableColdLens"] = settings.enableColdLens;
-	o_json["coldLensStrength"] = settings.coldLensStrength;
-	o_json["coldAltitudeStart"] = settings.coldAltitudeStart;
-	o_json["coldAltitudeFull"] = settings.coldAltitudeFull;
-	o_json["enableElementalDamageLens"] = settings.enableElementalDamageLens;
-	o_json["elementalLensStrength"] = settings.elementalLensStrength;
+	o_json["enableColdLens"] = settingsToSave.enableColdLens;
+	o_json["coldLensStrength"] = settingsToSave.coldLensStrength;
+	o_json["coldAltitudeStart"] = settingsToSave.coldAltitudeStart;
+	o_json["coldAltitudeFull"] = settingsToSave.coldAltitudeFull;
+	o_json["enableElementalDamageLens"] = settingsToSave.enableElementalDamageLens;
+	o_json["elementalLensStrength"] = settingsToSave.elementalLensStrength;
+}
+
+void CameraSuite::BeginTransientSettings(const Settings& persistentBaseline)
+{
+	std::lock_guard<std::mutex> lock(settingsMutex);
+	persistentSettingsOverride = persistentBaseline;
+}
+
+void CameraSuite::EndTransientSettings()
+{
+	std::lock_guard<std::mutex> lock(settingsMutex);
+	persistentSettingsOverride.reset();
 }
 
 void CameraSuite::LoadSettings(json& o_json)
@@ -2826,7 +2839,7 @@ void CameraSuite::UpdatePhysicalCameraExposure(ID3D11ShaderResourceView* sceneSR
 			}
 
 			if (sceneDesc.Width && sceneDesc.Height) {
-				constexpr std::array<UINT, 4> histogramStrides{ 8u, 6u, 5u, 4u };
+				constexpr std::array<UINT, 4> histogramStrides{ 10u, 7u, 4u, 2u };
 				const UINT meterStride = histogramStrides[std::clamp(cameraQuality, 0u, 3u)];
 				const UINT meterWidth = (sceneDesc.Width + meterStride - 1u) / meterStride;
 				const UINT meterHeight = (sceneDesc.Height + meterStride - 1u) / meterStride;
@@ -3518,12 +3531,14 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 		!dofViewStateValid ||
 		(firstPersonView != dofWasFirstPerson) ||
 		(pixlDofEnabled != dofWasEnabled) ||
+		(directorPresentation != dofWasDirectorPresentation) ||
 		reconstructionDiscontinuity;
 	if (focusHistoryReset)
 		dofFocusStateValid = false;
 	dofViewStateValid = true;
 	dofWasFirstPerson = firstPersonView;
 	dofWasEnabled = pixlDofEnabled;
+	dofWasDirectorPresentation = directorPresentation;
 	float focusDistance = std::clamp(settings.dofFocusDistance, 100.0f, 20000.0f);
 	bool actorFocusActive = false;
 	bool directorFocusActive = false;
@@ -3539,7 +3554,9 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 			actorFocusActive = true;
 		}
 	}
-	if (pixlDofEnabled && settings.dofAutoFocus && !actorFocusActive && !directorFocusActive && !directorPhoto)
+	const bool screenAutoFocusActive =
+		pixlDofEnabled && settings.dofAutoFocus && !actorFocusActive && !directorFocusActive;
+	if (screenAutoFocusActive)
 		focusDistance = std::clamp(settings.dofFocusDistance, 100.0f, 20000.0f);
 
 	if (!dofFocusStateValid) {
@@ -3567,7 +3584,7 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 	// c19.w remains ABI-compatible with the original autofocus boolean. Values
 	// 2/3 additionally tell the shader that the camera is inside, allowing sky
 	// pixels and portal openings to receive a much gentler blur than open sky.
-	data.dofAutoFocus = (settings.dofAutoFocus && !actorFocusActive && !directorFocusActive && !directorPhoto ? 1.0f : 0.0f) +
+	data.dofAutoFocus = (screenAutoFocusActive ? 1.0f : 0.0f) +
 		(interiorScene ? 2.0f : 0.0f);
 	const bool elementalGameplay = environmentPresentation &&
 		!(ui && ui->GameIsPaused()) && !isMainOrLoadingMenu;
@@ -3612,7 +3629,7 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 	dofControlData.bladeCurvature = std::clamp(settings.dofBladeCurvature, 0.0f, 1.0f);
 	dofControlData.apertureBlades = static_cast<float>(std::clamp(settings.dofApertureBlades, 3u, 12u));
 	dofControlData.quality = static_cast<float>(std::clamp(cameraQuality, 0u, 3u));
-	dofControlData.focusMode = directorFocusActive ? 1.0f : (actorFocusActive ? 2.0f : (settings.dofAutoFocus ? 3.0f : 0.0f));
+	dofControlData.focusMode = directorFocusActive ? 1.0f : (actorFocusActive ? 2.0f : (screenAutoFocusActive ? 3.0f : 0.0f));
 	if (hdrTexture) {
 		dofControlData.renderWidth = static_cast<float>(hdrTexture->desc.Width);
 		dofControlData.renderHeight = static_cast<float>(hdrTexture->desc.Height);

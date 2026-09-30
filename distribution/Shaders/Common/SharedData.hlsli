@@ -253,7 +253,7 @@ namespace SharedData
 		uint EnableDynamicFoam;
 		float FoamStrength;
 		float FoamScale;
-		float PlayerWakeStrength;
+		float SSRTraceQuality;
 	};
 
 	struct PostProcessSettings

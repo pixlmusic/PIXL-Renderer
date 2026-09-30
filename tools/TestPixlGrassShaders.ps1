@@ -17,15 +17,25 @@ $results = [Collections.Generic.List[object]]::new()
 # power set of module toggles, VR, custom macros or other engine shader families.
 $integrated = @('GROUND_RESPONSE', 'CONTACT_SHADOWS', 'RADIANT_GRID', 'NATURAL_LIGHTING',
     'SKY_BOUNCE', 'WORLD_PROBES', 'AMBIENT_PROBE', 'ATMOSPHERE_PIPELINE')
-foreach ($mask in 0..15) {
+foreach ($mask in 0..31) {
     foreach ($stage in @('vs', 'ps')) {
         $defines = @('WINPC', 'DX11', $(if ($stage -eq 'vs') { 'VSHADER' } else { 'PSHADER' }))
         if ($mask -band 1) { $defines += 'FOLIAGE_DYNAMICS' }
         if ($mask -band 2) { $defines += 'RENDER_DEPTH' }
         if ($mask -band 4) { $defines += 'DO_ALPHA_TEST' }
         if ($mask -band 8) { $defines += $integrated }
+		if ($mask -band 16) { $defines += 'FOLIAGE_OPTIMIZER' }
         $prefix = Join-Path $output ($mask.ToString('D2') + '-' + $stage)
         $compilerArguments = @('/nologo', '/WX', '/Ges', '/O3', '/T', ($stage + '_5_0'), '/E', 'main', '/I', $root)
+		# Module includes are deployed beside the base shader tree at runtime. Add
+		# each source Kernel root here so repository tests exercise that same overlay
+		# without copying files into a temporary pseudo-installation.
+		Get-ChildItem -LiteralPath (Join-Path $repo 'pipeline') -Directory | ForEach-Object {
+			$kernelRoot = Join-Path $_.FullName 'Kernels'
+			if (Test-Path -LiteralPath $kernelRoot) {
+				$compilerArguments += @('/I', $kernelRoot)
+			}
+		}
         foreach ($define in $defines) { $compilerArguments += @('/D', $define) }
         $compilerArguments += @('/Fo', ($prefix + '.cso'), $entry)
         $compileOutput = & $compiler @compilerArguments 2>&1

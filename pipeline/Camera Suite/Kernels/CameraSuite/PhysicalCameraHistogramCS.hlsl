@@ -25,7 +25,7 @@ void main(uint2 dtid : SV_DispatchThreadID, uint2 gtid : SV_GroupThreadID)
         uint width, height;
         SceneTex.GetDimensions(width, height);
 
-		// Quality controls real metering workload (8/6/5/4 source-pixel stride).
+		// Quality controls real metering workload (10/7/4/2 source-pixel stride).
 		// Stable cell centres avoid metering a different set of emissive/window
 		// pixels every frame while the camera and scene are stationary.
 		uint stride = max(PixlCameraHistogramStride(), 1u);
