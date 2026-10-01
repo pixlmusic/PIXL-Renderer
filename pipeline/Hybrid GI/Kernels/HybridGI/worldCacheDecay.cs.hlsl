@@ -10,15 +10,9 @@ RWTexture2D<uint> outWorldMetadata : register(u0);
 // or pushed out of the toroidal window as the camera moves) is simply never
 // touched again -- its metadata just sits in the atlas.
 //
-// Age is reconstructed every frame from an 8-bit "frame written" stamp via
-// modular subtraction: ((now & 255) - stored) & 255. That arithmetic is only
-// correct while the true gap since the last write is below 256 frames. Once
-// an abandoned voxel's real age passes 256, the subtraction aliases back
-// down through small values once every 256 frames (~4-8 seconds depending on
-// framerate) -- which made the old, stale voxel falsely evaluate as "fresh"
-// again for a few frames on a fixed rhythm, then age back out. That produced
-// GI and reflections that pop in and out on a beat with no relation to
-// anything the camera or lighting was actually doing.
+// Age is reconstructed from an 8-bit fixed-rate cache clock. Unlike rendered
+// frame count, this clock has a consistent wall-time meaning across native,
+// temporal reconstruction, frame generation and compilation stalls.
 //
 // Fix: explicitly stamp a voxel's hash to WORLD_CACHE_INVALID_HASH (0, which
 // WorldCacheHash() never produces) the moment it first crosses
@@ -52,7 +46,7 @@ void main(const uint2 dispatchThreadID : SV_DispatchThreadID)
 	if (hash == WORLD_CACHE_INVALID_HASH)
 		return;
 
-	uint age = ((FrameIndex & 255u) - (metadata >> 24)) & 255u;
+	uint age = ((WorldCacheClock & 255u) - (metadata >> 24)) & 255u;
 	if (age > WorldCacheMaxAge) {
 		// Keep the timestamp byte (harmless, and cheaper than a full zero
 		// write to reason about), just clear the hash so no future read or
@@ -60,5 +54,4 @@ void main(const uint2 dispatchThreadID : SV_DispatchThreadID)
 		outWorldMetadata[dispatchThreadID] = metadata & 0xff000000u;
 	}
 }
-
 

@@ -202,14 +202,25 @@ void RadiantGrid::SetupResources()
 
 void RadiantGrid::Reset()
 {
+	// Reset is called at every Present. Geometry queues feed the NEXT prepass;
+	// clearing them here starves practical lighting and destroys its history.
+	auto* player = RE::PlayerCharacter::GetSingleton();
+	auto* cell = player ? player->GetParentCell() : nullptr;
+	const auto scene = reinterpret_cast<std::uintptr_t>(cell && cell->IsInteriorCell() ?
+		static_cast<void*>(cell) : static_cast<void*>(player ? player->GetWorldspace() : nullptr));
 	std::unique_lock lock{ particleLightsMutex };
+	if (scene != 0 && scene == particleLightScene)
+		return;
+	particleLightScene = scene;
 	queuedParticleLights.clear();
 	currentParticleLights.clear();
 	queuedParticleLightOwners.clear();
 	persistedParticleLights.clear();
-	particleLightFrameSerial = 0;
+	particleLightTime = 0.0;
 	particleEmitterLightCount = 0;
 	glowMappedEmitterLightCount = 0;
+	particleLightBufferStart = 0;
+	particleLightBufferCount = 0;
 }
 
 void RadiantGrid::SaveSettings(json& o_json)
@@ -447,12 +458,16 @@ void RadiantGrid::UpdateLights()
 	auto& isl = globals::pipeline::naturalLighting;
 	if (!smState || !globals::d3d::context || !lights || !lights->resource) {
 		lightCount = 0;
+		particleLightBufferStart = 0;
+		particleLightBufferCount = 0;
 		return;
 	}
 
 	auto shadowSceneNode = smState->shadowSceneNode[0];
 	if (!shadowSceneNode) {
 		lightCount = 0;
+		particleLightBufferStart = 0;
+		particleLightBufferCount = 0;
 		return;
 	}
 
@@ -547,7 +562,10 @@ void RadiantGrid::UpdateLights()
 		addLight(e);
 	}
 
+	particleLightBufferStart = static_cast<std::uint32_t>(std::min<std::size_t>(lightsData.size(), MAX_LIGHTS));
 	AddParticleLightsToBuffer(lightsData);
+	particleLightBufferCount = static_cast<std::uint32_t>(
+		std::min<std::size_t>(lightsData.size(), MAX_LIGHTS) - particleLightBufferStart);
 
 	auto context = globals::d3d::context;
 
@@ -739,6 +757,7 @@ namespace
 		float geometryMinimumRadius;
 		float geometryIntensityScale;
 		RE::NiColor geometryTint;
+		float flickerStrength;
 	};
 
 	std::optional<IncandescentEmitterProfile> GetIncandescentEmitterProfile(std::string_view a_evidence)
@@ -755,25 +774,25 @@ namespace
 			return IncandescentEmitterProfile{
 				8.0f, 280.0f, 0.90f,
 				4.0f, 360.0f, 1.55f,
-				{ 1.0f, 0.52f, 0.18f }
+				{ 1.0f, 0.52f, 0.18f }, 0.055f
 			};
 		if (contains("torch") || contains("sconce"))
 			return IncandescentEmitterProfile{
 				10.0f, 420.0f, 1.05f,
 				4.5f, 520.0f, 2.00f,
-				{ 1.0f, 0.43f, 0.12f }
+				{ 1.0f, 0.43f, 0.12f }, 0.085f
 			};
 		if (contains("brazier") || contains("bonfire") || contains("campfire") || contains("hearth"))
 			return IncandescentEmitterProfile{
 				12.0f, 620.0f, 1.15f,
 				5.0f, 900.0f, 2.80f,
-				{ 1.0f, 0.36f, 0.08f }
+				{ 1.0f, 0.36f, 0.08f }, 0.105f
 			};
 		if (contains("fire") || contains("flame") || contains("ember") || contains("burn"))
 			return IncandescentEmitterProfile{
 				9.0f, 380.0f, 1.00f,
 				4.5f, 640.0f, 2.30f,
-				{ 1.0f, 0.38f, 0.09f }
+				{ 1.0f, 0.38f, 0.09f }, 0.095f
 			};
 
 		return std::nullopt;
@@ -857,10 +876,6 @@ RadiantGrid::VertexColorCacheEntry RadiantGrid::GetParticleLightConfig(RE::BSRen
 	if (!material)
 		return {};
 
-	auto parent = a_pass->geometry->parent;
-	if (!parent || parent->GetRTTI() != globals::rtti::NiBillboardNodeRTTI.get())
-		return {};
-
 	auto* node = a_pass->geometry;
 
 	{
@@ -888,8 +903,31 @@ RadiantGrid::VertexColorCacheEntry RadiantGrid::GetParticleLightConfig(RE::BSRen
 
 	auto& configs = particleLightConfigs.configs;
 	auto configIt = configs.find(*textureName);
-	const auto incandescentProfile = GetIncandescentEmitterProfile(*textureName);
+	// Keep the complete path and nearby scene-node names as classification
+	// evidence. Many fire replacers use generic texture stems such as "black" or
+	// "fxglowenb", while their folder/node still identifies a torch or brazier.
+	std::string emitterEvidence = LowercasePath(material->sourceTexturePath.c_str());
+	for (RE::NiAVObject* parent = a_pass->geometry; parent != nullptr; parent = parent->parent) {
+		if (const char* name = parent->name.c_str(); name && *name) {
+			emitterEvidence.push_back('|');
+			emitterEvidence += LowercasePath(name);
+		}
+	}
+	const auto incandescentProfile = GetIncandescentEmitterProfile(emitterEvidence);
 	if (configIt == configs.end() && !incandescentProfile)
+		return cacheInvalid(node);
+
+	// Preserve the strict billboard requirement for arbitrary external particle
+	// configurations. Named incandescent textures may pass through wrapper nodes
+	// introduced by modern fire and ember mesh replacers.
+	bool billboardOwned = false;
+	for (auto* parent = a_pass->geometry->parent; parent != nullptr; parent = parent->parent) {
+		if (parent->GetRTTI() == globals::rtti::NiBillboardNodeRTTI.get()) {
+			billboardOwned = true;
+			break;
+		}
+	}
+	if (!billboardOwned && !incandescentProfile)
 		return cacheInvalid(node);
 
 	ParticleLightConfig config = configIt != configs.end() ? configIt->second : ParticleLightConfig{};
@@ -897,12 +935,15 @@ RadiantGrid::VertexColorCacheEntry RadiantGrid::GetParticleLightConfig(RE::BSRen
 	VertexColorCacheEntry entry{};
 	entry.valid = true;
 	entry.applyEffectMaterialTint = true;
+	entry.practicalIncandescent = incandescentProfile.has_value();
 	entry.config = config;
 	entry.baseColor = { 1, 1, 1, 1 };
 	if (incandescentProfile) {
 		entry.radiusScale = incandescentProfile->particleRadiusScale;
 		entry.minimumRadius = incandescentProfile->particleMinimumRadius;
 		entry.intensityScale = incandescentProfile->particleIntensityScale;
+		entry.incandescentTint = incandescentProfile->geometryTint;
+		entry.flickerStrength = incandescentProfile->flickerStrength;
 	}
 	bool hasVertexTint = false;
 	if (auto rendererData = a_pass->geometry->GetGeometryRuntimeData().rendererData) {
@@ -988,6 +1029,8 @@ RadiantGrid::VertexColorCacheEntry RadiantGrid::GetIncandescentGeometryLightConf
 	entry.radiusScale = profile->geometryRadiusScale;
 	entry.minimumRadius = profile->geometryMinimumRadius;
 	entry.intensityScale = profile->geometryIntensityScale;
+	entry.incandescentTint = profile->geometryTint;
+	entry.flickerStrength = profile->flickerStrength;
 
 	RE::NiColor tint = profile->geometryTint;
 	float emissiveEvidence = 1.0f;
@@ -1040,6 +1083,7 @@ bool RadiantGrid::QueueResolvedEmitterLight(RE::NiAVObject* a_owner, const Resol
 		if (resolvedEnergy > aggregateEnergy) {
 			aggregate.color = a_resolved.color;
 			aggregate.source = a_resolved.source;
+			aggregate.flickerStrength = a_resolved.flickerStrength;
 		}
 
 		if (a_resolved.radius > aggregate.radius) {
@@ -1050,7 +1094,15 @@ bool RadiantGrid::QueueResolvedEmitterLight(RE::NiAVObject* a_owner, const Resol
 	}
 
 	queuedParticleLightOwners.emplace(a_owner, queuedParticleLights.size());
-	queuedParticleLights.push_back(a_resolved);
+	auto resolved = a_resolved;
+	// Owner identity is an opaque per-session phase seed; it is not dereferenced
+	// after submission. This keeps neighbouring emitters from pulsing in unison.
+	std::uintptr_t seed = reinterpret_cast<std::uintptr_t>(a_owner);
+	seed ^= seed >> 17;
+	seed *= static_cast<std::uintptr_t>(0xed5ad4bbU);
+	seed ^= seed >> 11;
+	resolved.flickerPhase = static_cast<float>(seed & 0xffffu) * (6.28318530718f / 65536.0f);
+	queuedParticleLights.push_back(resolved);
 	return true;
 }
 
@@ -1071,6 +1123,7 @@ bool RadiantGrid::QueueIncandescentGeometryLight(RE::BSRenderPass* a_pass)
 		1.0f,
 		2000.0f);
 	resolved.source = ResolvedParticleLight::Source::GlowMappedGeometry;
+	resolved.flickerStrength = reference.flickerStrength;
 
 	if (!std::isfinite(resolved.position.x) || !std::isfinite(resolved.position.y) || !std::isfinite(resolved.position.z) ||
 		!std::isfinite(resolved.color.red) || !std::isfinite(resolved.color.green) || !std::isfinite(resolved.color.blue) ||
@@ -1111,9 +1164,23 @@ bool RadiantGrid::QueueParticleLight(RE::BSRenderPass* a_pass, VertexColorCacheE
 	color.red *= a_reference.intensityScale;
 	color.green *= a_reference.intensityScale;
 	color.blue *= a_reference.intensityScale;
+	if (a_reference.practicalIncandescent) {
+		// Most flame textures are neutral masks. Warm those masks while preserving
+		// deliberately coloured magical fire from the material/vertex evidence.
+		const float peak = std::max({ color.red, color.green, color.blue, 1.0e-4f });
+		const float floor = std::min({ color.red, color.green, color.blue });
+		const float chroma = (peak - floor) / peak;
+		const float authoredWeight = std::clamp((chroma - 0.08f) / 0.24f, 0.0f, 1.0f);
+		const RE::NiColor authored{ color.red / peak, color.green / peak, color.blue / peak };
+		color.red = peak * std::lerp(a_reference.incandescentTint.red, authored.red, authoredWeight);
+		color.green = peak * std::lerp(a_reference.incandescentTint.green, authored.green, authoredWeight);
+		color.blue = peak * std::lerp(a_reference.incandescentTint.blue, authored.blue, authoredWeight);
+	}
 
 	ResolvedParticleLight resolved;
-	resolved.position = a_pass->geometry->world.translate;
+	// The transformed bound centre tracks the visible flame card more reliably
+	// than a wrapper node's origin.
+	resolved.position = a_pass->geometry->worldBound.center;
 	resolved.color = color;
 	resolved.radius = std::clamp(
 		std::max(a_pass->geometry->worldBound.radius * a_reference.radiusScale, a_reference.minimumRadius),
@@ -1129,6 +1196,7 @@ bool RadiantGrid::QueueParticleLight(RE::BSRenderPass* a_pass, VertexColorCacheE
 	resolved.color.blue = std::max(resolved.color.blue, 0.0f);
 	resolved.color.alpha = std::clamp(resolved.color.alpha, 0.0f, 1.0f);
 	resolved.source = ResolvedParticleLight::Source::Particle;
+	resolved.flickerStrength = a_reference.flickerStrength;
 
 	// One billboard owner represents one physical fire/torch/brazier emitter.
 	// Skyrim may submit the same owner through multiple immediate-render paths,
@@ -1147,15 +1215,14 @@ bool RadiantGrid::CheckParticleLights(RE::BSRenderPass* a_pass, uint32_t)
 		return true;
 
 	using Flag = RE::BSShaderProperty::EShaderPropertyFlag;
-	if (!a_pass->shaderProperty->flags.all(Flag::kSoftEffect, Flag::kZBufferTest))
-		return true;
-
 	auto* alphaProperty = static_cast<RE::NiAlphaProperty*>(a_pass->geometry->GetGeometryRuntimeData().alphaProperty.get());
-	if (!alphaProperty || alphaProperty->alphaFlags != 4109)
-		return true;
-
 	auto reference = GetParticleLightConfig(a_pass);
 	if (reference.valid) {
+		const bool legacyParticleLayout =
+			a_pass->shaderProperty->flags.all(Flag::kSoftEffect, Flag::kZBufferTest) &&
+			alphaProperty && alphaProperty->alphaFlags == 4109;
+		if (!legacyParticleLayout && !reference.practicalIncandescent)
+			return true;
 		if (QueueParticleLight(a_pass, reference))
 			return !(settings.EnableParticleLightsCulling && reference.config.cull);
 	}
@@ -1169,12 +1236,14 @@ void RadiantGrid::AddParticleLightsToBuffer(eastl::vector<LightData>& a_lightsDa
 
 	std::unique_lock lock{ particleLightsMutex };
 
-	++particleLightFrameSerial;
+	const float frameDelta = static_cast<float>(RE::GetSecondsSinceLastFrame());
+	if (std::isfinite(frameDelta))
+		particleLightTime += std::clamp(frameDelta, 0.0f, 0.25f);
 	for (const auto& [owner, index] : queuedParticleLightOwners) {
 		if (owner && index < queuedParticleLights.size()) {
 			auto& persisted = persistedParticleLights[owner];
 			persisted.light = queuedParticleLights[index];
-			persisted.lastSeenFrame = particleLightFrameSerial;
+			persisted.lastSeenTime = particleLightTime;
 		}
 	}
 
@@ -1198,19 +1267,19 @@ void RadiantGrid::AddParticleLightsToBuffer(eastl::vector<LightData>& a_lightsDa
 	// remains visible. Preserve only the resolved scalar payload (never dereference
 	// the owner pointer), then fade it over a bounded third of a second. This removes
 	// camera-turn lighting pops while still retiring destroyed/hidden emitters.
-	constexpr std::uint64_t kFullHoldFrames = 2;
-	constexpr std::uint64_t kLifetimeFrames = 20;
+	constexpr double kFullHoldSeconds = 2.0 / 60.0;
+	constexpr double kLifetimeSeconds = 1.0 / 3.0;
 	for (auto it = persistedParticleLights.begin(); it != persistedParticleLights.end();) {
-		const std::uint64_t age = particleLightFrameSerial - it->second.lastSeenFrame;
-		if (age > kLifetimeFrames) {
+		const double age = particleLightTime - it->second.lastSeenTime;
+		if (age > kLifetimeSeconds) {
 			it = persistedParticleLights.erase(it);
 			continue;
 		}
 
 		ResolvedParticleLight resolved = it->second.light;
-		if (age > kFullHoldFrames) {
-			const float fade = 1.0f - static_cast<float>(age - kFullHoldFrames) /
-				static_cast<float>(kLifetimeFrames - kFullHoldFrames);
+		if (age > kFullHoldSeconds) {
+			const float fade = 1.0f - static_cast<float>((age - kFullHoldSeconds) /
+				(kLifetimeSeconds - kFullHoldSeconds));
 			resolved.color.alpha *= std::clamp(fade, 0.0f, 1.0f);
 		}
 		currentParticleLights.push_back(resolved);
@@ -1223,9 +1292,18 @@ void RadiantGrid::AddParticleLightsToBuffer(eastl::vector<LightData>& a_lightsDa
 
 		LightData light{};
 		constexpr float invPI = 1.f / std::numbers::pi_v<float>;
-		light.color.x = pl.color.red * invPI;
-		light.color.y = pl.color.green * invPI;
-		light.color.z = pl.color.blue * invPI;
+		// Smooth, band-limited flame movement is evaluated once and shared by all
+		// consumers (direct light, fog and GI), avoiding independent shader noise.
+		const float phase = static_cast<float>(particleLightTime) * 6.1f + pl.flickerPhase;
+		const float flameWave =
+			std::sin(phase) * 0.55f +
+			std::sin(phase * 1.73f + 1.91f) * 0.30f +
+			std::sin(phase * 0.37f + 4.13f) * 0.15f;
+		const float flicker = std::clamp(1.0f + flameWave * pl.flickerStrength, 0.78f, 1.16f);
+		const float warmth = std::clamp(1.0f - flameWave * pl.flickerStrength * 0.18f, 0.97f, 1.03f);
+		light.color.x = pl.color.red * flicker * invPI;
+		light.color.y = pl.color.green * flicker * invPI;
+		light.color.z = pl.color.blue * flicker * warmth * invPI;
 		light.color *= pl.color.alpha;
 
 		// ResolvedParticleLight already carries its final conservative world
@@ -1236,10 +1314,13 @@ void RadiantGrid::AddParticleLightsToBuffer(eastl::vector<LightData>& a_lightsDa
 		light.lightFlags.set(LightFlags::Simple);
 		SetLightPosition(light, pl.position);
 
-		float distance = (light.positionWS.data.x * light.positionWS.data.x) +
-		                 (light.positionWS.data.y * light.positionWS.data.y) +
-		                 (light.positionWS.data.z * light.positionWS.data.z) -
-		                 (light.radius * light.radius);
+		// These engine fade settings are linear Skyrim units. Comparing squared
+		// distance against them rejected practical emitters almost immediately.
+		const float centreDistance = std::sqrt(
+			(light.positionWS.data.x * light.positionWS.data.x) +
+			(light.positionWS.data.y * light.positionWS.data.y) +
+			(light.positionWS.data.z * light.positionWS.data.z));
+		const float distance = std::max(centreDistance - light.radius, 0.0f);
 
 		float dimmer = 0.0f;
 		if (distance < lightFadeStart || lightFadeEnd == 0.0f || lightFadeEnd <= lightFadeStart)

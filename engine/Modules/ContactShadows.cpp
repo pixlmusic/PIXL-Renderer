@@ -136,7 +136,7 @@ ID3D11ComputeShader* ContactShadows::GetComputeRaymarch()
 void ContactShadows::DrawShadows()
 {
 	ZoneScopedS(8);
-	if (!globals::state || !globals::state->tracyCtx || !globals::profiler ||
+	if (!globals::state || !globals::profiler ||
 		!globals::d3d::context || !globals::game::graphicsState || !raymarchCB ||
 		!contactShadowsTexture || !contactShadowsTexture->uav || !pointBorderSampler) {
 		return;
@@ -147,11 +147,13 @@ void ContactShadows::DrawShadows()
 	auto context = globals::d3d::context;
 
 	auto accumulator = *globals::game::currentAccumulator.get();
-	if (!accumulator) {
-		UpdateDirectionalSource(nullptr);
-		return;
-	}
-	auto* shadowSceneNode = accumulator->GetRuntimeData().activeShadowSceneNode;
+	RE::ShadowSceneNode* shadowSceneNode = accumulator ?
+		accumulator->GetRuntimeData().activeShadowSceneNode : nullptr;
+	// Some interior/exterior transitions leave the accumulator's active node empty
+	// for a frame even though Skyrim's shadow manager already owns the new one.
+	// RadiantGrid and the vanilla lighting path use this same stable fallback.
+	if (!shadowSceneNode && globals::game::smState)
+		shadowSceneNode = globals::game::smState->shadowSceneNode[0];
 	if (!shadowSceneNode || !shadowSceneNode->GetRuntimeData().sunLight ||
 		!shadowSceneNode->GetRuntimeData().sunLight->light) {
 		UpdateDirectionalSource(nullptr);
@@ -165,17 +167,22 @@ void ContactShadows::DrawShadows()
 	}
 	UpdateDirectionalSource(dirLight);
 
-	// Follow PIXL's live sky orientation (the same sun node used by SkyBounce,
-	// SkyVeil and SharedData) so custom weather/sky rotations also drive SSS.
-	float3 light{};
-	if (auto sky = globals::game::sky; sky && sky->sun && sky->sun->root && sky->root) {
-		const auto& sunPos = sky->sun->root->world.translate;
-		const auto& skyPos = sky->root->world.translate;
-		light = { sunPos.x - skyPos.x, sunPos.y - skyPos.y, sunPos.z - skyPos.z };
-	}
+	// The active NiDirectionalLight is authoritative. A sky-node position can be
+	// camera-relative and may still describe the sun while Skyrim has selected the
+	// moon, which made the ray march disagree with the actual directional light.
+	auto& directionNi = dirLight->GetWorldDirection();
+	float3 light{ directionNi.x, directionNi.y, directionNi.z };
 	if (light.LengthSquared() < 1.0e-6f) {
-		auto& directionNi = dirLight->GetWorldDirection();
-		light = { directionNi.x, directionNi.y, directionNi.z };
+		if (auto sky = globals::game::sky; sky && sky->sun && sky->sun->root && sky->root) {
+			const auto& sunPos = sky->sun->root->world.translate;
+			const auto& skyPos = sky->root->world.translate;
+			light = { sunPos.x - skyPos.x, sunPos.y - skyPos.y, sunPos.z - skyPos.z };
+		}
+	}
+	if (!std::isfinite(light.x) || !std::isfinite(light.y) || !std::isfinite(light.z) ||
+		light.LengthSquared() < 1.0e-6f) {
+		UpdateDirectionalSource(nullptr);
+		return;
 	}
 	light.Normalize();
 	float4 lightProjection = float4(-light.x, -light.y, -light.z, 0.0f);
@@ -309,8 +316,9 @@ void ContactShadows::Prepass()
 	float white[4] = { 1, 1, 1, 1 };
 	context->ClearUnorderedAccessViewFloat(contactShadowsTexture->uav.get(), white);
 
-	auto sky = globals::game::sky;
-	if (bendSettings.Enable && sky && sky->mode.get() == RE::Sky::Mode::kFull) {
+	// Source availability, not sky mode, decides whether the pass can run. Skyrim
+	// can expose a valid directional light in partial-sky/interior transition states.
+	if (bendSettings.Enable) {
 		DrawShadows();
 	} else {
 		UpdateDirectionalSource(nullptr);
@@ -338,10 +346,9 @@ void ContactShadows::SaveSettings(json& o_json)
 
 void ContactShadows::Reset()
 {
-	// Scene transitions may destroy the old Skyrim light before the next prepass.
-	// The source is always reacquired from the active shadow scene before use.
-	activeDirectionalSource = nullptr;
-	directionalSourceEpoch = 0;
+	// Reset is called from the presentation lifecycle, not only on cell changes.
+	// DrawShadows reacquires the source every prepass and never dereferences this
+	// diagnostic identity, so clearing it here caused false source churn each frame.
 }
 
 void ContactShadows::RestoreDefaultSettings()

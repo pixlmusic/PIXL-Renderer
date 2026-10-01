@@ -80,6 +80,17 @@ namespace
 			if (HasFurToken(evidence, token))
 				return 1.0f;
 		}
+		// Common Skyrim and armour-mod assets concatenate the material family with
+		// the garment/body part (furarmor, furboots, wolfbody). Keep this explicit
+		// instead of accepting a raw "fur" substring, which would regress the
+		// furniture/furnace false-positive protection below.
+		for (const auto token : {
+				 "furarmor", "furarmour", "furboot", "furshoe", "furglove",
+				 "furgauntlet", "furbracer", "furcloak", "furcape", "furhood",
+				 "furtrim", "furcollar", "pelts", "furs" }) {
+			if (evidence.find(token) != std::string::npos)
+				return 0.96f;
+		}
 
 		// Explicit non-fur sub-materials on otherwise furry creatures must win over
 		// directory/name evidence. Substring matching is intentional here because
@@ -104,7 +115,10 @@ namespace
 		for (const auto token : { "body", "skin", "coat", "torso", "hide" })
 			coat = coat || evidence.find(token) != std::string::npos;
 
-		return creature && coat ? 0.86f : 0.0f;
+		// Main creature textures often use only a species/variant filename. The
+		// explicit eye/claw/horn/armour exclusions above already remove unsafe
+		// sub-materials, so proven furry species can use a conservative fallback.
+		return creature ? (coat ? 0.90f : 0.82f) : 0.0f;
 	}
 
 	float ClassifyHairEvidence(std::string_view texturePath, std::string_view meshPath = {})

@@ -1,6 +1,7 @@
 #include "Common/Color.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/GBuffer.hlsli"
+#include "RadiantGrid/Common.hlsli"
 #include "HybridGI/common.hlsli"
 #include "HybridGI/worldCache.hlsli"
 
@@ -13,12 +14,72 @@ Texture2D<float4> srcPrevWorldSH0 : register(t5);
 Texture2D<float4> srcPrevWorldSH1 : register(t6);
 Texture2D<float4> srcPrevWorldSH2 : register(t7);
 Texture2D<uint> srcPrevWorldNormal : register(t8);
+StructuredBuffer<Light> srcRadiantLights : register(t9);
+StructuredBuffer<uint> srcRadiantLightList : register(t10);
+StructuredBuffer<LightGrid> srcRadiantLightGrid : register(t11);
 
 RWTexture2D<uint> outWorldMetadata : register(u0);
 RWTexture2D<float4> outWorldSH0 : register(u1);
 RWTexture2D<float4> outWorldSH1 : register(u2);
 RWTexture2D<float4> outWorldSH2 : register(u3);
 RWTexture2D<uint> outWorldNormal : register(u4);
+// Cleared to UINT_MAX each frame; select and publish are separate dispatches.
+RWTexture2D<uint> outWorldWinners : register(u5);
+
+float3 EstimateEmitterRadiance(float2 screenPos, float viewDepth, float3 renderPosition,
+    float3 worldNormal, float3 albedo)
+{
+    if (WorldCacheEmitterInjectionEnabled == 0u || RadiantParticleLightCount == 0u ||
+        WorldCacheEmitterInjectionStrength <= 0.0f)
+        return 0.0f;
+
+    const uint3 clusterSize = SharedData::radiantGridSettings.ClusterSize.xyz;
+    if (any(clusterSize == 0u))
+        return 0.0f;
+
+    float nearPlane = max(SharedData::CameraData.y, 1e-3f);
+    float farPlane = max(SharedData::CameraData.x, nearPlane + 1.0f);
+    float clusterDepth = log(max(viewDepth, nearPlane) / nearPlane) * clusterSize.z /
+        max(log(farPlane / nearPlane), 1e-4f);
+    uint3 cluster = uint3(min(uint2(screenPos * clusterSize.xy), clusterSize.xy - 1u),
+        min((uint)clusterDepth, clusterSize.z - 1u));
+    uint clusterIndex = cluster.x + clusterSize.x * cluster.y + clusterSize.x * clusterSize.y * cluster.z;
+    LightGrid grid = srcRadiantLightGrid[clusterIndex];
+
+    float3 linearAlbedo = saturate(Color::IrradianceToLinear(albedo / Color::PBRLightingScale));
+    float3 emitterRadiance = 0.0f;
+    // Emitter lights are normally sparse. Bound pathological particle scenes so
+    // cache injection cannot become more expensive than the primary lighting pass.
+    uint lightCount = min(grid.lightCount, 48u);
+    [loop] for (uint i = 0u; i < lightCount; ++i) {
+        Light light = srcRadiantLights[srcRadiantLightList[grid.offset + i]];
+        if ((light.lightFlags & LightFlags::Simple) == 0u)
+            continue;
+
+        float3 toLight = light.positionWS.xyz - renderPosition;
+        float distanceSq = dot(toLight, toLight);
+        float radius = max(light.radius, 1.0f);
+        if (distanceSq >= radius * radius)
+            continue;
+
+        float distance = sqrt(max(distanceSq, 1e-5f));
+        float3 lightDirection = toLight / distance;
+        float nDotL = saturate(dot(worldNormal, lightDirection));
+        if (nDotL <= 0.0f)
+            continue;
+
+        float normalizedDistance = saturate(distance / radius);
+        float rangeFalloff = 1.0f - normalizedDistance * normalizedDistance;
+        rangeFalloff *= rangeFalloff;
+        bool linearLight = (light.lightFlags & LightFlags::Linear) != 0u;
+        float3 lightEnergy = Color::PointLight(light.color, linearLight) *
+            max(light.fade, 0.0f) * rangeFalloff * nDotL;
+        emitterRadiance += lightEnergy * linearAlbedo;
+    }
+
+    return max(filterInf(filterNaN(emitterRadiance *
+        (GIStrength * WorldCacheEmitterInjectionStrength))), 0.0f);
+}
 
 bool ReadPreviousVoxel(float3 queryWS, uint cascade, float3 receiverWS,
     out float3 incomingRadiance, out float occupancy)
@@ -31,13 +92,9 @@ bool ReadPreviousVoxel(float3 queryWS, uint cascade, float3 receiverWS,
     uint meta = srcPrevWorldMetadata.Load(int3(coord, 0));
     if ((meta & 0x00ffffffu) != WorldCacheHash(cell, cascade))
         return false;
-    uint age = ((FrameIndex & 255u) - (meta >> 24)) & 255u;
-    float ageFade = WorldCacheAgeFade(age, WorldCacheMaxAge);
-    if (ageFade <= 0.0f)
-        return false;
-
     uint surface = srcPrevWorldNormal.Load(int3(coord, 0));
-    float confidence = UnpackWorldConfidence(surface) * ageFade;
+    uint age = ((WorldCacheClock & 255u) - (meta >> 24)) & 255u;
+    float confidence = UnpackWorldConfidence(surface) * WorldCacheAgeFade(age, WorldCacheMaxAge);
     // Confidence belongs to the sampling weight, not to emitted radiance.
     occupancy = UnpackWorldOccupancy(surface) * confidence;
     float3 fromSourceToReceiver = normalize(receiverWS - queryWS);
@@ -95,7 +152,7 @@ float3 SampleSecondaryBounce(float3 worldPosition, float3 worldNormal, float3 al
     return incoming * saturate(albedo) * (WorldCacheSecondBounceStrength / 3.14159265359f);
 }
 
-void InjectWorldVoxel(float3 worldPosition, float3 worldNormal, float3 radiance, float3 albedo, uint cascade)
+void InjectWorldVoxel(float3 worldPosition, float3 worldNormal, uint cascade, uint2 pixCoord, float viewDepth)
 {
     float cellSize = WorldCacheCellSize(cascade);
     int3 cell = int3(floor(worldPosition / cellSize));
@@ -104,8 +161,38 @@ void InjectWorldVoxel(float3 worldPosition, float3 worldNormal, float3 radiance,
 
     uint prevMeta = srcPrevWorldMetadata.Load(int3(coord, 0));
     uint prevSurface = srcPrevWorldNormal.Load(int3(coord, 0));
-    uint prevAge = ((FrameIndex & 255u) - (prevMeta >> 24)) & 255u;
+    // Age in fixed-rate cache ticks rather than rendered frames. This preserves
+    // useful off-screen lighting without making cache lifetime depend on FPS,
+    // upscaling, frame generation or foreground shader compilation stalls.
+    uint prevAge = ((WorldCacheClock & 255u) - (prevMeta >> 24)) & 255u;
     bool historyValid = ((prevMeta & 0x00ffffffu) == hash) && prevAge <= WorldCacheMaxAge;
+
+    // Prefer an observation near the voxel centre. Existing surface orientation
+    // wins ties over unrelated walls/floors without blocking refreshed history.
+    // The unique pixel index makes election independent of GPU scheduling.
+    float3 offset = frac(worldPosition / cellSize) - 0.5f;
+    uint priority = (uint)(saturate(dot(offset, offset) / 0.75f) * 30.0f);
+    if (historyValid && dot(UnpackWorldNormal(prevSurface), worldNormal) < 0.35f)
+        priority += 32u;
+    uint pixelIndex = pixCoord.y * (uint)OUT_FRAME_DIM.x + pixCoord.x;
+    uint candidate = (priority << 26) | pixelIndex;
+#ifdef WORLD_CACHE_SELECT
+    InterlockedMin(outWorldWinners[coord], candidate);
+    return;
+#else
+    if (outWorldWinners[coord] != candidate)
+        return;
+#endif
+
+    // Only the elected representative evaluates light clusters and colour.
+    // Selection itself needs depth/normals, not expensive emitter lighting.
+    float2 screenPos = (pixCoord + 0.5f) * RCP_OUT_FRAME_DIM;
+    float3 radiance = max(srcRadiance.Load(int3(pixCoord, 0)), 0.0f);
+    float3 albedo = saturate(FULLRES_LOAD(srcAlbedo, pixCoord, screenPos * (FrameDim * RcpTexDim), samplerLinearClamp));
+    // Transparent flames arrive after the opaque input. Seed from their existing
+    // clustered proxies using max, never double-add already observed lighting.
+    radiance = max(radiance, EstimateEmitterRadiance(screenPos, viewDepth,
+        worldPosition - FrameBuffer::CameraPosAdjust.xyz, worldNormal, albedo));
 
     radiance += SampleSecondaryBounce(worldPosition, worldNormal, albedo, cascade);
     radiance = max(filterInf(filterNaN(radiance)), 0.0f);
@@ -128,8 +215,17 @@ void InjectWorldVoxel(float3 worldPosition, float3 worldNormal, float3 radiance,
         float normalAgreement = dot(oldNormal, worldNormal);
         float response = saturate(WorldCacheTemporalResponse);
 
-        if (newLum > oldLum) {
-            float accepted = max(oldLum * 1.75f, oldLum + 0.35f);
+        // A new plane replaces rather than averages unrelated geometry. Election
+        // already prefers matching history when that surface remains visible.
+        if (normalAgreement < 0.35f) {
+            historyValid = false;
+        }
+
+        if (historyValid && newLum > oldLum) {
+            // The prefilter already rejects isolated radiance spikes. Permit a
+            // coherent practical light to establish within a handful of frames
+            // instead of taking seconds to emerge from a dark cached voxel.
+            float accepted = max(oldLum * 2.25f, oldLum + 0.75f);
             if (newLum > accepted && newLum > 1e-5f) {
                 float scale = accepted / newLum;
                 newSH0 *= scale;
@@ -137,62 +233,48 @@ void InjectWorldVoxel(float3 worldPosition, float3 worldNormal, float3 radiance,
                 newSH2.xw *= scale;
                 newLum = accepted;
             }
-            response *= lerp(1.0f, 0.35f, relativeChange);
-        } else {
-            response = lerp(response, max(response, 0.30f), relativeChange);
+            response = max(response * lerp(1.0f, 0.55f, relativeChange), 0.09f);
+        } else if (historyValid) {
+            // Many same-plane pixels compete for one coarse cell. Do not let a
+            // randomly darker atomic winner bypass the configured smoothing.
+            response = min(max(response, 0.06f + relativeChange * 0.04f), 0.10f);
         }
 
-        if (normalAgreement < 0.35f)
-            response = min(response, 0.04f);
+        if (historyValid) {
+            // Preserve the response slider's 60 Hz meaning at other frame rates.
+            response = 1.0f - pow(max(1.0f - response, 0.0f), WorldCacheDeltaTime * 60.0f);
+            newSH0 = lerp(oldSH0, newSH0, response);
+            newSH1 = lerp(oldSH1, newSH1, response);
+            // Chroma ratios should not be scaled as radiance energy, but are still
+            // temporally averaged to prevent hue flicker in coarse cells.
+            newSH2 = lerp(oldSH2, newSH2, response);
 
-        newSH0 = lerp(oldSH0, newSH0, response);
-        newSH1 = lerp(oldSH1, newSH1, response);
-        // Chroma ratios should not be scaled as radiance energy, but are still
-        // temporally averaged to prevent hue flicker in coarse cells.
-        newSH2 = lerp(oldSH2, newSH2, response);
-
-        if (normalAgreement > 0.35f)
             worldNormal = normalize(lerp(oldNormal, worldNormal, response));
-        else
-            worldNormal = oldNormal;
 
-        float oldConfidence = UnpackWorldConfidence(prevSurface);
-        bool firstUpdateThisFrame = (prevMeta >> 24) != (FrameIndex & 255u);
-        confidence = firstUpdateThisFrame ? min(oldConfidence + 0.20f, 1.0f) : oldConfidence;
-        if (normalAgreement < 0.35f)
-            confidence = min(confidence, max(oldConfidence, 0.20f));
+            float oldConfidence = UnpackWorldConfidence(prevSurface);
+            bool firstUpdateThisTick = (prevMeta >> 24) != (WorldCacheClock & 255u);
+            confidence = firstUpdateThisTick ? min(oldConfidence + 0.20f, 1.0f) : oldConfidence;
+        }
     }
 
-    // Claim this toroidal texel before publishing a multi-texture payload.
-    // Several visible pixels often map to one voxel; without a claim, SH0/1/2
-    // can be written by different threads and form an incoherent radiance
-    // record. The previous-frame snapshot gives every contender the same
-    // expected value, so exactly one thread wins this frame. Hash 0 is reserved
-    // as invalid and therefore doubles as a transient write lock.
-    uint writeLock = (FrameIndex & 255u) << 24;
-    uint observed;
-    InterlockedCompareExchange(outWorldMetadata[coord], prevMeta, writeLock, observed);
-    if (observed != prevMeta)
-        return;
-
-    // Publish the complete payload and make the real hash/timestamp visible
-    // last. No GI/reflection pass reads this UAV until the dispatch completes.
+    // Only the elected thread publishes. A timestamp CAS is not a lock: within
+    // one clock tick the published metadata equals the old expected value.
     outWorldSH0[coord] = newSH0;
     outWorldSH1[coord] = newSH1;
     outWorldSH2[coord] = newSH2;
     outWorldNormal[coord] = PackWorldSurface(worldNormal, 1.0f, confidence);
-    DeviceMemoryBarrier();
-    uint discarded;
-    InterlockedExchange(outWorldMetadata[coord], ((FrameIndex & 255u) << 24) | hash, discarded);
+    outWorldMetadata[coord] = ((WorldCacheClock & 255u) << 24) | hash;
 }
 
 [numthreads(8, 8, 1)]
 void main(const uint2 dispatchThreadID : SV_DispatchThreadID)
 {
     uint stride = max(WorldCacheInjectionStride, 1u);
-    uint2 jitter = uint2(FrameIndex % stride, (FrameIndex / stride) % stride);
-    uint2 pixCoord = dispatchThreadID * stride + jitter;
+    uint2 pixCoord = dispatchThreadID * stride;
     if (any(pixCoord >= uint2(OUT_FRAME_DIM)))
+        return;
+    uint pixelIndex = pixCoord.y * (uint)OUT_FRAME_DIM.x + pixCoord.x;
+    if (pixelIndex >= 0x03ffffffu)
         return;
 
     float viewDepth = READ_DEPTH(srcWorkingDepth, pixCoord);
@@ -201,17 +283,19 @@ void main(const uint2 dispatchThreadID : SV_DispatchThreadID)
 
     float2 screenPos = (pixCoord + 0.5f) * RCP_OUT_FRAME_DIM;
     float3 viewPosition = ScreenToViewPosition(screenPos, viewDepth);
-    float3 worldPosition = ViewToWorldPosition(viewPosition, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
+    float3 renderPosition = ViewToWorldPosition(viewPosition, FrameBuffer::CameraViewInverse);
+    float3 worldPosition = renderPosition + FrameBuffer::CameraPosAdjust.xyz;
     float3 cameraWS = ViewToWorldPosition(0.0f, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
+    // A toroidal atlas only represents one contiguous 32-cell window. Remote
+    // geometry outside it must not overwrite nearer cells sharing the same slot.
+    int3 farOffset = int3(floor(worldPosition / WorldCacheCellSizeFar)) -
+        int3(floor(cameraWS / WorldCacheCellSizeFar));
+    if (any(farOffset < -16) || any(farOffset >= 16))
+        return;
 
     float3 viewNormal = GBuffer::DecodeNormal(srcNormal.Load(int3(pixCoord, RES_MIP)));
     float3 worldNormal = normalize(ViewToWorldVector(viewNormal, FrameBuffer::CameraViewInverse));
-    float3 radiance = max(srcRadiance.Load(int3(pixCoord, 0)), 0.0f);
-    float3 albedo = saturate(FULLRES_LOAD(srcAlbedo, pixCoord, screenPos * (FrameDim * RcpTexDim), samplerLinearClamp));
-
-    InjectWorldVoxel(worldPosition, worldNormal, radiance, albedo, 1u);
+    InjectWorldVoxel(worldPosition, worldNormal, 1u, pixCoord, viewDepth);
     if (WorldCacheCascadeBlend(worldPosition, cameraWS) < 1.0f)
-        InjectWorldVoxel(worldPosition, worldNormal, radiance, albedo, 0u);
+        InjectWorldVoxel(worldPosition, worldNormal, 0u, pixCoord, viewDepth);
 }
-
-

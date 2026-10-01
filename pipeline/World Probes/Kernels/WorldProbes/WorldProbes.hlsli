@@ -127,6 +127,17 @@ namespace WorldProbes
 #		endif
 		}
 
+		// Interior Ambient Strength historically bounded only diffuse AmbientProbe
+		// energy. Normalized cubemap specular could therefore stay bright on rough
+		// timber/stone even when the room's diffuse ambient was deliberately low,
+		// reading as white DALC leakage. Use a square-root ceiling so polished
+		// materials retain reflections while broad environment glare follows the
+		// same interior control.
+#	if defined(AMBIENT_PROBE)
+		if (SharedData::InInterior && SharedData::ambientProbeSettings.EnableAmbientProbe)
+			finalIrradiance *= sqrt(saturate(SharedData::ambientProbeSettings.InteriorAmbientScale));
+#	endif
+
 		return finalIrradiance;
 #	endif
 	}

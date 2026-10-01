@@ -103,7 +103,7 @@ bool ReadWorldVoxelCascade(
 	uint metadata = srcWorldMetadata.Load(int3(atlasCoord, 0));
 	bool valid = (metadata & 0x00ffffffu) == WorldCacheHash(cell, cascade);
 	if (valid) {
-		uint age = ((FrameIndex & 255u) - (metadata >> 24)) & 255u;
+		uint age = ((WorldCacheClock & 255u) - (metadata >> 24)) & 255u;
 		float ageFade = WorldCacheAgeFade(age, WorldCacheMaxAge);
 		valid = ageFade > 0.0;
 		if (valid) {
@@ -128,8 +128,9 @@ bool ReadWorldVoxelCascade(
 					float sourceGate = smoothstep(-0.05f, 0.15f, sourceFacingSigned);
 					leakWeight = lerp(1.0f, receiverGate * sourceGate, leakReduction);
 				}
-				valid = leakWeight > 1e-3;
-				if (valid && readRadiance) {
+				// A back-facing/dark surface still blocks transport; rejecting its
+				// radiance must not turn the occupied voxel into a hole.
+				if (readRadiance && leakWeight > 1e-3) {
 					irradiance = WorldCacheEvaluateRadiance(
 						srcWorldSH0.Load(int3(atlasCoord, 0)),
 						srcWorldSH1.Load(int3(atlasCoord, 0)),
@@ -229,14 +230,20 @@ void SampleWorldCache(
 			if (ReadWorldVoxel(receiverPositionWS + direction * distance, receiverNormalWS, direction, cameraWS,
 					sampleIrradiance, cascade, occupancy, !foundIrradiance)) {
 				float attenuation = rcp(1.0 + distance * inverseRadius);
+				float transportWeight = occupancy * rayTransmittance;
 				if (computeDirectionalOcclusion)
 					directionalOcclusion += occupancy * rayTransmittance * attenuation;
 				rayTransmittance *= 1.0 - occupancy;
 
 				if (!foundIrradiance && any(sampleIrradiance > 1e-5)) {
-					float3 ycocg = Color::RGBToYCoCg(sampleIrradiance * attenuation * occupancy);
-					cacheY += ycocg.r * SphericalHarmonics::Evaluate(direction);
-					cacheCoCg += ycocg.gb;
+					float3 ycocg = Color::RGBToYCoCg(sampleIrradiance * attenuation * transportWeight);
+					float4 basis = SphericalHarmonics::Evaluate(direction);
+					cacheY += ycocg.r * basis;
+					// Chroma is stored as irradiance, not SH. Apply the same cosine
+					// convolution as the luminance consumer, avoiding saturated colour
+					// from an unweighted hemisphere sum beside directional luminance.
+					cacheCoCg += ycocg.gb * max(dot(basis,
+						SphericalHarmonics::EvaluateCosineLobe(receiverNormalWS)), 0.0f);
 					hitRatio += occupancy;
 					cascadeMix += cascade * occupancy;
 					foundIrradiance = true;
@@ -356,10 +363,9 @@ float AdaptiveWorldCacheConfidence(float3 viewspacePosition)
 	if ((metadata & 0x00ffffffu) != WorldCacheHash(cell, cascade))
 		return 0.0f;
 
-	uint age = ((FrameIndex & 255u) - (metadata >> 24)) & 255u;
-	float ageFade = WorldCacheAgeFade(age, WorldCacheMaxAge);
 	uint surface = srcWorldNormal.Load(int3(atlasCoord, 0));
-	return saturate(UnpackWorldConfidence(surface) * UnpackWorldOccupancy(surface) * ageFade);
+	uint age = ((WorldCacheClock & 255u) - (metadata >> 24)) & 255u;
+	return saturate(UnpackWorldConfidence(surface) * UnpackWorldOccupancy(surface) * WorldCacheAgeFade(age, WorldCacheMaxAge));
 }
 
 float ClassifyAdaptiveRayDemand(
@@ -804,7 +810,12 @@ void CalculateGI(
 
 		if (needCacheDiffuse) {
 			float screenMiss = 1.0f - saturate(giCoverage * rcpNumSlices);
-			float cacheBlend = WorldCacheStrength * lerp(0.15f, 1.0f, screenMiss);
+			// The cache is learned from the same scene radiance as SSGI. It must fill
+			// missing directions, not add a permanent second copy underneath a valid
+			// screen hit. Require both missing screen coverage and several agreeing
+			// voxel observations before the low-frequency fallback gains authority.
+			float cacheConfidence = smoothstep(0.06f, 0.45f, cacheHitRatio);
+			float cacheBlend = WorldCacheStrength * smoothstep(0.05f, 0.90f, screenMiss) * cacheConfidence;
 			radianceY += cacheY * cacheBlend;
 			radianceCoCg += cacheCoCg * cacheBlend * GISaturation;
 		}
@@ -831,7 +842,9 @@ void CalculateGI(
 			debugColor = lerp(float3(0.0, 0.7, 1.0), float3(1.0, 0.1, 0.7), cacheCascadeMix) * max(cacheHitRatio, 0.15);
 		else if (DebugView == 7u) {
 			// Display the cache independently of its artistic contribution slider.
-			float3 cacheRGB = max(Color::YCoCgToRGB(float3(cacheY.x, cacheCoCg)), 0.0);
+			float3 debugNormalWS = normalize(ViewToWorldVector(viewspaceNormal, FrameBuffer::CameraViewInverse));
+			float cacheLuminance = max(dot(cacheY, SphericalHarmonics::EvaluateCosineLobe(debugNormalWS)), 0.0f);
+			float3 cacheRGB = max(Color::YCoCgToRGB(float3(cacheLuminance, cacheCoCg)), 0.0);
 			debugColor = 1.0 - exp(-cacheRGB);
 		}
 		else if (DebugView == 8u)

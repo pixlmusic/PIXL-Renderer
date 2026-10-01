@@ -102,12 +102,12 @@ inline bool ReadReflectionVoxelCascade(float3 queryWS, float3 receiverWS, uint c
     uint meta = srcWorldMetadata.Load(int3(coord, 0));
     bool valid = (meta & 0x00ffffffu) == WorldCacheHash(cell, cascade);
     if (valid) {
-        uint age = ((FrameIndex & 255u) - (meta >> 24)) & 255u;
-        float ageFade = WorldCacheAgeFade(age, WorldCacheMaxAge);
-        valid = ageFade > 0.0f;
+		uint age = ((WorldCacheClock & 255u) - (meta >> 24)) & 255u;
+		float ageFade = WorldCacheAgeFade(age, WorldCacheMaxAge);
+		valid = ageFade > 0.0f;
         if (valid) {
             uint surface = srcWorldNormal.Load(int3(coord, 0));
-            float confidence = UnpackWorldConfidence(surface) * ageFade;
+			float confidence = UnpackWorldConfidence(surface) * ageFade;
             occupancy = UnpackWorldOccupancy(surface) * confidence;
 
             float3 sourceToReceiver = normalize(receiverWS - queryWS);
@@ -115,8 +115,8 @@ inline bool ReadReflectionVoxelCascade(float3 queryWS, float3 receiverWS, uint c
             float sourceFacingSigned = dot(sourceNormal, sourceToReceiver);
             float sourceGate = smoothstep(-0.05f, 0.15f, sourceFacingSigned);
             float leakWeight = lerp(1.0f, sourceGate, saturate(WorldCacheLeakReduction));
-            valid = occupancy > (1.0f / 255.0f) && leakWeight > 1e-3f;
-            if (valid) {
+            valid = occupancy > (1.0f / 255.0f);
+            if (valid && leakWeight > 1e-3f) {
                 radiance = WorldCacheEvaluateRadiance(
                     srcWorldSH0.Load(int3(coord, 0)), srcWorldSH1.Load(int3(coord, 0)), srcWorldSH2.Load(int3(coord, 0)),
                     sourceToReceiver) * leakWeight;

@@ -5,13 +5,16 @@
 #include "../I18n/I18n.h"
 #include "Deferred.h"
 #include "Modules/CameraSuite.h"
+#include "Modules/AmbientProbe.h"
 #include "Modules/ImageReconstruction.h"
 #include "Modules/PixelCapture.h"
 #include "Modules/LinearLightCore.h"
+#include "Modules/RadiantGrid.h"
 #include "Globals.h"
 #include "Menu.h"
 #include "State.h"
 #include "MaterialForge.h"
+#include "MaterialForge/PhysicalMaterialRegistry.h"
 #include "MaterialLayers.h"
 #include "Renderer/QualityProfiles.h"
 #include "Util.h"
@@ -463,6 +466,15 @@ void HybridGI::DrawSettings()
 				BeginSettingRow("World GI Coverage", "Maximum useful world-space radius around the camera. Increasing this extends continuity but makes the fixed cache represent a larger region.");
 				ImGui::SliderFloat("##world_radius", &settings.WorldCacheRadius, 256.0f, 4096.0f, "%.0f units", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
 
+				BeginSettingRow("Fire & Emissive Injection", "Seeds transparent torch, candle, brazier and glow-emitter lighting into visible world-cache surfaces using Radiant Grid. This fills energy that is absent from the opaque SSGI input.");
+				PIXLUI::Toggle("##emitter_injection", &settings.EnableEmitterInjection);
+
+				BeginSettingRow("Emitter Bounce Strength", "Controls the conservative local-light floor used for transparent emitters. Existing opaque scene radiance is never added twice.");
+				{
+					auto emitterGuard = Util::DisableGuard(!settings.EnableEmitterInjection);
+					ImGui::SliderFloat("##emitter_injection_strength", &settings.EmitterInjectionStrength, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+				}
+
 				BeginSettingRow("Secondary Bounce", "Propagates a bounded amount of cached irradiance into neighbouring cells, carrying light farther around corners.");
 				PIXLUI::Toggle("##second_bounce", &settings.EnableWorldCacheSecondBounce);
 
@@ -664,9 +676,6 @@ void HybridGI::DrawSettings()
 					BeginSettingRow("Cone Trace Steps", "Maximum voxel steps used when sampling world irradiance/occlusion. Higher values see farther through the cache but cost more.");
 					Util::UIntSlider("##trace_steps", &settings.WorldCacheTraceSteps, 2, 6, "%d", ImGuiSliderFlags_AlwaysClamp);
 
-					BeginSettingRow("Cache Lifetime", "Maximum age of a voxel before it is considered stale. Longer lifetimes preserve off-screen lighting; shorter lifetimes react faster to scene changes.");
-					Util::UIntSlider("##cache_age", &settings.WorldCacheMaxAge, 1, 120, "%d frames", ImGuiSliderFlags_AlwaysClamp);
-
 					BeginSettingRow("Near Voxel Size", "World-space size of high-detail cache cells around the camera. Smaller cells preserve more detail but cover less space.");
 					ImGui::SliderFloat("##near_voxel", &settings.WorldCacheCellSizeNear, 64.0f, 256.0f, "%.0f units", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
 
@@ -788,6 +797,7 @@ void HybridGI::UpdateDiagnosticCapture()
 		Menu::GetSingleton()->IsEnabled = false;
 		diagnosticCaptureIndex = 0;
 		diagnosticRecords.clear();
+		diagnosticFrozenFrameIndex = globals::state->frameCount;
 		diagnosticCaptureActive = true;
 		diagnosticWaitingForScreenshot = false;
 		ApplyDiagnosticView(0);
@@ -884,7 +894,7 @@ void HybridGI::FinishDiagnosticCapture(bool complete)
 void HybridGI::WriteDiagnosticManifest(bool complete) const
 {
 	json root;
-	root["schemaVersion"] = 3;
+	root["schemaVersion"] = 5;
 	root["product"] = "PIXL PBR Rendering Engine";
 	root["capture"] = {
 		{ "complete", complete },
@@ -959,6 +969,27 @@ void HybridGI::WriteDiagnosticManifest(bool complete) const
 		{ "ggxMultiScatter", globals::pipeline::materialForge.settings.EnableGGXMultiScatter },
 		{ "ggxMultiScatterStrength", globals::pipeline::materialForge.settings.GGXMultiScatterStrength }
 	};
+	const auto materialDiagnostics = PhysicalMaterial::Registry::GetSingleton().GetDiagnostics();
+	const auto& ambientProbe = globals::pipeline::ambientProbe;
+	const auto& radiantGrid = globals::pipeline::radiantGrid;
+	root["settings"]["ambientProbe"] = {
+		{ "enabled", ambientProbe.settings.EnableAmbientProbe != 0u },
+		{ "disabledForCurrentScene", ambientProbe.IsDisabledForCurrentScene() },
+		{ "dalcAmount", ambientProbe.settings.DALCAmount },
+		{ "dalcMode", ambientProbe.settings.DALCMode },
+		{ "interiorAmbientScale", ambientProbe.settings.InteriorAmbientScale },
+		{ "disableInInteriors", ambientProbe.settings.DisableInInteriors }
+	};
+	root["classification"] = {
+		{ "physicalMaterialCount", materialDiagnostics.materialCount },
+		{ "automaticFurDescriptorCount", materialDiagnostics.furMaterialCount },
+		{ "invalidPhysicalDescriptorCount", materialDiagnostics.invalidDescriptorCount },
+		{ "radiantParticleEmitterCount", radiantGrid.particleEmitterLightCount },
+		{ "radiantGlowMappedEmitterCount", radiantGrid.glowMappedEmitterLightCount },
+		{ "radiantEmitterBufferStart", radiantGrid.particleLightBufferStart },
+		{ "radiantEmitterBufferCount", radiantGrid.particleLightBufferCount },
+		{ "emissiveViewScope", "opaque lighting geometry only; effect particles and embers are late transparent passes represented to HybridGI by RadiantGrid emitter proxies" }
+	};
 	root["runtime"] = {
 		{ "featureLoaded", loaded },
 		{ "shadersOK", ShadersOK() },
@@ -966,6 +997,13 @@ void HybridGI::WriteDiagnosticManifest(bool complete) const
 		{ "cacheConfidenceMaturation", true },
 		{ "asymmetricBrightOutlierRejection", true },
 		{ "visualizationInjectionIsolated", true },
+		{ "diagnosticWorldCacheClockFrozen", true },
+		{ "persistentWorldCache", true },
+		{ "frameAgeExpiryEnabled", true },
+		{ "worldCacheClockHz", 8.0f },
+		{ "worldCacheDeterministicElection", true },
+		{ "worldCacheFrameRateIndependentResponse", true },
+		{ "worldCacheBoundedToroidalWindow", true },
 		{ "temporalHistoryResetAfterVisualization", true },
 		{ "effectiveDepthFadeNear", std::clamp(settings.DepthFadeRange.x, 1e4f, std::clamp(settings.DepthFadeRange.y, 1.01e4f, 5e4f) - 100.f) },
 		{ "effectiveDepthFadeFar", std::clamp(settings.DepthFadeRange.y, 1.01e4f, 5e4f) },
@@ -977,9 +1015,10 @@ void HybridGI::WriteDiagnosticManifest(bool complete) const
 		{ "worldVoxelAtlasHeight", texWorldCacheMetadata ? texWorldCacheMetadata->desc.Height : 0 },
 		{ "worldVoxelSHOrder", 2 },
 		{ "worldVoxelSHCoefficients", 9 },
-		{ "horizonMaskBins", 64 },
-		{ "horizonMaskStorage", "uint2-sm5" },
-		{ "worldVoxelStorageBytes", 4194304 },
+		{ "horizonMaskBins", 32 },
+		{ "horizonMaskStorage", "uint-sm5" },
+		{ "worldVoxelStorageBytes", 4456448 },
+		{ "worldVoxelElectionBytes", 262144 },
 		{ "worldVoxelSnapshotCopyBytesPerFrame", 2097152 },
 		{ "worldCacheSecondBounce", settings.EnableWorldCacheSecondBounce },
 		{ "worldCacheSecondBounceStrength", settings.WorldCacheSecondBounceStrength },
@@ -1035,6 +1074,7 @@ void HybridGI::WriteDiagnosticManifest(bool complete) const
 		recordBuffer(std::format("bentVisibility{}", index), texBentVisibility[index].get());
 	}
 	recordBuffer("worldMetadata", texWorldCacheMetadata.get());
+	recordBuffer("worldWinners", texWorldCacheWinners.get());
 	recordBuffer("worldSH0", texWorldCacheSH0.get());
 	recordBuffer("worldSH1", texWorldCacheSH1.get());
 	recordBuffer("worldSH2", texWorldCacheSH2.get());
@@ -1054,6 +1094,7 @@ void HybridGI::WriteDiagnosticManifest(bool complete) const
 		{ "denoiseAtrous", blurAtrousCompute != nullptr },
 		{ "upsample", upsampleCompute != nullptr },
 		{ "voxelInjection", worldCacheInjectCompute != nullptr },
+		{ "voxelSelection", worldCacheSelectCompute != nullptr },
 		{ "voxelDecay", worldCacheDecayCompute != nullptr },
 		{ "hybridReflections", hybridReflectionCompute != nullptr },
 		{ "hybridReflectionDenoise", hybridReflectionDenoiseCompute != nullptr }
@@ -1148,6 +1189,8 @@ void HybridGI::LoadSettings(json& o_json)
 	settings.ContactDepthBias = o_json.value("ContactDepthBias", 0.08f);
 	settings.EnableAdaptiveRayAllocation = o_json.value("EnableAdaptiveRayAllocation", false);
 	settings.AdaptiveRayMinimum = o_json.value("AdaptiveRayMinimum", 0.50f);
+	settings.EnableEmitterInjection = o_json.value("EnableEmitterInjection", true);
+	settings.EmitterInjectionStrength = o_json.value("EmitterInjectionStrength", 0.65f);
 	settings.ResolutionMode = std::clamp(settings.ResolutionMode, 0, 2);
 	settings.DebugView = std::min(settings.DebugView, 13u);
 	settings.WorldCacheTraceSteps = std::clamp(settings.WorldCacheTraceSteps, 2u, 6u);
@@ -1173,6 +1216,7 @@ void HybridGI::LoadSettings(json& o_json)
 	settings.ContactDepthRadius = std::clamp(settings.ContactDepthRadius, 24.0f, 256.0f);
 	settings.ContactDepthBias = std::clamp(settings.ContactDepthBias, 0.0f, 0.35f);
 	settings.AdaptiveRayMinimum = std::clamp(settings.AdaptiveRayMinimum, 0.35f, 1.0f);
+	settings.EmitterInjectionStrength = std::clamp(settings.EmitterInjectionStrength, 0.0f, 1.5f);
 	settings.DepthFadeRange.y = std::clamp(settings.DepthFadeRange.y, 1.01e4f, 5e4f);
 	settings.DepthFadeRange.x = std::clamp(settings.DepthFadeRange.x, 1e4f, settings.DepthFadeRange.y - 100.f);
 
@@ -1188,6 +1232,8 @@ void HybridGI::SaveSettings(json& o_json)
 	o_json["ContactDepthBias"] = settings.ContactDepthBias;
 	o_json["EnableAdaptiveRayAllocation"] = settings.EnableAdaptiveRayAllocation;
 	o_json["AdaptiveRayMinimum"] = settings.AdaptiveRayMinimum;
+	o_json["EnableEmitterInjection"] = settings.EnableEmitterInjection;
+	o_json["EmitterInjectionStrength"] = settings.EmitterInjectionStrength;
 }
 
 RE::BSEventNotifyControl HybridGI::MenuOpenCloseEventHandler::ProcessEvent(
@@ -1427,6 +1473,7 @@ void HybridGI::SetupResources()
 			return texture;
 		};
 		texWorldCacheMetadata = createWorldCacheUintTexture("PIXL HybridGI::WorldMetadata");
+		texWorldCacheWinners = createWorldCacheUintTexture("PIXL HybridGI::WorldWinners");
 		texWorldCacheNormal = createWorldCacheUintTexture("PIXL HybridGI::WorldNormal");
 		texWorldCachePreviousMetadata = createWorldCacheUintTexture("PIXL HybridGI::Previous WorldMetadata");
 		texWorldCachePreviousNormal = createWorldCacheUintTexture("PIXL HybridGI::Previous WorldNormal");
@@ -1520,7 +1567,7 @@ void HybridGI::ClearShaderCache()
 {
 	static const std::vector<winrt::com_ptr<ID3D11ComputeShader>*> shaderPtrs = {
 		&prefilterDepthsCompute, &prefilterRadianceCompute, &prefilterNormalCompute, &radianceDisoccCompute, &giCompute, &blurCompute, &blurAtrousCompute, &upsampleCompute,
-		&worldCacheInjectCompute, &worldCacheDecayCompute, &hybridReflectionCompute, &hybridReflectionDenoiseCompute
+		&worldCacheInjectCompute, &worldCacheSelectCompute, &worldCacheDecayCompute, &hybridReflectionCompute, &hybridReflectionDenoiseCompute
 	};
 
 	for (auto shader : shaderPtrs)
@@ -1549,6 +1596,7 @@ void HybridGI::CompileComputeShaders()
 			{ &blurAtrousCompute, "blur.cs.hlsl", { { "ATROUS_STEP_2", "" } } },
 			{ &upsampleCompute, "upsample.cs.hlsl", {} },
 			{ &worldCacheInjectCompute, "worldCacheInject.cs.hlsl", {} },
+			{ &worldCacheSelectCompute, "worldCacheInject.cs.hlsl", { { "WORLD_CACHE_SELECT", "" } } },
 			{ &worldCacheDecayCompute, "worldCacheDecay.cs.hlsl", {} },
 			{ &hybridReflectionCompute, "hybridReflection.cs.hlsl", {} },
 			{ &hybridReflectionDenoiseCompute, "hybridReflectionDenoise.cs.hlsl", {} },
@@ -1587,46 +1635,73 @@ bool HybridGI::ShadersOK() const
 		texAccumFrames[0] && texAccumFrames[1] && texAo[0] && texAo[1] &&
 		texIlY[0] && texIlY[1] && texIlCoCg[0] && texIlCoCg[1] &&
 		texGiSpecular[0] && texGiSpecular[1] && texBentVisibility[0] && texBentVisibility[1] &&
-		texWorldCacheMetadata && texWorldCacheSH0 && texWorldCacheSH1 && texWorldCacheSH2 && texWorldCacheNormal &&
+		texWorldCacheMetadata && texWorldCacheWinners && texWorldCacheSH0 && texWorldCacheSH1 && texWorldCacheSH2 && texWorldCacheNormal &&
 		texWorldCachePreviousMetadata && texWorldCachePreviousSH0 && texWorldCachePreviousSH1 &&
 		texWorldCachePreviousSH2 && texWorldCachePreviousNormal;
 
 	return coreResources && prefilterDepthsCompute && prefilterRadianceCompute && prefilterNormalCompute &&
 	       radianceDisoccCompute && giCompute && blurCompute && blurAtrousCompute && upsampleCompute &&
-	       worldCacheInjectCompute && worldCacheDecayCompute &&
+	       worldCacheInjectCompute && worldCacheSelectCompute && worldCacheDecayCompute &&
 	       (!settings.EnableExperimentalSpecularGI || (hybridReflectionCompute && (!settings.EnableBlur || hybridReflectionDenoiseCompute)));
 }
 
 void HybridGI::UpdateSB()
 {
-	if (!texRadiance || !ssgiCB || !globals::game::shadowState || !globals::state)
+	if (!texRadiance || !ssgiCB || !globals::state)
 		return;
 
 	float2 res = { (float)texRadiance->desc.Width, (float)texRadiance->desc.Height };
 	float2 dynres = Util::ConvertToDynamic(res);
 	dynres = { std::max(floor(dynres.x), 1.0f), std::max(floor(dynres.y), 1.0f) };
 
-	static float4x4 prevInvView = {};
-
 	HybridGICB data{};
 	{
 		{
-			auto eye = globals::game::shadowState->GetRuntimeData().cameraData.getEye();
-			const float projectionX = std::abs(eye.projMat(0, 0)) > 1e-6f ? eye.projMat(0, 0) : 1.0f;
-			const float projectionY = std::abs(eye.projMat(1, 1)) > 1e-6f ? eye.projMat(1, 1) : 1.0f;
+			// Use the exact camera matrices uploaded for this frame. shadowState can
+			// lag or retain the world camera while Skyrim switches to first person,
+			// which reprojected GI into unrelated surfaces and appeared as a broad
+			// unowned light. Keeping projection and inverse view on one authority also
+			// matches the depth/motion data consumed by Image Reconstruction.
+			const auto& frameBuffer = globals::game::frameBufferCached;
+			const auto& projection = frameBuffer.GetCameraProj();
+			const auto& currentInverseView = frameBuffer.GetCameraViewInverse();
+			const float projectionX = std::abs(projection._11) > 1e-6f ? projection._11 : 1.0f;
+			const float projectionY = std::abs(projection._22) > 1e-6f ? projection._22 : 1.0f;
 
-			data.PrevInvViewMat = prevInvView;
+			data.PrevInvViewMat = hasPreviousFrameInverseView ? previousFrameInverseView : currentInverseView;
 			data.NDCToViewMul = { 2.0f / projectionX, -2.0f / projectionY, 0.0f, 0.0f };
 			data.NDCToViewAdd = { -1.0f / projectionX, 1.0f / projectionY, 0.0f, 0.0f };
 
-			prevInvView = eye.viewMat.Invert();
+			previousFrameInverseView = currentInverseView;
+			hasPreviousFrameInverseView = true;
 		}
 
 		data.TexDim = res;
 		data.RcpTexDim = float2(1.0f) / res;
 		data.FrameDim = dynres;
 		data.RcpFrameDim = float2(1.0f) / dynres;
-		data.FrameIndex = globals::state->frameCount;
+		// Keep the world-cache age and stochastic sequence stable while a diagnostic
+		// set is captured. The set is long enough to cross the cache's 8-bit frame
+		// stamp period, and injection is intentionally isolated from debug colours.
+		data.FrameIndex = diagnosticCaptureActive ? diagnosticFrozenFrameIndex : globals::state->frameCount;
+
+		// Cache lifetime is measured at a fixed eight ticks per second instead of
+		// rendered frames. This keeps persistence consistent at 30/60/120 FPS and
+		// prevents foreground shader compilation from stretching a 72-frame cache
+		// into the reported 10-15 second fade/pop cycle. Clamp exceptional stalls so
+		// one compilation hitch cannot expire the complete cache in a single frame.
+		const float rawDelta = globals::game::deltaTime ? *globals::game::deltaTime : static_cast<float>(RE::GetSecondsSinceLastFrame());
+		data.WorldCacheDeltaTime = std::isfinite(rawDelta) ? std::clamp(rawDelta, 0.0f, 0.25f) : 0.0f;
+		if (!diagnosticCaptureActive && globals::pipeline::materialForge.settings.LegacyPhysicalDebugMode == 0u) {
+			const float frameDelta = data.WorldCacheDeltaTime;
+			worldCacheClockAccumulator += frameDelta * 8.0f;
+			const uint elapsedTicks = static_cast<uint>(worldCacheClockAccumulator);
+			if (elapsedTicks > 0u) {
+				worldCacheClock += elapsedTicks;
+				worldCacheClockAccumulator -= static_cast<float>(elapsedTicks);
+			}
+		}
+		data.WorldCacheClock = worldCacheClock;
 
 		data.NumSlices = std::clamp(settings.NumSlices, 1u, 10u);
 		data.NumSteps = std::clamp(settings.NumSteps, 1u, 20u);
@@ -1671,6 +1746,14 @@ void HybridGI::UpdateSB()
 		data.DebugView = std::min(settings.DebugView, 13u);
 		data.DebugGain = std::clamp(settings.DebugGain, 0.1f, 16.0f);
 		data.WorldCacheTemporalResponse = std::clamp(settings.WorldCacheTemporalResponse, 0.02f, 1.0f);
+		auto& radiantGrid = globals::pipeline::radiantGrid;
+		const bool emitterInjectionReady = settings.EnableEmitterInjection && radiantGrid.loaded &&
+			radiantGrid.lights && radiantGrid.particleLightBufferCount > 0;
+		data.WorldCacheEmitterInjectionEnabled = emitterInjectionReady ? 1u : 0u;
+		data.RadiantParticleLightStart = emitterInjectionReady ? radiantGrid.particleLightBufferStart : 0u;
+		data.RadiantParticleLightCount = emitterInjectionReady ?
+			std::min(radiantGrid.particleLightBufferCount, RadiantGrid::MAX_LIGHTS - data.RadiantParticleLightStart) : 0u;
+		data.WorldCacheEmitterInjectionStrength = std::clamp(settings.EmitterInjectionStrength, 0.0f, 1.5f);
 		data.WorldCacheReflectionEnabled = settings.EnableVoxelReflections ? 1u : 0u;
 		data.WorldCacheReflectionStrength = std::clamp(settings.VoxelReflectionStrength, 0.0f, 1.5f);
 		data.WorldCacheReflectionRoughnessCutoff = std::clamp(settings.VoxelReflectionRoughnessCutoff, 0.2f, 1.0f);
@@ -1745,6 +1828,33 @@ void HybridGI::DrawHybridGI()
 		!globals::game::graphicsState || !globals::deferred || !globals::profiler)
 		return;
 
+	// A perspective transition changes both the visible geometry and Skyrim's
+	// near-camera render path. Screen history must restart, while the validated
+	// world-space cache remains useful. Only an interior or worldspace transition
+	// invalidates the cache: clearing it at every exterior cell boundary would
+	// defeat the point of persistent world-space lighting while travelling.
+	const auto* playerCamera = RE::PlayerCamera::GetSingleton();
+	const bool firstPerson = playerCamera && playerCamera->IsInFirstPerson();
+	auto* player = RE::PlayerCharacter::GetSingleton();
+	auto* parentCell = player ? player->GetParentCell() : nullptr;
+	const bool interior = parentCell && parentCell->IsInteriorCell();
+	const auto sceneIdentity = reinterpret_cast<std::uintptr_t>(
+		interior ? static_cast<void*>(parentCell) : static_cast<void*>(player ? player->GetWorldspace() : nullptr));
+	if (hasCameraSceneHistory) {
+		if (firstPerson != previousFirstPerson) {
+			queuedResetTemporalHistory = true;
+			hasPreviousFrameInverseView = false;
+		}
+		if (sceneIdentity != previousSceneIdentity || interior != previousInterior) {
+			queuedResetHistory = true;
+			hasPreviousFrameInverseView = false;
+		}
+	}
+	previousFirstPerson = firstPerson;
+	previousSceneIdentity = sceneIdentity;
+	previousInterior = interior;
+	hasCameraSceneHistory = true;
+
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "HybridGI");
 
@@ -1776,6 +1886,7 @@ void HybridGI::DrawHybridGI()
 	};
 
 	if (queuedResetHistory.exchange(false)) {
+		hasPreviousFrameInverseView = false;
 		clearTemporalHistory();
 		const UINT clearValue[4] = { 0, 0, 0, 0 };
 		context->ClearUnorderedAccessViewUint(texWorldCacheMetadata->uav.get(), clearValue);
@@ -1929,8 +2040,8 @@ void HybridGI::DrawHybridGI()
 
 	// GI
 	{
-		const bool visualizationActive = diagnosticCaptureActive || settings.DebugView != 0u || materialDebugMode != 0u;
-		if (settings.EnableWorldCache && !visualizationActive) {
+		const bool cacheInjectionIsolated = diagnosticCaptureActive || materialDebugMode != 0u;
+		if (settings.EnableWorldCache && !cacheInjectionIsolated) {
 			TracyD3D11Zone(globals::state->tracyCtx, "HybridGI - PIXL World Cache Inject");
 			resetViews();
 			// Snapshot the complete cache before sparse injection. The shader reads
@@ -1950,23 +2061,43 @@ void HybridGI::DrawHybridGI()
 			srvs.at(6) = texWorldCachePreviousSH1->srv.get();
 			srvs.at(7) = texWorldCachePreviousSH2->srv.get();
 			srvs.at(8) = texWorldCachePreviousNormal->srv.get();
+			auto& radiantGrid = globals::pipeline::radiantGrid;
+			srvs.at(9) = settings.EnableEmitterInjection && radiantGrid.loaded && radiantGrid.lights ?
+				radiantGrid.lights->srv.get() : nullptr;
+			srvs.at(10) = settings.EnableEmitterInjection && radiantGrid.loaded && radiantGrid.lightIndexList ?
+				radiantGrid.lightIndexList->srv.get() : nullptr;
+			srvs.at(11) = settings.EnableEmitterInjection && radiantGrid.loaded && radiantGrid.lightGrid ?
+				radiantGrid.lightGrid->srv.get() : nullptr;
 			uavs.at(0) = texWorldCacheMetadata->uav.get();
 			uavs.at(1) = texWorldCacheSH0->uav.get();
 			uavs.at(2) = texWorldCacheSH1->uav.get();
 			uavs.at(3) = texWorldCacheSH2->uav.get();
 			uavs.at(4) = texWorldCacheNormal->uav.get();
+			uavs.at(5) = texWorldCacheWinners->uav.get();
+			const uint emptyWinners[4] = { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX };
+			context->ClearUnorderedAccessViewUint(texWorldCacheWinners->uav.get(), emptyWinners);
 			context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 			context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
-			context->CSSetShader(worldCacheInjectCompute.get(), nullptr, 0);
 			const uint stride = std::clamp(settings.WorldCacheInjectionStride, 1u, 8u);
 			const uint injectWidth = (internalRes[0] + stride - 1u) / stride;
 			const uint injectHeight = (internalRes[1] + stride - 1u) / stride;
+			context->CSSetShader(worldCacheSelectCompute.get(), nullptr, 0);
+			globals::profiler->BeginPass("HybridGI::WorldCacheSelect");
+			context->Dispatch((injectWidth + 7u) >> 3, (injectHeight + 7u) >> 3, 1);
+			globals::profiler->EndPass();
+			// Separate dispatches establish visibility of the completed election.
+			// Exactly one representative may publish each multi-texture SH record.
+			ID3D11UnorderedAccessView* nullWinner = nullptr;
+			context->CSSetUnorderedAccessViews(5, 1, &nullWinner, nullptr);
+			context->CSSetUnorderedAccessViews(5, 1, &uavs.at(5), nullptr);
+			context->CSSetShader(worldCacheInjectCompute.get(), nullptr, 0);
 			globals::profiler->BeginPass("HybridGI::WorldCacheInject");
 			context->Dispatch((injectWidth + 7u) >> 3, (injectHeight + 7u) >> 3, 1);
 			globals::profiler->EndPass();
 
-			// Expire stale toroidal cells before any GI/reflection read. The 8-bit
-			// frame stamp otherwise aliases every 256 frames and can resurrect old light.
+			// Invalidate entries after their fixed-time lifetime before the GI and
+			// reflection readers run. This prevents 8-bit timestamp wraparound from
+			// resurrecting stale illumination while remaining independent of FPS.
 			resetViews();
 			uavs.at(0) = texWorldCacheMetadata->uav.get();
 			context->CSSetUnorderedAccessViews(0, 1, uavs.data(), nullptr);

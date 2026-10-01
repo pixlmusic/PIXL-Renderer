@@ -42,7 +42,16 @@ float ClampDepth(float depth)
 float DepthMIPFilter(float depth0, float depth1, float depth2, float depth3)
 {
 #ifdef LINEAR_FILTER
-	return (depth0 + depth1 + depth2 + depth3) * 0.25;
+	float minDepth = min(min(depth0, depth1), min(depth2, depth3));
+	float maxDepth = max(max(depth0, depth1), max(depth2, depth3));
+	float averageDepth = (depth0 + depth1 + depth2 + depth3) * 0.25;
+	// Averaging foreground and background depth manufactures a surface in empty
+	// space. Hierarchical GI rays then collect radiance from that phantom plane,
+	// especially around doorways and first-person camera transitions. Preserve
+	// smooth planar depth, but choose the conservative real surface whenever a
+	// 2x2 footprint crosses a discontinuity.
+	float discontinuityThreshold = max(minDepth * 0.018f, 6.0f);
+	return (maxDepth - minDepth) > discontinuityThreshold ? minDepth : averageDepth;
 #elif defined(MAX_FILTER)
 	return max(max(depth0, depth1), max(depth2, depth3));
 #elif defined(MIN_FILTER)

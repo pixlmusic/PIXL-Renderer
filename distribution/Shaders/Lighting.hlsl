@@ -4282,7 +4282,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #	if defined(CONTACT_SHADOWS) && defined(DEFERRED)
 	if (!pixlGroundRaisedShell &&
-		!SharedData::InInterior &&
+		(!SharedData::InInterior || SharedData::HasDirectionalShadows) &&
 		dirLightAngle >= 0.0)
 	{
 		float pixlContactShadow = ContactShadows::GetScreenSpaceShadow(
@@ -4752,8 +4752,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			useLocalContactShadow &&
 			lightAngle > 0.0f)
 		{
+			// Procedural particle/glow emitters have no Skyrim shadow-map slice, but
+			// they can still cast bounded depth-aware contact shadows. Keep the reach
+			// proportional to the resolved emitter without turning this into a long
+			// screen-space ray for every clustered light.
 			float heldEmitterShadowLength =
-				length(light.positionWS.xyz) < 280.0f ? 112.0f : 0.0f;
+				(light.lightFlags & RadiantGrid::LightFlags::Simple) != 0
+					? clamp(light.radius * 0.20f, 72.0f, 160.0f)
+					: (length(light.positionWS.xyz) < 280.0f ? 112.0f : 0.0f);
 			lightShadow *= ContactShadows::GetLocalContactShadow(
 				input.WorldPosition.xyz, worldNormal.xyz, normalizedLightDirection,
 				lightDist, heldEmitterShadowLength);

@@ -132,6 +132,8 @@ public:
 		float WorldCacheRadius = 1536.f;
 		float WorldCacheLeakReduction = 0.82f;
 		float WorldCacheTemporalResponse = 0.07f;
+		bool EnableEmitterInjection = true;
+		float EmitterInjectionStrength = 0.65f;
 		bool EnableWorldCacheSecondBounce = true;
 		float WorldCacheSecondBounceStrength = 0.20f;
 		uint WorldCacheInjectionStride = 2;
@@ -259,10 +261,21 @@ public:
 		// Append-only 8x8 adaptive ray-classification controls. Enablement is a
 		// shader permutation; the CB only carries the retained-work floor.
 		float AdaptiveRayMinimum;
-		float3 pad3;
+		// Fixed-rate cache clock. This occupies former padding, preserving the
+		// complete constant-buffer ABI while decoupling cache lifetime from FPS.
+		uint WorldCacheClock;
+		float WorldCacheDeltaTime;
+		float pad3;
+
+		// Authoritative RadiantGrid emitter range used to fill transparent
+		// torch/fire energy missing from the opaque screen-radiance source.
+		uint WorldCacheEmitterInjectionEnabled;
+		uint RadiantParticleLightStart;
+		uint RadiantParticleLightCount;
+		float WorldCacheEmitterInjectionStrength;
 	};
 	STATIC_ASSERT_ALIGNAS_16(HybridGICB);
-	static_assert(sizeof(HybridGICB) == 400, "HybridGICB must match the PIXL Rendering vNext Shader Model 5 layout.");
+	static_assert(sizeof(HybridGICB) == 416, "HybridGICB must match the PIXL Rendering vNext Shader Model 5 layout.");
 	static_assert(offsetof(HybridGICB, WorldCacheEnabled) == 216);
 	static_assert(offsetof(HybridGICB, WorldCacheTraceSteps) == 228);
 	static_assert(offsetof(HybridGICB, WorldCacheDirectionalOcclusionEnabled) == 256);
@@ -274,6 +287,9 @@ public:
 	static_assert(offsetof(HybridGICB, ReflectionFireflyClamp) == 352);
 	static_assert(offsetof(HybridGICB, ContactDepthEnabled) == 368);
 	static_assert(offsetof(HybridGICB, AdaptiveRayMinimum) == 384);
+	static_assert(offsetof(HybridGICB, WorldCacheClock) == 388);
+	static_assert(offsetof(HybridGICB, WorldCacheDeltaTime) == 392);
+	static_assert(offsetof(HybridGICB, WorldCacheEmitterInjectionEnabled) == 400);
 	eastl::unique_ptr<ConstantBuffer> ssgiCB;
 
 	eastl::unique_ptr<Texture2D> texNoise = nullptr;
@@ -294,6 +310,7 @@ public:
 	uint outputSpecIdx = 0;
 	uint outputBentIdx = 0;
 	eastl::unique_ptr<Texture2D> texWorldCacheMetadata = nullptr;
+	eastl::unique_ptr<Texture2D> texWorldCacheWinners = nullptr;
 	eastl::unique_ptr<Texture2D> texWorldCacheSH0 = nullptr;
 	eastl::unique_ptr<Texture2D> texWorldCacheSH1 = nullptr;
 	eastl::unique_ptr<Texture2D> texWorldCacheSH2 = nullptr;
@@ -331,11 +348,21 @@ public:
 	winrt::com_ptr<ID3D11ComputeShader> blurAtrousCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> upsampleCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> worldCacheInjectCompute = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> worldCacheSelectCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> worldCacheDecayCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> hybridReflectionCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> hybridReflectionDenoiseCompute = nullptr;
 
 private:
+	float4x4 previousFrameInverseView{};
+	bool hasPreviousFrameInverseView = false;
+	bool hasCameraSceneHistory = false;
+	bool previousFirstPerson = false;
+	bool previousInterior = false;
+	std::uintptr_t previousSceneIdentity = 0;
+	float worldCacheClockAccumulator = 0.0f;
+	uint worldCacheClock = 0u;
+
 	struct DiagnosticRecord
 	{
 		std::string name;
@@ -353,6 +380,11 @@ private:
 	uint diagnosticSavedMaterialDebugMode = 0;
 	uint diagnosticSettleFrames = 0;
 	uint diagnosticWaitFrames = 0;
+	// Diagnostics deliberately freeze the persistent-cache clock. A complete
+	// capture spans more than the cache's 8-bit timestamp period; allowing the
+	// normal frame counter to advance while injection is isolated made old cells
+	// fade, wrap and reappear part-way through one diagnostic set.
+	uint diagnosticFrozenFrameIndex = 0;
 	size_t diagnosticCaptureIndex = 0;
 	std::filesystem::path diagnosticCaptureDirectory;
 	std::filesystem::path diagnosticCurrentScreenshot;

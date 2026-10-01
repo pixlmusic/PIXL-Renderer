@@ -159,6 +159,9 @@ function Apply-QualityContract([object]$Config, [int]$Tier) {
     }
 
     Set-MenuTier $Config $Tier
+    # A live/user baseline has already completed onboarding. Public defaults must
+    # never inherit that session state or a fresh install will skip Quick Start.
+    $Config.Menu.FirstTimeSetupCompleted = $false
     if ($Config.Menu.PSObject.Properties.Name -contains 'QualityContractVersion') {
         $Config.Menu.QualityContractVersion = 2
     } else {

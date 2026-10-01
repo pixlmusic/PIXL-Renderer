@@ -30,24 +30,31 @@ struct RadiantGrid : OverlayFeature
 		RE::NiPoint3 position;
 		RE::NiColorA color;
 		float radius;
+		float flickerStrength = 0.0f;
+		float flickerPhase = 0.0f;
 		Source source = Source::Particle;
 	};
 
 	struct PersistedParticleLight
 	{
 		ResolvedParticleLight light{};
-		std::uint64_t lastSeenFrame = 0;
+		double lastSeenTime = 0.0;
 	};
 
 	struct VertexColorCacheEntry
 	{
 		bool valid = false;
 		bool applyEffectMaterialTint = true;
+		// Explicit fire/candle/torch/ember texture evidence can safely survive
+		// modern effect replacers changing the vanilla node/alpha layout.
+		bool practicalIncandescent = false;
 		ParticleLightConfig config{};
 		RE::NiColorA baseColor{ 1.0f, 1.0f, 1.0f, 1.0f };
 		float radiusScale = 0.5f;
 		float minimumRadius = 0.0f;
 		float intensityScale = 1.0f;
+		RE::NiColor incandescentTint{ 1.0f, 1.0f, 1.0f };
+		float flickerStrength = 0.0f;
 	};
 
 	struct IncandescentGeometryCacheEntry
@@ -64,10 +71,16 @@ struct RadiantGrid : OverlayFeature
 	eastl::vector<ResolvedParticleLight> currentParticleLights;
 	eastl::hash_map<RE::NiAVObject*, std::size_t> queuedParticleLightOwners;
 	eastl::hash_map<RE::NiAVObject*, PersistedParticleLight> persistedParticleLights;
-	std::uint64_t particleLightFrameSerial = 0;
+	double particleLightTime = 0.0;
+	std::uintptr_t particleLightScene = 0;
 	std::shared_mutex particleLightsMutex;
 	std::uint32_t particleEmitterLightCount = 0;
 	std::uint32_t glowMappedEmitterLightCount = 0;
+	// Contiguous range occupied by particle/glow emitters in the uploaded light
+	// buffer. HybridGI consumes this bounded range to seed persistent world
+	// irradiance when transparent flames are absent from its opaque scene input.
+	std::uint32_t particleLightBufferStart = 0;
+	std::uint32_t particleLightBufferCount = 0;
 
 	bool CheckParticleLights(RE::BSRenderPass* a_pass, uint32_t a_technique);
 

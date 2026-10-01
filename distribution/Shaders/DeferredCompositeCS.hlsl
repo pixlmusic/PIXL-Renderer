@@ -321,6 +321,15 @@ void SampleHybridGISpecular(uint2 pixCoord, sh2 lobe, out float3 legacyIl, out f
 #	endif
 		}
 
+#	if defined(AMBIENT_PROBE)
+		// Match the forward WorldProbes path: the user-facing interior ambient
+		// control also restrains low-frequency environment specular. Square-root
+		// scaling preserves useful reflections while preventing a bright cubemap
+		// from bypassing a deliberately dark interior diffuse ceiling.
+		if (SharedData::InInterior && SharedData::ambientProbeSettings.EnableAmbientProbe)
+			finalIrradiance *= sqrt(saturate(SharedData::ambientProbeSettings.InteriorAmbientScale));
+#	endif
+
 #	if defined(HYBRID_GI)
 		float3 ssgiIlSpecular;
 		float3 hybridReflection;
