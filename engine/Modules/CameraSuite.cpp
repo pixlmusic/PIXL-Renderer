@@ -1,6 +1,6 @@
 // Community Shaders HDR Display-derived file.
 // Modified for PIXL Renderer, 2026: physical camera, capture/Director integration,
-// exposure, stormglass, bloom and Cinematic DOF 2.0 orchestration.
+// exposure, stormglass, bloom and native Auto-DOF orchestration.
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Additional permissions are described in the repository EXCEPTIONS.md.
 
@@ -937,7 +937,7 @@ void CameraSuite::DrawSettings()
 				ImGui::TextWrapped("Cinematic DoF Standalone detected. PIXL can either leave it in control or use its own native DOF path.");
 			}
 			ImGui::BeginDisabled(UsesCinematicDoF());
-			changed |= ImGui::Checkbox("Enable PIXL Cinematic Depth of Field", &settings.enableEnhancedDepthOfField);
+			changed |= ImGui::Checkbox("Enable PIXL Auto-DOF", &settings.enableEnhancedDepthOfField);
 			DrawSettingsTooltip("Uses PIXL's native scene color and depth buffers with a restrained bokeh response. It avoids the heavy constant blur of the legacy path and remains disabled while Cinematic DoF owns the effect.");
 			if (settings.enableEnhancedDepthOfField) {
 				changed |= ImGui::Checkbox("Track Dialogue Actors", &settings.dofActorTracking);
@@ -979,7 +979,7 @@ void CameraSuite::DrawSettings()
 			ImGui::EndDisabled();
 			ImGui::BeginDisabled(settings.enableEnhancedDepthOfField || UsesCinematicDoF());
 			changed |= ImGui::Checkbox("Enable Skyrim Depth of Field", &settings.enableSkyrimDepthOfField);
-			DrawSettingsTooltip("Enables Skyrim's authored image-space depth of field when PIXL Cinematic Depth of Field is not active.");
+			DrawSettingsTooltip("Enables Skyrim's authored image-space depth of field when PIXL Auto-DOF is not active.");
 			ImGui::EndDisabled();
 		}
 

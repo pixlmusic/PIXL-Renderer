@@ -33,7 +33,7 @@ infrastructure; file-local notices remain authoritative.
 | Render Origin | PIXL-specific renderer service and integrations |
 | Ground Response snow/mud terrain deformation | PIXL contribution; grass collision remains upstream-derived |
 | Director camera paths and Video integrations | PIXL additions to the mixed CameraSuite/UI system |
-| CameraSuite physical camera and Cinematic DOF 2.0 | PIXL additions to the upstream-derived HDR Display system |
+| CameraSuite physical camera and Auto-DOF | PIXL additions to the upstream-derived HDR Display system |
 
 MaterialForge, CameraSuite, Directional SSS/Contact Shadows, Rain Response,
 Water Optics, Waterbody/Flowmap, SkyBounce, Image Reconstruction, and the main

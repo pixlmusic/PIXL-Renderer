@@ -131,7 +131,7 @@ public:
 		float dofFarBlurDistance = 30000.0f;
 		float dofCatEye = 0.12f;
 		float dofAnamorphicRatio = 1.0f;
-		// DOF 2.0 lens controls. Defaults retain the restrained gameplay look;
+		// Auto-DOF lens controls. Defaults retain the restrained gameplay look;
 		// Director/Photo/Video modes may opt into the physical lens model.
 		bool dofPhysicalLens = true;
 		float dofFocalLengthMm = 30.0f;
@@ -569,7 +569,7 @@ public:
 	Texture2D* bloomEighthScratchTexture = nullptr;
 	Texture2D* bloomQuarterScratchTexture = nullptr;
 	Texture2D* bloomHalfScratchTexture = nullptr;
-	// Cinematic DOF is kept in explicit intermediate layers. A signed CoC field
+	// Auto-DOF is kept in explicit intermediate layers. A signed CoC field
 	// and separate near/far half-resolution blurs prevent the single-pass gather
 	// from smearing silhouettes across the entire presentation image.
 	Texture2D* dofCoCTexture = nullptr;

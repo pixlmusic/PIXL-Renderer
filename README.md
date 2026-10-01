@@ -14,7 +14,7 @@ Install one renderer, complete Quick Setup and play. An optional advanced tuning
 
 This source revision builds on the 1.0.4 baseline with final renderer integration, stability and quality-control work while retaining the established Skyrim SE DirectX 11 and shader-cache architecture:
 
-- **Cinematic DOF 2.0** with one authoritative autofocus path, physical-lens controls, half-resolution adaptive bokeh, separate near/far treatment, foreground coverage, edge-aware reconstruction, sky protection and Director/Photo/Video integration;
+- **Auto-DOF** with one authoritative autofocus path, physical-lens controls, half-resolution adaptive bokeh, separate near/far treatment, foreground coverage, edge-aware reconstruction, sky protection and Director/Photo/Video integration;
 - **Contained Liquids** with effect-first potion classification, cached bottle-profile fitting, profile-aware volume fill, viscosity-aware slosh and bounded glass/liquid optics while preserving Skyrim's original bottle draw;
 - **Distant Life** for restrained, depth-aware distant settlement light activity that remains compatible with atmosphere, HDR and camera bokeh;
 - **Ground Response and water refinements** covering stable snow/mud deformation edges, material-specific response, flow, refraction, foam and temporal behavior;
@@ -83,7 +83,7 @@ PIXL currently contains **41 integrated rendering modules**, plus renderer-level
 - **Terrain Seam** blends terrain and intersecting objects more naturally.
 - **Terrain Occlusion** derives terrain shadowing from height data and current sun direction.
 - **Distance Blend** smooths the visual transition between full-detail objects and LOD.
-- **Distant Life** adds restrained settlement and structure activity into distant scenery, with distance-scaled softness and intensity designed to read through atmosphere and cinematic depth of field without becoming a second bloom pass.
+- **Distant Life** adds restrained settlement and structure activity into distant scenery, with distance-scaled softness and intensity designed to read through atmosphere and Auto-DOF without becoming a second bloom pass.
 - **Water Optics** adds surface-derived caustic bounce, underwater lighting, multi-scale flow response and high-resolution world-space contact/whitewater foam without a camera-following player decal.
 - **Waterbody** unifies close and distant water geometry/lighting to reduce the familiar water-LOD mismatch.
 - **Horizon Blend** cooperates with the separate HorizonBlend plugin when present and leaves vanilla far-water behaviour untouched when it is not.
@@ -91,7 +91,7 @@ PIXL currently contains **41 integrated rendering modules**, plus renderer-level
 ### Display, performance and creation tools
 
 - **Image Reconstruction** integrates TAA, NVIDIA DLSS/DLAA, AMD FidelityFX Super Resolution and supported frame-generation paths. The optional DX11/DX12 interop Neural Rendering path keeps depth, motion and UI resources synchronized through Present and exposes only quality controls supported by the installed runtime. NVIDIA does not expose application-side INT4/FP8 selection or transformer-layer counts through the validated Feature 18 contract, so those controls are intentionally omitted.
-- **Camera Suite** supports HDR10 output, 16-bit intermediate rendering, histogram exposure, highlight protection, local adaptation and Cinematic DOF 2.0. The DOF path uses physical lens parameters, unified actor/depth autofocus, adaptive bokeh, foreground coverage and reconstruction-aware temporal handling across gameplay, Photo, Video and Director modes.
+- **Camera Suite** supports HDR10 output, 16-bit intermediate rendering, histogram exposure, highlight protection, local adaptation and Auto-DOF. The native Auto-DOF path uses physical lens parameters, unified actor/depth autofocus, adaptive bokeh, foreground coverage and reconstruction-aware temporal handling across gameplay, Photo, Video and Director modes.
 - **Pixel Capture** provides asynchronous lossless screenshots, HDR PNG output and a Director Photo Finish path with locked camera/input, temporary native/DLAA reconstruction and optional offline-quality Neural Rendering before the final composite is captured. Its 8/16/24-frame neural convergence modes run complete fresh model evaluations with valid depth, motion, jitter and history, then use a robust offline resolve to reject isolated temporal outliers without recursively feeding processed RGB back into a temporal model.
 - **Pulse Profiler** exposes frame timing, FPS, draw calls, VRAM, shader timing and repeatable A/B performance comparisons.
 - **PIXL World Benchmark** runs repeatable scene fly-throughs, records samples/settings and captures reference frames for performance and visual-fidelity comparison.

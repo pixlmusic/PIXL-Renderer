@@ -2,7 +2,7 @@
 
 Changes since 1.0.4:
 
-- Upgraded Cinematic DOF with physical lens controls, unified autofocus and adaptive near/far bokeh.
+- Upgraded Auto-DOF with physical lens controls, unified autofocus and adaptive near/far bokeh.
 - Restored reliable close-object autofocus while retaining first-person hand and weapon protection.
 - Improved DOF foreground coverage, sky handling, temporal stability and DLSS/FSR/TAA integration.
 - Added profile-aware Contained Liquids fill, classification, slosh, bubbles, refraction and absorption.

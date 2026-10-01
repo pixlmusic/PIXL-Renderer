@@ -1,15 +1,15 @@
 # PIXL Renderer developer tools
 
-The root batch files are interactive launchers for `tools/PIXLDeveloperTools.ps1`.
-They keep the repository's CMake presets and release scripts as the build and
+The retained root build batch files are interactive launchers for
+`tools/PIXLDeveloperTools.ps1`. Deployment and Git wrapper batch files are local
+maintainer conveniences and are intentionally not part of the public source.
+The repository's CMake presets and release scripts remain the build and
 packaging source of truth.
 
 ## Entry points
 
 - `BuildRelease.bat`: choose a fast incremental DLL, audited Release, or clean audited Release.
 - `BuildDeployAll.bat`: build, optionally create Core/FOMOD archives, then deploy a verified package.
-- `DeployPIXL.bat`: deploy the latest manifest-backed Core to one configured Skyrim installation or all of them.
-- `CommitPushPIXL.bat`: guarded staging, commit, and current-branch push workflow.
 
 Failed interactive operations leave the command window open. All deployments
 require Skyrim to be closed, verify the package manifest, back up changed PIXL

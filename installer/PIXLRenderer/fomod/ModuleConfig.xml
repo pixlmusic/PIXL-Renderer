@@ -76,7 +76,7 @@ EXACT SURFACETIDES VERSION ONLY: this replaces SurfaceTides.dll, Shaders/Surface
             <plugin name="Review 1.0.5 changes">
               <description>HIGHLIGHTS SINCE 1.0.4
 
-- Cinematic DOF gains physical close-focus recovery, stable autofocus, improved foreground coverage and reconstruction-aware edges.
+- Auto-DOF gains physical close-focus recovery, stable autofocus, improved foreground coverage and reconstruction-aware edges.
 - Ground Response uses the proven direct terrain reconstruction path and ships the new live-tested snow/deformation defaults.
 - Contained Liquids gains profile-aware fill, effect-first classification, steadier slosh, bubbles and improved glass/liquid optics.
 - Foliage receives PIXL-native optimization infrastructure, improved quality scaling and corrected ordinary-grass SSGI normals.

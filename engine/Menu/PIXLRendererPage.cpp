@@ -2154,7 +2154,7 @@ namespace
 		auto& settings = camera.settings;
 		bool changed = false;
 
-		SectionHeading("CINEMATIC DEPTH OF FIELD");
+		SectionHeading("AUTO-DOF");
 		ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextMuted),
 			"PHYSICAL LENS  /  STABLE AUTOFOCUS  /  NATIVE PIXL DEPTH");
 		ImGui::TextWrapped("Shape focus for gameplay, portraits and Director shots. These are the same lens parameters exposed by the Advanced CameraSuite page.");
@@ -2165,7 +2165,7 @@ namespace
 				"Hands depth of field to Cinematic DoF Standalone. Turn this off to use PIXL's native physical lens and the controls below.");
 		}
 		ImGui::BeginDisabled(camera.UsesCinematicDoF());
-		changed |= ToggleControl("PIXL cinematic depth of field", &settings.enableEnhancedDepthOfField,
+		changed |= ToggleControl("PIXL Auto-DOF", &settings.enableEnhancedDepthOfField,
 			"Runs PIXL's depth-aware near/far bokeh before UI composition. This is the recommended native path.");
 
 		ImGui::BeginDisabled(!settings.enableEnhancedDepthOfField);

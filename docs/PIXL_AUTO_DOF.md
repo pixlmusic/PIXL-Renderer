@@ -1,6 +1,6 @@
-# PIXL Cinematic Depth of Field
+# PIXL Auto-DOF
 
-PIXL's cinematic depth-of-field path is implemented inside Camera Suite's native
+PIXL's Auto-DOF path is implemented inside Camera Suite's native
 DX11 presentation composite. It consumes PIXL's existing scene colour and depth
 resources and writes through the existing HDR output buffer; it does not load or
 depend on CinematicDoFStandalone at runtime.
@@ -43,8 +43,8 @@ Project). PIXL's implementation is a separate integration and shader path.
   camera motion, invalid depth, and disocclusion-like samples reduce history
   weight instead of smearing the frame.
 
-The feature is opt-in through Camera Suite's `Enable PIXL Cinematic Depth of
-Field` control. If CinematicDoFStandalone is installed and selected as owner,
+The feature is opt-in through Camera Suite's `Enable PIXL Auto-DOF` control. If
+CinematicDoFStandalone is installed and selected as owner,
 PIXL disables its own path to prevent double application.
 
 ## Validation status

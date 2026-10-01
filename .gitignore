@@ -79,6 +79,8 @@
 /Lighting.hlsl
 /WindowLife.hlsli
 /GlassGrime_1k.png
+/CommitPushPIXL.bat
+/DeployPIXL.bat
 
 # Private neural-enhancement research is developed and licensed separately.
 # It is not compiled, linked, loaded, or packaged by PIXL Renderer.

@@ -1,4 +1,4 @@
-// PIXL Renderer - Cinematic DOF 2.0 private shader ABI.
+// PIXL Renderer - Auto-DOF private shader ABI.
 // Copyright (C) 2026 PIXL Studio
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Additional permissions are described in the repository EXCEPTIONS.md.
