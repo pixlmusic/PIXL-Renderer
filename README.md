@@ -8,7 +8,7 @@ Install one renderer, complete Quick Setup and play. An optional advanced tuning
 
 > **Release candidate:** PIXL Renderer 1.0.5. See installation requirements and validation limits below before installing. Optional DLSSG proxy, Neural Rendering and Curved Surface Mapping paths remain experimental.
 
-> **DISCLAIMER: PIXL Renderer was HEAVILY created with AI assistance alongside testing; expect issues and bugs. This is an experimental branch, and we HIGHLY recommend Community Shaders' main branch for a consistent, well-tested and maintained playthrough.**
+> **Release status:** 1.0.5 is a release candidate for advanced Skyrim setups. It has extensive owner testing, but GPU, runtime and mod combinations vary; keep a recoverable mod-manager profile and report reproducible issues with the PIXL log attached.
 
 ## 1.0.5 renderer upgrade
 
@@ -20,6 +20,7 @@ This source revision builds on the 1.0.4 baseline with final renderer integratio
 - **Ground Response and water refinements** covering stable snow/mud deformation edges, material-specific response, flow, refraction, foam and temporal behavior;
 - **Window Life, Material Forge, directional SSS and character rendering updates** with safer classification, more stable projection/material response and live-tested skin-lighting defaults;
 - **PIXL Render Origin groundwork** for explicit large-world coordinate handling and validation without replacing Skyrim's camera-relative DX11 pipeline;
+- **Hybrid GI and emitter lighting refinements** with deterministic world-cache updates, fixed-rate cache aging, transparent fire/emissive injection, warmer particle-light classification and bounded contact shadows;
 - **reconstruction-aware camera and post processing** for TAA, DLSS/DLAA and FSR paths, with sharper UI separation and explicit history invalidation; and
 - **public-source provenance and release tooling** with preserved upstream notices, module-level attribution, third-party notices, reproducible audits and package hygiene checks.
 
@@ -42,12 +43,12 @@ The release includes a preloaded pipeline library. Additional or invalidated sha
 
 ## Renderer features
 
-PIXL currently contains **40 integrated rendering modules**, plus renderer-level systems for dialogue focus, Director/Photo/Video workflows, quality orchestration, benchmarking, tuning and capture. Individual experimental modules can remain disabled by default. One retired Hair Reconstruction source record remains solely for shared-shader ABI auditability and is not a runtime module.
+PIXL currently contains **41 integrated rendering modules**, plus renderer-level systems for dialogue focus, Director/Photo/Video workflows, quality orchestration, benchmarking, tuning and capture. Individual experimental modules can remain disabled by default. One retired Hair Reconstruction source record remains solely for shared-shader ABI auditability and is not a runtime module.
 
 ### Lighting and atmosphere
 
-- **Radiance Weave (Hybrid GI)** combines detailed screen-space diffuse/specular indirect lighting with a persistent two-cascade world irradiance cache, secondary bounce, directional visibility/bent normals, confidence-aware temporal accumulation and edge-aware denoising. Valid history is retained during rapid camera rotation instead of being discarded merely because the view moved quickly.
-- **Radiant Grid** replaces Skyrim's four-light restriction with clustered dynamic-light handling. Particle-derived candles, torches and fires are deduplicated by emitter and retain a short bounded submission history so their illumination remains stable through turns and brief visibility changes.
+- **Radiance Weave (Hybrid GI)** combines detailed screen-space diffuse/specular indirect lighting with a persistent two-cascade world irradiance cache, secondary bounce, directional visibility/bent normals, confidence-aware temporal accumulation and edge-aware denoising. Deterministic voxel selection, fixed-rate aging and frame-rate-independent response keep world-space lighting stable through camera movement and reconstruction changes.
+- **Radiant Grid** replaces Skyrim's four-light restriction with clustered dynamic-light handling. Particle-derived candles, torches and fires are deduplicated by emitter, retain source-appropriate colour and flame variation, and provide conservative indirect-light injection and contact shadows where Skyrim has no shadow-map slice.
 - **Linear Light Core** performs lighting in a more appropriate colour space so PBR, emissive and indirect-light calculations behave consistently.
 - **Natural Lighting** adds physically motivated inverse-square attenuation with controlled falloff.
 - **Ambient Probe** derives ambient irradiance from environment and sky cubemaps using spherical harmonics.
@@ -62,7 +63,7 @@ PIXL currently contains **40 integrated rendering modules**, plus renderer-level
 
 - **Material Forge** unifies legacy and authored materials under an energy-conscious PBR response with roughness, metallic, displacement, clearcoat, fuzz, glints, decals and landscape support.
 - **Material Layers** handles parallax occlusion mapping, height blending, terrain heightmaps and parallax self-shadowing.
-- **Window Life** upgrades architectural glass with old-glass optics, recessed room atlases, curtains, furniture depth, varied occupants, stable architectural families and adaptive window fitting. It is designed to stay inside the actual pane instead of illuminating half of Solitude—which turns out to be quite an important detail lol.
+- **Window Life** upgrades architectural glass with old-glass optics, recessed room atlases, curtains, furniture depth, varied occupants, stable architectural families and adaptive window fitting. Projection and emission remain bounded to the physical pane to avoid light leaking across nearby architecture.
 - **Skin Optics** adds layered skin response, dual specular lobes, micro detail and dynamic wetness. The eye path separately preserves sclera readability at grazing lid edges while keeping corneal reflections dielectric and stable at distance.
 - **Tissue Diffusion** provides material-aware subsurface light transport for natural skin and other translucent surfaces.
 - **Strand Shading** gives hair the stable legacy PIXL directional, tangent-based specular response and controllable highlight shift. The experimental Hair Reconstruction module has been retired from the shipping pipeline in favour of this known-good path.
@@ -89,7 +90,7 @@ PIXL currently contains **40 integrated rendering modules**, plus renderer-level
 
 ### Display, performance and creation tools
 
-- **Image Reconstruction** integrates TAA, NVIDIA DLSS/DLAA, AMD FidelityFX Super Resolution and supported frame-generation paths. The optional DX11/DX12 interop Neural Rendering path keeps depth, motion and UI resources synchronized through Present, exposes the installed runtime's legitimate quality/tuning controls, and provides a truthful DLSS/NR scene-input quality selector. NVIDIA does not expose a safe application-side INT4/FP8 switch or transformer-layer count through the validated Feature 18 contract, so PIXL does not present invented controls.
+- **Image Reconstruction** integrates TAA, NVIDIA DLSS/DLAA, AMD FidelityFX Super Resolution and supported frame-generation paths. The optional DX11/DX12 interop Neural Rendering path keeps depth, motion and UI resources synchronized through Present and exposes only quality controls supported by the installed runtime. NVIDIA does not expose application-side INT4/FP8 selection or transformer-layer counts through the validated Feature 18 contract, so those controls are intentionally omitted.
 - **Camera Suite** supports HDR10 output, 16-bit intermediate rendering, histogram exposure, highlight protection, local adaptation and Cinematic DOF 2.0. The DOF path uses physical lens parameters, unified actor/depth autofocus, adaptive bokeh, foreground coverage and reconstruction-aware temporal handling across gameplay, Photo, Video and Director modes.
 - **Pixel Capture** provides asynchronous lossless screenshots, HDR PNG output and a Director Photo Finish path with locked camera/input, temporary native/DLAA reconstruction and optional offline-quality Neural Rendering before the final composite is captured. Its 8/16/24-frame neural convergence modes run complete fresh model evaluations with valid depth, motion, jitter and history, then use a robust offline resolve to reject isolated temporal outliers without recursively feeding processed RGB back into a temporal model.
 - **Pulse Profiler** exposes frame timing, FPS, draw calls, VRAM, shader timing and repeatable A/B performance comparisons.
@@ -108,7 +109,7 @@ Neural Rendering (NR) is experimental and optional. **The NR runtime `nvngx_dlss
 
 1. In **Quick Setup**, select **Enable Neural Rendering (experimental)** to open the four-card guide. You can also open **PIXL Renderer → Neural Rendering → NR Setup Guide**.
 2. Open the [RenoDX Discord](https://discord.gg/renodx), find **dlss5-forum**, and open the **Patched DLSS-NR** discussion.
-3. Use **Pinned Messages only**, and **ShortFuse's pinned version only** for the illustrated setup. Do not substitute random chat attachments. If that post is unavailable, leave NR disabled rather than using a mirror.
+3. Use **Pinned Messages only**, and **ShortFuse's pinned version only** for the illustrated setup. Do not use unverified chat attachments or third-party mirrors. If that post is unavailable, leave NR disabled.
 4. Obtain the runtime only if you have permission to use it. Extract it if supplied in an archive, then place the DLL at:
    ```text
    Skyrim Special Edition/Data/Shaders/ImageReconstruction/Streamline/nvngx_dlssnr.dll
@@ -230,7 +231,7 @@ Unless a component says otherwise, the covered PIXL Renderer source is distribut
 
 If you distribute a PIXL Renderer binary or a modified build, you must also provide the corresponding covered source under the applicable GPL-3.0 terms, preserve upstream and third-party notices, identify your modifications, and comply with the licences of bundled dependencies. Please read the actual licence files rather than treating this paragraph as legal advice.
 
-Public source packages include the renderer source, shaders, build configuration and required notices. They intentionally omit generated build output, local shader caches, credentials, machine configuration, training data and unrelated private research that is not compiled, linked, loaded or packaged with the renderer. If something is used to build a public PIXL Renderer binary, it belongs on the corresponding-source side of that line—no creative hide-and-seek with the GPL.
+Public source packages include the renderer source, shaders, build configuration and required notices. They intentionally omit generated build output, local shader caches, credentials, machine configuration, training data and unrelated private research that is not compiled, linked, loaded or packaged with the renderer. Any material required to build a distributed PIXL Renderer binary must be included with the corresponding source as required by the applicable licence.
 
 Skyrim and related marks belong to their respective owners. Source-code licensing is separate from project identity; see [TRADEMARKS.md](TRADEMARKS.md). Upstream and third-party material retains its own copyright and licence.
 
@@ -240,4 +241,4 @@ When I am not staring at HLSL or waiting for Skyrim to compile one more permutat
 
 [X / Twitter](https://x.com/PIXLMUSIC) · [Spotify](https://open.spotify.com/artist/210hjvKOh716ZO4ErE3x22) · [SoundCloud](https://soundcloud.com/pixl-music) · [Instagram](https://www.instagram.com/pixlmusic)
 
-Thanks for checking out PIXL Renderer. I am building this because I still love what Skyrim can look and feel like when all of its systems finally agree with each other—and because apparently leaving a 2011 renderer alone was never really an option lol.
+PIXL Renderer is built around a simple goal: preserve Skyrim's identity while making its rendering systems feel coherent, responsive and physically credible.

@@ -6,10 +6,10 @@ Setup Guide in the renderer's Neural Rendering panel. Follow the packaged README
 check the file, save settings and fully restart Skyrim. Ordinary rendering does
 not need NR. Existing user settings remain in place during the update.
 
-PIXL Renderer is an owner-directed graphics project developed through hands-on
-testing, experimentation and substantial AI assistance. AI tools assisted with
-code, documentation, diagnostics and iteration; release decisions, visual
-direction and live game testing remain under PIXL Studio's direction.
+PIXL Renderer is directed, visually evaluated and released by PIXL Studio.
+Development combines hands-on implementation and testing with automated coding,
+diagnostic and documentation tools. Release decisions and in-game validation
+remain under PIXL Studio's direction.
 
 This is a complex SKSE/DX11 renderer and cannot be validated against every GPU,
 Skyrim runtime or mod combination. Back up important files and saves, install

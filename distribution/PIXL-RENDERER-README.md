@@ -10,7 +10,7 @@ Neural Rendering (NR) is experimental and optional. **The NR runtime `nvngx_dlss
 
 1. In **Quick Setup**, select **Enable Neural Rendering (experimental)** to open the four-card guide. You can also open **PIXL Renderer → Neural Rendering → NR Setup Guide**.
 2. Open the [RenoDX Discord](https://discord.gg/renodx), find **dlss5-forum**, and open the **Patched DLSS-NR** discussion.
-3. Use **Pinned Messages only**, and **ShortFuse's pinned version only** for the illustrated setup. Do not substitute random chat attachments. If that post is unavailable, leave NR disabled rather than using a mirror.
+3. Use **Pinned Messages only**, and **ShortFuse's pinned version only** for the illustrated setup. Do not use unverified chat attachments or third-party mirrors. If that post is unavailable, leave NR disabled.
 4. Obtain the runtime only if you have permission to use it. Extract it if supplied in an archive, then place the DLL at:
    ```text
    Skyrim Special Edition/Data/Shaders/ImageReconstruction/Streamline/nvngx_dlssnr.dll
@@ -142,7 +142,7 @@ Licences, attribution and source notices are included in
 `SKSE/Plugins/PIXL/Documentation`. This release has owner live-test coverage,
 not an exhaustive hardware, security or mod-compatibility certification.
 
-PIXL Renderer is owner-directed and has been developed through hands-on testing,
-experimentation and substantial AI assistance. AI tools assisted with code,
-documentation, diagnostics and iteration; visual direction, release decisions
-and live game testing remain under PIXL Studio's direction.
+PIXL Renderer is directed, visually evaluated and released by PIXL Studio.
+Development combines hands-on implementation and testing with automated coding,
+diagnostic and documentation tools. Release decisions and in-game validation
+remain under PIXL Studio's direction.

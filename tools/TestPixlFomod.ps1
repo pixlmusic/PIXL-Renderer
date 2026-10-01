@@ -28,7 +28,7 @@ if ($SchemaPath) {
 }
 if ($info.fomod.Version.'#text' -ne '1.0.5') { throw 'Incorrect installer version.' }
 $allText = (Get-Content -LiteralPath $configPath,$infoPath,(Join-Path $root 'PIXL-Core\PIXL-INSTALLER-NOTICE.md') -Raw) -join "`n"
-foreach ($phrase in @('substantial AI assistance','SurfaceTides 1.0.2 Integration','AllowPIXL=1','replaces SurfaceTides.dll','PAGE DOWN','HOME','HIGHLIGHTS SINCE 1.0.4')) {
+foreach ($phrase in @('automated coding','PIXL Studio','SurfaceTides 1.0.2 Integration','AllowPIXL=1','replaces SurfaceTides.dll','PAGE DOWN','HOME','HIGHLIGHTS SINCE 1.0.4')) {
     if ($allText -notmatch [regex]::Escape($phrase)) { throw "Missing required disclosure or warning: $phrase" }
 }
 $sources = @($config.SelectNodes('//@source') | ForEach-Object { $_.Value })

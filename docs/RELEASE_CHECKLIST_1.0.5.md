@@ -5,4 +5,4 @@
 - Pipeline library: active module identities, shader ABI and revision must match.
 - FOMOD: XML, payload, branding, notices, cache and archive integrity must pass.
 - Live testing: owner visual test remains authoritative for DOF, Ground Response and reconstruction behavior.
-- Publication: this working snapshot is not committed or pushed until explicitly approved.
+- Publication: commit and push only after owner approval and all release checks pass.

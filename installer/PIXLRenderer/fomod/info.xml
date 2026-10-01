@@ -4,7 +4,7 @@
   <Author>PIXL Studio</Author>
   <Version MachineVersion="1.0.5.0">1.0.5</Version>
   <Website>https://www.nexusmods.com/skyrimspecialedition/mods/189836</Website>
-  <Description>Modern DirectX 11 rendering for Skyrim SE. Owner-directed development, artwork and live testing with substantial AI assistance. Includes an optional, version-locked SurfaceTides 1.0.2 bridge.</Description>
+  <Description>Modern DirectX 11 rendering for Skyrim SE, directed and live-tested by PIXL Studio. Includes an optional, version-locked SurfaceTides 1.0.2 bridge.</Description>
   <Groups>
     <element>Graphics</element>
     <element>Visuals and Graphics</element>
