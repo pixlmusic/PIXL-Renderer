@@ -248,6 +248,18 @@ Atmosphere::Settings Atmosphere::ResolveRuntimeSettings() const
 		weatherMie(sky->currentWeather),
 		weatherPct);
 	const float mieBlend = strength * std::clamp(settings.weatherMieStrength, 0.0f, 1.0f);
+	// During a weather transition the froxel field changes before its reprojection
+	// history has converged.  Retaining the full steady-state history weight here
+	// produces a visible old-weather veil and occasional colour pumping.  A bounded
+	// reduction in the middle of the engine's blend window lets the new scattering
+	// settle without throwing history away on ordinary frames.
+	const float weatherTransition = 4.0f * weatherPct * (1.0f - weatherPct);
+	resolved.volumetricHistoryWeight *=
+		std::lerp(1.0f, 0.72f, weatherTransition * strength);
+	resolved.volumetricHistoryMissSampleCount = std::clamp(
+		static_cast<uint>(std::lround(std::lerp(
+			static_cast<float>(settings.volumetricHistoryMissSampleCount), 6.0f,
+			weatherTransition * strength))), 1u, 16u);
 	resolved.directionalInscatteringAnisotropy = std::lerp(
 		settings.directionalInscatteringAnisotropy, targetMie, mieBlend);
 	resolved.volumetricFogScatteringDistribution = std::lerp(

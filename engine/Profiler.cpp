@@ -1,8 +1,13 @@
 #include "Profiler.h"
 
 #include <algorithm>
+#include <fstream>
 #include <format>
+#include <chrono>
+#include <filesystem>
 #include <unordered_map>
+
+#include "Utils/FileSystem.h"
 
 float Profiler::RollingHistory::GetAverage() const
 {
@@ -97,6 +102,8 @@ void Profiler::Release()
 	results.clear();
 	knownTimers.clear();
 	knownTimerIndex.clear();
+	currentExternalEvents.clear();
+	lastExternalEvents.clear();
 	totalTimeMs = 0.0f;
 	cpuTotalTimeMs = 0.0f;
 	writeFrame = 0;
@@ -116,6 +123,7 @@ void Profiler::BeginFrame()
 		return;
 
 	CollectResults();
+	currentExternalEvents.clear();
 
 	auto& frame = frames[writeFrame];
 	// A busy GPU may need more than three frames. Never overwrite pending
@@ -186,8 +194,74 @@ void Profiler::EndFrame()
 
 	frameActive = false;
 	context->End(frames[writeFrame].disjoint.get());
+	lastExternalEvents = std::move(currentExternalEvents);
+	currentExternalEvents.clear();
 	writeFrame = (writeFrame + 1) % kFrameLatency;
 	framesSinceInit++;
+}
+
+void Profiler::RecordExternalEvent(std::string_view name)
+{
+	if (!initialized || name.empty())
+		return;
+	++currentExternalEvents[std::string(name)];
+}
+
+std::filesystem::path Profiler::WriteSnapshot() const
+{
+	const auto directory = Util::PathHelpers::GetPluginPath() / "Diagnostics" / "Profiler";
+	std::error_code ec;
+	std::filesystem::create_directories(directory, ec);
+	if (ec)
+		return {};
+
+	const auto now = std::chrono::system_clock::now();
+	const auto time = std::chrono::system_clock::to_time_t(now);
+	std::tm localTime{};
+	localtime_s(&localTime, &time);
+	const auto path = directory / std::format(
+		"PIXL-Profiler-{:04}{:02}{:02}-{:02}{:02}{:02}.txt",
+		localTime.tm_year + 1900,
+		localTime.tm_mon + 1,
+		localTime.tm_mday,
+		localTime.tm_hour,
+		localTime.tm_min,
+		localTime.tm_sec);
+
+	std::ofstream output(path, std::ios::out | std::ios::trunc);
+	if (!output)
+		return {};
+
+	output << "PIXL Renderer frame profiler snapshot\n";
+	output << "GPU total ms: " << totalTimeMs << "\n";
+	output << "CPU total ms: " << cpuTotalTimeMs << "\n\n";
+	output << "Named PIXL passes (current / average / p95 / p99 / CPU current):\n";
+	std::vector<const TimerResult*> sortedResults;
+	sortedResults.reserve(results.size());
+	for (const auto& result : results)
+		if (result.valid)
+			sortedResults.push_back(&result);
+	std::ranges::sort(sortedResults, [](const auto* lhs, const auto* rhs) {
+			return lhs->gpuTimeMs > rhs->gpuTimeMs;
+		});
+	for (const auto* result : sortedResults) {
+		output << std::format(
+			"  {:10.4f} ms | avg {:10.4f} | p95 {:10.4f} | p99 {:10.4f} | CPU {:10.4f} | {}\n",
+			result->gpuTimeMs, result->avgMs, result->p95Ms, result->p99Ms, result->cpuTimeMs, result->name);
+	}
+
+	std::vector<std::pair<std::string, uint32_t>> events(lastExternalEvents.begin(), lastExternalEvents.end());
+	std::ranges::sort(events, [](const auto& lhs, const auto& rhs) {
+		return lhs.second > rhs.second;
+	});
+	output << "\nExact annotated engine render events (count in captured frame):\n";
+	for (const auto& [name, count] : events)
+		output << std::format("  {:6} | {}\n", count, name);
+	if (events.empty())
+		output << "  (none captured)\n";
+
+	output << "\nNote: shader-class draw-call totals are exported by the Pulse Profiler UI dump.\n";
+	return path;
 }
 
 void Profiler::CollectResults()

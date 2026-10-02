@@ -244,7 +244,14 @@ namespace ContainedLiquids
         float3 absorption=max(d.opticalColor.rgb,0.001f.xxx);
         float3 liquidTint=max(d.liquidColor.rgb,0.0f.xxx);
         float3 transmission=exp(-absorption*d.optics.x*thickness);
-        float3 illumination=max(ambient,0)+max(lightColor,0)*saturate(dot(n,lightDirection));
+        // Keep the direct/ambient inputs, but also retain a small contribution
+        // from the already-lit authored shell. This captures nearby point-light
+        // and emissive responses that are not represented by the directional
+        // light argument without introducing another scene copy or light-buffer
+        // binding for every bottle.
+        float3 shellLighting=max(originalBottle,0.0f);
+        float3 illumination=max(ambient,0)+max(lightColor,0)*saturate(dot(n,lightDirection))+
+            shellLighting*0.22f;
         float3 liquid=background*transmission+liquidTint*(1-transmission)*illumination;
         if (surface) {
             const float f0=(liquidIOR-1)*(liquidIOR-1)/((liquidIOR+1)*(liquidIOR+1));
@@ -306,17 +313,27 @@ namespace ContainedLiquids
         // slowly but retain an object-stable layout and contribute only a small
         // reflective rim, avoiding noisy per-frame sparkle.
         float bubbleMask=0.0f;
+        float3 bubbleNormalAccum=0.0f;
+        float bubbleRefractionWeight=0.0f;
         [unroll] for (int bubbleIndex=0;bubbleIndex<6;++bubbleIndex) {
             float key=d.detail.z+bubbleIndex*1.731f;
-            float bubbleZ=frac(Hash11(key+5.1f)+
-                d.dynamics.x*(0.014f+0.004f*bubbleIndex))*1.55f-0.78f;
+            float viscosity=max(d.appearance.w,0.5f);
+            float movement=saturate(d.dynamics.y*0.85f);
+            float riseRate=(0.014f+0.004f*bubbleIndex)*(1.0f+movement*0.85f)/viscosity;
+            float bubbleZ=frac(Hash11(key+5.1f)+d.dynamics.x*riseRate)*1.55f-0.78f;
             // Fit every bubble to the local bottle section. The former fixed
             // XY cylinder put most bubbles outside narrow potion profiles, so
             // even a maximum UI setting often produced no visible intersection.
             float localWall=max(ProfileRadius(bubbleZ,d),0.04f);
             float angle=Hash11(key+2.7f)*6.28318530718f;
             float radial=sqrt(Hash11(key+4.9f))*localWall*0.62f;
-            float3 bubbleCenter=float3(cos(angle)*radial,sin(angle)*radial,bubbleZ);
+            // Slosh tilts the bubble stream toward the instantaneous liquid
+            // plane. The displacement is world/object stable and bounded, so
+            // shaking a bottle changes the path without making bubbles crawl
+            // with the camera.
+            float2 sloshOffset=d.plane.xy*(0.035f+movement*0.08f)*(bubbleZ+0.82f);
+            float3 bubbleCenter=float3(cos(angle)*radial+sloshOffset.x,
+                sin(angle)*radial+sloshOffset.y,bubbleZ);
             float bubbleRadius=lerp(0.035f,0.085f,Hash11(key+8.4f)) *
                 saturate(localWall/0.28f);
             float3 bubbleOrigin=o-bubbleCenter;
@@ -330,11 +347,29 @@ namespace ContainedLiquids
                     float3 bubbleNormal=normalize(bubbleOrigin+v*bubbleT);
                     float bubbleRim=pow(1.0f-saturate(abs(dot(bubbleNormal,normalize(v)))),2.5f);
                     bubbleMask=max(bubbleMask,0.35f+0.65f*bubbleRim);
+                    bubbleNormalAccum+=bubbleNormal*(0.35f+0.65f*bubbleRim);
+                    bubbleRefractionWeight+=0.35f+0.65f*bubbleRim;
                 }
             }
         }
         bubbleMask*=saturate(d.detail.x)*saturate(thickness*0.8f);
-        liquid+=bubbleMask*(max(lightColor,0)*0.32f+max(ambient,0)*0.12f);
+        if (bubbleRefractionWeight>1.0e-4f && bubbleMask>1.0e-4f) {
+            float3 bubbleNormal=normalize(bubbleNormalAccum/max(bubbleRefractionWeight,1.0e-4f));
+            float3 bubbleRay=refract(ray,bubbleNormal,1.0f/1.333f);
+            if (dot(bubbleRay,bubbleRay)<1.0e-6f) bubbleRay=reflect(ray,bubbleNormal);
+            float3 bubbleViewRay=mul((float3x3)FrameBuffer::CameraView,ray);
+            float3 bubbleViewRefracted=mul((float3x3)FrameBuffer::CameraView,normalize(bubbleRay));
+            float2 bubbleOffset=clamp((bubbleViewRefracted.xy-bubbleViewRay.xy)*
+                (1.2f+thickness*0.12f),-0.75f.xx,0.75f.xx);
+            float3 bubbleScene=SampleCrop(pixel+bubbleOffset,d);
+            float bubbleF0=(1.333f-1.0f)*(1.333f-1.0f)/((1.333f+1.0f)*(1.333f+1.0f));
+            float bubbleFresnel=BRDF::F_Schlick(bubbleF0.xxx,
+                saturate(abs(dot(bubbleNormal,-ray)))).x;
+            liquid=lerp(liquid,lerp(liquid,bubbleScene,0.45f),
+                saturate(bubbleMask*(0.35f+0.65f*bubbleFresnel)));
+            liquid+=bubbleMask*(max(lightColor,0)*0.32f+max(ambient,0)*0.12f+
+                shellLighting*0.10f)*lerp(0.65f,1.0f,bubbleFresnel);
+        }
         // Magical liquids can illuminate their own volume. Emission scales with
         // thickness so the silhouette stays dark and the core carries the glow.
         liquid+=liquidTint*max(d.appearance.y,0.0f)*(1.0f-exp(-thickness*0.42f));
@@ -344,6 +379,13 @@ namespace ContainedLiquids
         // the liquid at particular view angles. A bounded, view-independent
         // retention instead makes the volume read behind the glass while the
         // fitted profile and original bottle raster own all hard boundaries.
+        // Two scene taps create a restrained soft meniscus transition. It is
+        // intentionally limited to the contact edge so the liquid body stays
+        // sharp while viscous fluids get a believable rounded surface blend.
+        if (surface && meniscus>1.0e-3f) {
+            float3 softMeniscus=SampleCrop(pixel+offset*1.35f,d);
+            liquid=lerp(liquid,lerp(background,softMeniscus,0.5f),meniscus*0.16f);
+        }
         float coverage=smoothstep(0.01f,0.18f,thickness)*d.dynamics.w;
         // Keep the authored glass as the dominant outer coat. The liquid and
         // refraction sit behind it; replacing most of this response makes

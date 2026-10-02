@@ -30,6 +30,7 @@
 #include "Modules/ContainedLiquids.h"
 #include "Modules/CurvedSurfaceMapping.h"
 #include "Modules/DistantLife.h"
+#include "Modules/ReactiveFX.h"
 #include "Modules/SkyContinuity.h"
 #include "Modules/SkyBounce.h"
 #include "Modules/TissueDiffusion.h"
@@ -273,7 +274,8 @@ const std::vector<RenderModule*>& RenderModule::GetModuleList()
 		&globals::pipeline::windowLife,
 		&globals::pipeline::containedLiquids,
 		&globals::pipeline::curvedSurfaceMapping,
-		&globals::pipeline::distantLife
+		&globals::pipeline::distantLife,
+		&globals::pipeline::reactiveFX
 	};
 
 	return features;

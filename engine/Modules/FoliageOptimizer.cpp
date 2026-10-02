@@ -9,6 +9,29 @@
 
 #define I18N_KEY_PREFIX "feature.foliage_optimizer."
 
+namespace
+{
+	// Director/Photo camera ownership can move the active NiCamera without
+	// changing the character-facing world-root camera immediately. Resolve the
+	// same camera tree used by CameraSuite for capture focus and retain the
+	// world-root camera as a safe gameplay fallback.
+	RE::NiCamera* FindActiveCaptureCamera(RE::NiAVObject* object)
+	{
+		if (!object)
+			return nullptr;
+		if (auto* camera = netimmerse_cast<RE::NiCamera*>(object))
+			return camera;
+		const auto node = object->AsNode();
+		if (!node)
+			return nullptr;
+		for (const auto& child : node->GetChildren()) {
+			if (auto* camera = FindActiveCaptureCamera(child.get()))
+				return camera;
+		}
+		return nullptr;
+	}
+}
+
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	FoliageOptimizer::Settings,
 	MinPixelSize,
@@ -330,11 +353,40 @@ void FoliageOptimizer::UpdateGrass()
 	globals::profiler->EndPass();
 
 	RE::NiCamera* cam = RE::Main::WorldRootCamera();
+	if (directorVideo || directorPhoto) {
+		if (auto* playerCamera = RE::PlayerCamera::GetSingleton()) {
+			if (auto* captureCamera = FindActiveCaptureCamera(playerCamera->cameraRoot.get()))
+				cam = captureCamera;
+		}
+	}
 	if (!cam) {
 		// Leaving last frame's flags up would let the draw path re-issue its indirect draws.
 		for (auto& [key, b] : bucketStore.buckets)
 			b.cullVisible = false;
 		return;
+	}
+
+	// A capture camera is a separate NiCamera in CameraSuite. If ownership has
+	// changed, or the camera has teleported, the previous frame's occlusion
+	// result is spatially unrelated and can hide otherwise visible grass. Give
+	// frustum culling two settling frames while the new depth/Hi-Z view catches
+	// up. The guard band still preserves edge vegetation during normal motion.
+	const bool directorCamera = directorVideo || directorPhoto;
+	const auto delta = cam->world.translate - lastCullCameraPosition;
+	const float cameraJumpSq = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
+	const bool cameraChanged = !haveCullCameraState ||
+		lastCullCamera != cam ||
+		lastCullWasDirector != directorCamera ||
+		cameraJumpSq > (768.0f * 768.0f);
+	if (cameraChanged) {
+		lastCullCamera = cam;
+		lastCullCameraPosition = cam->world.translate;
+		lastCullWasDirector = directorCamera;
+		haveCullCameraState = true;
+		cameraTransitionFrames = 2;
+		hiZ.Invalidate();
+		for (auto& [key, b] : bucketStore.buckets)
+			b.cullVisible = false;
 	}
 
 	RE::NiFrustumPlanes frustum{};
@@ -344,10 +396,13 @@ void FoliageOptimizer::UpdateGrass()
 	FrustumSoA frustumSoA;
 	BuildFrustumSoA(frustumSoA, frustum);
 
-	if (settings.EnableOcclusionCulling)
+	const bool allowHiZ = settings.EnableOcclusionCulling && cameraTransitionFrames == 0;
+	if (allowHiZ)
 		hiZ.Build(device, ctx);
 	else
 		hiZ.Invalidate();
+	if (cameraTransitionFrames > 0)
+		--cameraTransitionFrames;
 
 	{
 		CullParamsCB cp{};
@@ -701,21 +756,42 @@ void FoliageOptimizer::SetupResources()
 		return;
 	}
 
-	// The Community Shaders 1.9.1 replacement hook set repeatedly produced a DEP
-	// execute-access violation before the first optimizer frame on the shipping
-	// Skyrim 1.5.97 runtime. Do not install partially validated call-site/vtable
-	// patches in a release build. RunGrass retains its explicit null-extras path,
-	// so the FOLIAGE_OPTIMIZER permutation safely executes Skyrim's normal grass
-	// draw ABI while the SE hook integration is rebuilt around verified call sites.
+	// Fail closed on the SE executable. Even the group-allocation route shares
+	// the optimizer's vtable/draw hooks, and the previous attempt still faulted
+	// during grass setup. Keep the module visible for diagnostics and preserve
+	// vanilla grass rendering until the exact SE hook ABI has a verified test.
 	if (REL::Module::IsSE()) {
 		runtimeReady = false;
-		logger::critical("[PIXL] Foliage Optimizer native hooks quarantined on Skyrim 1.5.97 after repeatable pre-frame DEP violations; vanilla grass submission remains active");
+		logger::warn("[PIXL] Foliage Optimizer disabled on Skyrim SE for stability; vanilla grass rendering retained");
 		return;
 	}
+
 	if (!hooksInstalled) {
-		Hooks::Install();
+		// The SE 1.5.x CommonLib surface does not expose the GID stream header
+		// used by the newer call-site chain. Those hooks were able to fault while
+		// a cell was loading before PIXL reached its normal fallback. SE already
+		// exposes the populated group allocation through DoneAddingInstances, so
+		// retain the safe capture path and leave only the ABI-sensitive GID hooks
+		// out. AE/other supported runtimes may use the complete stream path.
+		Hooks::Install(!REL::Module::IsSE());
 		hooksInstalled = true;
+		if (REL::Module::IsSE())
+			logger::info("[PIXL] Foliage Optimizer using SE-safe group allocation capture; GID stream hooks quarantined");
 	}
+}
+
+namespace
+{
+	static size_t GIDGroupBytes(const PIXLGrassGroupHeader* header)
+	{
+		if (!header || !header->numShortsPerInstance)
+			return 0;
+		return static_cast<size_t>(header->groupInstanceCount) * header->numShortsPerInstance * sizeof(std::uint16_t);
+	}
+
+	thread_local PIXLGrassGroupHeader tl_lastFileGroupHeader{};
+	thread_local std::vector<std::uint16_t> tl_lastFileInstanceData;
+	thread_local bool tl_haveFileGroup = false;
 }
 
 void FoliageOptimizer::ClearShaderCache()
@@ -874,6 +950,54 @@ void FoliageOptimizer::Hooks::BSGrassShader_SetupGeometry::thunk(RE::BSShader* T
 	}
 
 	func(This, a2, flags);
+}
+
+std::uint32_t FoliageOptimizer::Hooks::AddGroupGIDBuffer::thunk(RE::BSMultiStreamInstanceTriShape* shape, PIXLGrassGroupHeader* header, std::uint16_t* data)
+{
+	globals::pipeline::foliageOptimizer.bucketStore.CaptureGIDGroup(shape, header, data, GIDGroupBytes(header));
+	return func(shape, header, data);
+}
+
+std::uint32_t FoliageOptimizer::Hooks::AddQueuedGroupGIDBuffer::thunk(RE::BSMultiStreamInstanceTriShape* shape, PIXLGrassGroupHeader* header, std::uint16_t* data, RE::BSTArray<std::uint32_t>& queued)
+{
+	globals::pipeline::foliageOptimizer.bucketStore.CaptureGIDGroup(shape, header, data, GIDGroupBytes(header));
+	return func(shape, header, data, queued);
+}
+
+void FoliageOptimizer::Hooks::ReadGroupHeaderStreamTraits::thunk(RE::BSStreamHeader* streamHeader, PIXLGrassGroupHeader* groupHeader, uint32_t size)
+{
+	func(streamHeader, groupHeader, size);
+	std::memcpy(&tl_lastFileGroupHeader, groupHeader, std::min<uint32_t>(size, sizeof(tl_lastFileGroupHeader)));
+}
+
+void FoliageOptimizer::Hooks::ReadInstanceGroupStreamTraits::thunk(RE::BSStreamHeader* streamHeader, uint16_t* instanceData, uint32_t size)
+{
+	func(streamHeader, instanceData, size);
+	tl_lastFileInstanceData.resize((size + sizeof(uint16_t) - 1) / sizeof(uint16_t));
+	std::memcpy(tl_lastFileInstanceData.data(), instanceData, size);
+	tl_haveFileGroup = true;
+}
+
+void FoliageOptimizer::Hooks::AddGroupQueuedGIDFile::thunk(RE::BSMultiStreamInstanceTriShape* shape, RE::BSStream* stream, RE::BSTArray<std::uint32_t>& queued)
+{
+	tl_haveFileGroup = false;
+	func(shape, stream, queued);
+	if (tl_haveFileGroup) {
+		globals::pipeline::foliageOptimizer.bucketStore.CaptureGIDGroup(
+			shape, &tl_lastFileGroupHeader, tl_lastFileInstanceData.data(), tl_lastFileInstanceData.size() * sizeof(std::uint16_t));
+		tl_haveFileGroup = false;
+	}
+}
+
+void FoliageOptimizer::Hooks::AddGroupGIDFile::thunk(RE::BSMultiStreamInstanceTriShape* shape, RE::BSStream* stream)
+{
+	tl_haveFileGroup = false;
+	func(shape, stream);
+	if (tl_haveFileGroup) {
+		globals::pipeline::foliageOptimizer.bucketStore.CaptureGIDGroup(
+			shape, &tl_lastFileGroupHeader, tl_lastFileInstanceData.data(), tl_lastFileInstanceData.size() * sizeof(std::uint16_t));
+		tl_haveFileGroup = false;
+	}
 }
 
 RE::BSMultiStreamInstanceTriShape* FoliageOptimizer::Hooks::LoadGrassType::thunk(RE::BGSGrassManager* grassManager, RE::GrassParam* a_param, uint32_t CellXDivided, uint32_t CellYDivided, uint64_t* typeKey, RE::BSFixedString* modelPath)

@@ -772,26 +772,26 @@ namespace
 
 		if (contains("candle") || contains("wick"))
 			return IncandescentEmitterProfile{
-				8.0f, 280.0f, 0.90f,
-				4.0f, 360.0f, 1.55f,
+				8.0f, 272.0f, 0.87f,
+				4.0f, 350.0f, 1.49f,
 				{ 1.0f, 0.52f, 0.18f }, 0.055f
 			};
 		if (contains("torch") || contains("sconce"))
 			return IncandescentEmitterProfile{
-				10.0f, 420.0f, 1.05f,
-				4.5f, 520.0f, 2.00f,
+				10.0f, 408.0f, 1.00f,
+				4.5f, 505.0f, 1.92f,
 				{ 1.0f, 0.43f, 0.12f }, 0.085f
 			};
 		if (contains("brazier") || contains("bonfire") || contains("campfire") || contains("hearth"))
 			return IncandescentEmitterProfile{
-				12.0f, 620.0f, 1.15f,
-				5.0f, 900.0f, 2.80f,
+				12.0f, 600.0f, 1.10f,
+				5.0f, 870.0f, 2.65f,
 				{ 1.0f, 0.36f, 0.08f }, 0.105f
 			};
 		if (contains("fire") || contains("flame") || contains("ember") || contains("burn"))
 			return IncandescentEmitterProfile{
-				9.0f, 380.0f, 1.00f,
-				4.5f, 640.0f, 2.30f,
+				0.72f, 172.0f, 0.96f,
+				3.0f, 268.0f, 2.18f,
 				{ 1.0f, 0.38f, 0.09f }, 0.095f
 			};
 

@@ -609,7 +609,10 @@ void ContainedLiquids::SetupGeometry(RE::BSRenderPass* pass)
     const float seed=std::fmod(static_cast<float>((owner->GetFormID()*1664525u+1013904223u)&0x00FFFFFFu)/16777216.0f,1.0f);
     data.detail={settings.BubbleStrength*style.bubbleScale,settings.InternalReflection,seed,1.52f};
     const float emission=style.magical?settings.Emission:settings.OrdinaryEmission;
-    data.appearance={settings.SubsurfaceScattering,emission,settings.LabelPreservation,static_cast<float>(style.family)};
+    // The shader does not need the enum family after CPU classification. Reuse
+    // the final lane for viscosity so bubble buoyancy and meniscus settling
+    // respond to the same liquid-family physics as the CPU slosh solver.
+    data.appearance={settings.SubsurfaceScattering,emission,settings.LabelPreservation,style.viscosity};
     data.opticalColor={style.absorption.x,style.absorption.y,style.absorption.z,style.magical?1.0f:0.0f};
     data.liquidColor={style.tint.x,style.tint.y,style.tint.z,style.liquidIOR};
     if (!CaptureScene(data)) {

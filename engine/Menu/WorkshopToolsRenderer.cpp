@@ -7,6 +7,7 @@
 #include <thread>
 
 #include "PipelineHealth.h"
+#include "Modules/PulseProfiler.h"
 #include "Modules/PulseProfiler/ABTesting/ABTesting.h"
 #include "Fonts.h"
 #include "Globals.h"
@@ -703,6 +704,23 @@ void WorkshopToolsRenderer::RenderDeveloperSection()
 
 	// Developer Mode Testing Section
 	if (globals::state->IsDeveloperMode()) {
+		ImGui::Spacing();
+		ImGui::SeparatorText("Performance Capture");
+		static std::string profilerDumpStatus;
+		if (ImGui::Button("Dump Current Frame Trace", { -1, 0 })) {
+			const auto dumpPath = globals::pipeline::pulseProfiler.WriteFrameDump();
+			profilerDumpStatus = dumpPath.empty()
+				? "Profiler dump failed; check the PIXL log."
+				: std::format("Saved: {}", dumpPath.string());
+		}
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(
+				"Writes the last complete frame's named PIXL passes, CPU/GPU timings, "
+				"annotated events and shader-class draw-call summary to the diagnostics folder.");
+		}
+		if (!profilerDumpStatus.empty())
+			ImGui::TextDisabled("%s", profilerDumpStatus.c_str());
+
 		PipelineHealth::Test::DrawDeveloperModeTestingUI();
 
 		ImGui::Spacing();

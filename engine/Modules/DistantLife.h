@@ -27,6 +27,9 @@ struct DistantLife : RenderModule
 		bool FarFieldActivity = true;
 		float FarFieldDensity = 0.18f;
 		float FarFieldMotion = 0.35f;
+		bool FarFieldSmoke = true;
+		float FarFieldSmokeDensity = 0.12f;
+		float FarFieldSmokeHeight = 240.0f;
 		std::uint32_t DebugMode = 0;
 	};
 
@@ -94,9 +97,9 @@ private:
 		std::uint32_t farFieldActivity{};
 		float farFieldDensity{};
 		float farFieldMotion{};
-		float pad0{};
-		float pad1{};
-		float pad2{};
+		std::uint32_t farFieldSmoke{};
+		float farFieldSmokeDensity{};
+		float farFieldSmokeHeight{};
 	};
 	STATIC_ASSERT_ALIGNAS_16(TuningData);
 	static_assert(sizeof(TuningData) == 80, "DistantLife tuning ABI mismatch");

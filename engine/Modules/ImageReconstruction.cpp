@@ -1,5 +1,6 @@
 #include "ImageReconstruction.h"
 #include "ContainedLiquids.h"
+#include "ReactiveFX.h"
 
 #include "../I18n/I18n.h"
 #include "Deferred.h"
@@ -2300,6 +2301,11 @@ void ImageReconstruction::Upscale()
 		// Mark their tight projected regions current-frame reactive so DLSS/FSR do
 		// not accumulate stale liquid/refraction history around the glass silhouette.
 		globals::pipeline::containedLiquids.MarkReconstructionReactive(
+			reactiveMaskTexture->uav.get(), renderWidth, renderHeight);
+		// Reactive particles are colour changes without matching geometry motion.
+		// Merge their current coverage after the base mask encode so temporal
+		// reconstruction does not accumulate stale sparks, embers or fragments.
+		globals::pipeline::reactiveFX.MarkReconstructionReactive(
 			reactiveMaskTexture->uav.get(), renderWidth, renderHeight);
 
 		state->EndPerfEvent();

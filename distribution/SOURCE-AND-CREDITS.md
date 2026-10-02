@@ -30,6 +30,7 @@ infrastructure; file-local notices remain authoritative.
 | DistantLife | PIXL-specific module |
 | Contained Liquids | PIXL-specific module |
 | Curved Surface Mapping | PIXL-specific module |
+| Reactive FX | PIXL-specific experimental module and event/VFX framework |
 | Render Origin | PIXL-specific renderer service and integrations |
 | Ground Response snow/mud terrain deformation | PIXL contribution; grass collision remains upstream-derived |
 | Director camera paths and Video integrations | PIXL additions to the mixed CameraSuite/UI system |
@@ -39,6 +40,12 @@ MaterialForge, CameraSuite, Directional SSS/Contact Shadows, Rain Response,
 Water Optics, Waterbody/Flowmap, SkyBounce, Image Reconstruction, and the main
 GUI/framework are upstream-derived or mixed systems with PIXL modifications;
 they are not claimed as wholly original PIXL work.
+
+The receiver-caustic design was reviewed against the GPL-3.0-only CausticLight
+project by qtuna (Iwillbewarlock). PIXL's implementation uses its own existing
+Water Optics resources and renderer interfaces; CausticLight source, binaries,
+assets, and plugin hooks are not redistributed by PIXL. The reference project's
+copyright and licence remain with its authors.
 
 This attribution does not restrict GPL-covered redistribution, forking, or
 modification. Files containing Community Shaders or third-party material retain

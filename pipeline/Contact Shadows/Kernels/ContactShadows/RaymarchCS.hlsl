@@ -36,7 +36,8 @@ cbuffer PerFrame : register(b1)
 	uint Enable;
 	uint SampleCount;
 	float Strength;
-	uint2 Padding;
+	float FalloffStart;
+	float FalloffEnd;
 };
 
 [numthreads(WAVE_SIZE, 1, 1)] void main(
@@ -71,6 +72,8 @@ cbuffer PerFrame : register(b1)
 	// clamped instead of jumping to maximum contrast.
 	parameters.ShadowContrast = clamp((half)ShadowContrast, 1.0h, 4.0h);
 	parameters.Strength = saturate((half)Strength);
+	parameters.FalloffStart = max((half)FalloffStart, 0.0h);
+	parameters.FalloffEnd = max((half)FalloffEnd, parameters.FalloffStart + 0.25h);
 
 	// Broad, flat interior floors still produced dark stepped blotches whenever
 	// repeated depth discontinuities were classified as edge casters. Prefer

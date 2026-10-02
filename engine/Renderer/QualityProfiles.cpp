@@ -11,6 +11,7 @@
 #include "Modules/ActorSurfaceEffects.h"
 #include "Modules/FoliageDynamics.h"
 #include "Modules/FoliageOptimizer.h"
+#include "Modules/ReactiveFX.h"
 #include "Modules/CameraSuite.h"
 #include "Modules/StrandShading.h"
 #include "Modules/HairReconstruction.h"
@@ -301,6 +302,9 @@ namespace PIXLRenderer::QualityProfiles
 			auto& ground = globals::pipeline::groundResponse.settings;
 			auto& foliage = globals::pipeline::foliageOptimizer.settings;
 			const auto& contract = kTerrainVegetationContracts[quality];
+			// Reactive FX follows the renderer's terrain/vegetation workload tier,
+			// while its artistic strength and master enable remain user-owned.
+			globals::pipeline::reactiveFX.settings.Quality = static_cast<std::uint32_t>(quality);
 			// Vegetation material response and wind character are artistic controls,
 			// not workload controls. Preserve them at every quality tier. Scale the
 			// expensive raised snow/mud tessellation factors instead. Coverage, depth,

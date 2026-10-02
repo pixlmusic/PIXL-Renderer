@@ -4219,7 +4219,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 #	if defined(WATER_OPTICS)
-	dirLightColor *= WaterOptics::ComputeCaustics(waterData, input.WorldPosition.xyz);
+	dirLightColor *= WaterOptics::ComputeCaustics(waterData, input.WorldPosition.xyz, worldNormal.xyz);
 #	endif
 
 	// Apply world shadow (terrain shadows, cloud shadows) directly to light color
@@ -4280,7 +4280,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #	endif
 
-#	if defined(CONTACT_SHADOWS) && defined(DEFERRED)
+#	if defined(CONTACT_SHADOWS)
 	if (!pixlGroundRaisedShell &&
 		(!SharedData::InInterior || SharedData::HasDirectionalShadows) &&
 		dirLightAngle >= 0.0)
@@ -4546,6 +4546,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		if (intensityMultiplier < 1e-5f)
 			continue;
 		float3 lightColor = Color::PointLight(PointLightColor[lightIndex].xyz) * intensityMultiplier;
+#		if defined(WATER_OPTICS)
+		lightColor *= WaterOptics::ComputeLocalReceiverCaustics(
+			waterData, input.WorldPosition.xyz, worldNormal.xyz,
+			PointLightPosition[lightIndex].xyz, lightColor, PointLightPosition[lightIndex].w);
+#		endif
 		float lightShadow = 1.f;
 		if (!pixlGroundRaisedShell &&
 			(Permutation::PixelShaderDescriptor & Permutation::LightingFlags::DefShadow)) {
@@ -4731,6 +4736,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 		const bool isPointLightLinear = light.lightFlags & RadiantGrid::LightFlags::Linear;
 		float3 lightColor = Color::PointLight(light.color.xyz, isPointLightLinear) * intensityMultiplier * light.fade;
+#		if defined(WATER_OPTICS)
+		lightColor *= WaterOptics::ComputeLocalReceiverCaustics(
+			waterData, input.WorldPosition.xyz, worldNormal.xyz,
+			light.positionWS.xyz, lightColor, light.radius);
+#		endif
 		float lightShadow = 1.0;
 
 		float shadowComponent = 1.0;

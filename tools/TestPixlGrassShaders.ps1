@@ -16,7 +16,7 @@ $results = [Collections.Generic.List[object]]::new()
 # These are representative minimal/integrated configurations, not the full
 # power set of module toggles, VR, custom macros or other engine shader families.
 $integrated = @('GROUND_RESPONSE', 'CONTACT_SHADOWS', 'RADIANT_GRID', 'NATURAL_LIGHTING',
-    'SKY_BOUNCE', 'WORLD_PROBES', 'AMBIENT_PROBE', 'ATMOSPHERE_PIPELINE')
+    'SKY_BOUNCE', 'WORLD_PROBES', 'AMBIENT_PROBE', 'ATMOSPHERE_PIPELINE', 'REACTIVE_FX')
 foreach ($mask in 0..31) {
     foreach ($stage in @('vs', 'ps')) {
         $defines = @('WINPC', 'DX11', $(if ($stage -eq 'vs') { 'VSHADER' } else { 'PSHADER' }))

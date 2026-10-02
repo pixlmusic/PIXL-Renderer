@@ -1887,6 +1887,7 @@ void HybridGI::DrawHybridGI()
 
 	if (queuedResetHistory.exchange(false)) {
 		hasPreviousFrameInverseView = false;
+		lastWorldCacheDecayClock = 0xffffffffu;
 		clearTemporalHistory();
 		const UINT clearValue[4] = { 0, 0, 0, 0 };
 		context->ClearUnorderedAccessViewUint(texWorldCacheMetadata->uav.get(), clearValue);
@@ -2096,15 +2097,19 @@ void HybridGI::DrawHybridGI()
 			globals::profiler->EndPass();
 
 			// Invalidate entries after their fixed-time lifetime before the GI and
-			// reflection readers run. This prevents 8-bit timestamp wraparound from
-			// resurrecting stale illumination while remaining independent of FPS.
-			resetViews();
-			uavs.at(0) = texWorldCacheMetadata->uav.get();
-			context->CSSetUnorderedAccessViews(0, 1, uavs.data(), nullptr);
-			context->CSSetShader(worldCacheDecayCompute.get(), nullptr, 0);
-			globals::profiler->BeginPass("HybridGI::WorldCacheDecay");
-			context->Dispatch(((32u * 32u) + 7u) >> 3, ((32u * 2u) + 7u) >> 3, 1);
-			globals::profiler->EndPass();
+			// reflection readers run. The cache clock advances at a fixed rate, so
+			// sweeping the same atlas on every render frame is redundant at 120 FPS
+			// and above. A sweep is still forced after a history reset.
+			if (worldCacheClock != lastWorldCacheDecayClock) {
+				resetViews();
+				uavs.at(0) = texWorldCacheMetadata->uav.get();
+				context->CSSetUnorderedAccessViews(0, 1, uavs.data(), nullptr);
+				context->CSSetShader(worldCacheDecayCompute.get(), nullptr, 0);
+				globals::profiler->BeginPass("HybridGI::WorldCacheDecay");
+				context->Dispatch(((32u * 32u) + 7u) >> 3, ((32u * 2u) + 7u) >> 3, 1);
+				globals::profiler->EndPass();
+				lastWorldCacheDecayClock = worldCacheClock;
+			}
 		}
 
 		TracyD3D11Zone(globals::state->tracyCtx, "HybridGI - GI");

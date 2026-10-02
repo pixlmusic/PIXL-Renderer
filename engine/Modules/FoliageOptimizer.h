@@ -215,6 +215,16 @@ public:
 	float maxDistSq = 0.0f;
 	float runtimeFrustumGuardBand = 128.0f;
 
+	// Culling ownership can move from Skyrim's gameplay camera to a CameraSuite
+	// capture camera without rebuilding the grass buckets. Keep a small amount of
+	// camera history so a Hi-Z pyramid produced for the old view is never trusted
+	// for the new view. This is the PIXL equivalent of per-camera culling state.
+	RE::NiCamera* lastCullCamera = nullptr;
+	RE::NiPoint3 lastCullCameraPosition{};
+	bool haveCullCameraState = false;
+	bool lastCullWasDirector = false;
+	uint32_t cameraTransitionFrames = 0;
+
 	struct Hooks
 	{
 		struct BSMultiStreamInstanceTriShape_dtor
@@ -241,6 +251,45 @@ public:
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
+		// The instance allocation is populated through Skyrim's GID/group stream
+		// readers. Without these capture points the optimizer sees no usable source
+		// records and every setting silently falls back to vanilla grass.
+		struct AddQueuedGroupGIDBuffer
+		{
+			static std::uint32_t thunk(RE::BSMultiStreamInstanceTriShape*, PIXLGrassGroupHeader*, std::uint16_t*, RE::BSTArray<std::uint32_t>&);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct AddGroupGIDBuffer
+		{
+			static std::uint32_t thunk(RE::BSMultiStreamInstanceTriShape*, PIXLGrassGroupHeader*, std::uint16_t*);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct ReadGroupHeaderStreamTraits
+		{
+			static void thunk(RE::BSStreamHeader*, PIXLGrassGroupHeader*, uint32_t);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct ReadInstanceGroupStreamTraits
+		{
+			static void thunk(RE::BSStreamHeader*, uint16_t*, uint32_t);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct AddGroupQueuedGIDFile
+		{
+			static void thunk(RE::BSMultiStreamInstanceTriShape*, RE::BSStream*, RE::BSTArray<std::uint32_t>&);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		struct AddGroupGIDFile
+		{
+			static void thunk(RE::BSMultiStreamInstanceTriShape*, RE::BSStream*);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
 		struct DrawInstanceTriShape
 		{
 			static void thunk(RE::BSRenderPass* curPass, RE::BSMultiStreamInstanceTriShape* geometry);
@@ -253,7 +302,7 @@ public:
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
-		static void Install()
+		static void Install(bool installGIDHooks)
 		{
 			auto& trampoline = SKSE::GetTrampoline();
 
@@ -262,6 +311,16 @@ public:
 			stl::write_vfunc<0x3A, DoneAddingInstances>(RE::VTABLE_BSMultiStreamInstanceTriShape[0]);
 
 			stl::write_vfunc<0x6, BSGrassShader_SetupGeometry>(RE::VTABLE_BSGrassShader[0]);
+
+		if (installGIDHooks) {
+			stl::write_thunk_call<AddQueuedGroupGIDBuffer>(REL::RelocationID(15205, 15373).address() + Util::VersionedRelocation::Select(0x7FF, 0x756, 0x768));
+			stl::write_thunk_call<AddGroupGIDBuffer>(REL::RelocationID(15205, 15373).address() + Util::VersionedRelocation::Select(0x806, 0x75D, 0x76F));
+			stl::write_thunk_call<ReadGroupHeaderStreamTraits>(REL::RelocationID(74599, 76327).address() + Util::VersionedRelocation::Select(0x36, 0x36, 0x45));
+			stl::write_thunk_call<ReadGroupHeaderStreamTraits>(REL::RelocationID(74596, 76324).address() + Util::VersionedRelocation::Select(0x2F, 0x33, 0x42));
+			stl::write_thunk_call<ReadInstanceGroupStreamTraits>(REL::RelocationID(74607, 76339).address() + REL::Relocate(0xCF, 0xCF));
+			stl::write_thunk_call<AddGroupQueuedGIDFile>(REL::RelocationID(15206, 15374).address() + REL::Relocate(0x394, 0x384));
+			stl::write_thunk_call<AddGroupGIDFile>(REL::RelocationID(15206, 15374).address() + REL::Relocate(0x39B, 0x38B));
+		}
 
 			// Record each grass type's source .nif path alongside its shape.
 			stl::write_thunk_call<LoadGrassType>(REL::RelocationID(15204, 15372).address() + Util::VersionedRelocation::Select(0x2F5, 0x2F5, 0x305));
@@ -273,8 +332,8 @@ public:
 			stl::write_thunk_call<DrawInstanceTriShape>(REL::RelocationID(100847, 107637).address() + REL::Relocate(0x663, 0x64B));
 			trampoline.write_branch<5>(REL::RelocationID(100847, 107637).address() + REL::Relocate(0x668, 0x650), REL::RelocationID(100847, 107637).address() + REL::Relocate(0x759, 0x73A));
 
-			// Preserve Skyrim's dynamic fade upload. Optimized permutations do not
-			// consume cb7/cb8, but fallback draws still require the original ABI.
+		// Preserve Skyrim's dynamic fade upload. Optimized permutations do not
+		// consume cb7/cb8, but fallback draws still require the original ABI.
 			logger::info("[PIXL] Foliage Optimizer hooks installed");
 		}
 	};

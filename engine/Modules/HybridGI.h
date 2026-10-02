@@ -362,6 +362,10 @@ private:
 	std::uintptr_t previousSceneIdentity = 0;
 	float worldCacheClockAccumulator = 0.0f;
 	uint worldCacheClock = 0u;
+	// Decay is defined in fixed-rate world-cache ticks, not render frames. Keep
+	// the last swept tick so high-FPS sessions do not repeatedly dispatch the
+	// same 2,048-entry atlas sweep between clock advances.
+	uint lastWorldCacheDecayClock = 0xffffffffu;
 
 	struct DiagnosticRecord
 	{

@@ -52,7 +52,8 @@ public:
 		uint Enable = 1;
 		uint SampleCount = 1;
 		float Strength = 1.0f;
-		uint pad0[2];
+		float FalloffStart = 6144.0f;
+		float FalloffEnd = 12288.0f;
 	};
 	static_assert(sizeof(BendSettings) == 32, "ContactShadows::BendSettings must match RaymarchCS b1 exactly.");
 

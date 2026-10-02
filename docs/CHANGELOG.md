@@ -1,4 +1,11 @@
-# PIXL Renderer 1.0.5 Changelog
+# PIXL Renderer 1.0.6 Changelog
+
+Changes since 1.0.5:
+
+- Moved Foliage Optimizer into Experimental and disabled it by default for the release build while its Skyrim SE hook path is validated.
+- Smoothed Radiance Weave voxel cascade blending to reduce visible world-cache transition edges.
+- Tuned default water caustics to a restrained 1.2 intensity.
+- Improved PIXL water receiver projection with moving multi-scale caustic focus and extended bridge/overhang coverage.
 
 Changes since 1.0.4:
 

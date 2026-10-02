@@ -26,7 +26,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	SurfaceThickness,
 	BilinearThreshold,
 	ShadowContrast,
-	Strength)
+	Strength,
+	FalloffStart,
+	FalloffEnd)
 
 void ContactShadows::DrawSettings()
 {
@@ -54,6 +56,11 @@ void ContactShadows::DrawSettings()
 		ImGui::SliderFloat("Directional SSS Strength", &bendSettings.Strength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Blends PIXL's depth-reconstructed sun/moon visibility with Skyrim's directional shadow map. Zero keeps Skyrim shadows; one applies the complete PIXL refinement.");
+
+		ImGui::SliderFloat("SSS Falloff Start", &bendSettings.FalloffStart, 256.0f, 20000.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat("SSS Falloff End", &bendSettings.FalloffEnd, 512.0f, 24000.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Fades the screen-space directional shadow to neutral over view distance. Lower values reduce raymarch work and avoid unstable far-depth shadows; Skyrim's normal shadow map remains active beyond this range.");
 
 		ImGui::Spacing();
 		ImGui::Spacing();
@@ -337,6 +344,8 @@ void ContactShadows::LoadSettings(json& o_json)
 	bendSettings.BilinearThreshold = std::clamp(bendSettings.BilinearThreshold, 0.02f, 1.0f);
 	bendSettings.ShadowContrast = std::clamp(bendSettings.ShadowContrast, 1.0f, 4.0f);
 	bendSettings.Strength = std::clamp(bendSettings.Strength, 0.0f, 1.0f);
+	bendSettings.FalloffStart = std::clamp(bendSettings.FalloffStart, 256.0f, 20000.0f);
+	bendSettings.FalloffEnd = std::clamp(std::max(bendSettings.FalloffEnd, bendSettings.FalloffStart + 256.0f), 512.0f, 24000.0f);
 }
 
 void ContactShadows::SaveSettings(json& o_json)

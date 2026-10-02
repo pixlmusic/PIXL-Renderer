@@ -218,6 +218,38 @@ void PulseProfiler::DrawSettings()
 		RestoreDefaultSettings();
 	}
 }
+
+std::filesystem::path PulseProfiler::WriteFrameDump() const
+{
+	if (!globals::profiler)
+		return {};
+
+	const auto path = globals::profiler->WriteSnapshot();
+	if (path.empty())
+		return {};
+
+	std::ofstream output(path, std::ios::out | std::ios::app);
+	if (!output)
+		return {};
+
+	auto [mainRows, summaryRows] = BuildDrawCallRows();
+	std::ranges::sort(mainRows, [](const auto& lhs, const auto& rhs) {
+		return lhs.frameTime > rhs.frameTime;
+	});
+	std::ranges::sort(summaryRows, [](const auto& lhs, const auto& rhs) {
+		return lhs.frameTime > rhs.frameTime;
+	});
+	output << "\nShader-class draw-call metrics (current profiler frame):\n";
+	for (const auto& row : mainRows) {
+		output << std::format(
+			"  {:8} calls | {:10.4f} ms | {:7.3f}% | {:8.4f} ms/call | {}\n",
+			row.drawCalls, row.frameTime, row.percent, row.costPerCall, row.label);
+	}
+	output << "Summary:\n";
+	for (const auto& row : summaryRows)
+		output << std::format("  {:10.4f} ms | {:7.3f}% | {}\n", row.frameTime, row.percent, row.label);
+	return path;
+}
 void PulseProfiler::SaveSettings(json& j)
 {
 	// Persist all overlay settings to JSON

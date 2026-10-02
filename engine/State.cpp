@@ -1007,6 +1007,8 @@ void State::ModifyShaderLookup(const RE::BSShader& a_shader, uint& a_vertexDescr
 
 void State::BeginPerfEvent(std::string_view title)
 {
+	if (globals::profiler)
+		globals::profiler->RecordExternalEvent(title);
 #ifdef TRACY_ENABLE
 	// Use dynamic source location so Tracy displays the title as the zone name
 	// rather than the static function name "BeginPerfEvent".

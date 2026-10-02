@@ -174,7 +174,13 @@ namespace SkinOptics
 			float fuzzG = BRDF::Vis_Neubelt(NdotV, NdotL);
 			float3 fuzzF = BRDF::F_Schlick(FuzzF0, VdotH);
 			float3 fuzzSpecular = fuzzD * fuzzG * fuzzF * context.lightColor * NdotL;
-			float fuzzWeight = saturate(material.FuzzWeight) * (1.0f - curvatureResponse * 0.25f);
+			// Peach fuzz is a grazing velvet layer, not a uniform diffuse veil.  Keeping
+			// a small head-on contribution avoids a hard terminator, while moving most
+			// of the energy to the rim restores pore contrast and removes the clay-like
+			// flatness seen on broad cheek and forehead lighting.
+			float fuzzGrazing = lerp(0.30f, 1.0f, smoothstep(0.05f, 0.82f, 1.0f - NdotV));
+			float fuzzWeight = saturate(material.FuzzWeight) * fuzzGrazing *
+				(1.0f - curvatureResponse * 0.25f);
 			float3 layerTransmission = 1.0f.xxx - fuzzF * fuzzWeight;
 			lightingOutput.diffuse *= layerTransmission;
 			lightingOutput.specular = lightingOutput.specular * layerTransmission + fuzzSpecular * fuzzWeight;
@@ -239,7 +245,9 @@ namespace SkinOptics
 		// at grazing angles and remains energy layered over the skin lobes.
 		if (material.FuzzWeight > 0.0f) {
 			const float grazing = 1.0f - NdotV;
-			const float fuzzWeight = saturate(material.FuzzWeight) *
+			const float fuzzGrazing = lerp(0.30f, 1.0f,
+				smoothstep(0.05f, 0.82f, 1.0f - NdotV));
+			const float fuzzWeight = saturate(material.FuzzWeight) * fuzzGrazing *
 				(1.0f - curvatureResponse * 0.25f);
 			const float3 fuzzF = BRDF::F_Schlick(saturate(material.FuzzColor), NdotV);
 			const float3 fuzzTransmission = 1.0f.xxx - fuzzF * fuzzWeight;

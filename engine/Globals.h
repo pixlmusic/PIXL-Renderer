@@ -44,6 +44,7 @@ struct WindowLife;
 struct ContainedLiquids;
 struct CurvedSurfaceMapping;
 struct DistantLife;
+struct ReactiveFX;
 
 class State;
 class Deferred;
@@ -136,6 +137,7 @@ namespace globals
 		extern ContainedLiquids containedLiquids;
 		extern CurvedSurfaceMapping curvedSurfaceMapping;
 		extern DistantLife distantLife;
+		extern ReactiveFX reactiveFX;
 
 	}
 

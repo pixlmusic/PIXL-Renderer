@@ -18,7 +18,8 @@
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DistantLife::Settings,
 	Enabled, Intensity, MinimumDistance, MaximumDistance, StaticLights,
 	ActorTorches, AtmosphericAttenuation, FarFieldActivity, FarFieldDensity,
-	FarFieldMotion, DebugMode)
+	FarFieldMotion, FarFieldSmoke, FarFieldSmokeDensity, FarFieldSmokeHeight,
+	DebugMode)
 
 namespace
 {
@@ -278,7 +279,7 @@ void DistantLife::Prepass()
 	scanCountdown -= dt;
 
 	auto* player = RE::PlayerCharacter::GetSingleton();
-	if (!settings.Enabled || !settings.StaticLights || !player || !player->GetWorldspace() || !player->GetParentCell() ||
+	if (!settings.Enabled || (!settings.StaticLights && !settings.FarFieldActivity) || !player || !player->GetWorldspace() || !player->GetParentCell() ||
 		player->GetParentCell()->IsInteriorCell()) {
 		emitters.clear();
 		worldspace = 0;
@@ -459,6 +460,9 @@ void DistantLife::DrawDistantLife()
 	tuning.farFieldActivity = settings.FarFieldActivity ? 1u : 0u;
 	tuning.farFieldDensity = std::clamp(settings.FarFieldDensity, 0.0f, 0.5f);
 	tuning.farFieldMotion = std::clamp(settings.FarFieldMotion, 0.0f, 1.0f);
+	tuning.farFieldSmoke = settings.FarFieldSmoke ? 1u : 0u;
+	tuning.farFieldSmokeDensity = std::clamp(settings.FarFieldSmokeDensity, 0.0f, 0.5f);
+	tuning.farFieldSmokeHeight = std::clamp(settings.FarFieldSmokeHeight, 64.0f, 640.0f);
 	tuningCB->Update(tuning);
 
 	const UINT clear[4]{};
@@ -528,6 +532,8 @@ void DistantLife::LoadSettings(json& j)
 	settings.MaximumDistance = std::clamp(settings.MaximumDistance, settings.MinimumDistance + 1.0f, 200000.0f);
 	settings.FarFieldDensity = std::clamp(std::isfinite(settings.FarFieldDensity) ? settings.FarFieldDensity : 0.18f, 0.0f, 0.5f);
 	settings.FarFieldMotion = std::clamp(std::isfinite(settings.FarFieldMotion) ? settings.FarFieldMotion : 0.35f, 0.0f, 1.0f);
+	settings.FarFieldSmokeDensity = std::clamp(std::isfinite(settings.FarFieldSmokeDensity) ? settings.FarFieldSmokeDensity : 0.12f, 0.0f, 0.5f);
+	settings.FarFieldSmokeHeight = std::clamp(std::isfinite(settings.FarFieldSmokeHeight) ? settings.FarFieldSmokeHeight : 240.0f, 64.0f, 640.0f);
 	settings.DebugMode = std::min(settings.DebugMode, 2u);
 }
 
@@ -571,6 +577,13 @@ void DistantLife::DrawSettings()
 	ImGui::SliderFloat("Far-field activity density", &settings.FarFieldDensity, 0.0f, 0.5f, "%.2f");
 	ImGui::SliderFloat("Far-field drift", &settings.FarFieldMotion, 0.0f, 1.0f, "%.2f");
 	ImGui::EndDisabled();
+	ImGui::Checkbox("Distant settlement haze", &settings.FarFieldSmoke);
+	ImGui::BeginDisabled(!settings.FarFieldSmoke);
+	ImGui::SliderFloat("Settlement haze density", &settings.FarFieldSmokeDensity, 0.0f, 0.5f, "%.2f");
+	ImGui::SliderFloat("Settlement haze height", &settings.FarFieldSmokeHeight, 64.0f, 640.0f, "%.0f units");
+	ImGui::EndDisabled();
+	if (auto tip = Util::HoverTooltipWrapper())
+		ImGui::TextWrapped("Adds a sparse, world-stable atmospheric suggestion around distant settlement-like terrain cells. It is an optical LOD aid, not a simulated fire or gameplay light.");
 	if (ImGui::TreeNode("Debug / DistantLife")) {
 		int debug = static_cast<int>(settings.DebugMode);
 		if (ImGui::Combo("Visualisation", &debug, "Off\0Source markers\0Optical footprint\0"))

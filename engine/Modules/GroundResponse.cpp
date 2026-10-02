@@ -5,6 +5,7 @@
 // Additional permissions are described in the repository EXCEPTIONS.md.
 
 #include "GroundResponse.h"
+#include "ReactiveFX.h"
 
 #include "ActorSurfaceEffects.h"
 #include "CameraSuite.h"
@@ -2639,6 +2640,13 @@ GroundResistanceSample ResistanceEvaluateActor(
 				a_projectile,
 				impact->desiredTargetLoc,
 				velocity);
+			if (globals::pipeline::reactiveFX.loaded) {
+				globals::pipeline::reactiveFX.QueueProjectileImpact(
+					a_projectile,
+					impact->desiredTargetLoc,
+					velocity,
+					impact->material);
+			}
 			++queued;
 		}
 
@@ -4349,6 +4357,16 @@ void GroundResponse::QueueCollisions()
 			for (const auto& contact : bodyContacts) {
 				if (!appendActorSurfaceStamp(contact.interaction))
 					break;
+
+				if (globals::pipeline::reactiveFX.loaded) {
+					globals::pipeline::reactiveFX.QueueFootstep(
+						contact.worldCenter,
+						contact.worldVelocity,
+						contact.effectType == ActorSurfaceEffects::EffectType::Snow
+							? ReactiveFX::SurfaceType::Snow
+							: ReactiveFX::SurfaceType::Mud,
+						contact.interaction.strength);
+				}
 
 				// Share the exact accepted contact with Actor Surface Effects. This is
 				// deliberately downstream of the same cap/receiver decision as the

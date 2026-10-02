@@ -50,8 +50,8 @@ $sourceWorkingTreeDirty = [bool]@($sourceChanges | Where-Object {
     -not ($reproducibleDependencyPatch -and $_ -eq ' m extern/FidelityFX-SDK')
 })
 $allowedRoot = [IO.Path]::GetFullPath($(if ($AllowedOutputRoot) { $AllowedOutputRoot } else { Join-Path $sourceRoot "dist" }))
-if (-not $OutputDirectory) { $OutputDirectory = Join-Path $allowedRoot "PIXL-Renderer-1.0.5-Core" }
-if (-not $ArchivePath) { $ArchivePath = Join-Path $allowedRoot "PIXL-Renderer-1.0.5-Core.zip" }
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $allowedRoot "PIXL-Renderer-1.0.6-Core" }
+if (-not $ArchivePath) { $ArchivePath = Join-Path $allowedRoot "PIXL-Renderer-1.0.6-Core.zip" }
 if (-not $BuildDirectory) { $BuildDirectory = Join-Path $sourceRoot "build\PIXL-12C\Release" }
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 $archive = if ($ArchivePath) { [IO.Path]::GetFullPath($ArchivePath) } else { "" }
@@ -358,8 +358,8 @@ $manifestFiles = Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object
 }
 [ordered]@{
     product = "PIXL Renderer"
-    title = "PIXL Renderer v1.0.5"
-    version = "1.0.5"
+    title = "PIXL Renderer v1.0.6"
+    version = "1.0.6"
     requirements = @([ordered]@{
         id = "EngineFixes"
         path = "SKSE/Plugins/EngineFixes.dll"

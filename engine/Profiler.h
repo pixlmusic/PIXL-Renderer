@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -120,6 +121,12 @@ public:
 	/** @brief Ends the current profiling frame and advances the ring buffer write cursor. */
 	void EndFrame();
 
+	/** @brief Records an engine render-event label for the current frame. */
+	void RecordExternalEvent(std::string_view name);
+
+	/** @brief Writes the current named-pass and engine-event snapshot for diagnostics. */
+	[[nodiscard]] std::filesystem::path WriteSnapshot() const;
+
 	/** @brief Gets the per-pass timing results from the last collected frame. */
 	const std::vector<TimerResult>& GetResults() const { return results; }
 
@@ -196,6 +203,8 @@ private:
 	};
 	std::vector<KnownTimer> knownTimers;
 	std::unordered_map<std::string, size_t> knownTimerIndex;
+	std::unordered_map<std::string, uint32_t> currentExternalEvents;
+	std::unordered_map<std::string, uint32_t> lastExternalEvents;
 	float totalTimeMs = 0.0f;
 	float cpuTotalTimeMs = 0.0f;
 

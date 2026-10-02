@@ -7,7 +7,6 @@
 #include "Common/Random.hlsli"
 #include "Common/SharedData.hlsli"
 #include "FoliageDynamics/FoliageWind.hlsli"
-
 #define DEFERRED
 
 #ifdef FOLIAGE_DYNAMICS
@@ -243,52 +242,55 @@ float3 CalculateOptimizedWindDisplacement(
 	VS_INPUT input,
 	float legacyScalar,
 	float windTimer,
-	float2 absoluteAnchor)
+	float2 absoluteAnchor,
+	bool previousFrame)
 {
 	float tip = saturate(input.Color.w);
 	float tip2 = tip * tip;
 	float weatherEnergy = max(abs(WindVector.z), 0.08f);
 	float3 legacy = float3(WindVector.xy, 0.0f) *
 		(WindVector.z * legacyScalar * (0.5f * tip2));
-	if (SharedData::foliageDynamicsSettings.EnableEnhancedWind == 0)
-		return legacy;
+	float3 result = legacy;
+	if (SharedData::foliageDynamicsSettings.EnableEnhancedWind != 0)
+	{
+		GrassWindContext context;
+		context.WindDirection = FoliageWind::SafeDirection(
+			WindVector.xy, float2(0.8192319f, 0.5734624f));
+		context.CrossWind = float2(-context.WindDirection.y, context.WindDirection.x);
+		context.AbsoluteAnchor = absoluteAnchor;
+		context.InstanceSeed = FoliageWind::Hash12(floor(absoluteAnchor * 0.015625f));
 
-	GrassWindContext context;
-	context.WindDirection = FoliageWind::SafeDirection(
-		WindVector.xy, float2(0.8192319f, 0.5734624f));
-	context.CrossWind = float2(-context.WindDirection.y, context.WindDirection.x);
-	context.AbsoluteAnchor = absoluteAnchor;
-	context.InstanceSeed = FoliageWind::Hash12(floor(absoluteAnchor * 0.015625f));
+		FoliageWind::GrassGustField windField = FoliageWind::SampleGrassGust(
+			context.AbsoluteAnchor,
+			windTimer,
+			context.WindDirection,
+			SharedData::foliageDynamicsSettings.WindSpatialScale,
+			SharedData::foliageDynamicsSettings.GustSpeed,
+			SharedData::foliageDynamicsSettings.FlutterSpeed,
+			context.InstanceSeed);
 
-	FoliageWind::GrassGustField windField = FoliageWind::SampleGrassGust(
-		context.AbsoluteAnchor,
-		windTimer,
-		context.WindDirection,
-		SharedData::foliageDynamicsSettings.WindSpatialScale,
-		SharedData::foliageDynamicsSettings.GustSpeed,
-		SharedData::foliageDynamicsSettings.FlutterSpeed,
-		context.InstanceSeed);
+		float rootLock = smoothstep(0.04f, 0.32f, tip);
+		float stemResponse = rootLock * tip2;
+		float tipResponse = stemResponse * tip2;
+		float gustAmount = min(max(SharedData::foliageDynamicsSettings.GustStrength, 0.0f), 1.5f);
+		float flutterAmount = min(max(SharedData::foliageDynamicsSettings.FlutterStrength, 0.0f), 1.0f);
+		float legacyEnvelope = 1.0f + (windField.Gust - 0.35f) * (0.24f * gustAmount);
+		float3 delta = legacy * (legacyEnvelope - 1.0f);
+		delta += float3(context.WindDirection, 0.0f) *
+			(weatherEnergy * stemResponse * windField.Gust * 0.105f * gustAmount);
+		delta += float3(context.CrossWind, 0.0f) *
+			(weatherEnergy * stemResponse * windField.Crosswind * 0.026f * gustAmount);
+		delta += float3(context.CrossWind, 0.0f) *
+			(weatherEnergy * tipResponse * windField.Flutter * 0.038f * flutterAmount);
 
-	float rootLock = smoothstep(0.04f, 0.32f, tip);
-	float stemResponse = rootLock * tip2;
-	float tipResponse = stemResponse * tip2;
-	float gustAmount = min(max(SharedData::foliageDynamicsSettings.GustStrength, 0.0f), 1.5f);
-	float flutterAmount = min(max(SharedData::foliageDynamicsSettings.FlutterStrength, 0.0f), 1.0f);
-	float legacyEnvelope = 1.0f + (windField.Gust - 0.35f) * (0.24f * gustAmount);
-	float3 delta = legacy * (legacyEnvelope - 1.0f);
-	delta += float3(context.WindDirection, 0.0f) *
-		(weatherEnergy * stemResponse * windField.Gust * 0.105f * gustAmount);
-	delta += float3(context.CrossWind, 0.0f) *
-		(weatherEnergy * stemResponse * windField.Crosswind * 0.026f * gustAmount);
-	delta += float3(context.CrossWind, 0.0f) *
-		(weatherEnergy * tipResponse * windField.Flutter * 0.038f * flutterAmount);
-
-	float maxDelta = weatherEnergy * stemResponse * (0.14f + 0.08f * gustAmount);
-	float deltaLengthSq = dot(delta, delta);
-	if (deltaLengthSq > maxDelta * maxDelta && maxDelta > 1e-5f)
-		delta *= maxDelta * rsqrt(deltaLengthSq);
-	return legacy + delta * clamp(
-		SharedData::foliageDynamicsSettings.WindStrength, 0.0f, 2.0f);
+		float maxDelta = weatherEnergy * stemResponse * (0.14f + 0.08f * gustAmount);
+		float deltaLengthSq = dot(delta, delta);
+		if (deltaLengthSq > maxDelta * maxDelta && maxDelta > 1e-5f)
+			delta *= maxDelta * rsqrt(deltaLengthSq);
+		result += delta * clamp(
+			SharedData::foliageDynamicsSettings.WindStrength, 0.0f, 2.0f);
+	}
+	return result;
 }
 #	endif
 
@@ -423,9 +425,9 @@ VS_OUTPUT main(VS_INPUT input, uint instanceID : SV_InstanceID)
 
 	const float2 absoluteAnchor = input.InstanceData1.xy + e0.xy;
 	msPosition.xyz += CalculateOptimizedWindDisplacement(
-		input, e1.x, WindTimer, absoluteAnchor);
+		input, e1.x, WindTimer, absoluteAnchor, false);
 	previousMsPosition.xyz += CalculateOptimizedWindDisplacement(
-		input, e1.y, PreviousWindTimer, absoluteAnchor);
+		input, e1.y, PreviousWindTimer, absoluteAnchor, true);
 
 	float4 worldPosition = float4(msPosition.xyz - FrameBuffer::CameraPosAdjust.xyz, 1.0f);
 	float4 previousWorldPosition = float4(

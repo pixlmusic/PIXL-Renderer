@@ -29,6 +29,7 @@
 #include "Modules/ContainedLiquids.h"
 #include "Modules/CurvedSurfaceMapping.h"
 #include "Modules/DistantLife.h"
+#include "Modules/ReactiveFX.h"
 #include "Modules/SkyContinuity.h"
 #include "Modules/SkyBounce.h"
 #include "Modules/TissueDiffusion.h"
@@ -103,6 +104,7 @@ namespace globals
 		ContainedLiquids containedLiquids{};
 		CurvedSurfaceMapping curvedSurfaceMapping{};
 		DistantLife distantLife{};
+		ReactiveFX reactiveFX{};
 
 		namespace llf
 		{

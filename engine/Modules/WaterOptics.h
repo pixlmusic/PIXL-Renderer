@@ -14,7 +14,7 @@ public:
 	struct alignas(16) Settings
 	{
 		uint32_t EnableEnhancedCaustics = true;
-		float CausticsStrength = 1.0f;
+		float CausticsStrength = 1.2f;
 		float CausticsDispersion = 0.5f;
 		float CausticsFocus = 1.0f;
 

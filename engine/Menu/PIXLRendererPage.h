@@ -53,7 +53,6 @@ namespace PIXLRendererPage
 		{ "TerrainSeam", CategoryOrder[1], "DISTANCE & TERRAIN", "Terrain blending coordinates near/far landscape continuity. Boot-state changes require a restart." },
 		{ "GroundResponse", CategoryOrder[1], "LAND & VEGETATION", "Grass and deformable-ground controls are real time. Initial installation adds Lighting permutations and requires a shader-cache rebuild." },
 		{ "FoliageDynamics", CategoryOrder[1], "LAND & VEGETATION", "Vegetation lighting controls update in real time through the shared feature buffer." },
-		{ "FoliageOptimizer", CategoryOrder[1], "LAND & VEGETATION", "GPU culling and LOD controls are real time. Enabling the module or changing shader defines requires a shader-cache rebuild and restart." },
 		{ "TerrainDetail", CategoryOrder[1], "LAND & VEGETATION", "Terrain stochastic sampling controls update in real time; enabling the hook at boot requires a restart." },
 		{ "TerrainOcclusion", CategoryOrder[1], "LAND & VEGETATION", "Terrain-shadow participation updates in real time; heightfield data refreshes automatically as exterior cells change." },
 		{ "Waterbody", CategoryOrder[1], "WATER & WEATHER", "Optimised mesh selection applies when water caches are rebuilt; manual cache tools are Developer Mode actions." },

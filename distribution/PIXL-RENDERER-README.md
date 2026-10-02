@@ -1,4 +1,4 @@
-# PIXL Renderer 1.0.5
+# PIXL Renderer 1.0.6
 
 An integrated DirectX 11 renderer for Skyrim Special Edition.
 
@@ -35,7 +35,7 @@ combinations still require live bridge testing.
 
 ### Optional SurfaceTides compatibility
 
-PIXL 1.0.5 retains the renderer side of the SurfaceTides bridge. The FOMOD offers
+PIXL 1.0.6 retains the renderer side of the SurfaceTides bridge. The FOMOD offers
 an optional bridge for the exact SurfaceTides 1.0.2 release. Select it only when
 that original release is already installed. The choice replaces SurfaceTides' DLL,
 water shader and INI with the PIXL-tuned integration preset. It enables

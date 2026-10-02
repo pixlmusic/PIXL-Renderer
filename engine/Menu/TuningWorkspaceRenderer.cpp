@@ -43,6 +43,7 @@
 #include "Modules/DistanceBlend.h"
 #include "Modules/GroundResponse.h"
 #include "Modules/FoliageDynamics.h"
+#include "Modules/FoliageOptimizer.h"
 #include "Modules/TerrainDetail.h"
 #include "Modules/WaterOptics.h"
 #include "Modules/RainResponse.h"
@@ -54,6 +55,7 @@
 #include "Modules/ContainedLiquids.h"
 #include "Modules/CurvedSurfaceMapping.h"
 #include "Modules/DistantLife.h"
+#include "Modules/ReactiveFX.h"
 #include "Modules/ImageReconstruction.h"
 #include "Modules/PixelCapture.h"
 #include "Modules/PulseProfiler.h"
@@ -4821,6 +4823,18 @@ namespace
 			return;
 		}
 
+		static std::string profilerDumpStatus;
+		if (PIXLUI::ActionButton("DUMP CURRENT FRAME TRACE", ImVec2(PIXLUI::Ref(230.0f), PIXLUI::Ref(30.0f)))) {
+			const auto dumpPath = pulse.WriteFrameDump();
+			profilerDumpStatus = dumpPath.empty()
+				? "Profiler dump failed; check the PIXL log."
+				: std::format("Saved: {}", dumpPath.string());
+		}
+		if (!profilerDumpStatus.empty()) {
+			ImGui::SameLine();
+			ImGui::TextDisabled("%s", profilerDumpStatus.c_str());
+		}
+
 		const auto& results = globals::profiler->GetResults();
 		std::vector<const Profiler::TimerResult*> rows;
 		rows.reserve(results.size());
@@ -6810,6 +6824,10 @@ std::vector<TuningWorkspaceRenderer::MenuFuncInfo> TuningWorkspaceRenderer::Buil
 			experimentalFeatures.push_back(&globals::pipeline::distantLife);
 		if (globals::pipeline::containedLiquids.installed || globals::pipeline::containedLiquids.loaded)
 			experimentalFeatures.push_back(&globals::pipeline::containedLiquids);
+		if (globals::pipeline::reactiveFX.installed || globals::pipeline::reactiveFX.loaded)
+			experimentalFeatures.push_back(&globals::pipeline::reactiveFX);
+		if (globals::pipeline::foliageOptimizer.installed || globals::pipeline::foliageOptimizer.loaded)
+			experimentalFeatures.push_back(&globals::pipeline::foliageOptimizer);
 		menuList.push_back(CategoryPage{ std::string(kExperimentalCategory), std::move(experimentalFeatures) });
 	} else {
 		for (const auto category : PIXLRendererPage::CategoryOrder)
@@ -7026,6 +7044,7 @@ void TuningWorkspaceRenderer::RenderLeftColumn(
 				});
 				group("ExperimentalMisc", "MISC", [&] {
 					experimentalItem(kENBTranslatorTool.data(), "ENB PRESET TRANSLATOR  [EXPERIMENTAL]");
+					experimentalItem("ReactiveFX", "REACTIVE FX  [EXPERIMENTAL]");
 				});
 			} else {
 				for (RenderModule* feature : page.features) {

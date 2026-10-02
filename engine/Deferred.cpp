@@ -15,6 +15,7 @@
 #include "Modules/TerrainSeam.h"
 #include "Modules/ImageReconstruction.h"
 #include "Modules/GroundResponse.h"
+#include "Modules/ReactiveFX.h"
 #include "Modules/RainResponse.h"
 #include "Modules/MaterialLayers.h"
 #include "Modules/DistantLife.h"
@@ -425,6 +426,12 @@ void Deferred::DeferredPasses()
 	auto& distantLife = globals::pipeline::distantLife;
 	if (distantLife.loaded)
 		distantLife.DrawDistantLife();
+
+	// Reactive FX resolves after opaque lighting so its depth/normal collision
+	// sees the final displaced scene, but before rain/forward presentation layers.
+	auto& reactiveFX = globals::pipeline::reactiveFX;
+	if (reactiveFX.loaded)
+		reactiveFX.DrawReactiveFX();
 
 	auto& rainResponse = globals::pipeline::rainResponse;
 	if (rainResponse.loaded)

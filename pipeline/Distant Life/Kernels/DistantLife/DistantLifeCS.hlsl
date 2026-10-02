@@ -32,7 +32,9 @@ cbuffer DistantLifeTuning : register(b13)
 	uint FarFieldActivity;
 	float FarFieldDensity;
 	float FarFieldMotion;
-	float3 DistantLifePadding;
+	uint FarFieldSmoke;
+	float FarFieldSmokeDensity;
+	float FarFieldSmokeHeight;
 };
 
 uint EncodeOpticalSource(float intensity, float3 color)
@@ -77,7 +79,9 @@ void BuildMaskCS(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
 		return;
 	float distanceT = saturate((emitter.Distance - MinimumDistance) / max(MaximumDistance - MinimumDistance, 1.0f));
 	float projectedRadius = emitter.Radius / max(sourceDepth, 1.0f) * RenderSize.y * 0.04f;
-	float radiusPixels = clamp(max(projectedRadius, lerp(1.25f, 3.35f, distanceT)), 1.25f, 7.0f);
+	// Keep far lights legible as soft optical sources before atmospheric
+	// extinction takes over. The cap remains bounded so this is not a bloom pass.
+	float radiusPixels = clamp(max(projectedRadius, lerp(1.5f, 5.0f, distanceT)), 1.25f, 10.0f);
 	int2 centre = int2(uv * RenderSize);
 	int2 offset = int2(threadID.xy) - 8;
 	float radius2 = dot(float2(offset), float2(offset));
@@ -100,11 +104,11 @@ void BuildMaskCS(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
 
 	float transitionWidth = max(256.0f, (MaximumDistance - MinimumDistance) * 0.12f);
 	float nearFade = smoothstep(MinimumDistance, MinimumDistance + transitionWidth, emitter.Distance);
-	float farFade = 1.0f - smoothstep(MaximumDistance * 0.82f, MaximumDistance, emitter.Distance);
+	float farFade = 1.0f - smoothstep(MaximumDistance * 0.90f, MaximumDistance, emitter.Distance);
 	// Preserve a faint optical signal at Skyrim's far LOD. The former extinction
 	// left less than 0.1% energy at 200k units, making the extended range moot.
 	float atmosphere = lerp(1.0f, exp(-emitter.Distance * 0.000012f), saturate(AtmosphericAttenuation));
-	float radialFalloff = lerp(3.0f, 1.65f, distanceT);
+	float radialFalloff = lerp(2.8f, 1.18f, distanceT);
 	float radial = exp2(-radialFalloff * radius2 / max(radiusPixels * radiusPixels, 1.0f));
 	float authoredStrength = max(0.20f, saturate(emitter.Radius / 640.0f));
 	float distanceDim = lerp(1.0f, 0.38f, smoothstep(0.10f, 1.0f, distanceT));
@@ -138,16 +142,16 @@ float3 ReconstructCompositePosition(uint2 pixel, float depth)
 	return position.xyz / max(abs(position.w), 1.0e-6f);
 }
 
-float EvaluateFarFieldActivity(uint2 pixel, float sceneDepth)
+float4 EvaluateFarFieldActivity(uint2 pixel, float sceneDepth)
 {
-	if (FarFieldActivity == 0u || sceneDepth >= 0.999999f)
-		return 0.0f;
+	if ((FarFieldActivity == 0u && FarFieldSmoke == 0u) || sceneDepth >= 0.999999f)
+		return 0.0f.xxxx;
 
 	float3 centre = ReconstructCompositePosition(pixel, sceneDepth);
 	float viewDistance = length(centre);
 	float farStart = max(MinimumDistance * 1.35f, 5000.0f);
 	if (viewDistance < farStart || viewDistance > MaximumDistance)
-		return 0.0f;
+		return 0.0f.xxxx;
 
 	uint2 leftPixel = pixel - uint2(pixel.x > 0u ? 1u : 0u, 0u);
 	uint2 upPixel = pixel - uint2(0u, pixel.y > 0u ? 1u : 0u);
@@ -160,14 +164,14 @@ float EvaluateFarFieldActivity(uint2 pixel, float sceneDepth)
 	float3 surfaceCross = cross(left - centre, up - centre);
 	float surfaceLengthSq = dot(surfaceCross, surfaceCross);
 	if (surfaceLengthSq < 1.0e-8f)
-		return 0.0f;
+		return 0.0f.xxxx;
 	float3 surfaceNormal = surfaceCross * rsqrt(surfaceLengthSq);
 	// The visible depth surface provides occlusion for free. Restrict activity
 	// to upward-facing land-like surfaces so walls and architecture do not glow.
 	// Reconstruction winding can flip with the active projection convention;
 	// use the magnitude so valid upward terrain is not rejected wholesale.
 	if (abs(surfaceNormal.z) < 0.62f)
-		return 0.0f;
+		return 0.0f.xxxx;
 
 	float cellSize = 768.0f;
 	float2 cellPosition = (centre.xy + FrameBuffer::CameraPosAdjust.xy) / cellSize;
@@ -179,8 +183,7 @@ float EvaluateFarFieldActivity(uint2 pixel, float sceneDepth)
 	float settlementSeed = Hash21(settlementCell + float2(83.2f, 11.6f));
 	float settlementBias = step(settlementSeed, 0.22f) * 0.24f;
 	float activityThreshold = saturate(FarFieldDensity * 0.72f + settlementBias);
-	if (seed > activityThreshold)
-		return 0.0f;
+	bool lightCell = FarFieldActivity != 0u && seed <= activityThreshold;
 	float2 pointOffset = float2(
 		Hash21(cell + float2(7.1f, 13.9f)),
 		Hash21(cell + float2(29.4f, 61.2f)));
@@ -199,7 +202,35 @@ float EvaluateFarFieldActivity(uint2 pixel, float sceneDepth)
 	footprint = pow(saturate(footprint), lerp(1.25f, 0.72f, distanceT));
 	float pulse = lerp(0.86f, 0.58f + 0.42f * sin(SharedData::Timer * (0.10f + seed * 0.07f) + seed * 13.0f), traveller);
 	float distanceDim = lerp(1.0f, 0.30f, distanceT);
-	return footprint * saturate(pulse) * distanceDim * (1.0f - smoothstep(farStart, MaximumDistance, viewDistance));
+	float lightActivity = lightCell
+		? footprint * saturate(pulse) * distanceDim * (1.0f - smoothstep(farStart, MaximumDistance, viewDistance))
+		: 0.0f;
+
+	// Unloaded chimneys cannot be queried safely without turning the periodic
+	// reference scan into a world-sized operation. Use the same deterministic
+	// settlement cells for a restrained, screen-depth-occluded haze suggestion.
+	// It is intentionally dim and broad: this is an LOD continuity cue, never a
+	// replacement for real smoke, volumetrics, or a gameplay light.
+	float settlement = step(settlementSeed, 0.30f);
+	float smokePointDistance = length(local - float2(0.015f, 0.0f));
+	float smokeFootprint = 1.0f - smoothstep(0.012f, 0.22f, smokePointDistance);
+	float smokeDrift = sin(SharedData::Timer * (0.018f + FarFieldMotion * 0.025f) + seed * 9.0f) * 0.035f;
+	float smokeColumn = 1.0f - smoothstep(0.0f, 1.0f, abs(local.x - smokeDrift) * 4.0f);
+	float smokeHeight = 0.55f + 0.45f * sin((centre.z + FrameBuffer::CameraPosAdjust.z) / max(FarFieldSmokeHeight, 1.0f) + seed * 4.0f);
+	// Two slow, uncorrelated bands keep distant settlement haze alive without
+	// making it pulse like a screen-space noise overlay. The cell seed anchors
+	// the pattern in world space, while the low-frequency time terms provide a
+	// restrained rolling lift through the column.
+	float rollingA = sin(dot(cellPosition, float2(0.71f, 0.37f)) * 1.7f +
+		SharedData::Timer * (0.010f + FarFieldMotion * 0.014f) + seed * 5.1f);
+	float rollingB = sin(dot(cellPosition, float2(-0.29f, 0.83f)) * 2.4f -
+		SharedData::Timer * (0.006f + FarFieldMotion * 0.009f) + seed * 11.7f);
+	float rolling = saturate(0.72f + 0.16f * rollingA + 0.12f * rollingB);
+	float smokeActivity = FarFieldSmoke != 0u
+		? settlement * smokeFootprint * smokeColumn * saturate(smokeHeight) * rolling * FarFieldSmokeDensity * distanceDim
+		  * (1.0f - smoothstep(farStart, MaximumDistance, viewDistance))
+		: 0.0f;
+	return float4(lightActivity, smokeActivity, 0.0f, 0.0f);
 }
 
 [numthreads(8, 8, 1)]
@@ -208,8 +239,8 @@ void CompositeCS(uint3 dispatchID : SV_DispatchThreadID)
 	if (any(dispatchID.xy >= uint2(RenderSize)))
 		return;
 	uint packed = CompositeMask[dispatchID.xy];
-	float syntheticIntensity = EvaluateFarFieldActivity(dispatchID.xy, CompositeDepth.Load(int3(dispatchID.xy, 0)));
-	if (packed == 0u && syntheticIntensity <= 1.0e-4f)
+	float4 syntheticActivity = EvaluateFarFieldActivity(dispatchID.xy, CompositeDepth.Load(int3(dispatchID.xy, 0)));
+	if (packed == 0u && max(syntheticActivity.x, syntheticActivity.y) <= 1.0e-4f)
 		return;
 	float intensity = float((packed >> 21u) & 2047u) / 2047.0f;
 	float3 color = float3(
@@ -220,6 +251,7 @@ void CompositeCS(uint3 dispatchID : SV_DispatchThreadID)
 	scene.rgb += color * intensity * 1.60f;
 	// Synthetic activity is deliberately dimmer and warmer than real emitters;
 	// it is an optical suggestion, never a gameplay light.
-	scene.rgb += float3(1.0f, 0.42f, 0.12f) * syntheticIntensity * GlobalIntensity * 0.20f;
+	scene.rgb += float3(1.0f, 0.42f, 0.12f) * syntheticActivity.x * GlobalIntensity * 0.20f;
+	scene.rgb += float3(0.38f, 0.42f, 0.44f) * syntheticActivity.y * GlobalIntensity * 0.045f;
 	SceneColor[dispatchID.xy] = scene;
 }

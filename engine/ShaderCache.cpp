@@ -29,7 +29,11 @@ namespace SIE
 	// candidate. They reach shader families beyond one module's define, so a
 	// dedicated revision invalidates old compiled stages without mislabeling an
 	// unchanged CPU/HLSL buffer ABI as a new layout.
-	static constexpr const char* kPipelineShaderRevision = "PIXL.Shaders.20260925.2";
+	// Bump whenever a shared shader or an included module shader changes.  The
+	// liquid optics update is included by Lighting.hlsl, so retaining the old
+	// revision would incorrectly treat pre-update Lighting permutations as
+	// valid and hide the new runtime path behind the disk cache.
+	static constexpr const char* kPipelineShaderRevision = "PIXL.Shaders.20261002.3";
 
 	// Custom include handler to track all includes during shader compilation
 	class TrackingIncludeHandler : public ID3DInclude

@@ -8,6 +8,19 @@
 #include "Buffer.h"
 #include "GrassMeshLibrary.h"
 
+// CommonLibSSE versions shipped with Skyrim SE do not all expose the GID
+// stream header, although the game ABI still passes this 0x24-byte record.
+// Keep the mirror local instead of modifying the generated/vendor headers.
+struct PIXLGrassGroupHeader
+{
+	RE::NiPoint3 center{};
+	RE::NiPoint3 size{};
+	uint32_t triCount = 0;
+	uint32_t groupInstanceCount = 0;
+	uint32_t numShortsPerInstance = 0;
+};
+static_assert(sizeof(PIXLGrassGroupHeader) == 0x24);
+
 struct BucketKey
 {
 	uint32_t meshId = 0;
@@ -271,6 +284,7 @@ public:
 	void RefreshComplexGrass(float threshold, ID3D11DeviceContext* ctx);
 
 	/** @brief Captures one GID group's instance records from the cell-load hooks. */
+	void CaptureGIDGroup(RE::BSMultiStreamInstanceTriShape* shape, PIXLGrassGroupHeader* header, const uint16_t* instanceData, size_t dataBytes);
 	/** @brief Stages a raw instance-record capture. Returns false when the stride is not the expected 32 bytes, defaulting to vanilla rendering. */
 	bool StageCapture(RE::BSMultiStreamInstanceTriShape* shape, const void* src, uint32_t count, uint32_t stride, uint64_t descVal, RE::NiSourceTexture* tex);
 

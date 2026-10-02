@@ -380,6 +380,32 @@ void GrassBucketStore::UploadDirtyBuckets(ID3D11Device* device, ID3D11DeviceCont
 	}
 }
 
+void GrassBucketStore::CaptureGIDGroup(RE::BSMultiStreamInstanceTriShape* shape, PIXLGrassGroupHeader* header, const uint16_t* instanceData, size_t dataBytes)
+{
+	if (!shape || !header || !instanceData || !header->numShortsPerInstance)
+		return;
+
+	auto prop = shape->GetGeometryRuntimeData().shaderProperty;
+	if (!prop || !skyrim_cast<RE::BSGrassShaderProperty*>(prop.get()))
+		return;
+
+	RE::NiSourceTexture* tex = prop->GetBaseTexture();
+	if (!tex)
+		return;
+
+	// The optimizer consumes the same 32-byte half-packed records as the
+	// normal group-allocation hook. Reject other stream layouts and let Skyrim
+	// render them normally rather than guessing at their packing.
+	constexpr uint32_t kRecordStride = 32;
+	const uint32_t count = std::min<uint32_t>(header->groupInstanceCount,
+		static_cast<uint32_t>(dataBytes / kRecordStride));
+	if (!count)
+		return;
+
+	const uint64_t descVal = *reinterpret_cast<const uint64_t*>(&shape->GetGeometryRuntimeData().vertexDesc);
+	StageCapture(shape, instanceData, count, kRecordStride, descVal, tex);
+}
+
 bool GrassBucketStore::StageCapture(RE::BSMultiStreamInstanceTriShape* shape, const void* src, uint32_t count, uint32_t stride, uint64_t descVal, RE::NiSourceTexture* tex)
 {
 	if (!shape || !src || !tex || !count || stride != kGrassStride) {

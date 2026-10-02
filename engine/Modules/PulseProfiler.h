@@ -170,6 +170,8 @@ struct PulseProfiler : OverlayFeature
 	void DrawFPS();
 	void DrawVRAM();
 	void DrawPostFGFrameTimeGraph();
+	/** @brief Writes named passes, exact engine events, and shader-class draw-call metrics. */
+	[[nodiscard]] std::filesystem::path WriteFrameDump() const;
 
 	// ============================================================================
 	// A/B TESTING FUNCTIONS

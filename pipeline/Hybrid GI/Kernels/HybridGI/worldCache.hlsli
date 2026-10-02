@@ -163,7 +163,10 @@ float WorldCacheCascadeBlend(float3 positionWS, float3 cameraWS)
     float nearExtent = WorldCacheCellSizeNear * (WORLD_CACHE_DIM * 0.47f);
     float3 diff = abs(positionWS - cameraWS);
     float maxDiff = max(diff.x, max(diff.y, diff.z));
-    return smoothstep(0.72f, 1.0f, maxDiff / max(nearExtent, 1.0f));
+    // Keep the near/far toroidal volumes overlapped for a wider band. The old
+    // narrow transition was visible as a radiance edge when voxel lighting
+    // changed authority, especially against large interior/exterior views.
+    return smoothstep(0.62f, 1.08f, maxDiff / max(nearExtent, 1.0f));
 }
 
 uint WorldCacheCascade(float3 positionWS, float3 cameraWS)

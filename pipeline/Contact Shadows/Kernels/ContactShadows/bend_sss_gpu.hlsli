@@ -81,6 +81,8 @@ struct DispatchParameters
 	half ShadowContrast;  // A contrast boost is applied to the transition in/out of shadow.
 						  // Recommended starting value: 2 or 4. Values >= 1 are valid.
 	half Strength;  // Final blend against Skyrim's authoritative directional shadow map.
+	half FalloffStart;
+	half FalloffEnd;
 
 	float2 DynamicRes;
 
@@ -119,6 +121,8 @@ struct DispatchParameters
 		BilinearThreshold = 0.02;
 		ShadowContrast = 4;
 		Strength = 1;
+		FalloffStart = 6144;
+		FalloffEnd = 12288;
 		IgnoreEdgePixels = false;
 		UsePrecisionOffset = false;
 		BilinearSamplingOffsetMode = false;
@@ -355,7 +359,7 @@ void WriteScreenSpaceShadow(DispatchParameters inParameters, int3 inGroupID, int
 	const float receiver_view_depth =
 		abs(SharedData::GetScreenDepth((float)start_depth));
 	const half distance_confidence =
-		(half)(1.0f - smoothstep(6144.0f, 12288.0f, receiver_view_depth));
+		1.0h - smoothstep(inParameters.FalloffStart, inParameters.FalloffEnd, receiver_view_depth);
 	if (distance_confidence <= 1e-3h)
 		return;
 
