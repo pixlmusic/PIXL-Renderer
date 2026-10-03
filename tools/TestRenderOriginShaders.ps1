@@ -1,6 +1,18 @@
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$ShaderRoot, [Parameter(Mandatory=$true)][string]$Fxc)
+param([string]$ShaderRoot = '', [string]$Fxc = '')
 $ErrorActionPreference = 'Stop'
+$repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+if ([string]::IsNullOrWhiteSpace($ShaderRoot)) {
+    $ShaderRoot = Join-Path $repo 'distribution\Shaders'
+}
+if ([string]::IsNullOrWhiteSpace($Fxc)) {
+    $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+    $Fxc = Get-ChildItem -Path (Join-Path $sdkRoot '*\x64\fxc.exe') -File -ErrorAction SilentlyContinue |
+        Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+}
+if (-not $Fxc -or -not (Test-Path -LiteralPath $Fxc -PathType Leaf)) {
+    throw 'Windows SDK FXC is required.'
+}
 $outDir = Join-Path $PSScriptRoot '..\build\render-origin-tests'
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 $binary = Join-Path $outDir 'RenderOriginValidation.cso'

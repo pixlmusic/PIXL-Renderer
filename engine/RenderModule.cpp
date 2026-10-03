@@ -56,6 +56,7 @@
 
 void RenderModule::Load(json& o_json)
 {
+	ModuleRules::InvalidateConstraintCache();
 	// Convert string to wstring
 	auto ini_filename = std::format("{}.ini", GetShortName());
 	std::wstring ini_filename_w;

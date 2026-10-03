@@ -7,6 +7,8 @@
 
 #include <winrt/base.h>
 
+#include "Renderer/RendererMetadata.h"
+
 /** @brief Enhances water rendering with realistic caustics and underwater lighting effects. */
 struct WaterOptics : RenderModule
 {
@@ -14,7 +16,7 @@ public:
 	struct alignas(16) Settings
 	{
 		uint32_t EnableEnhancedCaustics = true;
-		float CausticsStrength = 1.2f;
+		float CausticsStrength = static_cast<float>(PIXL::Metadata::Settings::WaterCausticsStrength.defaultValue);
 		float CausticsDispersion = 0.5f;
 		float CausticsFocus = 1.0f;
 
@@ -40,7 +42,7 @@ public:
 		float SSRTraceQuality = 2.0f;
 	};
 	STATIC_ASSERT_ALIGNAS_16(Settings);
-	static_assert(sizeof(Settings) == 64, "WaterOptics settings must match the four-register FeatureData block.");
+	static_assert(sizeof(Settings) == PIXL::Metadata::ABI::WaterOptics.sizeBytes, "WaterOptics settings must match the four-register FeatureData block.");
 
 	Settings settings;
 	winrt::com_ptr<ID3D11ShaderResourceView> causticsView;

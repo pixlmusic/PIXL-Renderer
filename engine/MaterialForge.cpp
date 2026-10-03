@@ -241,7 +241,9 @@ namespace
 void MaterialForge::DrawSettings()
 {
 	if (ImGui::TreeNodeEx(T(TKEY("global_settings"), "Global Settings"), ImGuiTreeNodeFlags_DefaultOpen)) {
-		ImGui::SliderFloat(T(TKEY("vertex_ao_strength"), "Vertex AO Strength"), &settings.VertexAOStrength, 0.f, 1.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat(T(TKEY("vertex_ao_strength"), "Vertex AO Strength"), &settings.VertexAOStrength,
+			static_cast<float>(PIXL::Metadata::Settings::MaterialVertexAO.minimum),
+			static_cast<float>(PIXL::Metadata::Settings::MaterialVertexAO.maximum), "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		DrawTooltip("Scales authored vertex ambient occlusion before it modulates indirect lighting. Updates in real time; 1.0 preserves the authored value.");
 		DrawUIntCheckbox(T(TKEY("legacy_physical_direct_lighting"), "Physical Direct Lighting for Legacy Materials"), settings.EnableLegacyPhysicalDirectLighting);
 		if (auto _tt = Util::HoverTooltipWrapper()) {

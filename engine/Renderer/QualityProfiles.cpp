@@ -26,6 +26,7 @@
 #include "Menu.h"
 #include "State.h"
 #include "MaterialForge.h"
+#include "ModuleRules.h"
 
 namespace PIXLRenderer::QualityProfiles
 {
@@ -496,6 +497,7 @@ namespace PIXLRenderer::QualityProfiles
 	{
 		quality = Clamp(quality);
 		ApplyGroupSettings(group, quality);
+		ModuleRules::InvalidateConstraintCache();
 		SetMenuGroupQuality(group, quality);
 		globals::state->UpdateFeatureData(globals::state->inWorld);
 		globals::state->Save();
@@ -511,6 +513,7 @@ namespace PIXLRenderer::QualityProfiles
 			ApplyGroupSettings(qualityGroup, quality);
 			SetMenuGroupQuality(qualityGroup, quality);
 		}
+		ModuleRules::InvalidateConstraintCache();
 		// Commit all seven groups in one coherent feature-data update. Calling
 		// Apply() here previously rebuilt feature data seven times.
 		globals::state->UpdateFeatureData(globals::state->inWorld);

@@ -9463,6 +9463,7 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::RenderFeatureSettings(RenderModul
 					constraintNow +
 					0.125;
 
+				ModuleRules::InvalidateConstraintCache();
 				auto currentConstraints =
 					ModuleRules::
 						GetAllActiveConstraints();

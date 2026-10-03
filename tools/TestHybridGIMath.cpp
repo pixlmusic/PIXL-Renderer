@@ -1,4 +1,7 @@
 // Checks the linear SH rotation and scalar horizon projection used by GI.
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <algorithm>
 #include <array>
 #include <cassert>

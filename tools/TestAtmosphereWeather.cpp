@@ -1,3 +1,6 @@
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include "Modules/AtmosphereWeather.h"
 #include <cassert>
 #include <limits>

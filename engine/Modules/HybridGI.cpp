@@ -1,4 +1,5 @@
 #include "HybridGI.h"
+#include "HybridGI/TemporalPolicy.h"
 
 #include <DirectXTex.h>
 
@@ -17,6 +18,10 @@
 #include "MaterialForge/PhysicalMaterialRegistry.h"
 #include "MaterialLayers.h"
 #include "Renderer/QualityProfiles.h"
+#include "Renderer/LightTransportWorld.h"
+#include "Renderer/TemporalContext.h"
+#include "Renderer/GPUWorkloadBudgeter.h"
+#include "Renderer/ReflectionContext.h"
 #include "Util.h"
 #include "../Menu/PIXLStyle.h"
 #include "Utils/FileSystem.h"
@@ -25,6 +30,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstring>
 #include <format>
 #include <fstream>
 #include <iomanip>
@@ -461,7 +467,9 @@ void HybridGI::DrawSettings()
 			auto cacheGuard = Util::DisableGuard(!settings.EnableWorldCache);
 			if (BeginSettingsTable("PIXL GI World Cache")) {
 				BeginSettingRow("World GI Contribution", "Strength of lighting reconstructed from the persistent world cache. Screen-space GI remains the high-detail primary source.");
-				ImGui::SliderFloat("##world_strength", &settings.WorldCacheStrength, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+				ImGui::SliderFloat("##world_strength", &settings.WorldCacheStrength,
+					static_cast<float>(PIXL::Metadata::Settings::HybridWorldCacheStrength.minimum),
+					static_cast<float>(PIXL::Metadata::Settings::HybridWorldCacheStrength.maximum), "%.2f", ImGuiSliderFlags_AlwaysClamp);
 
 				BeginSettingRow("World GI Coverage", "Maximum useful world-space radius around the camera. Increasing this extends continuity but makes the fixed cache represent a larger region.");
 				ImGui::SliderFloat("##world_radius", &settings.WorldCacheRadius, 256.0f, 4096.0f, "%.0f units", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
@@ -1278,6 +1286,28 @@ void HybridGI::SetupResources()
 		logger::error("[PIXL Hybrid GI] Renderer/device/context unavailable; module will remain disabled");
 		return;
 	}
+	if (!temporalHistoryId) {
+		temporalHistoryId = PIXL::Renderer::TemporalContext::Get().RegisterHistory({
+			.name = "HybridGI screen-space accumulation",
+			.owner = "HybridGI",
+			.invalidateOn = PIXL::Renderer::AllTemporalInvalidations,
+			.reset = [this](PIXL::Renderer::TemporalInvalidationReason) { queuedResetTemporalHistory = true; }
+		});
+	}
+	if (!worldHistoryId) {
+		using Reason = PIXL::Renderer::TemporalInvalidationReason;
+		worldHistoryId = PIXL::Renderer::TemporalContext::Get().RegisterHistory({
+			.name = "HybridGI world irradiance cache",
+			.owner = "HybridGI",
+			.invalidateOn = PIXL::Renderer::TemporalMask(Reason::Teleport) |
+				PIXL::Renderer::TemporalMask(Reason::WorldspaceChange) |
+				PIXL::Renderer::TemporalMask(Reason::RenderOriginShift) |
+				PIXL::Renderer::TemporalMask(Reason::SettingsChange) |
+				PIXL::Renderer::TemporalMask(Reason::ModuleReset) |
+				PIXL::Renderer::TemporalMask(Reason::DeviceReset),
+			.reset = [this](Reason) { queuedResetHistory = true; }
+		});
+	}
 
 	logger::debug("Creating buffers...");
 	{
@@ -1561,6 +1591,12 @@ void HybridGI::SetupResources()
 	}
 
 	CompileComputeShaders();
+	if (texRadiance) {
+		const std::uint64_t pixels = static_cast<std::uint64_t>(texRadiance->desc.Width) * texRadiance->desc.Height;
+		PIXL::Renderer::TemporalContext::Get().SetHistoryMemory(temporalHistoryId, pixels * 64u);
+	}
+	PIXL::Renderer::TemporalContext::Get().SetHistoryMemory(worldHistoryId,
+		static_cast<std::uint64_t>(32u * 32u * 32u * 2u) * 68u);
 }
 
 void HybridGI::ClearShaderCache()
@@ -1664,16 +1700,21 @@ void HybridGI::UpdateSB()
 			// matches the depth/motion data consumed by Image Reconstruction.
 			const auto& frameBuffer = globals::game::frameBufferCached;
 			const auto& projection = frameBuffer.GetCameraProj();
-			const auto& currentInverseView = frameBuffer.GetCameraViewInverse();
+			const auto temporalFrame = PIXL::Renderer::TemporalContext::Get().GetFrameSnapshot();
+			float4x4 currentInverseView = frameBuffer.GetCameraViewInverse();
+			float4x4 previousInverseView = currentInverseView;
+			if (temporalFrame.current.frameIndex == globals::state->frameCount) {
+				std::memcpy(&currentInverseView, temporalFrame.current.inverseView.data(), sizeof(temporalFrame.current.inverseView));
+				if (temporalFrame.previousFrameValid)
+					std::memcpy(&previousInverseView, temporalFrame.previous.inverseView.data(), sizeof(temporalFrame.previous.inverseView));
+			}
 			const float projectionX = std::abs(projection._11) > 1e-6f ? projection._11 : 1.0f;
 			const float projectionY = std::abs(projection._22) > 1e-6f ? projection._22 : 1.0f;
 
-			data.PrevInvViewMat = hasPreviousFrameInverseView ? previousFrameInverseView : currentInverseView;
+			data.PrevInvViewMat = previousInverseView;
 			data.NDCToViewMul = { 2.0f / projectionX, -2.0f / projectionY, 0.0f, 0.0f };
 			data.NDCToViewAdd = { -1.0f / projectionX, 1.0f / projectionY, 0.0f, 0.0f };
 
-			previousFrameInverseView = currentInverseView;
-			hasPreviousFrameInverseView = true;
 		}
 
 		data.TexDim = res;
@@ -1691,20 +1732,17 @@ void HybridGI::UpdateSB()
 		// into the reported 10-15 second fade/pop cycle. Clamp exceptional stalls so
 		// one compilation hitch cannot expire the complete cache in a single frame.
 		const float rawDelta = globals::game::deltaTime ? *globals::game::deltaTime : static_cast<float>(RE::GetSecondsSinceLastFrame());
-		data.WorldCacheDeltaTime = std::isfinite(rawDelta) ? std::clamp(rawDelta, 0.0f, 0.25f) : 0.0f;
+		data.WorldCacheDeltaTime = PIXL::HybridGIInternal::SanitizeDeltaTime(rawDelta);
 		if (!diagnosticCaptureActive && globals::pipeline::materialForge.settings.LegacyPhysicalDebugMode == 0u) {
-			const float frameDelta = data.WorldCacheDeltaTime;
-			worldCacheClockAccumulator += frameDelta * 8.0f;
-			const uint elapsedTicks = static_cast<uint>(worldCacheClockAccumulator);
-			if (elapsedTicks > 0u) {
-				worldCacheClock += elapsedTicks;
-				worldCacheClockAccumulator -= static_cast<float>(elapsedTicks);
-			}
+			worldCacheClock = PIXL::HybridGIInternal::AdvanceFixedRateClock(
+				worldCacheClock, worldCacheClockAccumulator, data.WorldCacheDeltaTime, 8.0f);
 		}
 		data.WorldCacheClock = worldCacheClock;
 
-		data.NumSlices = std::clamp(settings.NumSlices, 1u, 10u);
-		data.NumSteps = std::clamp(settings.NumSteps, 1u, 20u);
+		const float workloadScale = PIXL::Renderer::GPUWorkloadBudgeter::Get().GetScale(
+			PIXL::Renderer::WorkloadDomain::HybridGI);
+		data.NumSlices = std::clamp(static_cast<uint>(std::lround(settings.NumSlices * workloadScale)), 1u, 10u);
+		data.NumSteps = std::clamp(static_cast<uint>(std::lround(settings.NumSteps * workloadScale)), 1u, 20u);
 		data.MinScreenRadius = std::clamp(settings.MinScreenRadius, 0.0f, 1.0f) * dynres.x;
 
 		const float aoRadius = std::clamp(settings.AORadius, 0.0f, 1024.0f);
@@ -1735,7 +1773,9 @@ void HybridGI::UpdateSB()
 		data.WorldCacheMaxAge = std::clamp(settings.WorldCacheMaxAge, 1u, 120u);
 		data.WorldCacheSampleCount = std::clamp(settings.WorldCacheSampleCount, 1u, 8u);
 		data.WorldCacheTraceSteps = std::clamp(settings.WorldCacheTraceSteps, 2u, 6u);
-		data.WorldCacheStrength = std::clamp(settings.WorldCacheStrength, 0.0f, 1.5f);
+		data.WorldCacheStrength = std::clamp(settings.WorldCacheStrength,
+			static_cast<float>(PIXL::Metadata::Settings::HybridWorldCacheStrength.minimum),
+			static_cast<float>(PIXL::Metadata::Settings::HybridWorldCacheStrength.maximum));
 		data.WorldCacheCellSizeNear = std::clamp(settings.WorldCacheCellSizeNear, 64.0f, 256.0f);
 		data.WorldCacheCellSizeFar = std::max(std::clamp(settings.WorldCacheCellSizeFar, 256.0f, 1024.0f), data.WorldCacheCellSizeNear);
 		data.WorldCacheRadius = std::clamp(settings.WorldCacheRadius, 256.0f, 4096.0f);
@@ -1747,12 +1787,16 @@ void HybridGI::UpdateSB()
 		data.DebugGain = std::clamp(settings.DebugGain, 0.1f, 16.0f);
 		data.WorldCacheTemporalResponse = std::clamp(settings.WorldCacheTemporalResponse, 0.02f, 1.0f);
 		auto& radiantGrid = globals::pipeline::radiantGrid;
-		const bool emitterInjectionReady = settings.EnableEmitterInjection && radiantGrid.loaded &&
-			radiantGrid.lights && radiantGrid.particleLightBufferCount > 0;
+		const auto sharedLights = PIXL::Renderer::LightTransportWorld::Get().AcquireLocalLights();
+		const bool sharedLightsReady = globals::state && sharedLights.ValidFor(globals::state->frameCount);
+		const std::uint32_t emitterStart = sharedLightsReady ? sharedLights.emitterStart : radiantGrid.particleLightBufferStart;
+		const std::uint32_t emitterCount = sharedLightsReady ? sharedLights.emitterCount : radiantGrid.particleLightBufferCount;
+		const bool emitterInjectionReady = settings.EnableEmitterInjection && emitterCount > 0 &&
+			(sharedLightsReady || (radiantGrid.loaded && radiantGrid.lights));
 		data.WorldCacheEmitterInjectionEnabled = emitterInjectionReady ? 1u : 0u;
-		data.RadiantParticleLightStart = emitterInjectionReady ? radiantGrid.particleLightBufferStart : 0u;
+		data.RadiantParticleLightStart = emitterInjectionReady ? std::min(emitterStart, RadiantGrid::MAX_LIGHTS) : 0u;
 		data.RadiantParticleLightCount = emitterInjectionReady ?
-			std::min(radiantGrid.particleLightBufferCount, RadiantGrid::MAX_LIGHTS - data.RadiantParticleLightStart) : 0u;
+			std::min(emitterCount, RadiantGrid::MAX_LIGHTS - data.RadiantParticleLightStart) : 0u;
 		data.WorldCacheEmitterInjectionStrength = std::clamp(settings.EmitterInjectionStrength, 0.0f, 1.5f);
 		data.WorldCacheReflectionEnabled = settings.EnableVoxelReflections ? 1u : 0u;
 		data.WorldCacheReflectionStrength = std::clamp(settings.VoxelReflectionStrength, 0.0f, 1.5f);
@@ -1828,33 +1872,6 @@ void HybridGI::DrawHybridGI()
 		!globals::game::graphicsState || !globals::deferred || !globals::profiler)
 		return;
 
-	// A perspective transition changes both the visible geometry and Skyrim's
-	// near-camera render path. Screen history must restart, while the validated
-	// world-space cache remains useful. Only an interior or worldspace transition
-	// invalidates the cache: clearing it at every exterior cell boundary would
-	// defeat the point of persistent world-space lighting while travelling.
-	const auto* playerCamera = RE::PlayerCamera::GetSingleton();
-	const bool firstPerson = playerCamera && playerCamera->IsInFirstPerson();
-	auto* player = RE::PlayerCharacter::GetSingleton();
-	auto* parentCell = player ? player->GetParentCell() : nullptr;
-	const bool interior = parentCell && parentCell->IsInteriorCell();
-	const auto sceneIdentity = reinterpret_cast<std::uintptr_t>(
-		interior ? static_cast<void*>(parentCell) : static_cast<void*>(player ? player->GetWorldspace() : nullptr));
-	if (hasCameraSceneHistory) {
-		if (firstPerson != previousFirstPerson) {
-			queuedResetTemporalHistory = true;
-			hasPreviousFrameInverseView = false;
-		}
-		if (sceneIdentity != previousSceneIdentity || interior != previousInterior) {
-			queuedResetHistory = true;
-			hasPreviousFrameInverseView = false;
-		}
-	}
-	previousFirstPerson = firstPerson;
-	previousSceneIdentity = sceneIdentity;
-	previousInterior = interior;
-	hasCameraSceneHistory = true;
-
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "HybridGI");
 
@@ -1886,7 +1903,6 @@ void HybridGI::DrawHybridGI()
 	};
 
 	if (queuedResetHistory.exchange(false)) {
-		hasPreviousFrameInverseView = false;
 		lastWorldCacheDecayClock = 0xffffffffu;
 		clearTemporalHistory();
 		const UINT clearValue[4] = { 0, 0, 0, 0 };
@@ -2063,12 +2079,14 @@ void HybridGI::DrawHybridGI()
 			srvs.at(7) = texWorldCachePreviousSH2->srv.get();
 			srvs.at(8) = texWorldCachePreviousNormal->srv.get();
 			auto& radiantGrid = globals::pipeline::radiantGrid;
-			srvs.at(9) = settings.EnableEmitterInjection && radiantGrid.loaded && radiantGrid.lights ?
-				radiantGrid.lights->srv.get() : nullptr;
-			srvs.at(10) = settings.EnableEmitterInjection && radiantGrid.loaded && radiantGrid.lightIndexList ?
-				radiantGrid.lightIndexList->srv.get() : nullptr;
-			srvs.at(11) = settings.EnableEmitterInjection && radiantGrid.loaded && radiantGrid.lightGrid ?
-				radiantGrid.lightGrid->srv.get() : nullptr;
+			const auto sharedLights = PIXL::Renderer::LightTransportWorld::Get().AcquireLocalLights();
+			const bool sharedLightsReady = globals::state && sharedLights.ValidFor(globals::state->frameCount);
+			srvs.at(9) = !settings.EnableEmitterInjection ? nullptr : sharedLightsReady ?
+				sharedLights.lights.get() : radiantGrid.loaded && radiantGrid.lights ? radiantGrid.lights->srv.get() : nullptr;
+			srvs.at(10) = !settings.EnableEmitterInjection ? nullptr : sharedLightsReady ?
+				sharedLights.lightIndices.get() : radiantGrid.loaded && radiantGrid.lightIndexList ? radiantGrid.lightIndexList->srv.get() : nullptr;
+			srvs.at(11) = !settings.EnableEmitterInjection ? nullptr : sharedLightsReady ?
+				sharedLights.lightGrid.get() : radiantGrid.loaded && radiantGrid.lightGrid ? radiantGrid.lightGrid->srv.get() : nullptr;
 			uavs.at(0) = texWorldCacheMetadata->uav.get();
 			uavs.at(1) = texWorldCacheSH0->uav.get();
 			uavs.at(2) = texWorldCacheSH1->uav.get();
@@ -2268,6 +2286,27 @@ void HybridGI::DrawHybridGI()
 	outputIlIdx = inputGITexIdx;
 	outputSpecIdx = inputSpecTexIdx;
 	outputBentIdx = inputBentTexIdx;
+	PIXL::Renderer::ReflectionFrame reflectionFrame{};
+	if (settings.EnableExperimentalSpecularGI && texGiSpecular[outputSpecIdx] && texGiSpecular[outputSpecIdx]->srv) {
+		reflectionFrame.radianceConfidence = texGiSpecular[outputSpecIdx]->srv;
+		reflectionFrame.width = resolution[0]; reflectionFrame.height = resolution[1];
+		reflectionFrame.traceSteps = settings.ReflectionSteps;
+		reflectionFrame.maxDistance = settings.ReflectionMaxDistance;
+		reflectionFrame.maxRoughness = settings.ReflectionMaxRoughness;
+		reflectionFrame.thickness = settings.ReflectionThickness;
+		reflectionFrame.screenTrace = true;
+		reflectionFrame.worldFallback = settings.EnableVoxelReflections && settings.EnableWorldCache;
+		reflectionFrame.temporal = settings.EnableTemporalDenoiser;
+		reflectionFrame.spatial = settings.EnableBlur;
+		reflectionFrame.valid = true;
+	}
+	PIXL::Renderer::ReflectionContext::Get().Publish(std::move(reflectionFrame));
+
+	if (settings.EnableWorldCache && texWorldCacheSH0 && texWorldCacheSH0->srv) {
+		PIXL::Renderer::LightTransportWorld::Get().PublishProbe(
+			PIXL::Renderer::ProbeKind::WorldIrradiance, texWorldCacheSH0->srv.get(),
+			texWorldCacheSH0->desc.Width, texWorldCacheSH0->desc.Height);
+	}
 
 	// cleanup
 	resetViews();
@@ -2278,6 +2317,8 @@ void HybridGI::DrawHybridGI()
 	context->CSSetConstantBuffers(1, 1, &cb);
 	context->CSSetSamplers(0, (uint)samplers.size(), samplers.data());
 	context->CSSetShader(nullptr, nullptr, 0);
+	PIXL::Renderer::TemporalContext::Get().SetHistoryValid(temporalHistoryId);
+	PIXL::Renderer::TemporalContext::Get().SetHistoryValid(worldHistoryId);
 }
 
 #undef I18N_KEY_PREFIX

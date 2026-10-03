@@ -142,6 +142,7 @@ public:
 		results.clear();
 		knownTimers.clear();
 		knownTimerIndex.clear();
+		activeTimerStack.clear();
 		totalTimeMs = 0.0f;
 		cpuTotalTimeMs = 0.0f;
 	}
@@ -205,6 +206,9 @@ private:
 	std::unordered_map<std::string, size_t> knownTimerIndex;
 	std::unordered_map<std::string, uint32_t> currentExternalEvents;
 	std::unordered_map<std::string, uint32_t> lastExternalEvents;
+	// Timer scopes may be nested (for example a scheduler pass containing
+	// module-owned subpasses). Indices refer to the current frame query array.
+	std::vector<std::uint32_t> activeTimerStack;
 	float totalTimeMs = 0.0f;
 	float cpuTotalTimeMs = 0.0f;
 

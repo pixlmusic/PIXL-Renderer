@@ -4,8 +4,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "FoliageOptimizer.h"
+
+#include "Renderer/HookRegistry.h"
 #include "FoliageDynamics.h"
 #include "Menu/TuningWorkspaceRenderer.h"
+#include "Renderer/VisibilityContext.h"
+#include "State.h"
 
 #define I18N_KEY_PREFIX "feature.foliage_optimizer."
 
@@ -302,6 +306,7 @@ void FoliageOptimizer::ComputeFrustumPlanes(RE::NiFrustumPlanes& out, const RE::
 
 void FoliageOptimizer::UpdateGrass()
 {
+	auto& visibility = PIXL::Renderer::VisibilityContext::Get();
 	std::scoped_lock blk(bucketStore.bucketMutex);
 	auto* device = globals::d3d::device;
 	auto* ctx = globals::d3d::context;
@@ -384,7 +389,7 @@ void FoliageOptimizer::UpdateGrass()
 		lastCullWasDirector = directorCamera;
 		haveCullCameraState = true;
 		cameraTransitionFrames = 2;
-		hiZ.Invalidate();
+		visibility.Invalidate("foliage camera ownership changed");
 		for (auto& [key, b] : bucketStore.buckets)
 			b.cullVisible = false;
 	}
@@ -398,9 +403,9 @@ void FoliageOptimizer::UpdateGrass()
 
 	const bool allowHiZ = settings.EnableOcclusionCulling && cameraTransitionFrames == 0;
 	if (allowHiZ)
-		hiZ.Build(device, ctx);
+		visibility.Build(device, ctx, globals::state ? globals::state->frameCount : 0u);
 	else
-		hiZ.Invalidate();
+		visibility.Invalidate("foliage occlusion temporarily disabled");
 	if (cameraTransitionFrames > 0)
 		--cameraTransitionFrames;
 
@@ -440,12 +445,12 @@ void FoliageOptimizer::UpdateGrass()
 		cp.farLODPixelSize = settings.EnableMidLOD ? std::min(settings.FarLODPixelSize, settings.MidLODPixelSize) : settings.FarLODPixelSize;
 
 		cp.meshLODBandPx = std::max(0.0f, settings.MeshLODBandPixels);
-		cp.hiZEnabled = hiZ.IsValid() ? 1.0f : 0.0f;
-		cp.hiZSizeX = (float)hiZ.GetWidth();
-		cp.hiZSizeY = (float)hiZ.GetHeight();
+		cp.hiZEnabled = visibility.IsValid() ? 1.0f : 0.0f;
+		cp.hiZSizeX = (float)visibility.GetWidth();
+		cp.hiZSizeY = (float)visibility.GetHeight();
 
-		cp.hiZTexelPixels = hiZ.GetTexelPixels();
-		cp.hiZMipCount = (float)hiZ.GetMipCount();
+		cp.hiZTexelPixels = visibility.GetTexelPixels();
+		cp.hiZMipCount = (float)visibility.GetMipCount();
 		cp.occlusionBias = std::max(0.0f, settings.OcclusionBias);
 		cp.costBiasStartDist = std::max(0.0f, settings.CostBiasStartDistance);
 
@@ -740,9 +745,16 @@ bool FoliageOptimizer::AabbVisible(const FrustumSoA& f, __m128 lo, __m128 hi)
 
 void FoliageOptimizer::SetupResources()
 {
+	auto& hookRegistry = PIXL::Renderer::HookRegistry::Get();
+	hookRegistry.Declare({
+		.name = "FoliageOptimizer.RuntimeHooks",
+		.owner = "Foliage Optimizer",
+		.relocation = "Grass instance lifecycle, setup, stream and indirect-draw hook set",
+		.featureImpact = "GPU grass capture, culling and indirect rendering",
+		.required = false });
+
 	runtimeReady = false;
 	cullParamsCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<CullParamsCB>(), "FoliageOptimizer::CullParamsCB");
-	hiZ.SetupResources();
 	bucketStore.SetupResources();
 
 	if (FAILED(globals::d3d::context->QueryInterface(__uuidof(ID3D11DeviceContext1), reinterpret_cast<void**>(&ctx1))) || !ctx1) {
@@ -752,6 +764,10 @@ void FoliageOptimizer::SetupResources()
 
 	runtimeReady = ctx1 && GetCullCS();
 	if (!runtimeReady) {
+		hookRegistry.SetStatus(
+			"FoliageOptimizer.RuntimeHooks",
+			PIXL::Renderer::HookStatus::Disabled,
+			"Required DX11.1 context or culling shader is unavailable; vanilla grass retained");
 		logger::error("[PIXL] Foliage Optimizer disabled: required DX11 resources are unavailable");
 		return;
 	}
@@ -762,6 +778,10 @@ void FoliageOptimizer::SetupResources()
 	// vanilla grass rendering until the exact SE hook ABI has a verified test.
 	if (REL::Module::IsSE()) {
 		runtimeReady = false;
+		hookRegistry.SetStatus(
+			"FoliageOptimizer.RuntimeHooks",
+			PIXL::Renderer::HookStatus::Unsupported,
+			"SE grass hook ABI is quarantined; vanilla grass retained");
 		logger::warn("[PIXL] Foliage Optimizer disabled on Skyrim SE for stability; vanilla grass rendering retained");
 		return;
 	}
@@ -773,10 +793,16 @@ void FoliageOptimizer::SetupResources()
 		// exposes the populated group allocation through DoneAddingInstances, so
 		// retain the safe capture path and leave only the ABI-sensitive GID hooks
 		// out. AE/other supported runtimes may use the complete stream path.
-		Hooks::Install(!REL::Module::IsSE());
+		hookRegistry.SetStatus(
+			"FoliageOptimizer.RuntimeHooks",
+			PIXL::Renderer::HookStatus::Validated,
+			"Supported runtime selected; installing the complete grass hook set");
+		Hooks::Install(true);
 		hooksInstalled = true;
-		if (REL::Module::IsSE())
-			logger::info("[PIXL] Foliage Optimizer using SE-safe group allocation capture; GID stream hooks quarantined");
+		hookRegistry.SetStatus(
+			"FoliageOptimizer.RuntimeHooks",
+			PIXL::Renderer::HookStatus::Installed,
+			"Grass lifecycle, stream capture and indirect-draw hooks installed");
 	}
 }
 
@@ -803,7 +829,7 @@ void FoliageOptimizer::ClearShaderCache()
 	};
 	release(cullCS);
 	cullCompileAttempted = false;
-	hiZ.ClearShaderCache();
+	PIXL::Renderer::VisibilityContext::Get().ClearShaderCache();
 	bucketStore.ClearShaderCache();
 }
 
@@ -846,7 +872,7 @@ void FoliageOptimizer::CullBucket(GrassBucket& b, ID3D11DeviceContext* ctx)
 
 	ID3D11ShaderResourceView* sliceTableSRV = sliceTable ? sliceTable->srv.get() : nullptr;
 	ID3D11ShaderResourceView* srvs[4] = { b.instanceSRV, b.originSRV,
-		hiZ.GetSRV(), sliceTableSRV };
+		PIXL::Renderer::VisibilityContext::Get().GetDepthPyramidSRV(), sliceTableSRV };
 	ctx->CSSetShaderResources(0, 4, srvs);
 
 	ID3D11Buffer* bucketCB = cullBucketCB->CB();

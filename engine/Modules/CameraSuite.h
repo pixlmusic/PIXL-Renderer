@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include "Renderer/RendererMetadata.h"
+
 #include "Buffer.h"
 #include "RenderModule.h"
 
@@ -135,7 +137,7 @@ public:
 		// Director/Photo/Video modes may opt into the physical lens model.
 		bool dofPhysicalLens = true;
 		float dofFocalLengthMm = 30.0f;
-		float dofFStop = 3.4f;
+		float dofFStop = static_cast<float>(PIXL::Metadata::Settings::CameraDofFStop.defaultValue);
 		float dofSensorHeightMm = 21.9f;
 		float dofFocusSpeed = 8.81f;
 		float dofFocusDeadband = 0.055f;
@@ -432,7 +434,7 @@ public:
 	};
 
 	static_assert((sizeof(HDRDataCB) % 16) == 0, "CB size not padded correctly");
-	static_assert(sizeof(HDRDataCB) == 352, "HDRDataCB must match PhysicalCameraCommon.hlsli (22 float4 registers / 352 bytes).");
+	static_assert(sizeof(HDRDataCB) == PIXL::Metadata::ABI::CameraHDR.sizeBytes, "HDRDataCB must match PhysicalCameraCommon.hlsli (22 float4 registers / 352 bytes).");
 	static_assert(offsetof(HDRDataCB, physicalCameraEnabled) == 48);
 	static_assert(offsetof(HDRDataCB, cameraHighlightProtection) == 76);
 	static_assert(offsetof(HDRDataCB, bodycamEnabled) == 100);
@@ -501,12 +503,13 @@ public:
 		float farBlurDistance;
 		uint32_t pad3;
 	};
-	static_assert(sizeof(DofControlCB) == 8 * 16);
+	static_assert(sizeof(DofControlCB) == PIXL::Metadata::ABI::CameraDOF.sizeBytes);
 	static_assert(offsetof(DofControlCB, focalLengthMm) == 16);
 	static_assert(offsetof(DofControlCB, renderWidth) == 88);
 	static_assert(offsetof(DofControlCB, deltaTime) == 116);
 	std::unique_ptr<ConstantBuffer> dofControlCB;
 	mutable DofControlCB dofControlData{};
+	std::uint64_t dofHistoryId = 0;
 	float lastExposureCompensationEV = 0.0f;
 	bool exposureHistoryValid = false;
 	bool exposureHoldLogged = false;

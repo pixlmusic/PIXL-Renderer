@@ -639,7 +639,9 @@ void RainResponse::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("%s", T(TKEY("enable_wetness_tooltip"), "Enables a wetness effect near water and when it is raining."));
 		}
-		ImGui::SliderFloat(T(TKEY("rain_wetness"), "Rain Wetness"), &settings.MaxRainWetness, 0.0f, 2.5f);
+		ImGui::SliderFloat(T(TKEY("rain_wetness"), "Rain Wetness"), &settings.MaxRainWetness,
+			static_cast<float>(PIXL::Metadata::Settings::RainWetness.minimum),
+			static_cast<float>(PIXL::Metadata::Settings::RainWetness.maximum));
 		tooltip("Maximum wet-material response reached during rain. Updates in real time and selecting a value marks the climate preset as Custom.");
 		if (ImGui::IsItemDeactivatedAfterEdit())
 			DetectCurrentPreset();
@@ -1806,7 +1808,10 @@ void RainResponse::LoadSettings(json& o_json)
 		return std::clamp(finiteOr(value, fallback), minimum, maximum);
 	};
 	settings.EnableRainResponse = settings.EnableRainResponse ? 1u : 0u;
-	settings.MaxRainWetness = clampFinite(settings.MaxRainWetness, 1.388f, 0.0f, 2.5f);
+	settings.MaxRainWetness = clampFinite(settings.MaxRainWetness,
+		static_cast<float>(PIXL::Metadata::Settings::RainWetness.defaultValue),
+		static_cast<float>(PIXL::Metadata::Settings::RainWetness.minimum),
+		static_cast<float>(PIXL::Metadata::Settings::RainWetness.maximum));
 	settings.MaxPuddleWetness = clampFinite(settings.MaxPuddleWetness, 1.57f, 0.0f, 6.0f);
 	settings.MaxShoreWetness = clampFinite(settings.MaxShoreWetness, 1.0f, 0.0f, 1.0f);
 	settings.ShoreRange = std::clamp(settings.ShoreRange, 1u, 64u);

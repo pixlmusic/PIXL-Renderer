@@ -5,6 +5,7 @@
 // Additional permissions are described in the repository EXCEPTIONS.md.
 
 #include "GroundResponse.h"
+#include "GroundResponse/SurfaceClassifier.h"
 #include "ReactiveFX.h"
 
 #include "ActorSurfaceEffects.h"
@@ -758,35 +759,7 @@ namespace
 
 	std::string ResistanceNormalizeTextureKey(const char* a_path)
 	{
-		if (!a_path || a_path[0] == '\0')
-			return {};
-
-		std::string key;
-		key.reserve(std::char_traits<char>::length(a_path));
-
-		for (const char c : std::string_view(a_path)) {
-			char out = c == '/' ? '\\' : c;
-			if (out >= 'A' && out <= 'Z')
-				out = static_cast<char>(out - 'A' + 'a');
-			key.push_back(out);
-		}
-
-		auto stripPrefix = [&](std::string_view prefix) {
-			if (key.size() >= prefix.size() &&
-				key.compare(0, prefix.size(), prefix) == 0) {
-				key.erase(0, prefix.size());
-			}
-		};
-
-		stripPrefix("data\\");
-		stripPrefix("textures\\");
-
-		if (key.size() > 4 &&
-			key.compare(key.size() - 4, 4, ".dds") == 0) {
-			key.resize(key.size() - 4);
-		}
-
-		return key;
+		return a_path ? PIXL::GroundResponseInternal::NormalizeTextureKey(a_path) : std::string{};
 	}
 
 	ResolvedLandSurface GroundResolveLandSurface(const RE::TESLandTexture* a_landTexture)
@@ -918,15 +891,7 @@ namespace
 				text += diffusePath;
 		}
 
-		for (char& c : text) {
-			if (c >= 'A' && c <= 'Z')
-				c = static_cast<char>(c - 'A' + 'a');
-		}
-
-		return
-			text.find("snow") != std::string::npos ||
-			text.find("snw") != std::string::npos ||
-			text.find("glacier") != std::string::npos;
+		return PIXL::GroundResponseInternal::HasSnowTextureHint(text);
 	}
 
 	GroundSnowClassifier ResistanceClassifySnow(
@@ -3853,7 +3818,9 @@ void GroundResponse::DrawSettings()
 
 		ImGui::Separator();
 		changed |= ImGui::SliderFloat("Track Normal Strength", &settings.GroundNormalStrength, 0.0f, 2.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-		changed |= ImGui::SliderFloat("Interaction / Compaction Strength", &settings.GroundResponseStrength, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		changed |= ImGui::SliderFloat("Interaction / Compaction Strength", &settings.GroundResponseStrength,
+			static_cast<float>(PIXL::Metadata::Settings::GroundResponseStrength.minimum),
+			static_cast<float>(PIXL::Metadata::Settings::GroundResponseStrength.maximum), "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Overall stamp strength for both materials. Snow/mud history is stored as normalized compaction in an absolute-world XY toroidal field; first/third person, camera height and equipment changes never rebase existing trail values.");
 		changed |= ImGui::SliderFloat("Track Hold Time", &settings.TrackHoldSeconds, 0.0f, 30.0f, "%.1f s", ImGuiSliderFlags_AlwaysClamp);

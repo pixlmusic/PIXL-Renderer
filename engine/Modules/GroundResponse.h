@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include "Renderer/RendererMetadata.h"
+
 #include "Buffer.h"
 
 #include <atomic>
@@ -93,7 +95,7 @@ public:
 		float MudDarkening = 0.48f;
 		float MudRoughness = 0.24f;
 		float MudWetnessThreshold = 0.15f;
-		float GroundResponseStrength = 0.71f;
+		float GroundResponseStrength = static_cast<float>(PIXL::Metadata::Settings::GroundResponseStrength.defaultValue);
 		bool DebugInteractionField = false;
 		bool GeometrySelfTest = false;
 		// Developer safety valve for Phase 2 tile scheduling. Kept serialized so a
@@ -365,7 +367,7 @@ public:
 	static_assert(offsetof(PerFrame, WeatherSnowRaise) == 160, "GroundResponse b13 weather-snow ABI mismatch.");
 	static_assert(offsetof(PerFrame, WeatherSnowTrackCover) == 176, "GroundResponse b13 environmental-state ABI mismatch.");
 	static_assert(offsetof(PerFrame, WeatherWindIntensity) == 192, "GroundResponse b13 environment ABI mismatch.");
-	static_assert(sizeof(PerFrame) == 208, "GroundResponse::PerFrame must match GroundResponse/Runtime.hlsli.");
+	static_assert(sizeof(PerFrame) == PIXL::Metadata::ABI::GroundResponse.sizeBytes, "GroundResponse::PerFrame must match GroundResponse/Runtime.hlsli.");
 
 	Settings settings;
 	float weatherSnowRaiseState = 0.0f;

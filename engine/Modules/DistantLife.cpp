@@ -9,6 +9,8 @@
 #include "Globals.h"
 #include "State.h"
 #include "Util.h"
+#include "Renderer/GPUResourceServices.h"
+#include "Renderer/RenderOrigin.h"
 
 #include <RE/A/ActorMagicCaster.h>
 #include <RE/N/NiLight.h>
@@ -339,10 +341,15 @@ void DistantLife::Prepass()
 	for (std::size_t index = 0; index < candidateCount; ++index) {
 		const auto& candidate = candidates[index];
 		const auto& source = *candidate.emitter;
+		const auto relativePosition = PIXL::RenderOrigin::Get().WorldToEngine(
+			PIXL::RenderOrigin::AbsoluteWorldPosition{ PIXL::RenderOrigin::Position{
+				source.position.x, source.position.y, source.position.z } },
+			PIXL::RenderOrigin::AbsoluteWorldPosition{ PIXL::RenderOrigin::Position{
+				cameraAdjust.x, cameraAdjust.y, cameraAdjust.z } });
 		const RE::NiPoint3 relative{
-			source.position.x - cameraAdjust.x,
-			source.position.y - cameraAdjust.y,
-			source.position.z - cameraAdjust.z
+			static_cast<float>(relativePosition.value.x),
+			static_cast<float>(relativePosition.value.y),
+			static_cast<float>(relativePosition.value.z)
 		};
 		if (!Finite(relative))
 			continue;
@@ -356,13 +363,11 @@ void DistantLife::Prepass()
 
 	if (!uploadedCount || !emitterBuffer || !globals::d3d::context)
 		return;
-	D3D11_MAPPED_SUBRESOURCE mapped{};
-	if (FAILED(globals::d3d::context->Map(emitterBuffer.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+	if (!PIXL::Renderer::GPUResourceServices::Get().UploadDiscard(
+			emitterBuffer.get(), upload.data(), sizeof(GPUEmitter) * uploadedCount)) {
 		uploadedCount = 0;
 		return;
 	}
-	std::memcpy(mapped.pData, upload.data(), sizeof(GPUEmitter) * uploadedCount);
-	globals::d3d::context->Unmap(emitterBuffer.get(), 0);
 }
 
 void DistantLife::EnsureMask(std::uint32_t width, std::uint32_t height)

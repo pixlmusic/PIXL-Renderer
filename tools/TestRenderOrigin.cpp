@@ -1,8 +1,14 @@
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include "../engine/Renderer/RenderOrigin.h"
 #include <cassert>
 #include <iostream>
+#include <type_traits>
 
 using namespace PIXL::RenderOrigin;
+static_assert(!std::is_convertible_v<AbsoluteWorldPosition, EngineRelativePosition>);
+static_assert(!std::is_convertible_v<RenderRelativePosition, PreviousRenderPosition>);
 static void Near(Position a, Position b, double epsilon = 1e-6)
 { if ((a-b).MaxAbs() > epsilon) { std::cerr << "coordinate mismatch\n"; std::abort(); } }
 static Position XYZ(const std::array<float,4>& p) { return {p[0],p[1],p[2]}; }
@@ -17,6 +23,13 @@ int main()
     assert(m.Enabled() && !m.HistoryValid());
     const Position p{1000031.125, -999930.25, 55.5};
     Near(m.RenderToWorld(m.WorldToRender(p)), p);
+	const AbsoluteWorldPosition typedWorld{ p };
+	const auto typedRender = m.WorldToRender(typedWorld);
+	Near(m.RenderToWorld(typedRender).value, p);
+	const AbsoluteWorldPosition typedEngineOrigin{ Position{1000000.0, -1000000.0, 0.0} };
+	const EngineRelativePosition typedEnginePoint{ Position{31.125, 69.75, 55.5} };
+	Near(m.RenderToEngine(m.EngineToRender(typedEnginePoint, typedEngineOrigin), typedEngineOrigin).value,
+		typedEnginePoint.value);
     auto oldOrigin = m.GetCurrentOrigin();
     m.Update(2, {oldOrigin.x+2049, oldOrigin.y, oldOrigin.z}, 1);
     assert(!m.ShiftedThisFrame()); // no chatter at the nearest-cell boundary
@@ -54,8 +67,10 @@ int main()
     }
     m.Update(10005, engine, 2);
     assert(m.Discontinuity() && !m.HistoryValid());
+	assert(m.GetDiscontinuityReason() == DiscontinuityReason::WorldContextChanged);
     m.Update(10006, engine+Position{100000,0,0}, 2);
     assert(m.Discontinuity());
+	assert(m.GetDiscontinuityReason() == DiscontinuityReason::LargeCameraJump);
     m.Update(10007, {std::numeric_limits<double>::quiet_NaN(),0,0}, 2);
     assert(!m.Enabled());
     m.Update(10008, {-8193,-4097,-256}, 2);

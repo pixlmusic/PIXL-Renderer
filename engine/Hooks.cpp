@@ -10,6 +10,7 @@
 #include "ShaderCache.h"
 #include "State.h"
 #include "Util.h"
+#include "Renderer/HookRegistry.h"
 
 #include "Modules/CameraSuite.h"
 #include "Modules/InteriorDaylight.h"
@@ -1158,6 +1159,18 @@ namespace Hooks
 	 */
 	void Install()
 	{
+		auto& hookRegistry = PIXL::Renderer::HookRegistry::Get();
+		hookRegistry.Declare({
+			.name = "Core.RendererPipelineHooks",
+			.owner = "PIXL Core",
+			.relocation = "CommonLib relocation set: shader, render-target, image-space and presentation hooks",
+			.featureImpact = "Required renderer interception and shader substitution",
+			.required = true });
+		hookRegistry.SetStatus(
+			"Core.RendererPipelineHooks",
+			PIXL::Renderer::HookStatus::Validated,
+			"Runtime selected and CommonLib relocations are being resolved");
+
 		logger::info("Hooking BSImageSpace::Init::IBLF");
 		stl::detour_thunk<BSImageSpace_Init_IBLF>(REL::RelocationID(100480, 107198));
 
@@ -1260,16 +1273,52 @@ namespace Hooks
 		}
 
 		stl::write_thunk_call<BSLightingShader_SetupGeometry_GeometrySetupConstantPointLights>(REL::RelocationID(100565, 107300).address() + REL::Relocate(0x523, 0xB0E));
+
+		hookRegistry.SetStatus(
+			"Core.RendererPipelineHooks",
+			PIXL::Renderer::HookStatus::Installed,
+			"Required core hook set installed; per-site byte signatures remain explicit future metadata");
 	}
 
 	void InstallEarlyHooks()
 	{
+		auto& hookRegistry = PIXL::Renderer::HookRegistry::Get();
+		hookRegistry.Declare({
+			.name = "Early.D3D11DeviceIAT",
+			.owner = "PIXL Core",
+			.relocation = "d3d11.dll!D3D11CreateDeviceAndSwapChain IAT",
+			.featureImpact = "Native PIXL device and swap-chain interception",
+			.patchSize = static_cast<std::uint32_t>(sizeof(void*)),
+			.required = false });
+		hookRegistry.Declare({
+			.name = "Early.DXGIFactoryIAT",
+			.owner = "PIXL Core",
+			.relocation = "dxgi.dll!CreateDXGIFactory IAT",
+			.featureImpact = "DXGI factory and presentation interception",
+			.patchSize = static_cast<std::uint32_t>(sizeof(void*)),
+			.required = true });
+
 		if (!globals::pipeline::imageReconstruction.loaded) {
 			logger::info("Hooking D3D11CreateDeviceAndSwapChain");
 			*(uintptr_t*)&ptrD3D11CreateDeviceAndSwapChain = SKSE::PatchIAT(hk_D3D11CreateDeviceAndSwapChain, "d3d11.dll", "D3D11CreateDeviceAndSwapChain");
+			hookRegistry.SetStatus(
+				"Early.D3D11DeviceIAT",
+				ptrD3D11CreateDeviceAndSwapChain ? PIXL::Renderer::HookStatus::Installed : PIXL::Renderer::HookStatus::RelocationMissing,
+				ptrD3D11CreateDeviceAndSwapChain ? "IAT patch installed" : "D3D11 import was not resolved",
+				reinterpret_cast<std::uintptr_t>(ptrD3D11CreateDeviceAndSwapChain));
+		} else {
+			hookRegistry.SetStatus(
+				"Early.D3D11DeviceIAT",
+				PIXL::Renderer::HookStatus::Disabled,
+				"Image Reconstruction owns device creation for this configuration");
 		}
 
 		logger::info("Hooking CreateDXGIFactory");
 		*(uintptr_t*)&ptrCreateDXGIFactory = SKSE::PatchIAT(hk_CreateDXGIFactory, "dxgi.dll", "CreateDXGIFactory");
+		hookRegistry.SetStatus(
+			"Early.DXGIFactoryIAT",
+			ptrCreateDXGIFactory ? PIXL::Renderer::HookStatus::Installed : PIXL::Renderer::HookStatus::RelocationMissing,
+			ptrCreateDXGIFactory ? "IAT patch installed" : "DXGI import was not resolved",
+			reinterpret_cast<std::uintptr_t>(ptrCreateDXGIFactory));
 	}
 }

@@ -269,8 +269,9 @@ public:
 
 	bool previousUpscalingWasActive = false;
 	bool depthUpscaleUseWideKernel = false;
-	float previousReconstructionFov = 0.0f;
-	bool hasPreviousReconstructionFov = false;
+	std::uint64_t reconstructionHistoryId = 0;
+	std::uint64_t containedLiquidReactiveContributorId = 0;
+	std::uint64_t reactiveFXContributorId = 0;
 
 	/**
 	 * Set when loading/cell transitions or camera discontinuities invalidate temporal

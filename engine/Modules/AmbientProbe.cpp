@@ -5,6 +5,7 @@
 #include "Shadercache.h"
 #include "State.h"
 #include "WeatherVariableRegistry.h"
+#include "Renderer/LightTransportWorld.h"
 
 #include "Globals.h"
 
@@ -332,6 +333,12 @@ void AmbientProbe::Prepass()
 		ID3D11ShaderResourceView* views[2]{ envIBLTexture->srv.get(), skyIBLTexture->srv.get() };
 		context->PSSetShaderResources(76, 2, views);
 	}
+
+	auto& lightTransport = PIXL::Renderer::LightTransportWorld::Get();
+	lightTransport.PublishProbe(PIXL::Renderer::ProbeKind::AmbientEnvironmentSH,
+		envIBLTexture->srv.get(), envIBLTexture->desc.Width, envIBLTexture->desc.Height);
+	lightTransport.PublishProbe(PIXL::Renderer::ProbeKind::AmbientSkySH,
+		skyIBLTexture->srv.get(), skyIBLTexture->desc.Width, skyIBLTexture->desc.Height);
 }
 
 void AmbientProbe::SetupResources()

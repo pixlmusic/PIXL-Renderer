@@ -16,6 +16,18 @@
 #include "ShaderCache.h"
 #include "State.h"
 #include "Renderer/WorldBenchmark.h"
+#include "Renderer/RenderPassScheduler.h"
+#include "Renderer/RendererMetadata.h"
+#include "Renderer/GPUResourceServices.h"
+#include "Renderer/HookRegistry.h"
+#include "Renderer/LightTransportWorld.h"
+#include "Renderer/TemporalContext.h"
+#include "Renderer/PixelAnnotations.h"
+#include "Renderer/ReconstructionContext.h"
+#include "Renderer/GPUWorkloadBudgeter.h"
+#include "Renderer/ReflectionContext.h"
+#include "Renderer/VolumetricContext.h"
+#include "Renderer/VisibilityContext.h"
 #include "Util.h"
 #include "Utils/Format.h"
 #include "Utils/UI.h"
@@ -704,6 +716,294 @@ void WorkshopToolsRenderer::RenderDeveloperSection()
 
 	// Developer Mode Testing Section
 	if (globals::state->IsDeveloperMode()) {
+		ImGui::Spacing();
+		ImGui::SeparatorText("Frame Pass Scheduler");
+		auto& scheduler = PIXL::Renderer::RenderPassScheduler::Get();
+		ImGui::Text("Registry: %s | history epoch: %llu | resource epoch: %llu",
+			scheduler.IsReady() ? "ready" : "legacy fallback",
+			static_cast<unsigned long long>(scheduler.HistoryEpoch()),
+			static_cast<unsigned long long>(scheduler.ResourceEpoch()));
+		ImGui::SameLine();
+		ImGui::TextDisabled("| history: %s", scheduler.IsHistoryValid() ? "valid" : "reset");
+
+		for (const auto& message : scheduler.ValidationMessages())
+			ImGui::TextColored(ImVec4(0.95f, 0.72f, 0.25f, 1.0f), "%s", message.c_str());
+
+		const auto passes = scheduler.GetDiagnostics();
+		if (ImGui::BeginTable("##PIXLFramePasses", 7,
+				ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
+				ImVec2(0.0f, 300.0f))) {
+			ImGui::TableSetupScrollFreeze(0, 1);
+			ImGui::TableSetupColumn("Pass", ImGuiTableColumnFlags_WidthStretch);
+			ImGui::TableSetupColumn("Owner", ImGuiTableColumnFlags_WidthFixed, 110.0f);
+			ImGui::TableSetupColumn("Hook", ImGuiTableColumnFlags_WidthFixed, 115.0f);
+			ImGui::TableSetupColumn("Phase", ImGuiTableColumnFlags_WidthFixed, 125.0f);
+			ImGui::TableSetupColumn("Resources", ImGuiTableColumnFlags_WidthStretch);
+			ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthFixed, 75.0f);
+			ImGui::TableSetupColumn("CPU", ImGuiTableColumnFlags_WidthFixed, 65.0f);
+			ImGui::TableHeadersRow();
+			ImGuiListClipper clipper;
+			clipper.Begin(static_cast<int>(passes.size()));
+			while (clipper.Step()) {
+				for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+					const auto& pass = passes[static_cast<std::size_t>(row)];
+					std::string resources;
+					auto appendResources = [&](std::string_view prefix, const auto& list) {
+						if (list.empty())
+							return;
+						if (!resources.empty())
+							resources += " | ";
+						resources += prefix;
+						for (std::size_t i = 0; i < list.size(); ++i) {
+							if (i)
+								resources += ", ";
+							resources += PIXL::Renderer::RenderPassScheduler::ToString(list[i]);
+						}
+					};
+					appendResources("R: ", pass.reads);
+					appendResources("W: ", pass.writes);
+
+					ImGui::TableNextRow();
+					ImGui::TableSetColumnIndex(0);
+					ImGui::TextUnformatted(pass.name.c_str());
+					ImGui::TableSetColumnIndex(1);
+					ImGui::TextUnformatted(pass.owner.c_str());
+					ImGui::TableSetColumnIndex(2);
+					ImGui::TextUnformatted(PIXL::Renderer::RenderPassScheduler::ToString(pass.executionPoint).data());
+					ImGui::TableSetColumnIndex(3);
+					ImGui::TextUnformatted(PIXL::Renderer::RenderPassScheduler::ToString(pass.phase).data());
+					ImGui::TableSetColumnIndex(4);
+					ImGui::TextWrapped("%s", resources.c_str());
+					ImGui::TableSetColumnIndex(5);
+					if (pass.failed)
+						ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.30f, 1.0f), "failed");
+					else
+						ImGui::TextUnformatted(pass.enabled ? "enabled" : "disabled");
+					if (pass.temporal && ImGui::IsItemHovered())
+						ImGui::SetTooltip("Temporal pass");
+					ImGui::TableSetColumnIndex(6);
+					if (pass.profilingEnabled)
+						ImGui::Text("%.3f", pass.lastCpuMs);
+					else
+						ImGui::TextDisabled("--");
+					if (pass.failed && ImGui::IsItemHovered())
+						ImGui::SetTooltip("%s", pass.failureReason.c_str());
+				}
+			}
+			ImGui::EndTable();
+		}
+		if (ImGui::TreeNodeEx("Settings / Shader ABI Metadata")) {
+			ImGui::Text("Schema settings: %zu | ABI records: %zu | hash: %016llX",
+				PIXL::Metadata::Settings::All.size(), PIXL::Metadata::ABI::All.size(),
+				static_cast<unsigned long long>(PIXL::Metadata::ShaderABIHash()));
+			if (ImGui::BeginTable("##SettingMetadata", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+				ImGui::TableSetupColumn("Setting", ImGuiTableColumnFlags_WidthStretch);
+				ImGui::TableSetupColumn("Default");
+				ImGui::TableSetupColumn("Range");
+				ImGui::TableSetupColumn("GPU");
+				ImGui::TableHeadersRow();
+				for (const auto& setting : PIXL::Metadata::Settings::All) {
+					ImGui::TableNextRow();
+					ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted(setting.id.data());
+					ImGui::TableSetColumnIndex(1); ImGui::Text("%.3g", setting.defaultValue);
+					ImGui::TableSetColumnIndex(2); ImGui::Text("%.3g .. %.3g", setting.minimum, setting.maximum);
+					ImGui::TableSetColumnIndex(3); ImGui::TextUnformatted(setting.shaderVisible ? "yes" : "no");
+				}
+				ImGui::EndTable();
+			}
+			if (ImGui::BeginTable("##ShaderABIMetadata", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+				ImGui::TableSetupColumn("Buffer", ImGuiTableColumnFlags_WidthStretch);
+				ImGui::TableSetupColumn("Slot");
+				ImGui::TableSetupColumn("Bytes");
+				ImGui::TableSetupColumn("Version");
+				ImGui::TableHeadersRow();
+				for (const auto& abi : PIXL::Metadata::ABI::All) {
+					ImGui::TableNextRow();
+					ImGui::TableSetColumnIndex(0); ImGui::Text("%s / %s", abi.module.data(), abi.buffer.data());
+					ImGui::TableSetColumnIndex(1); ImGui::Text("b%u", abi.registerSlot);
+					ImGui::TableSetColumnIndex(2); ImGui::Text("%u", abi.sizeBytes);
+					ImGui::TableSetColumnIndex(3); ImGui::TextUnformatted(abi.version.data());
+				}
+				ImGui::EndTable();
+			}
+			ImGui::TreePop();
+		}
+
+		ImGui::Spacing();
+		ImGui::SeparatorText("GPU Resource Services");
+		const auto resourceStats = PIXL::Renderer::GPUResourceServices::Get().GetDiagnostics();
+		ImGui::Text("Textures: %zu pooled / %zu active | created %llu / reused %llu",
+			resourceStats.pooledTextures, resourceStats.activeTextures,
+			static_cast<unsigned long long>(resourceStats.textureCreates),
+			static_cast<unsigned long long>(resourceStats.textureReuses));
+		ImGui::Text("Buffers: %zu pooled / %zu active | created %llu / reused %llu",
+			resourceStats.pooledBuffers, resourceStats.activeBuffers,
+			static_cast<unsigned long long>(resourceStats.bufferCreates),
+			static_cast<unsigned long long>(resourceStats.bufferReuses));
+		ImGui::Text("Uploads: %llu calls / %.2f MiB | histories: %zu / %zu valid",
+			static_cast<unsigned long long>(resourceStats.uploadCalls),
+			static_cast<double>(resourceStats.uploadBytes) / (1024.0 * 1024.0),
+			resourceStats.registeredHistories, resourceStats.validHistories);
+		const auto temporalStats = PIXL::Renderer::TemporalContext::Get().GetDiagnostics();
+		ImGui::Text("Temporal: frame %llu | %s | motion %s | disocclusion %s | %.2f MiB history",
+			static_cast<unsigned long long>(temporalStats.frameIndex),
+			temporalStats.frameValid ? "continuous" : "reset",
+			temporalStats.motionValid ? "valid" : "missing",
+			temporalStats.disocclusionAvailable ? "published" : "not published",
+			static_cast<double>(temporalStats.historyMemoryBytes) / (1024.0 * 1024.0));
+		if (ImGui::TreeNodeEx("Temporal Histories")) {
+			if (temporalStats.frameInvalidations != 0) {
+				std::string reasons;
+				for (std::uint32_t bit = 0; bit < 8; ++bit) {
+					const auto mask = std::uint32_t{ 1u } << bit;
+					if ((temporalStats.frameInvalidations & mask) == 0)
+						continue;
+					if (!reasons.empty())
+						reasons += ", ";
+					reasons += PIXL::Renderer::TemporalContext::ToString(
+						static_cast<PIXL::Renderer::TemporalInvalidationReason>(mask));
+				}
+				ImGui::TextDisabled("Frame invalidation: %s", reasons.c_str());
+			}
+			if (ImGui::BeginTable("##TemporalHistories", 5,
+				ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
+				ImGui::TableSetupColumn("History", ImGuiTableColumnFlags_WidthStretch);
+				ImGui::TableSetupColumn("Owner", ImGuiTableColumnFlags_WidthFixed, 140.0f);
+				ImGui::TableSetupColumn("Valid", ImGuiTableColumnFlags_WidthFixed, 48.0f);
+				ImGui::TableSetupColumn("Last reset", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+				ImGui::TableSetupColumn("Memory", ImGuiTableColumnFlags_WidthFixed, 78.0f);
+				ImGui::TableHeadersRow();
+				for (const auto& history : temporalStats.histories) {
+					ImGui::TableNextRow();
+					ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted(history.name.c_str());
+					ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(history.owner.c_str());
+					ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(history.valid ? "yes" : "no");
+					ImGui::TableSetColumnIndex(3); ImGui::TextUnformatted(
+						PIXL::Renderer::TemporalContext::ToString(history.lastReason).data());
+					ImGui::TableSetColumnIndex(4); ImGui::Text("%.2f MiB",
+						static_cast<double>(history.memoryBytes) / (1024.0 * 1024.0));
+				}
+				ImGui::EndTable();
+			}
+			ImGui::TreePop();
+		}
+		const auto annotationViews = PIXL::Renderer::PixelAnnotations::Get().Acquire();
+		ImGui::Text("Frame annotations: %s | %ux%u | material %s | reactive %s | transparency %s",
+			annotationViews.valid ? "published" : "unavailable",
+			annotationViews.width, annotationViews.height,
+			annotationViews.deferredMaterialMask ? "yes" : "no",
+			annotationViews.reactiveMask ? "yes" : "no",
+			annotationViews.transparencyMask ? "yes" : "no");
+		const auto reconstructionStats = PIXL::Renderer::ReconstructionContext::Get().GetDiagnostics();
+		ImGui::Text("Reconstruction: %s | %ux%u -> %ux%u | %zu reactive contributors | temporal %s",
+			PIXL::Renderer::ReconstructionContext::ToString(reconstructionStats.backend).data(),
+			reconstructionStats.renderWidth, reconstructionStats.renderHeight,
+			reconstructionStats.outputWidth, reconstructionStats.outputHeight,
+			reconstructionStats.contributors,
+			reconstructionStats.temporalValid ? "valid" : "reset");
+		auto& budgeter = PIXL::Renderer::GPUWorkloadBudgeter::Get();
+		bool adaptiveEnabled = budgeter.IsEnabled();
+		if (ImGui::Checkbox("Adaptive GPU workload (experimental)", &adaptiveEnabled))
+			budgeter.SetEnabled(adaptiveEnabled);
+		float targetFrameMs = budgeter.GetTargetFrameMs();
+		if (ImGui::SliderFloat("Target frame time", &targetFrameMs, 8.0f, 50.0f, "%.2f ms"))
+			budgeter.SetTargetFrameMs(targetFrameMs);
+		const auto& workloadStates = budgeter.GetStates();
+		for (std::size_t index = 0; index < workloadStates.size(); ++index) {
+			const auto domain = static_cast<PIXL::Renderer::WorkloadDomain>(index);
+			const auto& workload = workloadStates[index];
+			ImGui::TextDisabled("%s: %.3f ms avg | level %u/%u | %s",
+				PIXL::Renderer::GPUWorkloadBudgeter::ToString(domain).data(), workload.averageMs,
+				workload.level, workload.maximumLevel, workload.reason);
+		}
+		const auto reflectionFrame = PIXL::Renderer::ReflectionContext::Get().Acquire();
+		ImGui::Text("Reflections: %s | %ux%u | %u steps | %.0f units | roughness %.2f | fallback %s",
+			reflectionFrame.valid ? "published" : "fallback only", reflectionFrame.width, reflectionFrame.height,
+			reflectionFrame.traceSteps, reflectionFrame.maxDistance, reflectionFrame.maxRoughness,
+			reflectionFrame.worldFallback ? "world cache" : "environment/probe");
+		const auto volumeFrame = PIXL::Renderer::VolumetricContext::Get().Acquire();
+		ImGui::Text("Atmosphere volume: %s | %ux%ux%u | %.2f MiB | temporal %s",
+			volumeFrame.valid ? "published" : "unavailable",
+			volumeFrame.width, volumeFrame.height, volumeFrame.depth,
+			static_cast<double>(volumeFrame.memoryBytes) / (1024.0 * 1024.0),
+			volumeFrame.temporalValid ? "accepted" : "reset/current frame");
+		if (volumeFrame.valid) {
+			ImGui::TextDisabled("Lighting: sun/shadow %s | depth %s | IBL %s | sky bounce %s | local lights %s",
+				(volumeFrame.lightingFlags & 1u) ? "yes" : "no",
+				(volumeFrame.lightingFlags & 2u) ? "yes" : "no",
+				(volumeFrame.lightingFlags & 4u) ? "yes" : "no",
+				(volumeFrame.lightingFlags & 8u) ? "yes" : "no",
+				(volumeFrame.lightingFlags & 32u) ? "yes" : "no");
+		}
+		const auto visibilityStats = PIXL::Renderer::VisibilityContext::Get().GetDiagnostics();
+		ImGui::Text("Visibility: %s | %ux%u | %u mips | %.2f px/texel | builds %llu",
+			visibilityStats.valid ? "valid" : "fail-open",
+			visibilityStats.width, visibilityStats.height, visibilityStats.mipCount,
+			visibilityStats.texelPixels,
+			static_cast<unsigned long long>(visibilityStats.buildCount));
+		if (!visibilityStats.invalidationReason.empty())
+			ImGui::TextDisabled("Visibility status: %s", visibilityStats.invalidationReason.c_str());
+		const auto lightingStats = PIXL::Renderer::LightTransportWorld::Get().GetDiagnostics();
+		ImGui::Text("Light transport: %u lights / %u emitters | %u probe resources | epoch %llu",
+			lightingStats.localLightCount, lightingStats.localEmitterCount, lightingStats.validProbeCount,
+			static_cast<unsigned long long>(lightingStats.epoch));
+		if (!lightingStats.invalidationReason.empty())
+			ImGui::TextDisabled("Light transport status: %s", lightingStats.invalidationReason.c_str());
+		if (ImGui::TreeNodeEx("Published Light-Transport Resources")) {
+			for (std::uint32_t index = 0; index < static_cast<std::uint32_t>(PIXL::Renderer::ProbeKind::Count); ++index) {
+				const auto kind = static_cast<PIXL::Renderer::ProbeKind>(index);
+				const auto probe = PIXL::Renderer::LightTransportWorld::Get().AcquireProbe(kind);
+				ImGui::Text("%s: %s (%ux%ux%u, frame %llu)",
+					PIXL::Renderer::LightTransportWorld::ToString(kind).data(),
+					probe.resource ? "valid" : "not published",
+					probe.width, probe.height, probe.depth,
+					static_cast<unsigned long long>(probe.frame));
+			}
+			ImGui::TreePop();
+		}
+
+		ImGui::Spacing();
+		ImGui::SeparatorText("Hook Compatibility");
+		const auto runtime = PIXL::Renderer::HookRegistry::Get().GetRuntimeCapabilities();
+		ImGui::Text("Runtime: %s %s", runtime.runtime.c_str(), runtime.version.c_str());
+		const auto hookRecords = PIXL::Renderer::HookRegistry::Get().Snapshot();
+		if (ImGui::BeginTable("##HookCompatibility", 4,
+			ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
+			ImGui::TableSetupColumn("Hook", ImGuiTableColumnFlags_WidthStretch);
+			ImGui::TableSetupColumn("Owner", ImGuiTableColumnFlags_WidthFixed, 130.0f);
+			ImGui::TableSetupColumn("Required", ImGuiTableColumnFlags_WidthFixed, 62.0f);
+			ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, 150.0f);
+			ImGui::TableHeadersRow();
+			for (const auto& record : hookRecords) {
+				ImGui::TableNextRow();
+				ImGui::TableSetColumnIndex(0);
+				ImGui::TextUnformatted(record.desc.name.c_str());
+				if (ImGui::IsItemHovered()) {
+					ImGui::BeginTooltip();
+					ImGui::TextWrapped("Impact: %s", record.desc.featureImpact.c_str());
+					ImGui::TextWrapped("Location: %s", record.desc.relocation.c_str());
+					if (!record.detail.empty())
+						ImGui::TextWrapped("Result: %s", record.detail.c_str());
+					if (record.resolvedAddress)
+						ImGui::Text("Resolved: 0x%llX", static_cast<unsigned long long>(record.resolvedAddress));
+					ImGui::EndTooltip();
+				}
+				ImGui::TableSetColumnIndex(1);
+				ImGui::TextUnformatted(record.desc.owner.c_str());
+				ImGui::TableSetColumnIndex(2);
+				ImGui::TextUnformatted(record.desc.required ? "yes" : "no");
+				ImGui::TableSetColumnIndex(3);
+				const auto status = PIXL::Renderer::HookRegistry::ToString(record.status);
+				if (record.status == PIXL::Renderer::HookStatus::Installed || record.status == PIXL::Renderer::HookStatus::Validated)
+					ImGui::TextColored(ImVec4(0.45f, 0.90f, 0.55f, 1.0f), "%s", status.data());
+				else if (record.status == PIXL::Renderer::HookStatus::Disabled || record.status == PIXL::Renderer::HookStatus::Unsupported)
+					ImGui::TextColored(ImVec4(0.95f, 0.72f, 0.30f, 1.0f), "%s", status.data());
+				else
+					ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.30f, 1.0f), "%s", status.data());
+			}
+			ImGui::EndTable();
+		}
+
 		ImGui::Spacing();
 		ImGui::SeparatorText("Performance Capture");
 		static std::string profilerDumpStatus;

@@ -42,7 +42,9 @@ void WaterOptics::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("enhanced_caustics_tooltip"), "Adds sun-projected multi-scale focusing, chromatic dispersion and depth-dependent absorption. Changes are real-time."));
 		ImGui::BeginDisabled(settings.EnableEnhancedCaustics == 0);
-		changed |= ImGui::SliderFloat(T(TKEY("caustics_strength"), "Intensity"), &settings.CausticsStrength, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		changed |= ImGui::SliderFloat(T(TKEY("caustics_strength"), "Intensity"), &settings.CausticsStrength,
+			static_cast<float>(PIXL::Metadata::Settings::WaterCausticsStrength.minimum),
+			static_cast<float>(PIXL::Metadata::Settings::WaterCausticsStrength.maximum), "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("caustics_strength_tooltip"), "Brightness contrast of focused underwater sunlight. The shader remains energy bounded."));
 		changed |= ImGui::SliderFloat(T(TKEY("caustics_dispersion"), "Color Dispersion"), &settings.CausticsDispersion, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -123,7 +125,9 @@ void WaterOptics::LoadSettings(json& o_json)
 		settings = {};
 
 	settings.EnableEnhancedCaustics = settings.EnableEnhancedCaustics ? 1u : 0u;
-	settings.CausticsStrength = std::clamp(settings.CausticsStrength, 0.0f, 2.0f);
+	settings.CausticsStrength = std::clamp(settings.CausticsStrength,
+		static_cast<float>(PIXL::Metadata::Settings::WaterCausticsStrength.minimum),
+		static_cast<float>(PIXL::Metadata::Settings::WaterCausticsStrength.maximum));
 	settings.CausticsDispersion = std::clamp(settings.CausticsDispersion, 0.0f, 1.5f);
 	settings.CausticsFocus = std::clamp(settings.CausticsFocus, 0.25f, 2.0f);
 	settings.EnableEnhancedSSR = settings.EnableEnhancedSSR ? 1u : 0u;

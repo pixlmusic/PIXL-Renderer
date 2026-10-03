@@ -11,6 +11,9 @@
 #include "Modules/TerrainOcclusion.h"
 #include "I18n/I18n.h"
 #include "State.h"
+#include "Renderer/GPUWorkloadBudgeter.h"
+#include "Renderer/TemporalContext.h"
+#include "Renderer/VolumetricContext.h"
 #include "Utils/D3D.h"
 #include "Utils/Game.h"
 #include "WeatherVariableRegistry.h"
@@ -393,6 +396,14 @@ void Atmosphere::DrawSettings()
 
 void Atmosphere::SetupResources()
 {
+	if (temporalHistoryId == 0) {
+		temporalHistoryId = PIXL::Renderer::TemporalContext::Get().RegisterHistory({
+			.name = "Atmosphere froxel scattering",
+			.owner = "Atmosphere",
+			.invalidateOn = PIXL::Renderer::AllTemporalInvalidations
+		});
+	}
+
 	if (!globals::d3d::device || !globals::d3d::context) {
 		logger::error("[PIXL Atmosphere] D3D11 device/context unavailable; volumetric resources were not created");
 		return;
@@ -454,8 +465,14 @@ void Atmosphere::EnsureVolumetricResources()
 	if (!globals::d3d::device || !globals::game::graphicsState)
 		return;
 
-	uint32_t pixelSize = std::clamp(settings.volumetricGridPixelSize, 4u, 64u);
-	const uint32_t gridZ = std::clamp(settings.volumetricGridSizeZ, 16u, 160u);
+	const float workloadScale = PIXL::Renderer::GPUWorkloadBudgeter::Get().GetScale(
+		PIXL::Renderer::WorkloadDomain::Atmosphere);
+	uint32_t pixelSize = std::clamp(
+		static_cast<uint32_t>(std::lround(static_cast<float>(settings.volumetricGridPixelSize) /
+			std::max(workloadScale, 0.5f))), 4u, 64u);
+	const uint32_t gridZ = std::clamp(
+		static_cast<uint32_t>(std::lround(static_cast<float>(settings.volumetricGridSizeZ) * workloadScale)),
+		16u, 160u);
 	float2 screenSz{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight };
 	// Atmosphere 2.0 keeps the apparent froxel footprint tied to display pixels.
 	// DLSS/FSR therefore no longer silently lowers volumetric XY resolution.
@@ -548,14 +565,20 @@ void Atmosphere::EnsureVolumetricResources()
 	hasLightScatteringHistory = false;
 	hasConservativeDepthHistory = false;
 	hasSceneClassHistory = false;
-	hasProjectionHistory = false;
-	hasWorldspaceHistory = false;
 	hasLightingInputHistory = false;
 	lastPrepassFrame = UINT32_MAX;
+	if (temporalHistoryId != 0)
+		PIXL::Renderer::TemporalContext::Get().InvalidateHistory(
+			temporalHistoryId, PIXL::Renderer::TemporalInvalidationReason::ResolutionChange);
+
+	const std::uint64_t volumeBytes = static_cast<std::uint64_t>(gridSize.x) * gridSize.y * gridSize.z * 8u;
+	const std::uint64_t depthBytes = static_cast<std::uint64_t>(gridSize.x) * gridSize.y * 8u;
+	PIXL::Renderer::TemporalContext::Get().SetHistoryMemory(temporalHistoryId, volumeBytes + depthBytes);
 }
 
 void Atmosphere::ReleaseVolumetricResources()
 {
+	const bool hadResources = vBufferA || conservativeDepth || lightScattering || integratedLightScattering;
 	vBufferA.reset();
 	conservativeDepth.reset();
 	conservativeDepthHistory.reset();
@@ -566,10 +589,12 @@ void Atmosphere::ReleaseVolumetricResources()
 	hasLightScatteringHistory = false;
 	hasConservativeDepthHistory = false;
 	hasSceneClassHistory = false;
-	hasProjectionHistory = false;
-	hasWorldspaceHistory = false;
 	hasLightingInputHistory = false;
 	lastPrepassFrame = UINT32_MAX;
+	if (hadResources && temporalHistoryId != 0)
+		PIXL::Renderer::TemporalContext::Get().InvalidateHistory(
+			temporalHistoryId, PIXL::Renderer::TemporalInvalidationReason::ModuleReset);
+	PIXL::Renderer::VolumetricContext::Get().Invalidate();
 	ID3D11ShaderResourceView* nullSRV = nullptr;
 	if (globals::d3d::context) {
 		globals::d3d::context->PSSetShaderResources(kIntegratedFogPSSlot, 1, &nullSRV);
@@ -582,8 +607,9 @@ void Atmosphere::BindIntegratedLightScattering()
 	if (!globals::d3d::context)
 		return;
 
-	ID3D11ShaderResourceView* integratedFogSRV = integratedLightScattering ? integratedLightScattering->srv.get() : nullptr;
-	ID3D11ShaderResourceView* depthRangeSRV = conservativeDepth ? conservativeDepth->srv.get() : nullptr;
+	const auto sharedVolume = PIXL::Renderer::VolumetricContext::Get().Acquire();
+	ID3D11ShaderResourceView* integratedFogSRV = sharedVolume.valid ? sharedVolume.integratedScattering.get() : nullptr;
+	ID3D11ShaderResourceView* depthRangeSRV = sharedVolume.valid ? sharedVolume.conservativeDepth.get() : nullptr;
 	globals::d3d::context->PSSetShaderResources(kIntegratedFogPSSlot, 1, &integratedFogSRV);
 	globals::d3d::context->PSSetShaderResources(kDepthRangePSSlot, 1, &depthRangeSRV);
 }
@@ -665,13 +691,15 @@ void Atmosphere::Prepass()
 	// volumetric pass on it, and never let stale gameplay history leak across the
 	// map/game camera transition. Resources are retained to avoid a reallocation hitch.
 	if (mapProfileActive && settings.mapDisableVolumetricFog != 0) {
+		if (temporalHistoryId != 0 && lastPrepassFrame != UINT32_MAX)
+			PIXL::Renderer::TemporalContext::Get().InvalidateHistory(
+				temporalHistoryId, PIXL::Renderer::TemporalInvalidationReason::ModuleReset);
 		hasLightScatteringHistory = false;
 		hasConservativeDepthHistory = false;
 		hasSceneClassHistory = false;
-		hasProjectionHistory = false;
-		hasWorldspaceHistory = false;
 		hasLightingInputHistory = false;
 		lastPrepassFrame = UINT32_MAX;
+		PIXL::Renderer::VolumetricContext::Get().Invalidate();
 		return;
 	}
 
@@ -679,17 +707,20 @@ void Atmosphere::Prepass()
 	if (!vBufferA || !conservativeDepth || !conservativeDepthHistory ||
 		!lightScattering || !lightScatteringHistory || !integratedLightScattering ||
 		currentGridSize.x == 0u || currentGridSize.y == 0u || currentGridSize.z == 0u) {
+		PIXL::Renderer::VolumetricContext::Get().Invalidate();
 		return;
 	}
 
 	if (runtimeSettings.fogDensity <= 0.0f) {
+		if (temporalHistoryId != 0 && lastPrepassFrame != UINT32_MAX)
+			PIXL::Renderer::TemporalContext::Get().InvalidateHistory(
+				temporalHistoryId, PIXL::Renderer::TemporalInvalidationReason::SettingsChange);
 		hasLightScatteringHistory = false;
 		hasConservativeDepthHistory = false;
 		hasSceneClassHistory = false;
-		hasProjectionHistory = false;
-		hasWorldspaceHistory = false;
 		hasLightingInputHistory = false;
 		lastPrepassFrame = UINT32_MAX;
+		PIXL::Renderer::VolumetricContext::Get().Invalidate();
 		return;
 	}
 
@@ -711,35 +742,6 @@ void Atmosphere::Prepass()
 	const bool hasSkyBounce = skyBounce.loaded && skyBounce.texProbeArray;
 
 	const bool temporalReprojection = Util::GetTemporal();
-	const auto& frameBuffer = globals::game::frameBufferCached;
-	const auto& cameraPos = frameBuffer.GetCameraPosAdjust();
-	const auto& previousCameraPos = frameBuffer.GetCameraPreviousPosAdjust();
-	const float dx = cameraPos.x - previousCameraPos.x;
-	const float dy = cameraPos.y - previousCameraPos.y;
-	const float dz = cameraPos.z - previousCameraPos.z;
-	const float cameraDeltaSq = dx * dx + dy * dy + dz * dz;
-	constexpr float kCameraCutDistance = 4096.0f;
-	const bool cameraCut = cameraDeltaSq > kCameraCutDistance * kCameraCutDistance;
-
-	const auto& dr = frameBuffer.GetDynamicResolutionParams1();
-	const bool dynamicResolutionChanged =
-		std::abs(dr.x - dr.z) > 0.01f ||
-		std::abs(dr.y - dr.w) > 0.01f;
-	const float currentVerticalFov = Util::GetVerticalFOVRad();
-	const bool currentFovValid = std::isfinite(currentVerticalFov) && currentVerticalFov > 0.0f;
-	const bool projectionChanged =
-		hasProjectionHistory &&
-		(!currentFovValid || std::abs(currentVerticalFov - lastVerticalFov) > 1.0e-4f);
-
-	// Camera-relative positions can be numerically identical in two unrelated
-	// exterior worldspaces. Do not reproject the previous world's fog into the new
-	// one merely because a load/teleport happened to remain below the distance cut.
-	auto* tes = RE::TES::GetSingleton();
-	const auto currentExteriorWorldspaceIdentity = reinterpret_cast<std::uintptr_t>(
-		!inInterior && tes ? tes->GetRuntimeData2().worldSpace : nullptr);
-	const bool worldspaceChanged =
-		hasWorldspaceHistory && currentExteriorWorldspaceIdentity != lastExteriorWorldspaceIdentity;
-
 	const uint32_t lightingInputFlags =
 		(directionalShadowMap && directionalShadowLightData ? 1u : 0u) |
 		(depthSrv ? 2u : 0u) |
@@ -756,12 +758,10 @@ void Atmosphere::Prepass()
 	const bool temporalHistoryValid =
 		temporalReprojection &&
 		hasLightScatteringHistory &&
+		temporalHistoryId != 0 &&
+		PIXL::Renderer::TemporalContext::Get().IsHistoryValid(temporalHistoryId) &&
 		lastPrepassFrame != UINT32_MAX &&
 		globals::state->frameCount == lastPrepassFrame + 1u &&
-		!cameraCut &&
-		!dynamicResolutionChanged &&
-		!projectionChanged &&
-		!worldspaceChanged &&
 		!lightingInputsChanged &&
 		!sceneClassChanged;
 
@@ -833,6 +833,7 @@ void Atmosphere::Prepass()
 		!lightScatteringShader || !integrationShader) {
 		hasLightScatteringHistory = false;
 		hasConservativeDepthHistory = false;
+		PIXL::Renderer::VolumetricContext::Get().Invalidate();
 		return;
 	}
 
@@ -952,13 +953,29 @@ void Atmosphere::Prepass()
 	lastHideSky = hideSky;
 	lastInMapMenu = inMapMenu;
 	hasSceneClassHistory = true;
-	lastVerticalFov = currentVerticalFov;
-	hasProjectionHistory = currentFovValid;
-	lastExteriorWorldspaceIdentity = currentExteriorWorldspaceIdentity;
-	hasWorldspaceHistory = true;
 	lastLightingInputFlags = lightingInputFlags;
 	hasLightingInputHistory = true;
 	lastPrepassFrame = globals::state->frameCount;
+	if (temporalHistoryId != 0)
+		PIXL::Renderer::TemporalContext::Get().SetHistoryValid(temporalHistoryId, temporalReprojection);
+
+	const std::uint64_t volumeBytes = static_cast<std::uint64_t>(currentGridSize.x) *
+		currentGridSize.y * currentGridSize.z * 8u;
+	const std::uint64_t depthBytes = static_cast<std::uint64_t>(currentGridSize.x) * currentGridSize.y * 8u;
+	PIXL::Renderer::VolumetricFrame sharedVolume{};
+	sharedVolume.materialExtinction = vBufferA->srv;
+	sharedVolume.scattering = lightScattering->srv;
+	sharedVolume.integratedScattering = integratedLightScattering->srv;
+	sharedVolume.conservativeDepth = conservativeDepth->srv;
+	sharedVolume.width = currentGridSize.x;
+	sharedVolume.height = currentGridSize.y;
+	sharedVolume.depth = currentGridSize.z;
+	sharedVolume.lightingFlags = lightingInputFlags;
+	sharedVolume.frame = globals::state->frameCount;
+	sharedVolume.memoryBytes = volumeBytes * 4u + depthBytes * 2u;
+	sharedVolume.temporalValid = temporalHistoryValid;
+	sharedVolume.valid = true;
+	PIXL::Renderer::VolumetricContext::Get().Publish(std::move(sharedVolume));
 	BindIntegratedLightScattering();
 }
 

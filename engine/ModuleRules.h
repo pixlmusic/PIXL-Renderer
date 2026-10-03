@@ -69,6 +69,9 @@ namespace ModuleRules
 	 */
 	ConstraintResult GetConstraints(const SettingId& setting);
 
+	/** Invalidates the indexed snapshot after module/settings/profile state changes. */
+	void InvalidateConstraintCache();
+
 	/**
 	 * @brief Get all active constraints across all features
 	 * @return Vector of setting IDs and their constraint results

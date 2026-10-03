@@ -6,6 +6,7 @@
 #pragma once
 
 #include "Buffer.h"
+#include "Renderer/RendererMetadata.h"
 
 /** @brief Adds dynamic weather-driven wetness, puddle formation, shore wetness, and raindrop effects. */
 struct RainResponse : RenderModule
@@ -38,7 +39,7 @@ public:
 	struct Settings
 	{
 		uint EnableRainResponse = true;
-		float MaxRainWetness = 1.388f;
+		float MaxRainWetness = static_cast<float>(PIXL::Metadata::Settings::RainWetness.defaultValue);
 		float MaxPuddleWetness = 1.57f;
 		float MaxShoreWetness = 1.0f;
 		uint ShoreRange = 32;
@@ -105,7 +106,7 @@ public:
 	};
 	STATIC_ASSERT_ALIGNAS_16(PerFrame);
 	static_assert(sizeof(Settings) == 176, "RainResponse::Settings must consume the former PerFrame padding slot");
-	static_assert(sizeof(PerFrame) == 256, "RainResponse::PerFrame constant-buffer ABI changed unexpectedly");
+	static_assert(sizeof(PerFrame) == PIXL::Metadata::ABI::RainResponse.sizeBytes, "RainResponse::PerFrame constant-buffer ABI changed unexpectedly");
 
 	struct DebugSettings
 	{

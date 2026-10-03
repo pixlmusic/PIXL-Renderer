@@ -10,6 +10,13 @@
 
 void HiZPyramid::SetupResources()
 {
+	valid = false;
+	texture.reset();
+	mipUAVs.clear();
+	mip0SRV = nullptr;
+	paddedWidth = 0;
+	paddedHeight = 0;
+	mipCount = 1;
 	paramsCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<BaseParams>(), "FoliageOptimizer::HiZParamsCB");
 }
 

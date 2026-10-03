@@ -9,6 +9,8 @@
 #include "I18n/I18n.h"
 #include "ShaderCache.h"
 #include "State.h"
+#include "Renderer/LightTransportWorld.h"
+#include "Renderer/RenderOrigin.h"
 #include "Utils/D3D.h"
 
 #define I18N_KEY_PREFIX "feature.sky_bounce."
@@ -243,9 +245,14 @@ SkyBounce::SkyBounceCB SkyBounce::GetCommonBufferData([[maybe_unused]] bool a_in
 		const double z = std::round(static_cast<double>(cameraPos.z) / cellSize.z);
 		cellID = { static_cast<float>(x), static_cast<float>(y), static_cast<float>(z) };
 		// cellOrigin below is only used in PosOffset; keep that subtraction local.
-		cellOrigin = { static_cast<float>(x * cellSize.x - cameraPos.x),
-			static_cast<float>(y * cellSize.y - cameraPos.y),
-			static_cast<float>(z * cellSize.z - cameraPos.z) };
+		const auto engineRelative = PIXL::RenderOrigin::Get().WorldToEngine(
+			PIXL::RenderOrigin::AbsoluteWorldPosition{ PIXL::RenderOrigin::Position{
+				x * cellSize.x, y * cellSize.y, z * cellSize.z } },
+			PIXL::RenderOrigin::AbsoluteWorldPosition{ PIXL::RenderOrigin::Position{
+				cameraPos.x, cameraPos.y, cameraPos.z } });
+		cellOrigin = { static_cast<float>(engineRelative.value.x),
+			static_cast<float>(engineRelative.value.y),
+			static_cast<float>(engineRelative.value.z) };
 	}
 	float3 cellIDDiff = prevCellID - cellID;
 	prevCellID = cellID;
@@ -329,6 +336,10 @@ void SkyBounce::Prepass()
 			context->CSSetShader(nullptr, nullptr, 0);
 		}
 	}
+
+	PIXL::Renderer::LightTransportWorld::Get().PublishProbe(
+		PIXL::Renderer::ProbeKind::SkyVisibility, texProbeArray->srv.get(),
+		probeArrayDims[0], probeArrayDims[1], probeArrayDims[2]);
 
 	// Set PS shader resources
 	{

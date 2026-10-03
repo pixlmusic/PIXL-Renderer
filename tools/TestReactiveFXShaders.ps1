@@ -6,7 +6,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 if ([string]::IsNullOrWhiteSpace($Fxc)) {
-    $Fxc = Get-ChildItem -Path 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\fxc.exe' -File -ErrorAction SilentlyContinue |
+    $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+    $Fxc = Get-ChildItem -Path (Join-Path $sdkRoot '*\x64\fxc.exe') -File -ErrorAction SilentlyContinue |
         Sort-Object FullName -Descending |
         Select-Object -First 1 -ExpandProperty FullName
 }

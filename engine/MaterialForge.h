@@ -7,6 +7,7 @@
 
 #include "RenderModule.h"
 #include "Buffer.h"
+#include "Renderer/RendererMetadata.h"
 
 struct GlintParameters
 {
@@ -82,7 +83,7 @@ public:
 
 	struct alignas(16) Settings
 	{
-		float VertexAOStrength = 1.0f;
+		float VertexAOStrength = static_cast<float>(PIXL::Metadata::Settings::MaterialVertexAO.defaultValue);
 		/** Enables the Stage 5 GGX adapter for non-True-PBR direct lighting. */
 		uint EnableLegacyPhysicalDirectLighting = 1;
 		/** Selects an in-game diagnostic visualization for physical material inputs. */
@@ -123,7 +124,7 @@ public:
 		float PhysicalLocalLightFalloffStrength = 0.65f;
 	};
 	STATIC_ASSERT_ALIGNAS_16(Settings);
-	static_assert(sizeof(Settings) == 80, "MaterialForge::Settings must match its five-register shader ABI.");
+	static_assert(sizeof(Settings) == PIXL::Metadata::ABI::MaterialForge.sizeBytes, "MaterialForge::Settings must match its five-register shader ABI.");
 	// distribution/Shaders/Common/SharedData.hlsli::MaterialForgeSettings mirrors this exact
 	// layout. PipelineBuffer.cpp copies this complete struct immediately before
 	// SkinOpticsData, so any CPU/HLSL size drift corrupts every following feature.

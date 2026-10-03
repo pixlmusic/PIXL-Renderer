@@ -1,4 +1,5 @@
 #include "ShaderCache.h"
+#include "ShaderCache/DescriptorUtilities.h"
 #include "Globals.h"
 #include "ShaderFileWatcher.h"
 #include "Util.h"
@@ -33,7 +34,7 @@ namespace SIE
 	// liquid optics update is included by Lighting.hlsl, so retaining the old
 	// revision would incorrectly treat pre-update Lighting permutations as
 	// valid and hide the new runtime path behind the disk cache.
-	static constexpr const char* kPipelineShaderRevision = "PIXL.Shaders.20261002.3";
+	static constexpr const char* kPipelineShaderRevision = "PIXL.Shaders.20261003.Visibility1";
 
 	// Custom include handler to track all includes during shader compilation
 	class TrackingIncludeHandler : public ID3DInclude
@@ -136,31 +137,19 @@ namespace SIE
 		@return A string with a valid BSShader::Type
 		*/
 		static std::string GetTypeFromShaderString(const std::string&);
-		constexpr const char* VertexShaderProfile = "vs_5_0";
-		constexpr const char* PixelShaderProfile = "ps_5_0";
-		constexpr const char* ComputeShaderProfile = "cs_5_0";
-
 		static std::wstring GetShaderPath(const std::string_view& name)
 		{
-			return std::format(L"Data/Shaders/{}.hlsl", std::wstring(name.begin(), name.end()));
+			return PIXL::ShaderCacheInternal::GetShaderPath(name);
 		}
 
 		static const char* GetShaderProfile(ShaderClass shaderClass)
 		{
-			switch (shaderClass) {
-			case ShaderClass::Vertex:
-				return VertexShaderProfile;
-			case ShaderClass::Pixel:
-				return PixelShaderProfile;
-			case ShaderClass::Compute:
-				return ComputeShaderProfile;
-			}
-			return nullptr;
+			return PIXL::ShaderCacheInternal::GetShaderProfile(shaderClass);
 		}
 
 		uint32_t GetTechnique(uint32_t descriptor)
 		{
-			return 0x3F & (descriptor >> 24);
+			return PIXL::ShaderCacheInternal::GetTechnique(descriptor);
 		}
 
 		static void GetLightingShaderDefines(uint32_t descriptor, std::span<D3D_SHADER_MACRO> defines)

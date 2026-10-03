@@ -5,9 +5,12 @@
 #include <format>
 #include <chrono>
 #include <filesystem>
+#include <limits>
 #include <unordered_map>
 
-#include "Utils/FileSystem.h"
+#ifndef PIXL_PROFILER_STANDALONE
+#	include "Utils/FileSystem.h"
+#endif
 
 float Profiler::RollingHistory::GetAverage() const
 {
@@ -102,6 +105,7 @@ void Profiler::Release()
 	results.clear();
 	knownTimers.clear();
 	knownTimerIndex.clear();
+	activeTimerStack.clear();
 	currentExternalEvents.clear();
 	lastExternalEvents.clear();
 	totalTimeMs = 0.0f;
@@ -133,6 +137,7 @@ void Profiler::BeginFrame()
 		return;
 	}
 	frame.activeCount = 0;
+	activeTimerStack.clear();
 	frame.inFlight = true;
 	frameActive = true;
 	context->Begin(frame.disjoint.get());
@@ -149,10 +154,16 @@ void Profiler::BeginPass(const std::string& name)
 		return;
 
 	auto& frame = frames[writeFrame];
-	if (frame.activeCount >= kMaxTimers)
+	if (frame.activeCount >= kMaxTimers) {
+		// Preserve Begin/End balance so a dropped inner timer cannot close its
+		// parent's scope.
+		activeTimerStack.push_back(std::numeric_limits<std::uint32_t>::max());
 		return;
+	}
 
-	auto& timer = frame.timers[frame.activeCount];
+	const auto timerIndex = frame.activeCount++;
+	activeTimerStack.push_back(timerIndex);
+	auto& timer = frame.timers[timerIndex];
 	timer.name = name;
 	context->End(timer.begin.get());
 	QueryPerformanceCounter(&timer.cpuBegin);
@@ -163,22 +174,22 @@ void Profiler::BeginPass(const std::string& name)
 
 void Profiler::EndPass()
 {
-	if (!initialized || !context || !frameActive)
+	if (!initialized || !context || !frameActive || activeTimerStack.empty())
 		return;
 
 	auto& frame = frames[writeFrame];
-	if (frame.activeCount >= kMaxTimers)
+	const auto timerIndex = activeTimerStack.back();
+	activeTimerStack.pop_back();
+	if (timerIndex == std::numeric_limits<std::uint32_t>::max())
 		return;
 
-	auto& timer = frame.timers[frame.activeCount];
+	auto& timer = frame.timers[timerIndex];
 
 	LARGE_INTEGER cpuEnd;
 	QueryPerformanceCounter(&cpuEnd);
 	timer.cpuMs = static_cast<float>(static_cast<double>(cpuEnd.QuadPart - timer.cpuBegin.QuadPart) * cpuTicksToMs);
 
 	context->End(timer.end.get());
-	frame.activeCount++;
-
 	if (endPerfEvent)
 		endPerfEvent({});
 }
@@ -191,6 +202,10 @@ void Profiler::EndFrame()
 	}
 	if (!initialized || !context || !frameActive)
 		return;
+	if (!activeTimerStack.empty()) {
+		logger::warn("[PIXL Profiler] {} timing scope(s) remained open at frame end", activeTimerStack.size());
+		activeTimerStack.clear();
+	}
 
 	frameActive = false;
 	context->End(frames[writeFrame].disjoint.get());

@@ -5,6 +5,9 @@
 
 #include "ShaderCache.h"
 #include "State.h"
+#include "Renderer/RenderOrigin.h"
+#include "Renderer/RenderPassScheduler.h"
+#include "Renderer/ReflectionContext.h"
 #include "Utils/D3D.h"
 
 #include "Modules/WorldProbes.h"
@@ -210,7 +213,8 @@ void Deferred::ReflectionsPrepasses()
 
 	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);  // Run OMSetRenderTargets again
 
-	RenderModule::ForEachLoadedModule("ReflectionsPrepass", [](RenderModule* feature) { feature->ReflectionsPrepass(); }, true);
+	if (!PIXL::Renderer::RenderPassScheduler::Get().Execute(PIXL::Renderer::PassExecutionPoint::ReflectionsPrepass))
+		RenderModule::ForEachLoadedModule("ReflectionsPrepass", [](RenderModule* feature) { feature->ReflectionsPrepass(); }, true);
 }
 
 void Deferred::EarlyPrepasses()
@@ -233,7 +237,15 @@ void Deferred::EarlyPrepasses()
 	// Shadow maps have just been rendered — upload BSShadowDirectionalLight data to t98.
 	CopyShadowLightData();
 
-	RenderModule::ForEachLoadedModule("EarlyPrepass", [](RenderModule* feature) { feature->EarlyPrepass(); }, true);
+	auto& scheduler = PIXL::Renderer::RenderPassScheduler::Get();
+	const auto* graphicsState = globals::game::graphicsState;
+	scheduler.BeginFrame(
+		globals::state->frameCount,
+		graphicsState ? graphicsState->screenWidth : 0u,
+		graphicsState ? graphicsState->screenHeight : 0u,
+		PIXL::RenderOrigin::Get().HistoryValid());
+	if (!scheduler.Execute(PIXL::Renderer::PassExecutionPoint::EarlyPrepass))
+		RenderModule::ForEachLoadedModule("EarlyPrepass", [](RenderModule* feature) { feature->EarlyPrepass(); }, true);
 }
 
 void Deferred::PrepassPasses()
@@ -249,7 +261,8 @@ void Deferred::PrepassPasses()
 	auto context = globals::d3d::context;
 	context->OMSetRenderTargets(0, nullptr, nullptr);  // Unbind all bound render targets
 
-	RenderModule::ForEachLoadedModule("Prepass", [](RenderModule* feature) { feature->Prepass(); }, true);
+	if (!PIXL::Renderer::RenderPassScheduler::Get().Execute(PIXL::Renderer::PassExecutionPoint::Prepass))
+		RenderModule::ForEachLoadedModule("Prepass", [](RenderModule* feature) { feature->Prepass(); }, true);
 }
 
 void Deferred::StartDeferred()
@@ -336,7 +349,14 @@ void Deferred::DeferredPasses()
 	auto& ssgi = globals::pipeline::hybridGI;
 	if (ssgi.loaded)
 		ssgi.DrawHybridGI();
+	else
+		PIXL::Renderer::ReflectionContext::Get().Invalidate();
 	auto [ssgi_ao, ssgi_y, ssgi_cocg, ssgi_gi_spec, ssgi_bent_visibility] = ssgi.GetOutputTextures();
+	if (!ssgi_gi_spec)
+		PIXL::Renderer::ReflectionContext::Get().Invalidate();
+	const auto sharedReflections = PIXL::Renderer::ReflectionContext::Get().Acquire();
+	if (sharedReflections.valid)
+		ssgi_gi_spec = sharedReflections.radianceConfidence.get();
 	bool ssgi_hq_spec = ssgi.settings.EnableExperimentalSpecularGI;
 	pixlGIDebugCB->Update(PixlGIDebugData{
 		globals::pipeline::materialLayers.showEffectsDepthDebug ? 100u : ssgi.settings.DebugView,

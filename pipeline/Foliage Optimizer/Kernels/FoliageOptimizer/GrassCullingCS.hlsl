@@ -5,6 +5,7 @@
 #include "Common/FrameBuffer.hlsli"
 #include "Common/Math.hlsli"
 #include "Common/Random.hlsli"
+#include "Common/PIXLVisibility.hlsli"
 
 cbuffer CullParams : register(b0)
 {
@@ -230,7 +231,7 @@ float WindScalar(float basis, float timer)
             }
 
             // Cull only when the sphere is behind every sampled tile, allowing for depth error.
-            if (nearZ > tileMax + OcclusionBias)
+            if (!PIXLVisibility::TestDepthVisibility(nearZ, tileMax, OcclusionBias))
                 return;
             }
         }

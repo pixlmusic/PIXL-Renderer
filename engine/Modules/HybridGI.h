@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Buffer.h"
+#include "Renderer/RendererMetadata.h"
 
 #include <cstddef>
 #include <atomic>
@@ -126,7 +127,7 @@ public:
 		bool EnableWorldCache = true;
 		uint WorldCacheMaxAge = 72;
 		uint WorldCacheSampleCount = 8;
-		float WorldCacheStrength = 0.60f;
+		float WorldCacheStrength = static_cast<float>(PIXL::Metadata::Settings::HybridWorldCacheStrength.defaultValue);
 		float WorldCacheCellSizeNear = 96.f;
 		float WorldCacheCellSizeFar = 512.f;
 		float WorldCacheRadius = 1536.f;
@@ -275,7 +276,7 @@ public:
 		float WorldCacheEmitterInjectionStrength;
 	};
 	STATIC_ASSERT_ALIGNAS_16(HybridGICB);
-	static_assert(sizeof(HybridGICB) == 416, "HybridGICB must match the PIXL Rendering vNext Shader Model 5 layout.");
+	static_assert(sizeof(HybridGICB) == PIXL::Metadata::ABI::HybridGI.sizeBytes, "HybridGICB must match the PIXL Rendering vNext Shader Model 5 layout.");
 	static_assert(offsetof(HybridGICB, WorldCacheEnabled) == 216);
 	static_assert(offsetof(HybridGICB, WorldCacheTraceSteps) == 228);
 	static_assert(offsetof(HybridGICB, WorldCacheDirectionalOcclusionEnabled) == 256);
@@ -354,12 +355,8 @@ public:
 	winrt::com_ptr<ID3D11ComputeShader> hybridReflectionDenoiseCompute = nullptr;
 
 private:
-	float4x4 previousFrameInverseView{};
-	bool hasPreviousFrameInverseView = false;
-	bool hasCameraSceneHistory = false;
-	bool previousFirstPerson = false;
-	bool previousInterior = false;
-	std::uintptr_t previousSceneIdentity = 0;
+	std::uint64_t temporalHistoryId = 0;
+	std::uint64_t worldHistoryId = 0;
 	float worldCacheClockAccumulator = 0.0f;
 	uint worldCacheClock = 0u;
 	// Decay is defined in fixed-rate world-cache ticks, not render frames. Keep

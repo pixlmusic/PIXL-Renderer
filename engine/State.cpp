@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <codecvt>
+#include <cstring>
 #include <filesystem>
 #include <thread>
 
@@ -18,6 +19,13 @@
 #include "Modules/ActorSurfaceEffects.h"
 #include "Modules/DialogueFocus.h"
 #include "Modules/PulseProfiler.h"
+#include "Renderer/RenderPassScheduler.h"
+#include "Renderer/GPUResourceServices.h"
+#include "Renderer/LightTransportWorld.h"
+#include "Renderer/TemporalContext.h"
+#include "Renderer/PixelAnnotations.h"
+#include "Renderer/GPUWorkloadBudgeter.h"
+#include "Renderer/VisibilityContext.h"
 #include "Modules/SkinOptics.h"
 #include "Modules/SkyContinuity.h"
 #include "Modules/SkyBounce.h"
@@ -220,6 +228,10 @@ bool State::HandlePostProcessing(RE::RENDER_TARGET a_input, RE::RENDER_TARGET a_
 void State::Reset()
 {
 	globals::profiler->EndFrame();
+	PIXL::Renderer::GPUWorkloadBudgeter::Get().Update(*globals::profiler,
+		static_cast<float>(RE::GetSecondsSinceLastFrame()));
+	PIXL::Renderer::GPUResourceServices::Get().BeginFrame(static_cast<std::uint64_t>(frameCount) + 1u);
+	PIXL::Renderer::LightTransportWorld::Get().BeginFrame(static_cast<std::uint64_t>(frameCount) + 1u);
 
 	RenderModule::ForEachLoadedModule("Reset", [](RenderModule* feature) { feature->Reset(); });
 	if (!globals::game::ui->GameIsPaused())
@@ -295,6 +307,9 @@ void State::Setup()
 	if (globals::pipeline::actorSurfaceEffects.loaded)
 		globals::pipeline::actorSurfaceEffects.InstallLateHooks();
 	globals::deferred->SetupResources();
+	auto& passScheduler = PIXL::Renderer::RenderPassScheduler::Get();
+	passScheduler.RegisterLegacyModulePasses(RenderModule::GetModuleList());
+	passScheduler.NotifyResourcesRecreated();
 
 	// Load per-weather settings after features are setup
 	globals::weatherManager->LoadPerWeatherSettingsFromDisk();
@@ -899,6 +914,8 @@ void State::SetupResources()
 #endif
 
 	globals::profiler->Initialize(globals::d3d::device, globals::d3d::context);
+	PIXL::Renderer::GPUResourceServices::Get().Initialize(globals::d3d::device, globals::d3d::context);
+	PIXL::Renderer::VisibilityContext::Get().SetupResources();
 
 	if (frameAnnotations) {
 		globals::profiler->SetPerfEventCallbacks(
@@ -1088,10 +1105,29 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 		if (globals::menu)
 			renderOrigin.requestedEnabled = globals::menu->GetSettings().ExperimentalRenderOriginEnabled;
 		const auto& previousAdjust = globals::game::frameBufferCached.GetCameraPreviousPosAdjust();
-		const PIXL::RenderOrigin::Position engineOrigin{ cameraPosAdjust.x, cameraPosAdjust.y, cameraPosAdjust.z };
-		const PIXL::RenderOrigin::Position previousEngineOrigin{ previousAdjust.x, previousAdjust.y, previousAdjust.z };
+		const PIXL::RenderOrigin::AbsoluteWorldPosition engineOrigin{
+			PIXL::RenderOrigin::Position{ cameraPosAdjust.x, cameraPosAdjust.y, cameraPosAdjust.z }
+		};
+		const PIXL::RenderOrigin::AbsoluteWorldPosition previousEngineOrigin{
+			PIXL::RenderOrigin::Position{ previousAdjust.x, previousAdjust.y, previousAdjust.z }
+		};
+		const auto inverseView = globals::game::frameBufferCached.GetCameraViewInverse().Transpose();
+		PIXL::RenderOrigin::Position cameraAbsolute =
+			engineOrigin.value + PIXL::RenderOrigin::Position{ inverseView._41, inverseView._42, inverseView._43 };
+		if (auto* playerCamera = RE::PlayerCamera::GetSingleton(); playerCamera && playerCamera->cameraRoot) {
+			const auto& cameraPosition = playerCamera->cameraRoot->world.translate;
+			const PIXL::RenderOrigin::Position authoritativeCamera{ cameraPosition.x, cameraPosition.y, cameraPosition.z };
+			if (authoritativeCamera.Finite())
+				cameraAbsolute = authoritativeCamera;
+		}
+		std::uint64_t worldContext = 0;
+		if (auto* player = globals::game::player) {
+			if (auto* cell = player->GetParentCell()) {
+				if (cell->IsInteriorCell()) worldContext = (std::uint64_t{ 1 } << 32) | cell->GetFormID();
+				else if (auto* world = player->GetWorldspace()) worldContext = world->GetFormID();
+			}
+		}
 		if (renderOrigin.NeedsUpdate(frameCount)) {
-			const auto inverseView = globals::game::frameBufferCached.GetCameraViewInverse().Transpose();
 			// Skyrim rewrites the shared per-frame buffer for auxiliary views. Reflection,
 			// UI and post-display camera setups can therefore replace the gameplay view
 			// before this snapshot runs. Using that transient inverse view made the render
@@ -1099,24 +1135,6 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 			// PlayerCamera's root is the authoritative rendered camera for gameplay,
 			// SmoothCam and PIXL's free/director cameras. Keep matrix reconstruction only
 			// as a startup/menu fallback while no camera root is available.
-			PIXL::RenderOrigin::Position cameraAbsolute =
-				engineOrigin + PIXL::RenderOrigin::Position{ inverseView._41, inverseView._42, inverseView._43 };
-			if (auto* playerCamera = RE::PlayerCamera::GetSingleton();
-				playerCamera && playerCamera->cameraRoot) {
-				const auto& cameraPosition = playerCamera->cameraRoot->world.translate;
-				const PIXL::RenderOrigin::Position authoritativeCamera{
-					cameraPosition.x, cameraPosition.y, cameraPosition.z
-				};
-				if (authoritativeCamera.Finite())
-					cameraAbsolute = authoritativeCamera;
-			}
-			std::uint64_t worldContext = 0;
-			if (auto* player = globals::game::player) {
-				if (auto* cell = player->GetParentCell()) {
-					if (cell->IsInteriorCell()) worldContext = (std::uint64_t{1} << 32) | cell->GetFormID();
-					else if (auto* world = player->GetWorldspace()) worldContext = world->GetFormID();
-				}
-			}
 			const bool wasEnabled = renderOrigin.Enabled();
 			if (renderOrigin.Update(frameCount, cameraAbsolute, worldContext) &&
 				(wasEnabled != renderOrigin.Enabled() || (renderOrigin.verbose && renderOrigin.ShiftedThisFrame()))) {
@@ -1127,6 +1145,46 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 					origin.x, origin.y, origin.z, previous.x, previous.y, previous.z,
 					cameraAbsolute.x, cameraAbsolute.y, cameraAbsolute.z, renderOrigin.Discontinuity());
 			}
+		}
+		{
+			auto copyMatrix = [](const Matrix& source) {
+				std::array<float, 16> result{};
+				static_assert(sizeof(Matrix) >= sizeof(result));
+				std::memcpy(result.data(), &source, sizeof(result));
+				return result;
+			};
+			const auto* graphics = globals::game::graphicsState;
+			const auto outputWidth = graphics ? graphics->screenWidth : 0u;
+			const auto outputHeight = graphics ? graphics->screenHeight : 0u;
+			const auto renderSize = Util::ConvertToDynamic(float2{ static_cast<float>(outputWidth), static_cast<float>(outputHeight) });
+			auto* renderer = globals::game::renderer;
+			ID3D11ShaderResourceView* motionVectors = renderer ?
+				renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR].SRV : nullptr;
+			const auto* playerCamera = RE::PlayerCamera::GetSingleton();
+			const std::uint32_t cameraMode = playerCamera && playerCamera->IsInFirstPerson() ? 1u : 2u;
+			const auto& frame = globals::game::frameBufferCached;
+			PIXL::Renderer::TemporalContext::Get().BeginFrame({
+				.view = copyMatrix(frame.GetCameraView()),
+				.projection = copyMatrix(frame.GetCameraProj()),
+				.viewProjection = copyMatrix(frame.GetCameraViewProj()),
+				.unjitteredViewProjection = copyMatrix(frame.GetCameraViewProjUnjittered()),
+				.enginePreviousUnjitteredViewProjection = copyMatrix(frame.GetCameraPreviousViewProjUnjittered()),
+				.inverseView = copyMatrix(frame.GetCameraViewInverse()),
+				.absoluteCameraPosition = { cameraAbsolute.x, cameraAbsolute.y, cameraAbsolute.z },
+				.motionVectors = motionVectors,
+				.frameIndex = frameCount,
+				.worldContext = worldContext,
+				.renderOriginEpoch = renderOrigin.GetOriginEpoch(),
+				.renderWidth = static_cast<std::uint32_t>(std::max(renderSize.x, 0.0f)),
+				.renderHeight = static_cast<std::uint32_t>(std::max(renderSize.y, 0.0f)),
+				.outputWidth = outputWidth,
+				.outputHeight = outputHeight,
+				.cameraMode = cameraMode,
+				.deltaTime = globals::game::deltaTime ? std::clamp(*globals::game::deltaTime, 0.0f, 0.25f) : 0.0f,
+				.verticalFov = Util::GetVerticalFOVRad(),
+				.renderOriginShifted = renderOrigin.ShiftedThisFrame()
+			});
+			PIXL::Renderer::PixelAnnotations::Get().BeginFrame(frameCount);
 		}
 		data.RenderCoordinates = renderOrigin.GetGPUData(engineOrigin, previousEngineOrigin);
 		data.Timer = timer;

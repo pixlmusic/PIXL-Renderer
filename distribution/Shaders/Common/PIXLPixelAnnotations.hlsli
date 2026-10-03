@@ -1,0 +1,33 @@
+#ifndef PIXL_PIXEL_ANNOTATIONS_HLSLI
+#define PIXL_PIXEL_ANNOTATIONS_HLSLI
+
+// Shared numeric contract for future draw-time packed annotations. Existing
+// deferred/TAA/water masks remain authoritative until each draw family migrates.
+#define PIXL_MATERIAL_UNKNOWN 0u
+#define PIXL_MATERIAL_TERRAIN 1u
+#define PIXL_MATERIAL_ROCK 2u
+#define PIXL_MATERIAL_WOOD 3u
+#define PIXL_MATERIAL_METAL 4u
+#define PIXL_MATERIAL_GRASS 5u
+#define PIXL_MATERIAL_FOLIAGE 6u
+#define PIXL_MATERIAL_SKIN 7u
+#define PIXL_MATERIAL_HAIR 8u
+#define PIXL_MATERIAL_CLOTH 9u
+#define PIXL_MATERIAL_GLASS 10u
+#define PIXL_MATERIAL_CONTAINED_LIQUID 11u
+#define PIXL_MATERIAL_WATER 12u
+#define PIXL_MATERIAL_SNOW 13u
+#define PIXL_MATERIAL_MUD 14u
+#define PIXL_MATERIAL_EMISSIVE 15u
+#define PIXL_MATERIAL_PARTICLE 16u
+#define PIXL_MATERIAL_SKY 17u
+#define PIXL_MATERIAL_WINDOW_INTERIOR 18u
+
+#define PIXL_ANNOTATION_TRANSPARENT (1u << 0u)
+#define PIXL_ANNOTATION_REACTIVE (1u << 1u)
+#define PIXL_ANNOTATION_FAST_TEMPORAL (1u << 2u)
+#define PIXL_ANNOTATION_THIN_SURFACE (1u << 3u)
+#define PIXL_ANNOTATION_DEFORMABLE (1u << 4u)
+#define PIXL_ANNOTATION_EMISSIVE (1u << 5u)
+
+#endif

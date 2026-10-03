@@ -1,0 +1,17 @@
+name: Portable validation
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  portable-tests:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install current CMake
+        run: py -m pip install --disable-pip-version-check --upgrade cmake
+      - name: Configure portable tests
+        run: cmake -S . -B build/portable-ci -DPIXL_PORTABLE_TESTS_ONLY=ON -DBUILD_TESTING=ON
+      - name: Build portable tests
+        run: cmake --build build/portable-ci --config Release --target PIXL-Portable-Tests

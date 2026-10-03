@@ -10,6 +10,14 @@ project(
 )
 set(PIXL_DISPLAY_VERSION "1.0.6")
 
+include(CTest)
+option(PIXL_PORTABLE_TESTS_ONLY "Configure only game-independent PIXL validation" OFF)
+if(PIXL_PORTABLE_TESTS_ONLY)
+    include(cmake/PIXLTests.cmake)
+    message("PIXL portable validation-only configuration complete")
+    return()
+endif()
+
 # PIXL Renderer is one closed DX11 pipeline: host code under engine/, integrated
 # shader modules under pipeline/, and the authored runtime image under
 # distribution/. Nothing in the build treats modules as optional add-ons.
@@ -392,6 +400,8 @@ if(WIN32 AND POWERSHELL_PATH)
     )
     add_dependencies(PIXL-Standalone-Beta PIXL-Audit)
 endif()
+
+include(cmake/PIXLTests.cmake)
 
 message("*************************************************************")
 message("PIXL Renderer v${PROJECT_VERSION} configuration complete")

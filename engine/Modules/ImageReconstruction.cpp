@@ -12,6 +12,9 @@
 #include "ImageReconstruction/DX12SwapChain.h"
 #include "ImageReconstruction/FidelityFX.h"
 #include "ImageReconstruction/Streamline.h"
+#include "Renderer/TemporalContext.h"
+#include "Renderer/PixelAnnotations.h"
+#include "Renderer/ReconstructionContext.h"
 #include "Utils/Game.h"
 #include "Utils/UI.h"
 #include <Windows.h>
@@ -1512,6 +1515,31 @@ void ImageReconstruction::SetupResources()
 
 	copyDepthToSharedBufferPS.attach((ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\ImageReconstruction\\CopyDepthToSharedBufferPS.hlsl", { { "PSHADER", "" } }, "ps_5_0"));
 
+	if (reconstructionHistoryId == 0) {
+		reconstructionHistoryId = PIXL::Renderer::TemporalContext::Get().RegisterHistory({
+			.name = "Image reconstruction backend history",
+			.owner = "ImageReconstruction",
+			.invalidateOn = PIXL::Renderer::AllTemporalInvalidations,
+			.reset = [this](PIXL::Renderer::TemporalInvalidationReason) {
+				pendingDLSSReset.store(true, std::memory_order_release);
+				pendingNeuralRenderingReset.store(true, std::memory_order_release);
+				FidelityFX::needsReset.store(true, std::memory_order_release);
+			}
+		});
+	}
+	if (containedLiquidReactiveContributorId == 0) {
+		containedLiquidReactiveContributorId = PIXL::Renderer::ReconstructionContext::Get().RegisterReactiveContributor(
+			"ContainedLiquids", [](ID3D11UnorderedAccessView* target, std::uint32_t width, std::uint32_t height) {
+				globals::pipeline::containedLiquids.MarkReconstructionReactive(target, width, height);
+			});
+	}
+	if (reactiveFXContributorId == 0) {
+		reactiveFXContributorId = PIXL::Renderer::ReconstructionContext::Get().RegisterReactiveContributor(
+			"ReactiveFX", [](ID3D11UnorderedAccessView* target, std::uint32_t width, std::uint32_t height) {
+				globals::pipeline::reactiveFX.MarkReconstructionReactive(target, width, height);
+			});
+	}
+
 	// CameraSuite is ordered after ImageReconstruction in the central module list,
 	// so its own SetupResources pass sees the finalized reconstruction/swap-chain
 	// state. Calling it here as well destroyed and recreated the full HDR/camera
@@ -2198,35 +2226,14 @@ void ImageReconstruction::Upscale()
 		return;
 	}
 
-	// Temporal reconstruction must not reuse history across discontinuous camera,
-	// projection, or render-resolution state. The same signals already protect
-	// PIXL volumetrics; consume them here before either reconstruction backend.
-	const auto& frameBuffer = globals::game::frameBufferCached;
-	const auto& cameraPos = frameBuffer.GetCameraPosAdjust();
-	const auto& previousCameraPos = frameBuffer.GetCameraPreviousPosAdjust();
-	const float dx = cameraPos.x - previousCameraPos.x;
-	const float dy = cameraPos.y - previousCameraPos.y;
-	const float dz = cameraPos.z - previousCameraPos.z;
-	constexpr float kCameraCutDistance = 4096.0f;
-	const bool cameraCut = dx * dx + dy * dy + dz * dz > kCameraCutDistance * kCameraCutDistance;
-	const auto& dynamicResolution = frameBuffer.GetDynamicResolutionParams1();
-	const bool dynamicResolutionChanged =
-		std::abs(dynamicResolution.x - dynamicResolution.z) > 0.01f ||
-		std::abs(dynamicResolution.y - dynamicResolution.w) > 0.01f;
-	const float currentFov = Util::GetVerticalFOVRad();
-	const bool fovChanged = hasPreviousReconstructionFov &&
-		std::abs(currentFov - previousReconstructionFov) > 1e-4f;
-	previousReconstructionFov = currentFov;
-	hasPreviousReconstructionFov = true;
-
-	if (cameraCut || dynamicResolutionChanged || fovChanged) {
+	// Temporal continuity is renderer-owned. Backends consume a single typed
+	// history decision instead of independently estimating cuts and resolution
+	// changes (which previously disagreed with Auto-DOF and HybridGI).
+	if (reconstructionHistoryId != 0 &&
+		!PIXL::Renderer::TemporalContext::Get().IsHistoryValid(reconstructionHistoryId)) {
 		pendingDLSSReset.store(true, std::memory_order_release);
 		pendingNeuralRenderingReset.store(true, std::memory_order_release);
 		FidelityFX::needsReset.store(true, std::memory_order_release);
-		if (cameraCut)
-			globals::pipeline::hybridGI.queuedResetHistory.store(true, std::memory_order_release);
-		else
-			globals::pipeline::hybridGI.queuedResetTemporalHistory.store(true, std::memory_order_release);
 	}
 	const bool resetReconstructionHistory = pendingDLSSReset.exchange(false, std::memory_order_acq_rel);
 
@@ -2244,6 +2251,14 @@ void ImageReconstruction::Upscale()
 	auto* encodeShader = GetEncodeTexturesCS();
 	if (!temporalAAMask.SRV || !normals.SRV || !materialMasks.SRV || !depth.depthSRV || !encodeShader)
 		return;
+	const auto renderSizeForAnnotations = Util::ConvertToDynamic(float2{
+		(float)globals::game::graphicsState->screenWidth,
+		(float)globals::game::graphicsState->screenHeight });
+	PIXL::Renderer::PixelAnnotations::Get().PublishBase(
+		materialMasks.SRV, normals.SRV, temporalAAMask.SRV,
+		static_cast<std::uint32_t>(renderSizeForAnnotations.x),
+		static_cast<std::uint32_t>(renderSizeForAnnotations.y));
+	const auto annotations = PIXL::Renderer::PixelAnnotations::Get().Acquire();
 	if (upscaleMethod == UpscaleMethod::kDLSS && (!motionVectorCopyTexture || !motionVectorCopyTexture->uav))
 		return;
 	if (upscaleMethod == UpscaleMethod::kFSR && (!fsrDepthTexture || !fsrDepthTexture->uav))
@@ -2259,11 +2274,11 @@ void ImageReconstruction::Upscale()
 		uint32_t renderHeight = (uint32_t)renderSize.y;
 
 		ID3D11ShaderResourceView* views[5] = {
-			temporalAAMask.SRV,
-			normals.SRV,
+			annotations.temporalAAMask.get(),
+			annotations.normalWaterMask.get(),
 			motionVector.SRV,
 			depth.depthSRV,
-			materialMasks.SRV
+			annotations.deferredMaterialMask.get()
 		};
 		context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 		context->CSSetShader(encodeShader, nullptr, 0);
@@ -2300,13 +2315,31 @@ void ImageReconstruction::Upscale()
 		// Moving/refractive bottle interiors are composited after opaque lighting.
 		// Mark their tight projected regions current-frame reactive so DLSS/FSR do
 		// not accumulate stale liquid/refraction history around the glass silhouette.
-		globals::pipeline::containedLiquids.MarkReconstructionReactive(
+		PIXL::Renderer::ReconstructionContext::Get().ApplyReactiveContributors(
 			reactiveMaskTexture->uav.get(), renderWidth, renderHeight);
-		// Reactive particles are colour changes without matching geometry motion.
-		// Merge their current coverage after the base mask encode so temporal
-		// reconstruction does not accumulate stale sparks, embers or fragments.
-		globals::pipeline::reactiveFX.MarkReconstructionReactive(
-			reactiveMaskTexture->uav.get(), renderWidth, renderHeight);
+		PIXL::Renderer::PixelAnnotations::Get().PublishReconstruction(
+			reactiveMaskTexture->srv.get(), transparencyCompositionMaskTexture->srv.get(),
+			renderWidth, renderHeight);
+		PIXL::Renderer::TemporalContext::Get().PublishDisocclusion(
+			reactiveMaskTexture->srv.get(), renderWidth, renderHeight);
+		const auto temporalFrame = PIXL::Renderer::TemporalContext::Get().GetFrameSnapshot();
+		const auto backend = upscaleMethod == UpscaleMethod::kDLSS ? PIXL::Renderer::ReconstructionBackend::DLSS :
+			upscaleMethod == UpscaleMethod::kFSR ? PIXL::Renderer::ReconstructionBackend::FSR :
+			PIXL::Renderer::ReconstructionBackend::Native;
+		PIXL::Renderer::ReconstructionFrame reconstructionFrame{};
+		reconstructionFrame.depth.copy_from(depth.depthSRV);
+		reconstructionFrame.motion.copy_from(motionVector.SRV);
+		reconstructionFrame.reactive = reactiveMaskTexture->srv;
+		reconstructionFrame.transparency = transparencyCompositionMaskTexture->srv;
+		reconstructionFrame.annotations = PIXL::Renderer::PixelAnnotations::Get().Acquire();
+		reconstructionFrame.backend = backend;
+		reconstructionFrame.renderWidth = renderWidth;
+		reconstructionFrame.renderHeight = renderHeight;
+		reconstructionFrame.outputWidth = globals::game::graphicsState->screenWidth;
+		reconstructionFrame.outputHeight = globals::game::graphicsState->screenHeight;
+		reconstructionFrame.frame = globals::state->frameCount;
+		reconstructionFrame.temporalValid = temporalFrame.previousFrameValid;
+		PIXL::Renderer::ReconstructionContext::Get().Publish(std::move(reconstructionFrame));
 
 		state->EndPerfEvent();
 		globals::profiler->EndPass();
@@ -2321,6 +2354,10 @@ void ImageReconstruction::Upscale()
 			streamline.Upscale(main.texture, reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVectorCopyTexture->resource.get(), resetReconstructionHistory);
 		} else if (upscaleMethod == UpscaleMethod::kFSR) {
 			fidelityFX.Upscale(main.texture, fsrDepthTexture->resource.get(), reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVector.texture, settings.sharpnessFSR, resetReconstructionHistory);
+		}
+		if ((upscaleMethod == UpscaleMethod::kDLSS || upscaleMethod == UpscaleMethod::kFSR) &&
+			reconstructionHistoryId != 0) {
+			PIXL::Renderer::TemporalContext::Get().SetHistoryValid(reconstructionHistoryId);
 		}
 
 		state->EndPerfEvent();
@@ -2537,12 +2574,13 @@ void ImageReconstruction::ApplySharpening()
 			static_cast<float>(globals::game::graphicsState->screenHeight)
 		};
 		const float2 inputDimensions = Util::ConvertToDynamic(outputDimensions);
+		const auto annotations = PIXL::Renderer::PixelAnnotations::Get().Acquire();
 		sharpened = rcas.ApplySharpen(
 			sharpenerTexture->srv.get(),
 			main.UAV,
 			currentSharpness,
-			reactiveMaskTexture ? reactiveMaskTexture->srv.get() : nullptr,
-			transparencyCompositionMaskTexture ? transparencyCompositionMaskTexture->srv.get() : nullptr,
+			annotations.reactiveMask.get(),
+			annotations.transparencyMask.get(),
 			motionVectorCopyTexture ? motionVectorCopyTexture->srv.get() : nullptr,
 			inputDimensions);
 	}

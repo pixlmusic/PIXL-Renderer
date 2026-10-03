@@ -3,69 +3,78 @@
 #include "Globals.h"
 #include "State.h"
 
-#include <unordered_set>
+#include <mutex>
+#include <unordered_map>
 
 namespace ModuleRules
 {
-	ConstraintResult GetConstraints(const SettingId& setting)
+	namespace
 	{
-		if (globals::state && globals::state->IsDeveloperMode())
-			return {};
-		ConstraintResult result;
+		std::mutex constraintCacheMutex;
+		bool constraintCacheValid = false;
+		std::vector<std::pair<SettingId, ConstraintResult>> constraintCacheEntries;
+		std::unordered_map<std::string, std::size_t> constraintCacheIndex;
 
-		for (auto* feature : RenderModule::GetModuleList()) {
-			if (!feature->loaded)
-				continue;
+		std::string MakeKey(const SettingId& setting)
+		{
+			return setting.featureShortName + "|" + setting.settingPath;
+		}
 
-			auto constraints = feature->GetActiveConstraints();
-			for (const auto& constraint : constraints) {
-				if (constraint.targetSetting == setting) {
+		void RebuildConstraintCache()
+		{
+			constraintCacheEntries.clear();
+			constraintCacheIndex.clear();
+			for (auto* feature : RenderModule::GetModuleList()) {
+				if (!feature->loaded)
+					continue;
+				for (const auto& constraint : feature->GetActiveConstraints()) {
+					const auto key = MakeKey(constraint.targetSetting);
+					auto [it, inserted] = constraintCacheIndex.try_emplace(key, constraintCacheEntries.size());
+					if (inserted)
+						constraintCacheEntries.push_back({ constraint.targetSetting, {} });
+					auto& result = constraintCacheEntries[it->second].second;
 					if (!result.isConstrained) {
 						result.isConstrained = true;
 						result.forcedValue = constraint.forcedValue;
 					} else if (constraint.forcedValue != result.forcedValue) {
-						// Two features disagree on the forced value; first one wins.
-						// Log once so it surfaces during development / testing.
 						logger::warn("[ModuleRules] Conflict on {}.{}: {} wants {}, but {} already forced {}",
-							setting.featureShortName, setting.settingPath,
+							constraint.targetSetting.featureShortName, constraint.targetSetting.settingPath,
 							feature->GetName(), FormatConstraintValue(constraint.forcedValue),
 							result.sources[0].featureName, FormatConstraintValue(result.forcedValue));
 					}
-					result.sources.push_back({ feature->GetName(),
-						feature->GetShortName(),
-						constraint.reason,
-						constraint.recommendDisableAtBoot });
+					result.sources.push_back({ feature->GetName(), feature->GetShortName(),
+						constraint.reason, constraint.recommendDisableAtBoot });
 				}
 			}
+			constraintCacheValid = true;
 		}
+	}
 
-		return result;
+	void InvalidateConstraintCache()
+	{
+		std::scoped_lock lock(constraintCacheMutex);
+		constraintCacheValid = false;
+	}
+
+	ConstraintResult GetConstraints(const SettingId& setting)
+	{
+		if (globals::state && globals::state->IsDeveloperMode())
+			return {};
+		std::scoped_lock lock(constraintCacheMutex);
+		if (!constraintCacheValid)
+			RebuildConstraintCache();
+		const auto it = constraintCacheIndex.find(MakeKey(setting));
+		return it == constraintCacheIndex.end() ? ConstraintResult{} : constraintCacheEntries[it->second].second;
 	}
 
 	std::vector<std::pair<SettingId, ConstraintResult>> GetAllActiveConstraints()
 	{
 		if (globals::state && globals::state->IsDeveloperMode())
 			return {};
-		std::vector<std::pair<SettingId, ConstraintResult>> allConstraints;
-		std::unordered_set<std::string> processedKeys;  // featureShortName|settingPath for O(1) lookup
-
-		for (auto* feature : RenderModule::GetModuleList()) {
-			if (!feature->loaded)
-				continue;
-
-			auto constraints = feature->GetActiveConstraints();
-			for (const auto& constraint : constraints) {
-				std::string key = constraint.targetSetting.featureShortName + "|" + constraint.targetSetting.settingPath;
-				if (processedKeys.insert(key).second) {
-					auto result = GetConstraints(constraint.targetSetting);
-					if (result.isConstrained) {
-						allConstraints.push_back({ constraint.targetSetting, result });
-					}
-				}
-			}
-		}
-
-		return allConstraints;
+		std::scoped_lock lock(constraintCacheMutex);
+		if (!constraintCacheValid)
+			RebuildConstraintCache();
+		return constraintCacheEntries;
 	}
 
 	std::string BuildConstraintTooltip(const ConstraintResult& result)

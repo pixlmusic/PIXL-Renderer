@@ -5,6 +5,7 @@
 // Additional permissions are described in the repository EXCEPTIONS.md.
 
 #include "CameraSuite.h"
+#include "CameraSuite/CameraPolicy.h"
 
 #include "PCH.h"
 
@@ -21,6 +22,7 @@
 #include "WeatherManager.h"
 #include "ImageReconstruction.h"
 #include "Renderer/ExternalPostProcessing.h"
+#include "Renderer/TemporalContext.h"
 #include "Util.h"
 #include <algorithm>
 #include <cmath>
@@ -959,7 +961,9 @@ void CameraSuite::DrawSettings()
 					DrawSettingsTooltip("Uses focal length, sensor size and f-stop to derive a signed, resolution-aware circle of confusion. Director and Photo modes use this automatically.");
 					ImGui::BeginDisabled(!settings.dofPhysicalLens && !TuningWorkspaceRenderer::IsDirectorPhotoModeActive() && !TuningWorkspaceRenderer::IsDirectorVideoModeActive());
 					changed |= ImGui::SliderFloat("Focal Length", &settings.dofFocalLengthMm, 18.0f, 200.0f, "%.0f mm", ImGuiSliderFlags_AlwaysClamp);
-					changed |= ImGui::SliderFloat("F-Stop", &settings.dofFStop, 0.7f, 32.0f, "f/%.1f", ImGuiSliderFlags_AlwaysClamp);
+					changed |= ImGui::SliderFloat("F-Stop", &settings.dofFStop,
+						static_cast<float>(PIXL::Metadata::Settings::CameraDofFStop.minimum),
+						static_cast<float>(PIXL::Metadata::Settings::CameraDofFStop.maximum), "f/%.1f", ImGuiSliderFlags_AlwaysClamp);
 					changed |= ImGui::SliderFloat("Sensor Height", &settings.dofSensorHeightMm, 10.0f, 40.0f, "%.1f mm", ImGuiSliderFlags_AlwaysClamp);
 					changed |= ImGui::SliderFloat("Focus Speed", &settings.dofFocusSpeed, 0.25f, 20.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 					changed |= ImGui::SliderFloat("Maximum Bokeh Radius", &settings.dofMaxBokehPixels, 4.0f, 96.0f, "%.0f px", ImGuiSliderFlags_AlwaysClamp);
@@ -1136,7 +1140,9 @@ void CameraSuite::LoadSettings(json& o_json)
 	settings.dofCatEye = std::clamp(settings.dofCatEye, 0.0f, 1.0f);
 	settings.dofAnamorphicRatio = std::clamp(settings.dofAnamorphicRatio, 0.5f, 2.0f);
 	settings.dofFocalLengthMm = std::clamp(settings.dofFocalLengthMm, 18.0f, 200.0f);
-	settings.dofFStop = std::clamp(settings.dofFStop, 0.7f, 32.0f);
+	settings.dofFStop = std::clamp(settings.dofFStop,
+		static_cast<float>(PIXL::Metadata::Settings::CameraDofFStop.minimum),
+		static_cast<float>(PIXL::Metadata::Settings::CameraDofFStop.maximum));
 	settings.dofSensorHeightMm = std::clamp(settings.dofSensorHeightMm, 10.0f, 40.0f);
 	settings.dofFocusSpeed = std::clamp(settings.dofFocusSpeed, 0.25f, 20.0f);
 	settings.dofFocusDeadband = std::clamp(settings.dofFocusDeadband, 0.0f, 0.25f);
@@ -1242,7 +1248,7 @@ void CameraSuite::RestoreDefaultSettings()
 	settings.dofAnamorphicRatio = 1.0f;
 	settings.dofPhysicalLens = true;
 	settings.dofFocalLengthMm = 18.0f;
-	settings.dofFStop = 1.8f;
+	settings.dofFStop = static_cast<float>(PIXL::Metadata::Settings::CameraDofFStop.defaultValue);
 	settings.dofSensorHeightMm = 14.9f;
 	settings.dofFocusSpeed = 8.81f;
 	settings.dofFocusDeadband = 0.055f;
@@ -1451,6 +1457,17 @@ void CameraSuite::SetupResources()
 	}
 
 	SetupCameraFinishingResources(hdrTexture->desc);
+	if (dofHistoryId == 0) {
+		dofHistoryId = PIXL::Renderer::TemporalContext::Get().RegisterHistory({
+			.name = "Auto-DOF focus and CoC",
+			.owner = "CameraSuite",
+			.invalidateOn = PIXL::Renderer::AllTemporalInvalidations,
+			.reset = [this](PIXL::Renderer::TemporalInvalidationReason) { dofFocusStateValid = false; }
+		});
+	}
+	PIXL::Renderer::TemporalContext::Get().SetHistoryMemory(
+		dofHistoryId,
+		static_cast<std::uint64_t>(hdrTexture->desc.Width) * hdrTexture->desc.Height * 2u + 8u);
 
 	D3D11_SAMPLER_DESC finishingSamplerDesc{};
 	finishingSamplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
@@ -2965,6 +2982,8 @@ void CameraSuite::RunDepthOfFieldPasses(ID3D11ShaderResourceView* sceneSRV)
 	const bool farReady = dispatch("CameraSuite::DOF::FarBlur", GetDofBlurCS(false), blurInputs, 4u, dofFarTexture);
 	const bool nearReady = dispatch("CameraSuite::DOF::NearBlur", GetDofBlurCS(true), blurInputs, 4u, dofNearTexture);
 	dofPassReady = farReady && nearReady;
+	if (dofPassReady && dofHistoryId != 0)
+		PIXL::Renderer::TemporalContext::Get().SetHistoryValid(dofHistoryId);
 }
 
 void CameraSuite::RunCameraFinishingPasses(ID3D11ShaderResourceView* sceneSRV)
@@ -3183,16 +3202,16 @@ float4 CameraSuite::GetSharedDataHDR() const
 	const bool inMenuOrPause =
 		ui && (ui->GameIsPaused() || isMainOrLoading || state->isMapMenuOpen);
 
-	float menuSceneEncoding = kHdrMenuSceneGameplay;
-	if (isMainOrLoading) {
-		menuSceneEncoding = kHdrMenuSceneMainOrLoading;
-	} else if (TuningWorkspaceRenderer::IsDirectorPhotoModeActive() && !state->isMapMenuOpen) {
-		// ISHDR uses this state to hold Skyrim's earlier eye adaptation. HDRSun
-		// independently treats Director as a live scene rather than a pause menu.
-		menuSceneEncoding = kHdrMenuScenePhoto;
-	} else if (inMenuOrPause) {
-		menuSceneEncoding = kHdrMenuScenePauseOrMap;
-	}
+	// ISHDR uses the photo state to hold Skyrim's earlier eye adaptation. HDRSun
+	// independently treats Director as a live scene rather than a pause menu.
+	const float menuSceneEncoding = PIXL::CameraSuiteInternal::ResolveMenuSceneEncoding(
+		isMainOrLoading,
+		TuningWorkspaceRenderer::IsDirectorPhotoModeActive() && !state->isMapMenuOpen,
+		inMenuOrPause,
+		kHdrMenuSceneGameplay,
+		kHdrMenuScenePauseOrMap,
+		kHdrMenuScenePhoto,
+		kHdrMenuSceneMainOrLoading);
 
 	return {
 		settings.enableHDR ? 1.0f : 0.0f,
@@ -3231,7 +3250,8 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 	// separate UI guide for interpolation, so it must not skip this composite.
 	bool skipUIComposite = IsFGCompositingThisFrame() &&
 		globals::pipeline::imageReconstruction.dx12SwapChain.presenter == DX12SwapChain::Presenter::kFidelityFX;
-	const float frameDelta = std::clamp(static_cast<float>(RE::GetSecondsSinceLastFrame()), 1.0f / 240.0f, 0.1f);
+	const float frameDelta = PIXL::CameraSuiteInternal::SanitizeFrameDelta(
+		static_cast<float>(RE::GetSecondsSinceLastFrame()));
 	const std::uint32_t currentFrame = globals::state ? globals::state->frameCount : 0u;
 	if (isLoadingPresentation) {
 		if (!displayMenuWasActive) {
@@ -3289,7 +3309,7 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 			? std::clamp(std::max(directSkySnow * 0.78f, altitudeSignal * 0.34f), 0.0f, 1.0f)
 			: 0.0f;
 		const float coldRate = coldTarget > coldLensState ? 0.85f : 0.22f;
-		const float coldResponse = 1.0f - std::exp(-simulationDelta * coldRate);
+		const float coldResponse = PIXL::CameraSuiteInternal::ExponentialResponse(simulationDelta, coldRate);
 		coldLensState = std::lerp(coldLensState, coldTarget, coldResponse);
 
 		// Confirmed elemental-hit pulses decay independently from the persistent
@@ -3342,7 +3362,7 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 		const float inertiaDelta = paused ? frameDelta : simulationDelta;
 		const bool acceleratingLaterally = std::abs(lateralTarget) > std::abs(stormglassLateralInertiaState);
 		const float inertiaRate = acceleratingLaterally ? 12.0f : 4.0f;
-		const float inertiaResponse = 1.0f - std::exp(-inertiaDelta * inertiaRate);
+		const float inertiaResponse = PIXL::CameraSuiteInternal::ExponentialResponse(inertiaDelta, inertiaRate);
 		stormglassLateralInertiaState = std::lerp(stormglassLateralInertiaState, lateralTarget, inertiaResponse);
 		if (std::abs(stormglassLateralInertiaState) < 1e-4f)
 			stormglassLateralInertiaState = 0.0f;
@@ -3359,11 +3379,12 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 			authoredWetness = std::clamp(rainData.Wetness, 0.0f, 1.0f);
 		}
 
-		const float rainAdaptResponse = 1.0f - std::exp(-simulationDelta * (targetRain > stormglassRainIntensityState ? 7.0f : 2.2f));
+		const float rainAdaptResponse = PIXL::CameraSuiteInternal::ExponentialResponse(
+			simulationDelta, targetRain > stormglassRainIntensityState ? 7.0f : 2.2f);
 		stormglassRainIntensityState = std::lerp(stormglassRainIntensityState, targetRain, rainAdaptResponse);
 		const float wetnessTarget = std::max(targetRain * 0.86f, authoredWetness * 0.62f);
 		if (wetnessTarget > stormglassWetnessState) {
-			const float wettingResponse = 1.0f - std::exp(-simulationDelta * 4.5f);
+			const float wettingResponse = PIXL::CameraSuiteInternal::ExponentialResponse(simulationDelta, 4.5f);
 			stormglassWetnessState = std::lerp(stormglassWetnessState, wetnessTarget, wettingResponse);
 		} else {
 			stormglassWetnessState = std::max(wetnessTarget,
@@ -3385,7 +3406,7 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 		const float submergedTarget = playerUnderwater ? 1.0f : 0.0f;
 		const float transitionSpeed = std::clamp(settings.submergedTransitionSpeed, 0.5f, 8.0f) *
 			(submergedTarget > submergedBlendState ? 1.35f : 0.78f);
-		const float submergedResponse = 1.0f - std::exp(-simulationDelta * transitionSpeed);
+		const float submergedResponse = PIXL::CameraSuiteInternal::ExponentialResponse(simulationDelta, transitionSpeed);
 		submergedBlendState = std::lerp(submergedBlendState, submergedTarget, submergedResponse);
 		wasPlayerUnderwater = playerUnderwater;
 		environmentStateFrame = currentFrame;
@@ -3517,16 +3538,8 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 	// third/first-person switch radically changes both the subject and the near
 	// clip content, so carrying the previous diopter produces a visibly wrong
 	// rack focus and can let first-person hands drive the centre ROI.
-	const auto& cameraNow = globals::game::frameBufferCached.GetCameraPosAdjust();
-	const auto& cameraPrevious = globals::game::frameBufferCached.GetCameraPreviousPosAdjust();
-	const float cameraDx = cameraNow.x - cameraPrevious.x;
-	const float cameraDy = cameraNow.y - cameraPrevious.y;
-	const float cameraDz = cameraNow.z - cameraPrevious.z;
-	const auto& dynamicResolution = globals::game::frameBufferCached.GetDynamicResolutionParams1();
-	const bool reconstructionDiscontinuity =
-		cameraDx * cameraDx + cameraDy * cameraDy + cameraDz * cameraDz > 4096.0f * 4096.0f ||
-		std::abs(dynamicResolution.x - dynamicResolution.z) > 0.01f ||
-		std::abs(dynamicResolution.y - dynamicResolution.w) > 0.01f;
+	const bool reconstructionDiscontinuity = dofHistoryId != 0 &&
+		!PIXL::Renderer::TemporalContext::Get().IsHistoryValid(dofHistoryId);
 	const bool focusHistoryReset =
 		!dofViewStateValid ||
 		(firstPersonView != dofWasFirstPerson) ||
@@ -3612,7 +3625,9 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 	dofControlData.focusSpeed = std::clamp(settings.dofFocusSpeed, 0.25f, 20.0f);
 	dofControlData.focusDeadband = std::clamp(settings.dofFocusDeadband, 0.0f, 0.25f);
 	dofControlData.focalLengthMm = std::clamp(settings.dofFocalLengthMm, 18.0f, 200.0f);
-	dofControlData.fStop = std::clamp(settings.dofFStop, 0.7f, 32.0f);
+	dofControlData.fStop = std::clamp(settings.dofFStop,
+		static_cast<float>(PIXL::Metadata::Settings::CameraDofFStop.minimum),
+		static_cast<float>(PIXL::Metadata::Settings::CameraDofFStop.maximum));
 	dofControlData.sensorHeightMm = std::clamp(settings.dofSensorHeightMm, 10.0f, 40.0f);
 	dofControlData.maxCoCPixels = std::clamp(settings.dofMaxBokehPixels, 4.0f, 96.0f);
 	dofControlData.bokehRadius = std::clamp(settings.dofBokehRadius, 0.5f, 2.0f);

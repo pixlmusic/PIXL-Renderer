@@ -12,6 +12,20 @@
 
 namespace PIXL::RenderOrigin
 {
+	std::string_view ToString(DiscontinuityReason reason)
+	{
+		switch (reason) {
+		case DiscontinuityReason::None: return "continuous";
+		case DiscontinuityReason::Startup: return "startup/load";
+		case DiscontinuityReason::FrameRegression: return "frame regression";
+		case DiscontinuityReason::WorldContextChanged: return "worldspace/cell context changed";
+		case DiscontinuityReason::InvalidCamera: return "invalid camera";
+		case DiscontinuityReason::LargeCameraJump: return "teleport/large camera jump";
+		case DiscontinuityReason::ModeChanged: return "render-origin mode changed";
+		default: return "unknown";
+		}
+	}
+
     Manager& Get()
     {
         static Manager manager;
@@ -42,7 +56,7 @@ namespace PIXL::RenderOrigin
         const auto origin = manager.GetCurrentOrigin();
         const auto previous = manager.GetPreviousOrigin();
         const auto delta = manager.GetOriginDelta();
-        const auto relative = manager.WorldToRender(camera);
+		const auto relative = manager.WorldToRender(AbsoluteWorldPosition{ camera }).value;
         ImGui::Text("Camera: %.3f, %.3f, %.3f", camera.x, camera.y, camera.z);
         ImGui::Text("Origin: %.0f, %.0f, %.0f", origin.x, origin.y, origin.z);
         ImGui::Text("Previous: %.0f, %.0f, %.0f", previous.x, previous.y, previous.z);
@@ -52,6 +66,8 @@ namespace PIXL::RenderOrigin
         ImGui::Text("Epoch: %llu | shifted: %s | continuity: %s",
             static_cast<unsigned long long>(manager.GetOriginEpoch()),
             manager.ShiftedThisFrame() ? "yes" : "no", manager.HistoryValid() ? "valid" : "discontinuity");
+		if (!manager.HistoryValid())
+			ImGui::TextDisabled("Reset reason: %s", ToString(manager.GetDiscontinuityReason()).data());
         ImGui::PopID();
     }
 }

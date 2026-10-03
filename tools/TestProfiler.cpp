@@ -3,11 +3,16 @@
 #include <Windows.h>
 #include <cassert>
 #include <cmath>
+#include <filesystem>
 #include <iostream>
 #include <random>
 namespace logger {
 template<class... T> void warn(const char*, T&&...) {}
 template<class... T> void info(const char*, T&&...) {}
+}
+#define PIXL_PROFILER_STANDALONE
+namespace Util::PathHelpers {
+std::filesystem::path GetPluginPath() { return std::filesystem::temp_directory_path() / "PIXL-Profiler-Test"; }
 }
 #include "../engine/Profiler.cpp"
 
@@ -37,6 +42,8 @@ int main()
     profiler.Initialize(device.get(), context.get());
     bool sawFirst = false;
     bool sawInactive = false;
+    bool sawNestedOuter = false;
+    bool sawNestedInner = false;
     for (int frame = 0; frame < 240; ++frame) {
         profiler.BeginFrame();
         const char* name = frame < 100 ? "Test::First" : "Test::Second";
@@ -45,6 +52,10 @@ int main()
             profiler.BeginPass(name);
             profiler.EndPass();
         }
+        profiler.BeginPass("Scheduler::Outer");
+        profiler.BeginPass("Module::Inner");
+        profiler.EndPass();
+        profiler.EndPass();
         profiler.EndFrame();
         context->Flush();
         Sleep(1);
@@ -59,11 +70,13 @@ int main()
                     sawInactive = true;
                 }
             }
+            if (result.name == "Scheduler::Outer") sawNestedOuter |= result.valid;
+            if (result.name == "Module::Inner") sawNestedInner |= result.valid;
         }
         assert(std::abs(sum - profiler.GetTotalTimeMs()) < 0.001f);
     }
-    assert(sawFirst && sawInactive);
+    assert(sawFirst && sawInactive && sawNestedOuter && sawNestedInner);
     profiler.Release();
     assert(profiler.GetResults().empty());
-    std::cout << "Profiler WARP regression passed: coherent totals, inactive passes, repeated names, query-ring reuse.\n";
+    std::cout << "Profiler WARP regression passed: coherent totals, inactive passes, repeated names, nested scopes, query-ring reuse.\n";
 }

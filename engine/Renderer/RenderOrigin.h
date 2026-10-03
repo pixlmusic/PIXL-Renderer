@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <string_view>
 
 namespace PIXL::RenderOrigin
 {
@@ -24,6 +25,38 @@ namespace PIXL::RenderOrigin
         bool Finite() const { return std::isfinite(x) && std::isfinite(y) && std::isfinite(z); }
         double MaxAbs() const { return std::max({std::abs(x), std::abs(y), std::abs(z)}); }
     };
+
+	// Coordinate-domain wrappers deliberately do not convert implicitly. The
+	// legacy Position API remains available while modules migrate incrementally,
+	// but new code can no longer pass an engine-relative point where an absolute
+	// or render-relative point is required merely because storage is identical.
+	template <class Tag>
+	struct TaggedPosition
+	{
+		Position value{};
+		explicit constexpr TaggedPosition(Position position = {}) : value(position) {}
+		bool operator==(const TaggedPosition&) const = default;
+	};
+
+	struct AbsoluteWorldTag;
+	struct EngineRelativeTag;
+	struct RenderRelativeTag;
+	struct PreviousRenderTag;
+	using AbsoluteWorldPosition = TaggedPosition<AbsoluteWorldTag>;
+	using EngineRelativePosition = TaggedPosition<EngineRelativeTag>;
+	using RenderRelativePosition = TaggedPosition<RenderRelativeTag>;
+	using PreviousRenderPosition = TaggedPosition<PreviousRenderTag>;
+
+	enum class DiscontinuityReason : std::uint8_t
+	{
+		None,
+		Startup,
+		FrameRegression,
+		WorldContextChanged,
+		InvalidCamera,
+		LargeCameraJump,
+		ModeChanged
+	};
 
     // Appended to SharedData b5; no new DX11 register is allocated.
     struct alignas(16) GPUData
@@ -60,8 +93,18 @@ namespace PIXL::RenderOrigin
             const double nextGrid = smallGrid ? 256.0 : 4096.0;
             const bool changedMode = enabled != requestedEnabled || grid != nextGrid;
             const bool validCamera = camera.Finite() && camera.MaxAbs() <= 1.0e12;
-            discontinuity = first || frame < lastFrameBeforeUpdate || context != worldContext || !validCamera ||
-                (!first && (camera - absoluteCamera).MaxAbs() > 32768.0);
+			discontinuityReason = DiscontinuityReason::None;
+			if (first)
+				discontinuityReason = DiscontinuityReason::Startup;
+			else if (frame < lastFrameBeforeUpdate)
+				discontinuityReason = DiscontinuityReason::FrameRegression;
+			else if (context != worldContext)
+				discontinuityReason = DiscontinuityReason::WorldContextChanged;
+			else if (!validCamera)
+				discontinuityReason = DiscontinuityReason::InvalidCamera;
+			else if ((camera - absoluteCamera).MaxAbs() > 32768.0)
+				discontinuityReason = DiscontinuityReason::LargeCameraJump;
+			discontinuity = discontinuityReason != DiscontinuityReason::None;
             previousOrigin = currentOrigin;
             enabled = requestedEnabled && validCamera;
             grid = nextGrid;
@@ -85,7 +128,9 @@ namespace PIXL::RenderOrigin
             forceShift = false;
             shifted = !(currentOrigin == previousOrigin);
             if (shifted || discontinuity || changedMode) ++epoch;
-            historyValid = !discontinuity && !changedMode;
+			if (changedMode)
+				discontinuityReason = DiscontinuityReason::ModeChanged;
+			historyValid = !discontinuity && !changedMode;
             if (!historyValid) previousOrigin = currentOrigin;
             originDelta = currentOrigin - previousOrigin;
             worldContext = context;
@@ -96,6 +141,18 @@ namespace PIXL::RenderOrigin
         Position WorldToRender(Position absolute) const { return absolute - currentOrigin; }
         Position RenderToWorld(Position relative) const { return relative + currentOrigin; }
         Position CurrentToPrevious(Position relative) const { return relative + originDelta; }
+		RenderRelativePosition WorldToRender(AbsoluteWorldPosition absolute) const
+		{ return RenderRelativePosition{ absolute.value - currentOrigin }; }
+		AbsoluteWorldPosition RenderToWorld(RenderRelativePosition relative) const
+		{ return AbsoluteWorldPosition{ relative.value + currentOrigin }; }
+		PreviousRenderPosition CurrentToPrevious(RenderRelativePosition relative) const
+		{ return PreviousRenderPosition{ relative.value + originDelta }; }
+		RenderRelativePosition EngineToRender(EngineRelativePosition relative, AbsoluteWorldPosition engineOrigin) const
+		{ return RenderRelativePosition{ relative.value + engineOrigin.value - currentOrigin }; }
+		EngineRelativePosition RenderToEngine(RenderRelativePosition relative, AbsoluteWorldPosition engineOrigin) const
+		{ return EngineRelativePosition{ relative.value + currentOrigin - engineOrigin.value }; }
+		EngineRelativePosition WorldToEngine(AbsoluteWorldPosition absolute, AbsoluteWorldPosition engineOrigin) const
+		{ return EngineRelativePosition{ absolute.value - engineOrigin.value }; }
         Position GetAbsoluteCameraPosition() const { return absoluteCamera; }
         Position GetCurrentOrigin() const { return currentOrigin; }
         Position GetPreviousOrigin() const { return previousOrigin; }
@@ -105,6 +162,7 @@ namespace PIXL::RenderOrigin
         bool HistoryValid() const { return historyValid; }
         bool Enabled() const { return enabled; }
         bool Discontinuity() const { return discontinuity; }
+		DiscontinuityReason GetDiscontinuityReason() const { return discontinuityReason; }
 
         GPUData GetGPUData(Position engineOrigin, Position previousEngineOrigin) const
         {
@@ -124,6 +182,9 @@ namespace PIXL::RenderOrigin
             return data;
         }
 
+		GPUData GetGPUData(AbsoluteWorldPosition engineOrigin, AbsoluteWorldPosition previousEngineOrigin) const
+		{ return GetGPUData(engineOrigin.value, previousEngineOrigin.value); }
+
     private:
         double Snap(double value) const { return std::floor(value / grid + 0.5) * grid; }
         static std::array<float, 4> Floats(Position p)
@@ -137,8 +198,10 @@ namespace PIXL::RenderOrigin
         std::uint64_t epoch{}, lastFrame{}, worldContext{};
         double grid = 4096.0;
         bool initialized{}, enabled{}, shifted{}, historyValid{}, discontinuity{};
+		DiscontinuityReason discontinuityReason{ DiscontinuityReason::Startup };
     };
 
     Manager& Get();
+	std::string_view ToString(DiscontinuityReason reason);
     void DrawExperimentalPanel();
 }
