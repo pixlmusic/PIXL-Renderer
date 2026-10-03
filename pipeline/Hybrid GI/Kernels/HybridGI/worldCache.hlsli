@@ -158,6 +158,23 @@ float WorldCacheCellSize(uint cascade)
     return cascade == 0u ? WorldCacheCellSizeNear : WorldCacheCellSizeFar;
 }
 
+bool WorldCacheCellInWindow(int3 cell, float3 cameraWS, uint cascade)
+{
+    float cellSize = WorldCacheCellSize(cascade);
+    int3 cameraCell = int3(floor(cameraWS / cellSize));
+    int3 offset = cell - cameraCell;
+    // A 32-cell toroidal axis has one unique signed window: [-16, 16).
+    // Never publish/read cells outside it, even during the near/far blend band,
+    // otherwise unrelated world cells can compete for the same wrapped slot.
+    return all(offset >= -16) && all(offset < 16);
+}
+
+bool WorldCachePositionInWindow(float3 positionWS, float3 cameraWS, uint cascade)
+{
+    float cellSize = WorldCacheCellSize(cascade);
+    return WorldCacheCellInWindow(int3(floor(positionWS / cellSize)), cameraWS, cascade);
+}
+
 float WorldCacheCascadeBlend(float3 positionWS, float3 cameraWS)
 {
     float nearExtent = WorldCacheCellSizeNear * (WORLD_CACHE_DIM * 0.47f);

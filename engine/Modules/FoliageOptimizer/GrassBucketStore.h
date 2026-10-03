@@ -89,6 +89,7 @@ struct PendingRemoval
 {
 	RE::BSMultiStreamInstanceTriShape* shape = nullptr;
 	uint64_t lifecycleSerial = 0;
+	uint64_t modelGeneration = 0;
 };
 
 // Offset of the indirect args block. Uses an offset of 12 so the instance count lands on byte 16, as required for the raw UAV to have 16 byte alignment.
@@ -190,6 +191,12 @@ struct GrassBucket
 
 	// Atomic to make sure only one culling job queues the bucket per frame, ensuring setup is only done once per type per frame.
 	std::atomic<uint32_t> lastQueuedFrame{ UINT32_MAX };
+	// Published only after the complete source/cull/args resource set is usable.
+	// Worker-side queue claims consult this instead of racing on raw COM pointers.
+	std::atomic<bool> gpuResident{ false };
+	// Duplicate OnVisible suppression is only safe after an optimized frame completed
+	// successfully (or conclusively culled the bucket). Failures clear this for recovery.
+	std::atomic<bool> queueOptimizationSafe{ false };
 
 	uint32_t drawnFrame = UINT32_MAX;
 	// Identifies the pass by the passEnum + pixel-shader descriptor to prevent buckets from being drawn more than once per frame.
@@ -198,7 +205,14 @@ struct GrassBucket
 	RE::NiPoint3 coarseMin{};
 	RE::NiPoint3 coarseMax{};
 	bool coarseValid = false;
-	bool cullVisible = false;
+	enum class CullState : uint8_t
+	{
+		Unavailable,  // Optimized data is not trustworthy this frame; draw vanilla.
+		Invisible,    // Broad phase proved the bucket contributes nothing; suppress the draw.
+		Candidate,    // CPU broad phase produced work, but the GPU cull has not completed submission.
+		Ready         // GPU cull/indirect arguments are current for this frame.
+	};
+	CullState cullState = CullState::Unavailable;
 
 	// This frame's window into the shared slice table and the instances the dispatch must cover.
 	uint32_t sliceTableOffset = 0;
@@ -209,7 +223,8 @@ struct GrassBucket
 	void ResetCullState()
 	{
 		cullSlot = UINT32_MAX;
-		cullVisible = false;
+		cullState = CullState::Unavailable;
+		queueOptimizationSafe.store(false, std::memory_order_release);
 		sliceTableCount = 0;
 		visibleInstances = 0;
 	}
@@ -222,6 +237,8 @@ struct GrassBucket
 	/** @brief Releases the GPU buffers and views, while keeping the instance data and slices. */
 	void ReleaseResources()
 	{
+		gpuResident.store(false, std::memory_order_release);
+		queueOptimizationSafe.store(false, std::memory_order_release);
 		auto rel = [](auto*& p) { if (p) { p->Release(); p = nullptr; } };
 		rel(instanceBuf);
 		rel(instanceSRV);
@@ -313,7 +330,7 @@ public:
 
 private:
 	/** @brief Removes dead shapes' slices from their buckets and drops them from the lookup maps. */
-	void ApplyRemovals(const std::vector<PendingRemoval>& removes);
+	void ApplyRemovals(const std::vector<PendingRemoval>& removes, const std::vector<PendingCapture>& survivingCaptures);
 
 	/** @brief Folds staged captures into buckets, creating buckets and slices as needed. */
 	void ApplyCaptures(std::vector<PendingCapture>& captures);
@@ -346,8 +363,12 @@ private:
 	/** @brief Caches per-type parameters (wave period, bound, mesh cost) from a source shape. */
 	void CacheBucketTypeParams(GrassBucket& b, RE::BSMultiStreamInstanceTriShape* shape);
 
-	/** @brief Samples a grass diffuse to decide whether it uses the complex-grass layout. */
+	/** @brief Samples a grass diffuse to decide whether it uses the complex-grass layout. Missing results are queued asynchronously and conservatively return false until resolved. */
 	bool DetectComplexGrass(RE::NiSourceTexture* tex, ID3D11DeviceContext* ctx);
+	/** @brief Publishes completed asynchronous complex-grass classification readbacks without blocking the render thread. */
+	void PumpComplexDetections(ID3D11DeviceContext* ctx);
+	/** @brief Releases classification entries no longer referenced by any live bucket. */
+	void PruneComplexCache();
 
 	/** @brief Returns the complex-grass detection compute shader, compiling it on first use. */
 	ID3D11ComputeShader* GetDetectCS();
@@ -356,7 +377,7 @@ private:
 
 	std::vector<PendingCapture> pendingCaptures;
 	std::vector<PendingRemoval> pendingRemoves;
-	uint64_t nextLifecycleSerial = 1;
+	std::atomic<uint64_t> nextLifecycleSerial{ 1 };
 	std::mutex pendingMutex;
 
 	// Read by culling jobs, so this guards the pointed-to buckets' lifetime as well as the map itself.
@@ -370,12 +391,19 @@ private:
 		ID3D11ShaderResourceView* resourceView = nullptr;
 		float normalLength = 0.0f;
 		bool complex = false;
+		bool resolved = false;
 	};
 	std::unordered_map<RE::NiSourceTexture*, ComplexEntry> complexCache;
+	struct PendingComplexDetection
+	{
+		RE::NiPointer<RE::NiSourceTexture> keepAlive;
+		ID3D11ShaderResourceView* resourceView = nullptr;
+		std::unique_ptr<Buffer> staging;
+	};
+	std::deque<PendingComplexDetection> pendingComplexDetections;
 	float cachedComplexThreshold = -1.0f;
 
 	ID3D11ComputeShader* detectCS = nullptr;
 	bool detectCompileAttempted = false;
 	std::unique_ptr<Buffer> detectResult;
-	std::unique_ptr<Buffer> detectStaging;
 };

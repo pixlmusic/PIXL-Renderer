@@ -28,7 +28,7 @@ foreach ($source in $sources) {
     Write-Host "PASS $name"
 }
 
-$foliage = Get-Content -LiteralPath (Join-Path $repo 'engine\Modules\FoliageOptimizer.cpp') -Raw
+$foliage = Get-Content -LiteralPath (Join-Path $repo 'engine\Modules\FoliageOptimizer\FoliageOptimizer.cpp') -Raw
 if ($foliage -notmatch 'VisibilityContext::Get\(\)' -or $foliage -match '\bhiZ\.') {
     throw 'Foliage Optimizer has not fully migrated to the shared VisibilityContext.'
 }

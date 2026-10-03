@@ -91,13 +91,15 @@ float3 FresnelSchlickReflection(float3 f0, float vdoth)
     return saturate(f0) + (1.0f - saturate(f0)) * f5;
 }
 
-inline bool ReadReflectionVoxelCascade(float3 queryWS, float3 receiverWS, uint cascade,
+inline bool ReadReflectionVoxelCascade(float3 queryWS, float3 receiverWS, float3 cameraWS, uint cascade,
     inout float3 radiance, inout float occupancy)
 {
     radiance = 0.0f;
     occupancy = 0.0f;
     float cellSize = WorldCacheCellSize(cascade);
     int3 cell = int3(floor(queryWS / cellSize));
+    if (!WorldCacheCellInWindow(cell, cameraWS, cascade))
+        return false;
     uint2 coord = WorldCacheAtlasCoord(cell, cascade);
     uint meta = srcWorldMetadata.Load(int3(coord, 0));
     bool valid = (meta & 0x00ffffffu) == WorldCacheHash(cell, cascade);
@@ -136,7 +138,7 @@ inline bool ReadReflectionVoxel(float3 queryWS, float3 receiverWS, float3 camera
     float blend = WorldCacheCascadeBlend(queryWS, cameraWS);
     bool nearValid = false;
     if (blend < 0.999f)
-        nearValid = ReadReflectionVoxelCascade(queryWS, receiverWS, 0u, nearRadiance, nearOccupancy);
+        nearValid = ReadReflectionVoxelCascade(queryWS, receiverWS, cameraWS, 0u, nearRadiance, nearOccupancy);
 
     bool valid = false;
     if (nearValid && blend <= 0.001f) {
@@ -144,7 +146,7 @@ inline bool ReadReflectionVoxel(float3 queryWS, float3 receiverWS, float3 camera
         occupancy = nearOccupancy;
         valid = true;
     } else {
-        bool farValid = ReadReflectionVoxelCascade(queryWS, receiverWS, 1u, farRadiance, farOccupancy);
+        bool farValid = ReadReflectionVoxelCascade(queryWS, receiverWS, cameraWS, 1u, farRadiance, farOccupancy);
         if (nearValid && farValid) {
             radiance = lerp(nearRadiance, farRadiance, blend);
             occupancy = lerp(nearOccupancy, farOccupancy, blend);
@@ -209,7 +211,7 @@ inline bool TraceScreenReflection(float3 originVS, float3 directionVS, float rou
     bool traceActive = !any(previousUV <= 0.001f) && !any(previousUV >= 0.999f);
     bool foundHit = false;
     float previousSceneZ = traceActive ?
-        srcDepth.SampleLevel(samplerPointClamp, previousUV * (FrameDim * RcpTexDim), 0.0f) : originVS.z;
+        srcDepth.SampleLevel(samplerPointClamp, FullFrameTextureUV(previousUV), 0.0f) : originVS.z;
     float previousDelta = originVS.z - previousSceneZ;
 
     [loop] for (uint i = 0u; i < steps && traceActive && !foundHit; ++i) {
@@ -226,8 +228,12 @@ inline bool TraceScreenReflection(float3 originVS, float3 directionVS, float rou
 
         float2 px = abs((uv - previousUV) * OUT_FRAME_DIM);
         float footprint = max(px.x, px.y);
-        float mip = clamp(log2(max(footprint, 1.0f)) - 0.5f + roughness * 1.5f, 0.0f, 4.0f);
-        float sceneZ = srcDepth.SampleLevel(samplerPointClamp, uv * (FrameDim * RcpTexDim), mip);
+        float internalMip = clamp(log2(max(footprint, 1.0f)) - 0.5f + roughness * 1.5f, 0.0f, 4.0f);
+        // The reflection ray advances in internal pixels while srcDepth is the
+        // full-resolution physical hierarchy. Apply the resolution offset only
+        // to depth; the compact radiance hierarchy uses internal mip space.
+        float depthMip = min(internalMip + (float)RES_MIP, 4.0f);
+        float sceneZ = srcDepth.SampleLevel(samplerPointClamp, FullFrameTextureUV(uv), depthMip);
         float delta = sampleVS.z - sceneZ;
         float thickness = thicknessBase * (1.0f + roughness * 2.0f + t / maxDistance * 0.5f);
 
@@ -242,21 +248,21 @@ inline bool TraceScreenReflection(float3 originVS, float3 directionVS, float rou
                 float mid = 0.5f * (lo + hi);
                 float3 q = originVS + directionVS * mid;
                 refinedUV = ViewToScreenPosition(q);
-                float z = srcDepth.SampleLevel(samplerPointClamp, refinedUV * (FrameDim * RcpTexDim), 0.0f);
+                float z = srcDepth.SampleLevel(samplerPointClamp, FullFrameTextureUV(refinedUV), 0.0f);
                 if (q.z - z >= 0.0f)
                     hi = mid;
                 else
                     lo = mid;
             }
             float3 q = originVS + directionVS * hi;
-            float z = srcDepth.SampleLevel(samplerPointClamp, refinedUV * (FrameDim * RcpTexDim), 0.0f);
+            float z = srcDepth.SampleLevel(samplerPointClamp, FullFrameTextureUV(refinedUV), 0.0f);
             float finalDelta = abs(q.z - z);
             if (finalDelta <= thickness * 1.5f) {
                 // A depth crossing alone can intersect the back side of a thin
                 // screen-space silhouette. Reject strongly back-facing hits so
                 // bright radiance behind a wall is not pulled through it as a
                 // reflection. The hit normal is already available in the G-buffer.
-                float2 hitTexCoord = refinedUV * (FrameDim * RcpTexDim);
+                float2 hitTexCoord = FullFrameTextureUV(refinedUV);
                 float3 hitNormal = GBuffer::DecodeNormal(srcNormalRoughness.SampleLevel(samplerLinearClamp, hitTexCoord, 0.0f).xy);
                 float hitFacing = saturate(dot(hitNormal, -directionVS));
                 if (hitFacing <= 0.025f) {
@@ -304,11 +310,10 @@ void main(uint2 dtid : SV_DispatchThreadID)
         return;
     }
 
-    float2 frameScale = FrameDim * RcpTexDim;
-    float4 nr = FULLRES_LOAD(srcNormalRoughness, dtid, uv * frameScale, samplerLinearClamp);
+    float4 nr = FULLRES_LOAD(srcNormalRoughness, dtid, FullFrameTextureUV(uv), samplerLinearClamp);
     float3 N = GBuffer::DecodeNormal(nr.xy);
     float roughness = saturate(1.0f - nr.z);
-    float3 materialReflectance = max(FULLRES_LOAD(srcReflectance, dtid, uv * frameScale, samplerLinearClamp), 0.0f);
+    float3 materialReflectance = max(FULLRES_LOAD(srcReflectance, dtid, FullFrameTextureUV(uv), samplerLinearClamp), 0.0f);
     float reflectanceEnergy = max(materialReflectance.x, max(materialReflectance.y, materialReflectance.z));
     float roughFadeWidth = min(0.10f, max(ReflectionMaxRoughness * 0.25f, 0.025f));
     float roughnessSupport = 1.0f - smoothstep(
@@ -340,17 +345,22 @@ void main(uint2 dtid : SV_DispatchThreadID)
     screenConfidence *= lerp(0.35f, 1.0f, saturate(geometryWeight));
 
 	float3 reflectedRadiance = 0.0f;
+#ifdef TEMPORAL_DENOISER
 	float3 screenNeighborhoodMin = 0.0f;
 	float3 screenNeighborhoodMax = 65504.0f.xxx;
+#endif
 	if (screenHit) {
 		float lod = saturate(roughness / max(ReflectionMaxRoughness, 1e-3f)) * 4.0f;
 		float2 texel = RCP_OUT_FRAME_DIM * (1.0f + roughness * 2.0f);
-		float3 hitCenter = srcRadiance.SampleLevel(samplerLinearClamp, hitUV * frameScale, lod);
-		float3 hitX0 = srcRadiance.SampleLevel(samplerLinearClamp, (hitUV - float2(texel.x, 0.0f)) * frameScale, lod);
-		float3 hitX1 = srcRadiance.SampleLevel(samplerLinearClamp, (hitUV + float2(texel.x, 0.0f)) * frameScale, lod);
-		float3 hitY0 = srcRadiance.SampleLevel(samplerLinearClamp, (hitUV - float2(0.0f, texel.y)) * frameScale, lod);
-		float3 hitY1 = srcRadiance.SampleLevel(samplerLinearClamp, (hitUV + float2(0.0f, texel.y)) * frameScale, lod);
+		float3 hitCenter = srcRadiance.SampleLevel(samplerLinearClamp, InternalFrameTextureUV(hitUV), lod);
 		reflectedRadiance = hitCenter;
+#ifdef TEMPORAL_DENOISER
+		// Radiance is stored in the compact internal footprint. Neighbouring
+		// screen-space samples must use the internal scale as well.
+		float3 hitX0 = srcRadiance.SampleLevel(samplerLinearClamp, InternalFrameTextureUV(hitUV - float2(texel.x, 0.0f)), lod);
+		float3 hitX1 = srcRadiance.SampleLevel(samplerLinearClamp, InternalFrameTextureUV(hitUV + float2(texel.x, 0.0f)), lod);
+		float3 hitY0 = srcRadiance.SampleLevel(samplerLinearClamp, InternalFrameTextureUV(hitUV - float2(0.0f, texel.y)), lod);
+		float3 hitY1 = srcRadiance.SampleLevel(samplerLinearClamp, InternalFrameTextureUV(hitUV + float2(0.0f, texel.y)), lod);
 		screenNeighborhoodMin = min(hitCenter, min(min(hitX0, hitX1), min(hitY0, hitY1)));
 		screenNeighborhoodMax = max(hitCenter, max(max(hitX0, hitX1), max(hitY0, hitY1)));
 		float3 mean = (hitCenter + hitX0 + hitX1 + hitY0 + hitY1) * 0.2f;
@@ -360,13 +370,8 @@ void main(uint2 dtid : SV_DispatchThreadID)
 		float3 sigma = sqrt(max(variance, 1e-6f));
 		screenNeighborhoodMin = max(screenNeighborhoodMin, mean - 2.5f * sigma);
 		screenNeighborhoodMax = min(screenNeighborhoodMax, mean + 2.5f * sigma);
+#endif
 	}
-
-    float3 positionWS = ViewToWorldPosition(P, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
-    float3 cameraWS = ViewToWorldPosition(0.0f, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
-    float3 directionWS = normalize(ViewToWorldVector(L, FrameBuffer::CameraViewInverse));
-	float worldConfidence = 0.0f;
-    float3 worldRadiance = TraceWorldFallback(positionWS, directionWS, cameraWS, roughness, worldConfidence);
 
     // The voxel cache is intentionally a *rough* reflection fallback. Avoid
     // using its low-frequency SH result as a fake mirror and fade it back out
@@ -374,8 +379,17 @@ void main(uint2 dtid : SV_DispatchThreadID)
     float cacheCutoff = max(WorldCacheReflectionRoughnessCutoff, 0.20f);
     float roughSupport = smoothstep(0.10f, min(0.35f, cacheCutoff * 0.65f), roughness);
     float roughCutoff = 1.0f - smoothstep(cacheCutoff * 0.90f, cacheCutoff, roughness);
-    float worldBlend = (1.0f - screenConfidence) * worldConfidence * roughSupport * roughCutoff;
-    worldBlend *= saturate(ReflectionWorldFallbackStrength) * max(WorldCacheReflectionStrength, 0.0f);
+    float fallbackPotential = (1.0f - screenConfidence) * roughSupport * roughCutoff *
+        saturate(ReflectionWorldFallbackStrength) * max(WorldCacheReflectionStrength, 0.0f);
+	float worldConfidence = 0.0f;
+	float3 worldRadiance = 0.0f;
+	[branch] if (fallbackPotential > 1e-3f && WorldCacheEnabled != 0u && WorldCacheReflectionEnabled != 0u) {
+        float3 positionWS = ViewToWorldPosition(P, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
+        float3 cameraWS = ViewToWorldPosition(0.0f, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
+        float3 directionWS = normalize(ViewToWorldVector(L, FrameBuffer::CameraViewInverse));
+        worldRadiance = TraceWorldFallback(positionWS, directionWS, cameraWS, roughness, worldConfidence);
+    }
+    float worldBlend = fallbackPotential * worldConfidence;
 
     // Confidence is metadata for temporal/spatial reconstruction, not brightness.
     // Blend observations by reliability and normalize the radiance so a valid

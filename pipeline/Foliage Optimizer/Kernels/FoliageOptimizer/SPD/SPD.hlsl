@@ -30,19 +30,19 @@
 #define SPD_MAX_MIPS 6
 #endif
 
-globallycoherent RWTexture2D<float> SpdMip1 : register(u0);
-globallycoherent RWTexture2D<float> SpdMip2 : register(u1);
-globallycoherent RWTexture2D<float> SpdMip3 : register(u2);
-globallycoherent RWTexture2D<float> SpdMip4 : register(u3);
-globallycoherent RWTexture2D<float> SpdMip5 : register(u4);
-globallycoherent RWTexture2D<float> SpdMip6 : register(u5);
+RWTexture2D<float> SpdMip1 : register(u0);
+RWTexture2D<float> SpdMip2 : register(u1);
+RWTexture2D<float> SpdMip3 : register(u2);
+RWTexture2D<float> SpdMip4 : register(u3);
+RWTexture2D<float> SpdMip5 : register(u4);
+RWTexture2D<float> SpdMip6 : register(u5);
 #if SPD_MAX_MIPS > 6
 globallycoherent RWTexture2D<float> SpdMip7 : register(u6);
 globallycoherent RWTexture2D<float> SpdMip8 : register(u7);
 globallycoherent RWTexture2D<float> SpdMip9 : register(u8);
-globallycoherent RWTexture2D<float> SpdMip10 : register(u9);
-globallycoherent RWTexture2D<float> SpdMip11 : register(u10);
-globallycoherent RWTexture2D<float> SpdMip12 : register(u11);
+RWTexture2D<float> SpdMip10 : register(u9);
+RWTexture2D<float> SpdMip11 : register(u10);
+RWTexture2D<float> SpdMip12 : register(u11);
 globallycoherent RWByteAddressBuffer SpdCounter : register(u12);
 #endif
 // Read mip 0 through a dedicated SRV to avoid overlap and keep the single-dispatch path within D3D11's UAV limit.

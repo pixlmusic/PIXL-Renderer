@@ -21,12 +21,12 @@ RWTexture2D<uint> outWorldMetadata : register(u0);
 // will not match any real cell again until the voxel is actually reinjected
 // from scratch.
 //
-// Dispatch once per frame over the full atlas (WORLD_CACHE_DIM * WORLD_CACHE_DIM
-// x WORLD_CACHE_DIM * WORLD_CACHE_CASCADES, i.e. 1024x64), after
-// worldCacheInject_cs and before gi_cs reads the cache. The whole atlas is
-// only 65536 texels, so this is a negligible full pass -- no stride/jitter
-// amortization needed, and none should be added: any amortization reopens
-// the wraparound window for cells that get revisited late.
+// Dispatch once per fixed cache-clock tick over the full atlas
+// (WORLD_CACHE_DIM * WORLD_CACHE_DIM x WORLD_CACHE_DIM * WORLD_CACHE_CASCADES,
+// i.e. 1024x64), after worldCacheInject_cs and before gi_cs reads the cache.
+// The whole atlas is only 65536 texels, so this is a negligible full pass --
+// no stride/jitter amortization needed, and none should be added: any
+// amortization reopens the wraparound window for cells revisited late.
 //
 // Extension note: if WORLD_CACHE_DIM or WORLD_CACHE_CASCADES is increased
 // later (bigger world, more cascades), keep this a full unstrided pass as

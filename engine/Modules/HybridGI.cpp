@@ -338,6 +338,14 @@ void HybridGI::DrawSettings()
 		Util::Text::Error("%s", T(TKEY("shader_compile_error"), "Compute shaders failed to compile!"));
 		ImGui::TextWrapped("The controls remain available, but the effect will not render until all Hybrid GI compute shaders compile successfully.");
 	}
+	if (settings.EnableWorldCache && !WorldCacheShadersOK())
+		Util::Text::Error("%s", "World-cache shaders are unavailable; core screen-space GI will continue without persistent world irradiance.");
+	if (settings.EnableExperimentalSpecularGI && !ReflectionShadersOK())
+		Util::Text::Error("%s", "Hybrid Reflection tracing is unavailable; diffuse GI will continue normally.");
+	else if (settings.EnableExperimentalSpecularGI && settings.EnableBlur && hybridReflectionDenoiseCompute.get() == nullptr)
+		Util::Text::Error("%s", "Hybrid Reflection spatial reconstruction is unavailable; temporal reflection output will remain active.");
+	if (settings.EnableBlur && !BlurShadersOK())
+		Util::Text::Error("%s", "Diffuse spatial denoising is unavailable; the renderer will use the temporally reconstructed GI result.");
 
 	const auto activePreset = DetectPreset();
 
@@ -634,7 +642,7 @@ void HybridGI::DrawSettings()
 
 			if (ImGui::CollapsingHeader("Screen-Space Sampling", ImGuiTreeNodeFlags_DefaultOpen)) {
 				if (BeginSettingsTable("PIXL GI Advanced Screen")) {
-					BeginSettingRow("Internal Resolution", "Full resolution is cleanest and most expensive. Half is the recommended default; quarter is intended for performance-constrained systems.");
+					BeginSettingRow("Internal Resolution", "Full preserves maximum detail. Half trades some reconstruction work for performance; Quarter is intended for performance-constrained systems.");
 					static constexpr const char* resolutionNames[] = { "Full", "Half", "Quarter" };
 					if (ImGui::Combo("##resolution_mode", &settings.ResolutionMode, resolutionNames, static_cast<int>(std::size(resolutionNames))))
 						recompileFlag = true;
@@ -1305,7 +1313,7 @@ void HybridGI::SetupResources()
 				PIXL::Renderer::TemporalMask(Reason::SettingsChange) |
 				PIXL::Renderer::TemporalMask(Reason::ModuleReset) |
 				PIXL::Renderer::TemporalMask(Reason::DeviceReset),
-			.reset = [this](Reason) { queuedResetHistory = true; }
+			.reset = [this](Reason) { queuedResetWorldHistory = true; }
 		});
 	}
 
@@ -1472,7 +1480,10 @@ void HybridGI::SetupResources()
 			texAccumFrames[1]->CreateUAV(uavDesc);
 		}
 
-		srvDesc.Format = uavDesc.Format = texDesc.Format = DXGI_FORMAT_R11G11B10_FLOAT;
+		// Temporal geometry is a packed validation payload: 16-bit fixed view depth plus
+		// two 8-bit octahedral world-normal components. R32_UINT keeps the same
+		// 4-byte footprint while preserving much more useful far-depth precision.
+		srvDesc.Format = uavDesc.Format = texDesc.Format = DXGI_FORMAT_R32_UINT;
 		{
 			texPrevGeo = eastl::make_unique<Texture2D>(texDesc, "HybridGI::PrevGeo");
 			texPrevGeo->CreateSRV(srvDesc);
@@ -1599,46 +1610,127 @@ void HybridGI::SetupResources()
 		static_cast<std::uint64_t>(32u * 32u * 32u * 2u) * 68u);
 }
 
-void HybridGI::ClearShaderCache()
+namespace
 {
-	static const std::vector<winrt::com_ptr<ID3D11ComputeShader>*> shaderPtrs = {
-		&prefilterDepthsCompute, &prefilterRadianceCompute, &prefilterNormalCompute, &radianceDisoccCompute, &giCompute, &blurCompute, &blurAtrousCompute, &upsampleCompute,
-		&worldCacheInjectCompute, &worldCacheSelectCompute, &worldCacheDecayCompute, &hybridReflectionCompute, &hybridReflectionDenoiseCompute
+	enum HybridGIShaderMask : std::uint32_t
+	{
+		kShaderPrefilterDepth = 1u << 0,
+		kShaderPrefilterRadiance = 1u << 1,
+		kShaderPrefilterNormal = 1u << 2,
+		kShaderRadianceDisocc = 1u << 3,
+		kShaderGI = 1u << 4,
+		kShaderBlur = 1u << 5,
+		kShaderBlurAtrous = 1u << 6,
+		kShaderUpsample = 1u << 7,
+		kShaderWorldInject = 1u << 8,
+		kShaderWorldSelect = 1u << 9,
+		kShaderWorldDecay = 1u << 10,
+		kShaderReflection = 1u << 11,
+		kShaderReflectionDenoise = 1u << 12,
+		kShaderAll = (1u << 13) - 1u
 	};
-
-	for (auto shader : shaderPtrs)
-		*shader = nullptr;
-
-	CompileComputeShaders();
 }
 
-void HybridGI::CompileComputeShaders()
+void HybridGI::ClearShaderCache()
+{
+	// Public/framework shader-cache invalidation keeps its original semantics:
+	// source hot-reloads and device rebuilds must never depend on settings deltas.
+	prefilterDepthsCompute = nullptr;
+	prefilterRadianceCompute = nullptr;
+	prefilterNormalCompute = nullptr;
+	radianceDisoccCompute = nullptr;
+	giCompute = nullptr;
+	blurCompute = nullptr;
+	blurAtrousCompute = nullptr;
+	upsampleCompute = nullptr;
+	worldCacheInjectCompute = nullptr;
+	worldCacheSelectCompute = nullptr;
+	worldCacheDecayCompute = nullptr;
+	hybridReflectionCompute = nullptr;
+	hybridReflectionDenoiseCompute = nullptr;
+	CompileComputeShaders(kShaderAll);
+	queuedResetTemporalHistory = true;
+	queuedResetWorldHistory = true;
+}
+
+void HybridGI::RecompileChangedShaders()
+{
+	std::uint32_t mask = 0u;
+	const int resolutionMode = std::clamp(settings.ResolutionMode, 0, 2);
+
+	if (!compiledShaderConfigInitialized) {
+		mask = kShaderAll;
+	} else if (compiledResolutionMode != resolutionMode) {
+		// Resolution defines alter the shared OUT_FRAME contract across most passes.
+		// Rebuild the complete set rather than maintaining a fragile exception list.
+		mask = kShaderAll;
+	} else {
+		if (compiledTemporalDenoiser != settings.EnableTemporalDenoiser) {
+			mask |= kShaderRadianceDisocc | kShaderGI | kShaderBlur | kShaderBlurAtrous | kShaderReflection;
+		}
+		if (compiledGI != settings.EnableGI)
+			mask |= kShaderGI;
+		if (compiledHybridReflections != settings.EnableExperimentalSpecularGI)
+			mask |= kShaderRadianceDisocc | kShaderGI;
+		if (compiledAdaptiveRayAllocation != settings.EnableAdaptiveRayAllocation)
+			mask |= kShaderGI;
+	}
+
+	if (mask == 0u) {
+		recompileFlag = false;
+		return;
+	}
+
+	auto clearIf = [&](std::uint32_t bit, winrt::com_ptr<ID3D11ComputeShader>& shader) {
+		if ((mask & bit) != 0u)
+			shader = nullptr;
+	};
+	clearIf(kShaderPrefilterDepth, prefilterDepthsCompute);
+	clearIf(kShaderPrefilterRadiance, prefilterRadianceCompute);
+	clearIf(kShaderPrefilterNormal, prefilterNormalCompute);
+	clearIf(kShaderRadianceDisocc, radianceDisoccCompute);
+	clearIf(kShaderGI, giCompute);
+	clearIf(kShaderBlur, blurCompute);
+	clearIf(kShaderBlurAtrous, blurAtrousCompute);
+	clearIf(kShaderUpsample, upsampleCompute);
+	clearIf(kShaderWorldInject, worldCacheInjectCompute);
+	clearIf(kShaderWorldSelect, worldCacheSelectCompute);
+	clearIf(kShaderWorldDecay, worldCacheDecayCompute);
+	clearIf(kShaderReflection, hybridReflectionCompute);
+	clearIf(kShaderReflectionDenoise, hybridReflectionDenoiseCompute);
+
+	CompileComputeShaders(mask);
+}
+
+void HybridGI::CompileComputeShaders(std::uint32_t a_shaderMask)
 {
 	struct ShaderCompileInfo
 	{
+		std::uint32_t bit;
 		winrt::com_ptr<ID3D11ComputeShader>* programPtr;
 		std::string_view filename;
 		std::vector<std::pair<const char*, const char*>> defines;
 	};
 
-	std::vector<ShaderCompileInfo>
-		shaderInfos = {
-			{ &prefilterDepthsCompute, "prefilterDepths.cs.hlsl", { { "LINEAR_FILTER", "" } } },
-			{ &prefilterRadianceCompute, "prefilterRadiance.cs.hlsl", {} },
-			{ &prefilterNormalCompute, "prefilterNormal.cs.hlsl", {} },
-			{ &radianceDisoccCompute, "radianceDisocc.cs.hlsl", {} },
-			{ &giCompute, "gi.cs.hlsl", {} },
-			{ &blurCompute, "blur.cs.hlsl", {} },
-			{ &blurAtrousCompute, "blur.cs.hlsl", { { "ATROUS_STEP_2", "" } } },
-			{ &upsampleCompute, "upsample.cs.hlsl", {} },
-			{ &worldCacheInjectCompute, "worldCacheInject.cs.hlsl", {} },
-			{ &worldCacheSelectCompute, "worldCacheInject.cs.hlsl", { { "WORLD_CACHE_SELECT", "" } } },
-			{ &worldCacheDecayCompute, "worldCacheDecay.cs.hlsl", {} },
-			{ &hybridReflectionCompute, "hybridReflection.cs.hlsl", {} },
-			{ &hybridReflectionDenoiseCompute, "hybridReflectionDenoise.cs.hlsl", {} },
-		};
+	std::vector<ShaderCompileInfo> shaderInfos = {
+		{ kShaderPrefilterDepth, &prefilterDepthsCompute, "prefilterDepths.cs.hlsl", { { "LINEAR_FILTER", "" } } },
+		{ kShaderPrefilterRadiance, &prefilterRadianceCompute, "prefilterRadiance.cs.hlsl", {} },
+		{ kShaderPrefilterNormal, &prefilterNormalCompute, "prefilterNormal.cs.hlsl", {} },
+		{ kShaderRadianceDisocc, &radianceDisoccCompute, "radianceDisocc.cs.hlsl", {} },
+		{ kShaderGI, &giCompute, "gi.cs.hlsl", {} },
+		{ kShaderBlur, &blurCompute, "blur.cs.hlsl", {} },
+		{ kShaderBlurAtrous, &blurAtrousCompute, "blur.cs.hlsl", { { "ATROUS_STEP_2", "" } } },
+		{ kShaderUpsample, &upsampleCompute, "upsample.cs.hlsl", {} },
+		{ kShaderWorldInject, &worldCacheInjectCompute, "worldCacheInject.cs.hlsl", {} },
+		{ kShaderWorldSelect, &worldCacheSelectCompute, "worldCacheInject.cs.hlsl", { { "WORLD_CACHE_SELECT", "" } } },
+		{ kShaderWorldDecay, &worldCacheDecayCompute, "worldCacheDecay.cs.hlsl", {} },
+		{ kShaderReflection, &hybridReflectionCompute, "hybridReflection.cs.hlsl", {} },
+		{ kShaderReflectionDenoise, &hybridReflectionDenoiseCompute, "hybridReflectionDenoise.cs.hlsl", {} },
+	};
 
 	for (auto& info : shaderInfos) {
+		if ((a_shaderMask & info.bit) == 0u)
+			continue;
 		if (settings.ResolutionMode == 1)
 			info.defines.push_back({ "HALF_RES", "" });
 		if (settings.ResolutionMode == 2)
@@ -1656,29 +1748,68 @@ void HybridGI::CompileComputeShaders()
 	}
 
 	for (auto& info : shaderInfos) {
+		if ((a_shaderMask & info.bit) == 0u)
+			continue;
 		auto path = std::filesystem::path("Data\\Shaders\\HybridGI") / info.filename;
 		if (auto rawPtr = reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(path.c_str(), info.defines, "cs_5_0")))
 			info.programPtr->attach(rawPtr);
 	}
 
+	compiledShaderConfigInitialized = true;
+	compiledResolutionMode = std::clamp(settings.ResolutionMode, 0, 2);
+	compiledTemporalDenoiser = settings.EnableTemporalDenoiser;
+	compiledGI = settings.EnableGI;
+	compiledHybridReflections = settings.EnableExperimentalSpecularGI;
+	compiledAdaptiveRayAllocation = settings.EnableAdaptiveRayAllocation;
 	recompileFlag = false;
 }
 
-bool HybridGI::ShadersOK() const
+bool HybridGI::CoreShadersOK() const
 {
 	const bool coreResources = ssgiCB && linearClampSampler && pointClampSampler && texNoise && texWorkingDepth &&
 		texPrevGeo && texRadiance && texRadianceTemp && texNormal &&
 		texAccumFrames[0] && texAccumFrames[1] && texAo[0] && texAo[1] &&
 		texIlY[0] && texIlY[1] && texIlCoCg[0] && texIlCoCg[1] &&
-		texGiSpecular[0] && texGiSpecular[1] && texBentVisibility[0] && texBentVisibility[1] &&
-		texWorldCacheMetadata && texWorldCacheWinners && texWorldCacheSH0 && texWorldCacheSH1 && texWorldCacheSH2 && texWorldCacheNormal &&
-		texWorldCachePreviousMetadata && texWorldCachePreviousSH0 && texWorldCachePreviousSH1 &&
-		texWorldCachePreviousSH2 && texWorldCachePreviousNormal;
+		texGiSpecular[0] && texGiSpecular[1] && texBentVisibility[0] && texBentVisibility[1];
 
 	return coreResources && prefilterDepthsCompute && prefilterRadianceCompute && prefilterNormalCompute &&
-	       radianceDisoccCompute && giCompute && blurCompute && blurAtrousCompute && upsampleCompute &&
-	       worldCacheInjectCompute && worldCacheSelectCompute && worldCacheDecayCompute &&
-	       (!settings.EnableExperimentalSpecularGI || (hybridReflectionCompute && (!settings.EnableBlur || hybridReflectionDenoiseCompute)));
+	       radianceDisoccCompute && giCompute;
+}
+
+bool HybridGI::WorldCacheShadersOK() const
+{
+	const bool resources = texWorldCacheMetadata && texWorldCacheWinners && texWorldCacheSH0 && texWorldCacheSH1 &&
+		texWorldCacheSH2 && texWorldCacheNormal && texWorldCachePreviousMetadata && texWorldCachePreviousSH0 &&
+		texWorldCachePreviousSH1 && texWorldCachePreviousSH2 && texWorldCachePreviousNormal;
+	return resources && worldCacheInjectCompute.get() != nullptr && worldCacheSelectCompute.get() != nullptr && worldCacheDecayCompute.get() != nullptr;
+}
+
+bool HybridGI::BlurShadersOK() const
+{
+	// Pass one is independently useful; a missing optional A-trous permutation
+	// should degrade to one spatial pass rather than disable denoising entirely.
+	return blurCompute.get() != nullptr;
+}
+
+bool HybridGI::ReflectionShadersOK() const
+{
+	return hybridReflectionCompute.get() != nullptr;
+}
+
+bool HybridGI::UpsampleShaderOK() const
+{
+	return upsampleCompute.get() != nullptr;
+}
+
+bool HybridGI::ShadersOK() const
+{
+	if (!CoreShadersOK())
+		return false;
+
+	// Reduced-resolution output cannot be consumed safely without its explicit
+	// full-resolution reconstruction pass. Other advanced features degrade
+	// independently instead of taking the complete GI module down.
+	return std::clamp(settings.ResolutionMode, 0, 2) == 0 || UpsampleShaderOK();
 }
 
 void HybridGI::UpdateSB()
@@ -1769,7 +1900,8 @@ void HybridGI::UpdateSB()
 		data.BlurRadius = std::clamp(settings.BlurRadius, 0.0f, 30.0f);
 		data.DistanceNormalisation = std::clamp(settings.DistanceNormalisation, 0.0f, 5.0f);
 
-		data.WorldCacheEnabled = settings.EnableWorldCache ? 1u : 0u;
+		const bool worldCacheAvailable = settings.EnableWorldCache && WorldCacheShadersOK();
+		data.WorldCacheEnabled = worldCacheAvailable ? 1u : 0u;
 		data.WorldCacheMaxAge = std::clamp(settings.WorldCacheMaxAge, 1u, 120u);
 		data.WorldCacheSampleCount = std::clamp(settings.WorldCacheSampleCount, 1u, 8u);
 		data.WorldCacheTraceSteps = std::clamp(settings.WorldCacheTraceSteps, 2u, 6u);
@@ -1789,19 +1921,21 @@ void HybridGI::UpdateSB()
 		auto& radiantGrid = globals::pipeline::radiantGrid;
 		const auto sharedLights = PIXL::Renderer::LightTransportWorld::Get().AcquireLocalLights();
 		const bool sharedLightsReady = globals::state && sharedLights.ValidFor(globals::state->frameCount);
+		const bool radiantGridFallbackReady = radiantGrid.loaded && radiantGrid.lights &&
+			radiantGrid.lightIndexList && radiantGrid.lightGrid;
 		const std::uint32_t emitterStart = sharedLightsReady ? sharedLights.emitterStart : radiantGrid.particleLightBufferStart;
 		const std::uint32_t emitterCount = sharedLightsReady ? sharedLights.emitterCount : radiantGrid.particleLightBufferCount;
-		const bool emitterInjectionReady = settings.EnableEmitterInjection && emitterCount > 0 &&
-			(sharedLightsReady || (radiantGrid.loaded && radiantGrid.lights));
+		const bool emitterInjectionReady = worldCacheAvailable && settings.EnableEmitterInjection && emitterCount > 0 &&
+			(sharedLightsReady || radiantGridFallbackReady);
 		data.WorldCacheEmitterInjectionEnabled = emitterInjectionReady ? 1u : 0u;
 		data.RadiantParticleLightStart = emitterInjectionReady ? std::min(emitterStart, RadiantGrid::MAX_LIGHTS) : 0u;
 		data.RadiantParticleLightCount = emitterInjectionReady ?
 			std::min(emitterCount, RadiantGrid::MAX_LIGHTS - data.RadiantParticleLightStart) : 0u;
 		data.WorldCacheEmitterInjectionStrength = std::clamp(settings.EmitterInjectionStrength, 0.0f, 1.5f);
-		data.WorldCacheReflectionEnabled = settings.EnableVoxelReflections ? 1u : 0u;
+		data.WorldCacheReflectionEnabled = worldCacheAvailable && settings.EnableVoxelReflections ? 1u : 0u;
 		data.WorldCacheReflectionStrength = std::clamp(settings.VoxelReflectionStrength, 0.0f, 1.5f);
 		data.WorldCacheReflectionRoughnessCutoff = std::clamp(settings.VoxelReflectionRoughnessCutoff, 0.2f, 1.0f);
-		data.WorldCacheSecondBounceEnabled = settings.EnableWorldCacheSecondBounce ? 1u : 0u;
+		data.WorldCacheSecondBounceEnabled = worldCacheAvailable && settings.EnableWorldCacheSecondBounce ? 1u : 0u;
 		data.WorldCacheSecondBounceStrength = std::clamp(settings.WorldCacheSecondBounceStrength, 0.0f, 0.5f);
 		data.BentNormalEnabled = settings.EnableBentNormalLighting ? 1u : 0u;
 		data.BentNormalStrength = std::clamp(settings.BentNormalStrength, 0.0f, 1.0f);
@@ -1853,6 +1987,56 @@ void HybridGI::DrawHybridGI()
 	lastRuntimeDebugView = settings.DebugView;
 	lastRuntimeMaterialDebugMode = materialDebugMode;
 
+	// History validity is a semantic contract, not just a loading-screen event.
+	// Detect settings that change resolution/permutations or the world-cache
+	// coordinate system so old data can never be interpreted under a new layout.
+	if (!runtimeConfigInitialized) {
+		runtimeConfigInitialized = true;
+		lastEnableGI = settings.EnableGI;
+		lastEnableTemporalDenoiser = settings.EnableTemporalDenoiser;
+		lastEnableExperimentalSpecularGI = settings.EnableExperimentalSpecularGI;
+		lastEnableAdaptiveRayAllocation = settings.EnableAdaptiveRayAllocation;
+		lastEnableWorldCache = settings.EnableWorldCache;
+		lastResolutionMode = std::clamp(settings.ResolutionMode, 0, 2);
+		lastWorldCacheCellSizeNear = settings.WorldCacheCellSizeNear;
+		lastWorldCacheCellSizeFar = settings.WorldCacheCellSizeFar;
+	} else {
+		const int currentResolutionMode = std::clamp(settings.ResolutionMode, 0, 2);
+		const bool temporalSemanticChanged =
+			lastEnableGI != settings.EnableGI ||
+			lastEnableTemporalDenoiser != settings.EnableTemporalDenoiser ||
+			lastEnableExperimentalSpecularGI != settings.EnableExperimentalSpecularGI ||
+			lastEnableAdaptiveRayAllocation != settings.EnableAdaptiveRayAllocation ||
+			lastEnableWorldCache != settings.EnableWorldCache ||
+			lastResolutionMode != currentResolutionMode;
+		if (temporalSemanticChanged)
+			queuedResetTemporalHistory = true;
+
+		const bool cacheStructureChanged =
+			lastWorldCacheCellSizeNear != settings.WorldCacheCellSizeNear ||
+			lastWorldCacheCellSizeFar != settings.WorldCacheCellSizeFar;
+		const bool cacheReenabled = !lastEnableWorldCache && settings.EnableWorldCache;
+		if (cacheStructureChanged || cacheReenabled)
+			queuedResetWorldHistory = true;
+		if (cacheStructureChanged)
+			queuedResetTemporalHistory = true;
+
+		lastEnableGI = settings.EnableGI;
+		lastEnableTemporalDenoiser = settings.EnableTemporalDenoiser;
+		lastEnableExperimentalSpecularGI = settings.EnableExperimentalSpecularGI;
+		lastEnableAdaptiveRayAllocation = settings.EnableAdaptiveRayAllocation;
+		lastEnableWorldCache = settings.EnableWorldCache;
+		lastResolutionMode = currentResolutionMode;
+		lastWorldCacheCellSizeNear = settings.WorldCacheCellSizeNear;
+		lastWorldCacheCellSizeFar = settings.WorldCacheCellSizeFar;
+	}
+
+	// Rebuild requested permutations before capability validation. The previous
+	// order validated stale shaders, then could continue the same frame after a
+	// failed rebuild with a null program in a newly-required pass.
+	if (settings.Enabled && recompileFlag)
+		RecompileChangedShaders();
+
 	if (!(settings.Enabled && ShadersOK())) {
 		FLOAT clr[4] = { 0.f, 0.f, 0.f, 0.f };
 		if (texAo[outputAoIdx])
@@ -1887,6 +2071,7 @@ void HybridGI::DrawHybridGI()
 
 	auto clearTemporalHistory = [&]() {
 		const FLOAT clr[4] = { 0.f, 0.f, 0.f, 0.f };
+		const UINT clearUint[4] = { 0, 0, 0, 0 };
 		for (auto& tex : texAccumFrames)
 			context->ClearUnorderedAccessViewFloat(tex->uav.get(), clr);
 		for (auto& tex : texAo)
@@ -1899,23 +2084,45 @@ void HybridGI::DrawHybridGI()
 			context->ClearUnorderedAccessViewFloat(tex->uav.get(), clr);
 		for (auto& tex : texBentVisibility)
 			context->ClearUnorderedAccessViewFloat(tex->uav.get(), clr);
-		context->ClearUnorderedAccessViewFloat(texPrevGeo->uav.get(), clr);
+		context->ClearUnorderedAccessViewUint(texPrevGeo->uav.get(), clearUint);
+	};
+
+	auto clearWorldHistory = [&]() {
+		const UINT clearUint[4] = { 0, 0, 0, 0 };
+		const FLOAT clearFloat[4] = { 0.f, 0.f, 0.f, 0.f };
+		if (texWorldCacheMetadata && texWorldCacheMetadata->uav)
+			context->ClearUnorderedAccessViewUint(texWorldCacheMetadata->uav.get(), clearUint);
+		if (texWorldCacheNormal && texWorldCacheNormal->uav)
+			context->ClearUnorderedAccessViewUint(texWorldCacheNormal->uav.get(), clearUint);
+		if (texWorldCachePreviousMetadata && texWorldCachePreviousMetadata->uav)
+			context->ClearUnorderedAccessViewUint(texWorldCachePreviousMetadata->uav.get(), clearUint);
+		if (texWorldCachePreviousNormal && texWorldCachePreviousNormal->uav)
+			context->ClearUnorderedAccessViewUint(texWorldCachePreviousNormal->uav.get(), clearUint);
+		if (texWorldCacheSH0 && texWorldCacheSH0->uav)
+			context->ClearUnorderedAccessViewFloat(texWorldCacheSH0->uav.get(), clearFloat);
+		if (texWorldCacheSH1 && texWorldCacheSH1->uav)
+			context->ClearUnorderedAccessViewFloat(texWorldCacheSH1->uav.get(), clearFloat);
+		if (texWorldCacheSH2 && texWorldCacheSH2->uav)
+			context->ClearUnorderedAccessViewFloat(texWorldCacheSH2->uav.get(), clearFloat);
+		if (texWorldCachePreviousSH0 && texWorldCachePreviousSH0->uav)
+			context->ClearUnorderedAccessViewFloat(texWorldCachePreviousSH0->uav.get(), clearFloat);
+		if (texWorldCachePreviousSH1 && texWorldCachePreviousSH1->uav)
+			context->ClearUnorderedAccessViewFloat(texWorldCachePreviousSH1->uav.get(), clearFloat);
+		if (texWorldCachePreviousSH2 && texWorldCachePreviousSH2->uav)
+			context->ClearUnorderedAccessViewFloat(texWorldCachePreviousSH2->uav.get(), clearFloat);
+		lastWorldCacheDecayClock = 0xffffffffu;
 	};
 
 	if (queuedResetHistory.exchange(false)) {
-		lastWorldCacheDecayClock = 0xffffffffu;
 		clearTemporalHistory();
-		const UINT clearValue[4] = { 0, 0, 0, 0 };
-		context->ClearUnorderedAccessViewUint(texWorldCacheMetadata->uav.get(), clearValue);
-		context->ClearUnorderedAccessViewUint(texWorldCacheNormal->uav.get(), clearValue);
+		clearWorldHistory();
 	}
 	if (queuedResetTemporalHistory.exchange(false))
 		clearTemporalHistory();
+	if (queuedResetWorldHistory.exchange(false))
+		clearWorldHistory();
 
 	//////////////////////////////////////////////////////
-
-	if (recompileFlag)
-		ClearShaderCache();
 
 	UpdateSB();
 
@@ -1937,6 +2144,10 @@ void HybridGI::DrawHybridGI()
 	};
 	const int resolutionMode = std::clamp(settings.ResolutionMode, 0, 2);
 	auto internalRes = resChoices[resolutionMode];
+	const bool worldCacheActive = settings.EnableWorldCache && WorldCacheShadersOK();
+	const bool reflectionActive = settings.EnableExperimentalSpecularGI && ReflectionShadersOK();
+	const bool diffuseBlurActive = settings.EnableBlur && BlurShadersOK();
+	const bool reflectionSpatialActive = reflectionActive && settings.EnableBlur && hybridReflectionDenoiseCompute.get() != nullptr;
 
 	std::array<ID3D11ShaderResourceView*, 17> srvs = { nullptr };
 	std::array<ID3D11UnorderedAccessView*, 7> uavs = { nullptr };
@@ -2058,7 +2269,7 @@ void HybridGI::DrawHybridGI()
 	// GI
 	{
 		const bool cacheInjectionIsolated = diagnosticCaptureActive || materialDebugMode != 0u;
-		if (settings.EnableWorldCache && !cacheInjectionIsolated) {
+		if (worldCacheActive && !cacheInjectionIsolated) {
 			TracyD3D11Zone(globals::state->tracyCtx, "HybridGI - PIXL World Cache Inject");
 			resetViews();
 			// Snapshot the complete cache before sparse injection. The shader reads
@@ -2142,11 +2353,11 @@ void HybridGI::DrawHybridGI()
 		srvs.at(6) = texIlCoCg[inputGITexIdx]->srv.get();
 		srvs.at(7) = texGiSpecular[inputSpecTexIdx]->srv.get();
 		srvs.at(8) = texNormal->srv.get();
-		srvs.at(9) = settings.EnableWorldCache ? texWorldCacheMetadata->srv.get() : nullptr;
-		srvs.at(10) = settings.EnableWorldCache ? texWorldCacheSH0->srv.get() : nullptr;
-		srvs.at(11) = settings.EnableWorldCache ? texWorldCacheSH1->srv.get() : nullptr;
-		srvs.at(12) = settings.EnableWorldCache ? texWorldCacheSH2->srv.get() : nullptr;
-		srvs.at(13) = settings.EnableWorldCache ? texWorldCacheNormal->srv.get() : nullptr;
+		srvs.at(9) = worldCacheActive ? texWorldCacheMetadata->srv.get() : nullptr;
+		srvs.at(10) = worldCacheActive ? texWorldCacheSH0->srv.get() : nullptr;
+		srvs.at(11) = worldCacheActive ? texWorldCacheSH1->srv.get() : nullptr;
+		srvs.at(12) = worldCacheActive ? texWorldCacheSH2->srv.get() : nullptr;
+		srvs.at(13) = worldCacheActive ? texWorldCacheNormal->srv.get() : nullptr;
 			srvs.at(14) = rts[REFLECTANCE].SRV;
 			srvs.at(15) = texBentVisibility[inputBentTexIdx]->srv.get();
 			srvs.at(16) = texAo[inputAoTexIdx]->srv.get();
@@ -2175,7 +2386,7 @@ void HybridGI::DrawHybridGI()
 
 	// PIXL Hybrid Reflections: stochastic GGX screen-space trace with temporal
 	// history already geometry-remapped by radianceDisocc.
-	if (settings.EnableExperimentalSpecularGI) {
+	if (reflectionActive) {
 		TracyD3D11Zone(globals::state->tracyCtx, "HybridGI - Hybrid Reflections");
 		resetViews();
 		srvs.at(0) = texWorkingDepth->srv.get();
@@ -2184,11 +2395,11 @@ void HybridGI::DrawHybridGI()
 		srvs.at(3) = texNoise->srv.get();
 		srvs.at(4) = texGiSpecular[inputSpecTexIdx]->srv.get();
 		srvs.at(5) = rts[REFLECTANCE].SRV;
-		srvs.at(6) = settings.EnableWorldCache ? texWorldCacheMetadata->srv.get() : nullptr;
-		srvs.at(7) = settings.EnableWorldCache ? texWorldCacheSH0->srv.get() : nullptr;
-		srvs.at(8) = settings.EnableWorldCache ? texWorldCacheSH1->srv.get() : nullptr;
-		srvs.at(9) = settings.EnableWorldCache ? texWorldCacheSH2->srv.get() : nullptr;
-		srvs.at(10) = settings.EnableWorldCache ? texWorldCacheNormal->srv.get() : nullptr;
+		srvs.at(6) = worldCacheActive ? texWorldCacheMetadata->srv.get() : nullptr;
+		srvs.at(7) = worldCacheActive ? texWorldCacheSH0->srv.get() : nullptr;
+		srvs.at(8) = worldCacheActive ? texWorldCacheSH1->srv.get() : nullptr;
+		srvs.at(9) = worldCacheActive ? texWorldCacheSH2->srv.get() : nullptr;
+		srvs.at(10) = worldCacheActive ? texWorldCacheNormal->srv.get() : nullptr;
 		uavs.at(0) = texGiSpecular[!inputSpecTexIdx]->uav.get();
 		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 		context->CSSetUnorderedAccessViews(0, 1, uavs.data(), nullptr);
@@ -2206,7 +2417,7 @@ void HybridGI::DrawHybridGI()
 	// Reuses the existing specular ping-pong textures; no extra full-resolution
 	// allocation is required. The user-facing Spatial Denoiser toggle controls
 	// both diffuse GI and hybrid reflection reconstruction.
-	if (settings.EnableExperimentalSpecularGI && settings.EnableBlur) {
+	if (reflectionSpatialActive) {
 		TracyD3D11Zone(globals::state->tracyCtx, "HybridGI - Hybrid Reflection Denoise");
 		resetViews();
 		srvs.at(0) = texGiSpecular[inputSpecTexIdx]->srv.get();
@@ -2224,9 +2435,9 @@ void HybridGI::DrawHybridGI()
 	}
 
 	// blur
-	if (settings.EnableBlur) {
+	if (diffuseBlurActive) {
 		TracyD3D11Zone(globals::state->tracyCtx, "HybridGI - Diffuse Blur");
-		const uint passCount = settings.EnableAdaptiveDenoiser ? 2u : 1u;
+		const uint passCount = settings.EnableAdaptiveDenoiser && blurAtrousCompute.get() != nullptr ? 2u : 1u;
 		for (uint passIndex = 0; passIndex < passCount; ++passIndex) {
 			resetViews();
 			srvs.at(0) = texWorkingDepth->srv.get();
@@ -2262,6 +2473,7 @@ void HybridGI::DrawHybridGI()
 		srvs.at(4) = texGiSpecular[inputSpecTexIdx]->srv.get();
 		srvs.at(5) = texBentVisibility[inputBentTexIdx]->srv.get();
 		srvs.at(6) = texNormal->srv.get();
+		srvs.at(7) = rts[NORMALROUGHNESS].SRV;
 
 		uavs.at(0) = texAo[!inputAoTexIdx]->uav.get();
 		uavs.at(1) = texIlY[!inputGITexIdx]->uav.get();
@@ -2287,7 +2499,7 @@ void HybridGI::DrawHybridGI()
 	outputSpecIdx = inputSpecTexIdx;
 	outputBentIdx = inputBentTexIdx;
 	PIXL::Renderer::ReflectionFrame reflectionFrame{};
-	if (settings.EnableExperimentalSpecularGI && texGiSpecular[outputSpecIdx] && texGiSpecular[outputSpecIdx]->srv) {
+	if (reflectionActive && texGiSpecular[outputSpecIdx] && texGiSpecular[outputSpecIdx]->srv) {
 		reflectionFrame.radianceConfidence = texGiSpecular[outputSpecIdx]->srv;
 		reflectionFrame.width = resolution[0]; reflectionFrame.height = resolution[1];
 		reflectionFrame.traceSteps = settings.ReflectionSteps;
@@ -2295,14 +2507,14 @@ void HybridGI::DrawHybridGI()
 		reflectionFrame.maxRoughness = settings.ReflectionMaxRoughness;
 		reflectionFrame.thickness = settings.ReflectionThickness;
 		reflectionFrame.screenTrace = true;
-		reflectionFrame.worldFallback = settings.EnableVoxelReflections && settings.EnableWorldCache;
+		reflectionFrame.worldFallback = settings.EnableVoxelReflections && worldCacheActive;
 		reflectionFrame.temporal = settings.EnableTemporalDenoiser;
-		reflectionFrame.spatial = settings.EnableBlur;
+		reflectionFrame.spatial = reflectionSpatialActive;
 		reflectionFrame.valid = true;
 	}
 	PIXL::Renderer::ReflectionContext::Get().Publish(std::move(reflectionFrame));
 
-	if (settings.EnableWorldCache && texWorldCacheSH0 && texWorldCacheSH0->srv) {
+	if (worldCacheActive && texWorldCacheSH0 && texWorldCacheSH0->srv) {
 		PIXL::Renderer::LightTransportWorld::Get().PublishProbe(
 			PIXL::Renderer::ProbeKind::WorldIrradiance, texWorldCacheSH0->srv.get(),
 			texWorldCacheSH0->desc.Width, texWorldCacheSH0->desc.Height);
@@ -2318,7 +2530,8 @@ void HybridGI::DrawHybridGI()
 	context->CSSetSamplers(0, (uint)samplers.size(), samplers.data());
 	context->CSSetShader(nullptr, nullptr, 0);
 	PIXL::Renderer::TemporalContext::Get().SetHistoryValid(temporalHistoryId);
-	PIXL::Renderer::TemporalContext::Get().SetHistoryValid(worldHistoryId);
+	if (worldCacheActive)
+		PIXL::Renderer::TemporalContext::Get().SetHistoryValid(worldHistoryId);
 }
 
 #undef I18N_KEY_PREFIX

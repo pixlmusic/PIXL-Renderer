@@ -3567,8 +3567,16 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 			actorFocusActive = true;
 		}
 	}
+	// Photo/video mode can provide an explicit director focus distance, but it is
+	// not guaranteed to do so (for example while entering an interior or when the
+	// camera is being positioned in Whiterun).  Keep the explicit director target
+	// authoritative when it exists; otherwise fall back to the same screen-space
+	// autofocus used by gameplay instead of silently freezing at the last manual
+	// distance.
+	const bool directorFocusUnavailable = directorPresentation && !directorFocusActive;
 	const bool screenAutoFocusActive =
-		pixlDofEnabled && settings.dofAutoFocus && !actorFocusActive && !directorFocusActive;
+		pixlDofEnabled && settings.dofAutoFocus && !actorFocusActive &&
+		(!directorPresentation || directorFocusUnavailable);
 	if (screenAutoFocusActive)
 		focusDistance = std::clamp(settings.dofFocusDistance, 100.0f, 20000.0f);
 

@@ -171,6 +171,42 @@ float StabilizeCoCWithReconstruction(float2 uv, float currentCoC)
 	float historyCoC = PreviousCoCTex.SampleLevel(LinearClampSampler, historyUV, 0.0f);
 	if (!isfinite(historyCoC))
 		return currentCoC;
+
+	// CoC history is especially prone to dancing where a jittered sample moves
+	// between the foreground and background side of a wall, tree or character
+	// silhouette.  The previous CoC alone cannot distinguish that from a valid
+	// moving surface.  Use the existing depth resource as a conservative gate:
+	// reject a reprojection whose linear depth disagrees materially, and reduce
+	// history weight across a local depth edge.  This adds no resource or ABI
+	// changes and is intentionally one-sided: uncertain history is discarded,
+	// never used to occlude a valid current pixel.
+	bool currentDepthValid;
+	bool currentSky;
+	float currentDepth = ReadLinearDepth(uv, currentDepthValid, currentSky);
+	bool historyDepthValid;
+	bool historySky;
+	float historyDepth = ReadLinearDepth(historyUV, historyDepthValid, historySky);
+	if (currentDepthValid && historyDepthValid && !currentSky && !historySky) {
+		float depthScale = max(max(currentDepth, historyDepth), 128.0f);
+		float depthMismatch = abs(currentDepth - historyDepth) / depthScale;
+		if (depthMismatch > 0.10f)
+			return currentCoC;
+	}
+
+	float depthEdge = 0.0f;
+	float2 depthTexel = float2(dofControlInvRenderWidth, dofControlInvRenderHeight);
+	[unroll] for (uint edgeSample = 0u; edgeSample < 4u; ++edgeSample) {
+		float2 direction = edgeSample == 0u ? float2(1.0f, 0.0f) :
+			edgeSample == 1u ? float2(-1.0f, 0.0f) :
+			edgeSample == 2u ? float2(0.0f, 1.0f) : float2(0.0f, -1.0f);
+		bool neighbourValid;
+		bool neighbourSky;
+		float neighbourDepth = ReadLinearDepth(uv + direction * depthTexel, neighbourValid, neighbourSky);
+		if (currentDepthValid && neighbourValid && !currentSky && !neighbourSky) {
+			float edgeScale = max(max(currentDepth, neighbourDepth), 128.0f);
+			depthEdge = max(depthEdge, abs(currentDepth - neighbourDepth) / edgeScale);
+		}
+	}
 	// Do not carry near coverage into a far surface (or vice versa). Around the
 	// focus plane, allow history to settle gently to zero without visible steps.
 	if (currentCoC * historyCoC < 0.0f &&
@@ -179,6 +215,7 @@ float StabilizeCoCWithReconstruction(float2 uv, float currentCoC)
 
 	float motionPixels = length(motion * float2(dofControlRenderWidth, dofControlRenderHeight));
 	float historyWeight = lerp(0.82f, 0.58f, saturate(motionPixels / 8.0f));
+	historyWeight *= 1.0f - 0.78f * smoothstep(0.015f, 0.085f, depthEdge);
 	// A tight history clamp limits trails during disocclusion while still
 	// suppressing the sub-pixel CoC toggling visible on tree and grass edges.
 	float clampRadius = max(0.75f, abs(currentCoC) * 0.18f);

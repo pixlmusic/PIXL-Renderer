@@ -66,14 +66,13 @@ float DepthMIPFilter(float depth0, float depth1, float depth2, float depth3)
 
 groupshared float g_scratchDepths[8][8];
 [numthreads(8, 8, 1)] void main(uint2 dispatchThreadID : SV_DispatchThreadID, uint2 groupThreadID : SV_GroupThreadID) {
-	const float2 frameScale = FrameDim * RcpTexDim;
 
 	// MIP 0
 	const uint2 baseCoord = dispatchThreadID;
 	const uint2 pixCoord = baseCoord * 2;
 	const float2 uv = (pixCoord + .5) * RcpFrameDim;
 
-	float4 depths4 = srcNDCDepth.GatherRed(samplerPointClamp, uv * frameScale);
+	float4 depths4 = srcNDCDepth.GatherRed(samplerPointClamp, FullFrameTextureUV(uv));
 	float depth0 = ClampDepth(depths4.w);
 	float depth1 = ClampDepth(depths4.z);
 	float depth2 = ClampDepth(depths4.x);

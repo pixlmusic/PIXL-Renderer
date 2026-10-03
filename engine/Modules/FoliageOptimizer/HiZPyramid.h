@@ -7,7 +7,7 @@
 
 #include "Buffer.h"
 
-/** @brief Max-depth mip pyramid over the scene depth copy, used to occlusion-cull grass instances. A texel at level N is exactly the farthest depth of everything beneath it */
+/** @brief Max-depth mip pyramid over the current scene depth, using live main depth when safe and a conservative prepass fallback otherwise. A texel at level N is the farthest depth beneath it. */
 class HiZPyramid
 {
 public:

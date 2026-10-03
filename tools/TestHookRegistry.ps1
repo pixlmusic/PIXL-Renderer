@@ -30,8 +30,8 @@ Require-Text 'engine\Renderer\HookRegistry.cpp' 'mask\.size\(\) != expected\.siz
 Require-Text 'engine\Hooks.cpp' 'Core\.RendererPipelineHooks' 'required core hook group'
 Require-Text 'engine\Hooks.cpp' 'Early\.D3D11DeviceIAT' 'optional D3D11 IAT hook'
 Require-Text 'engine\Hooks.cpp' 'Image Reconstruction owns device creation' 'intentional hook ownership handoff'
-Require-Text 'engine\Modules\FoliageOptimizer.cpp' 'HookStatus::Unsupported' 'unsupported optional hook isolation'
-Require-Text 'engine\Modules\FoliageOptimizer.cpp' 'vanilla grass retained' 'optional feature fallback'
+Require-Text 'engine\Modules\FoliageOptimizer\FoliageOptimizer.cpp' 'HookStatus::Unsupported' 'unsupported optional hook isolation'
+Require-Text 'engine\Modules\FoliageOptimizer\FoliageOptimizer.cpp' 'vanilla grass retained' 'optional feature fallback'
 Require-Text 'engine\Menu\WorkshopToolsRenderer.cpp' 'Hook Compatibility' 'developer compatibility inspector'
 
 Write-Host 'PASS: Phase 5 hook metadata, runtime reporting, guarded signatures and optional fallback contracts validated.'

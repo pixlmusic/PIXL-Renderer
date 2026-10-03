@@ -10,7 +10,8 @@ Texture2D<half4> srcIlY : register(t2);         // low-res
 Texture2D<half2> srcIlCoCg : register(t3);      // low-res
 Texture2D<half4> srcGiSpecular : register(t4);  // low-res
 Texture2D<half4> srcBentVisibility : register(t5); // low-res: encoded bent normal.xy, visibility, confidence
-Texture2D<float2> srcNormal : register(t6);      // full pyramid: octahedral view-space normal
+Texture2D<float2> srcNormal : register(t6);      // compact internal pyramid: octahedral view-space normal
+Texture2D<float4> srcFullNormalRoughness : register(t7); // full-resolution receiver normal
 
 RWTexture2D<half> outAo : register(u0);
 RWTexture2D<half4> outIlY : register(u1);
@@ -90,11 +91,15 @@ void main(const uint2 dtid : SV_DispatchThreadID)
     // thin alpha-tested geometry at almost the same depth).  Use the normal
     // pyramid that HybridGI already generated to prevent AO, radiance and the
     // bent direction from crossing those boundaries during reconstruction.
-    float3 receiverNormal = GBuffer::DecodeNormal(srcNormal.Load(int3(dtid, 0)));
-    float3 n00 = GBuffer::DecodeNormal(srcNormal.Load(int3(px00, RES_MIP)));
-    float3 n01 = GBuffer::DecodeNormal(srcNormal.Load(int3(px01, RES_MIP)));
-    float3 n10 = GBuffer::DecodeNormal(srcNormal.Load(int3(px10, RES_MIP)));
-    float3 n11 = GBuffer::DecodeNormal(srcNormal.Load(int3(px11, RES_MIP)));
+    float2 receiverScreenUV = (dtid + 0.5f) * RcpFrameDim;
+    float3 receiverNormal = GBuffer::DecodeNormal(
+        srcFullNormalRoughness.SampleLevel(samplerPointClamp, FullFrameTextureUV(receiverScreenUV), 0).xy);
+    // srcNormal mip 0 already stores one normal per low-resolution GI pixel;
+    // RES_MIP applies only to the full-resolution depth hierarchy.
+    float3 n00 = GBuffer::DecodeNormal(srcNormal.Load(int3(px00, 0)));
+    float3 n01 = GBuffer::DecodeNormal(srcNormal.Load(int3(px01, 0)));
+    float3 n10 = GBuffer::DecodeNormal(srcNormal.Load(int3(px10, 0)));
+    float3 n11 = GBuffer::DecodeNormal(srcNormal.Load(int3(px11, 0)));
     float4 normalSimilarity = saturate(float4(
         dot(receiverNormal, n00), dot(receiverNormal, n01),
         dot(receiverNormal, n10), dot(receiverNormal, n11)));
@@ -129,7 +134,7 @@ void main(const uint2 dtid : SV_DispatchThreadID)
     }
     else
     {
-        float2 lowUv = (dtid + 0.5) * RcpFrameDim * OUT_FRAME_DIM * RcpTexDim;
+        float2 lowUv = InternalFrameTextureUV(receiverScreenUV);
         ao = srcAo.SampleLevel(samplerLinearClamp, lowUv, 0);
         y = srcIlY.SampleLevel(samplerLinearClamp, lowUv, 0);
         coCg = srcIlCoCg.SampleLevel(samplerLinearClamp, lowUv, 0);

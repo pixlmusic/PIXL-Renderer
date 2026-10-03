@@ -6,7 +6,7 @@
 #include "FoliageOptimizer.h"
 
 #include "Renderer/HookRegistry.h"
-#include "FoliageDynamics.h"
+#include "../FoliageDynamics.h"
 #include "Menu/TuningWorkspaceRenderer.h"
 #include "Renderer/VisibilityContext.h"
 #include "State.h"
@@ -352,6 +352,15 @@ void FoliageOptimizer::UpdateGrass()
 
 	bucketStore.BeginFrame({ settings.EnableMeshLOD, settings.EnableMidLOD, settings.EnableFarLOD, timeAccum });
 
+	// Settings should have immediate VRAM semantics: disabled LOD tiers release their
+	// scratch across all buckets, not only when a bucket happens to become visible again.
+	for (auto& [key, bucket] : bucketStore.buckets) {
+		if (!settings.EnableMeshLOD || !settings.EnableMidLOD)
+			bucket.lodBins[(size_t)GrassMeshLibrary::LODTier::kMiddle].Release();
+		if (!settings.EnableMeshLOD || !settings.EnableFarLOD)
+			bucket.lodBins[(size_t)GrassMeshLibrary::LODTier::kFar].Release();
+	}
+
 	globals::profiler->BeginPass("FoliageOptimizer::ApplyPending");
 	bucketStore.RefreshComplexGrass(globals::pipeline::foliageDynamics.settings.ComplexGrassThreshold, ctx);
 	bucketStore.ApplyPending(device, ctx);
@@ -367,7 +376,7 @@ void FoliageOptimizer::UpdateGrass()
 	if (!cam) {
 		// Leaving last frame's flags up would let the draw path re-issue its indirect draws.
 		for (auto& [key, b] : bucketStore.buckets)
-			b.cullVisible = false;
+			b.ResetCullState();
 		return;
 	}
 
@@ -390,9 +399,10 @@ void FoliageOptimizer::UpdateGrass()
 		haveCullCameraState = true;
 		cameraTransitionFrames = 2;
 		visibility.Invalidate("foliage camera ownership changed");
-		for (auto& [key, b] : bucketStore.buckets)
-			b.cullVisible = false;
 	}
+	// Track the previous frame rather than the last jump anchor. Otherwise normal travel
+	// eventually accumulates past the teleport threshold and spuriously disables Hi-Z.
+	lastCullCameraPosition = cam->world.translate;
 
 	RE::NiFrustumPlanes frustum{};
 	ComputeFrustumPlanes(frustum, cam->GetRuntimeData2().viewFrustum, cam->world);
@@ -432,8 +442,8 @@ void FoliageOptimizer::UpdateGrass()
 			std::clamp(fadeScale, 1.0f, 2.0f);
 		cp.edgeFadeStart = std::clamp(1.0f - fadeCoverage, 0.0f, 1.0f);
 
-		cp.alphaParam1 = grassStartFadeDistance;
-		cp.alphaParam2 = maxGrassDistance;
+		cp.alphaParam1 = std::min(grassStartFadeDistance, maxGrassDistance);
+		cp.alphaParam2 = std::max(maxGrassDistance - cp.alphaParam1, 1.0f);
 		cp.fadeNow = timeAccum;
 		cp.fadeInTimeRcp = fadeInTimeRcp;
 
@@ -472,7 +482,7 @@ void FoliageOptimizer::UpdateGrass()
 
 		CullBucketSlices(b, frustumSoA, camPosV);
 
-		if (!b.cullVisible)
+		if (b.cullState != GrassBucket::CullState::Candidate)
 			continue;
 
 		for (uint32_t tier = 0; tier < (uint32_t)GrassMeshLibrary::LODTier::kCount; ++tier)
@@ -540,7 +550,7 @@ void FoliageOptimizer::CullBucketSlices(GrassBucket& b, const FrustumSoA& frustu
 	b.sliceTableOffset = (uint32_t)sliceTableCPU.size();
 	b.sliceTableCount = 0;
 	b.visibleInstances = 0;
-	b.cullVisible = false;
+	b.cullState = GrassBucket::CullState::Unavailable;
 	for (GrassBucket::LODBin& bin : b.lodBins)
 		bin.active = false;
 
@@ -549,8 +559,11 @@ void FoliageOptimizer::CullBucketSlices(GrassBucket& b, const FrustumSoA& frustu
 
 	const __m128 bucketLo = _mm_setr_ps(b.coarseMin.x, b.coarseMin.y, b.coarseMin.z, 0.0f);
 	const __m128 bucketHi = _mm_setr_ps(b.coarseMax.x, b.coarseMax.y, b.coarseMax.z, 0.0f);
-	if (!AabbVisible(frustumSoA, bucketLo, bucketHi))
+	if (!AabbVisible(frustumSoA, bucketLo, bucketHi)) {
+		b.cullState = GrassBucket::CullState::Invisible;
+		b.queueOptimizationSafe.store(true, std::memory_order_release);
 		return;
+	}
 
 	if (!b.clustersValid)
 		MergeSlicesIntoRuns(b);
@@ -572,9 +585,13 @@ void FoliageOptimizer::CullBucketSlices(GrassBucket& b, const FrustumSoA& frustu
 		b.visibleInstances += run.instanceCount;
 	}
 
-	b.cullVisible = b.sliceTableCount != 0;
-	if (!b.cullVisible)
+	if (b.sliceTableCount != 0) {
+		b.cullState = GrassBucket::CullState::Candidate;
+	} else {
+		b.cullState = GrassBucket::CullState::Invisible;
+		b.queueOptimizationSafe.store(true, std::memory_order_release);
 		sliceTableCPU.resize(b.sliceTableOffset);
+	}
 }
 
 void FoliageOptimizer::UploadCullState(ID3D11Device* device, ID3D11DeviceContext* ctx, uint32_t visibleBuckets)
@@ -587,7 +604,7 @@ void FoliageOptimizer::UploadCullState(ID3D11Device* device, ID3D11DeviceContext
 			auto* bytes = static_cast<uint8_t*>(m.pData);
 			uint32_t slot = 0;
 			for (auto& [key, b] : bucketStore.buckets) {
-				if (!b.cullVisible)
+				if (b.cullState != GrassBucket::CullState::Candidate)
 					continue;
 				b.cullSlot = slot;
 				auto* cb = reinterpret_cast<CullBucketCB*>(bytes + (size_t)slot * kSlotBytes);
@@ -616,7 +633,10 @@ void FoliageOptimizer::UploadCullState(ID3D11Device* device, ID3D11DeviceContext
 	// If the cull state failed to upload, skip all buckets to prevent the CS from running using garbage or out-of-date data.
 	if (visibleBuckets && !cullStateUploaded) {
 		for (auto& [key, b] : bucketStore.buckets)
-			b.cullVisible = false;
+			if (b.cullState == GrassBucket::CullState::Candidate) {
+				b.cullState = GrassBucket::CullState::Unavailable;
+				b.queueOptimizationSafe.store(false, std::memory_order_release);
+			}
 	}
 
 	ID3D11Buffer* paramsCB = cullParamsCB->CB();
@@ -667,13 +687,16 @@ void FoliageOptimizer::UploadCullState(ID3D11Device* device, ID3D11DeviceContext
 
 	if (!sliceTableUploaded) {
 		for (auto& [key, b] : bucketStore.buckets)
-			b.cullVisible = false;
+			if (b.cullState == GrassBucket::CullState::Candidate) {
+				b.cullState = GrassBucket::CullState::Unavailable;
+				b.queueOptimizationSafe.store(false, std::memory_order_release);
+			}
 	}
 
 	ctx->CSSetShader(cullCS, nullptr, 0);
 
 	for (auto& [key, b] : bucketStore.buckets)
-		if (b.cullVisible)
+		if (b.cullState == GrassBucket::CullState::Candidate)
 			CullBucket(b, ctx);
 
 	ID3D11UnorderedAccessView* nullUAVs[4 + 2 * (size_t)GrassMeshLibrary::LODTier::kCount] = {};
@@ -757,12 +780,13 @@ void FoliageOptimizer::SetupResources()
 	cullParamsCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<CullParamsCB>(), "FoliageOptimizer::CullParamsCB");
 	bucketStore.SetupResources();
 
-	if (FAILED(globals::d3d::context->QueryInterface(__uuidof(ID3D11DeviceContext1), reinterpret_cast<void**>(&ctx1))) || !ctx1) {
+	ctx1 = nullptr;
+	if (FAILED(globals::d3d::context->QueryInterface(__uuidof(ID3D11DeviceContext1), ctx1.put_void())) || !ctx1) {
 		logger::error("[GRASS OPTIMIZATIONS] ID3D11DeviceContext1 unavailable â€” feature disabled");
 		ctx1 = nullptr;
 	}
 
-	runtimeReady = ctx1 && GetCullCS();
+	runtimeReady = !!ctx1 && GetCullCS();
 	if (!runtimeReady) {
 		hookRegistry.SetStatus(
 			"FoliageOptimizer.RuntimeHooks",
@@ -772,32 +796,30 @@ void FoliageOptimizer::SetupResources()
 		return;
 	}
 
-	// Fail closed on the SE executable. Even the group-allocation route shares
-	// the optimizer's vtable/draw hooks, and the previous attempt still faulted
-	// during grass setup. Keep the module visible for diagnostics and preserve
-	// vanilla grass rendering until the exact SE hook ABI has a verified test.
+	// Runtime hook profiles are intentionally split. AE/validated runtimes may install
+	// the complete GID stream chain. SE has a reduced core profile available through
+	// Hooks::Install(false), but it remains quarantined until the 1.5.97 ABI is verified
+	// in-game; enabling an unverified vtable/draw hook set is not a safe fallback.
 	if (REL::Module::IsSE()) {
-		runtimeReady = false;
-		hookRegistry.SetStatus(
-			"FoliageOptimizer.RuntimeHooks",
-			PIXL::Renderer::HookStatus::Unsupported,
-			"SE grass hook ABI is quarantined; vanilla grass retained");
-		logger::warn("[PIXL] Foliage Optimizer disabled on Skyrim SE for stability; vanilla grass rendering retained");
-		return;
+		constexpr bool kSECoreHookProfileValidated = false;
+		if (!kSECoreHookProfileValidated) {
+			runtimeReady = false;
+			hookRegistry.SetStatus(
+				"FoliageOptimizer.RuntimeHooks",
+				PIXL::Renderer::HookStatus::Unsupported,
+				"SE core grass hook profile is isolated but not runtime-validated; vanilla grass retained");
+			logger::warn("[PIXL] Foliage Optimizer SE hook profile remains quarantined for stability; vanilla grass retained");
+			return;
+		}
 	}
 
 	if (!hooksInstalled) {
-		// The SE 1.5.x CommonLib surface does not expose the GID stream header
-		// used by the newer call-site chain. Those hooks were able to fault while
-		// a cell was loading before PIXL reached its normal fallback. SE already
-		// exposes the populated group allocation through DoneAddingInstances, so
-		// retain the safe capture path and leave only the ABI-sensitive GID hooks
-		// out. AE/other supported runtimes may use the complete stream path.
+		const bool installGIDHooks = !REL::Module::IsSE();
 		hookRegistry.SetStatus(
 			"FoliageOptimizer.RuntimeHooks",
 			PIXL::Renderer::HookStatus::Validated,
 			"Supported runtime selected; installing the complete grass hook set");
-		Hooks::Install(true);
+		Hooks::Install(installGIDHooks);
 		hooksInstalled = true;
 		hookRegistry.SetStatus(
 			"FoliageOptimizer.RuntimeHooks",
@@ -852,8 +874,13 @@ void FoliageOptimizer::CullBucket(GrassBucket& b, ID3D11DeviceContext* ctx)
 		(size_t)GrassMeshLibrary::LODTier::kCount == 2,
 		"GrassCullingCS LOD counter offsets must match LODTier");
 
-	if (b.cullSlot == UINT32_MAX)
+	if (b.cullSlot == UINT32_MAX || !b.gpuResident.load(std::memory_order_acquire) ||
+		!b.argsUAV || !b.lodCounterUAV || !b.lodCounterBuf || !b.instanceSRV || !b.originSRV ||
+		!b.compactedUAV || !b.extrasUAV) {
+		b.cullState = GrassBucket::CullState::Unavailable;
+		b.queueOptimizationSafe.store(false, std::memory_order_release);
 		return;
+	}
 
 	// Clearing the args view allows the instance count to be directly reset to zero for the draw.
 	const UINT zeros[4] = { 0, 0, 0, 0 };
@@ -880,9 +907,16 @@ void FoliageOptimizer::CullBucket(GrassBucket& b, ID3D11DeviceContext* ctx)
 	UINT num = 16;
 	ctx1->CSSetConstantBuffers1(1, 1, &bucketCB, &first, &num);
 
-	// Skipping the dispatch keeps the instance count at zero for the draw.
-	if (b.visibleInstances && b.sliceTableCount && sliceTableSRV)
+	// A Candidate becomes Ready only after every resource required for the GPU cull
+	// is bound and the dispatch is actually submitted. Any failure stays vanilla-safe.
+	if (b.visibleInstances && b.sliceTableCount && sliceTableSRV) {
 		ctx->Dispatch((b.visibleInstances + 63) / 64, 1, 1);
+		b.cullState = GrassBucket::CullState::Ready;
+		b.queueOptimizationSafe.store(true, std::memory_order_release);
+	} else {
+		b.cullState = GrassBucket::CullState::Unavailable;
+		b.queueOptimizationSafe.store(false, std::memory_order_release);
+	}
 
 	// The LOD counter UAV must be unbound before its values can be copied into the draw arguments.
 	ID3D11UnorderedAccessView* nullUAVs[std::size(uavs)] = {};
@@ -1067,6 +1101,11 @@ void FoliageOptimizer::Hooks::DrawInstanceTriShape::thunk(RE::BSRenderPass* pass
 	const uint64_t descVal = *reinterpret_cast<uint64_t*>(&geometry->GetGeometryRuntimeData().vertexDesc);
 	const uint32_t frame = globals::game::graphicsState->frameCount;
 
+	uint32_t descriptor = 0;
+	if (globals::game::currentPixelShader && *globals::game::currentPixelShader)
+		descriptor = (*globals::game::currentPixelShader)->id;
+	const uint64_t passKey = (static_cast<uint64_t>(pass->passEnum) << 32) | descriptor;
+
 	GrassBucket* b = nullptr;
 	{
 		std::scoped_lock lk(self.bucketStore.bucketMutex);
@@ -1075,41 +1114,77 @@ void FoliageOptimizer::Hooks::DrawInstanceTriShape::thunk(RE::BSRenderPass* pass
 		const uint32_t triCount = meshId ? 0u : (uint32_t)geometry->GetTrishapeRuntimeData().triangleCount;
 		auto* material = grassProperty->material;
 		auto it = self.bucketStore.buckets.find({ meshId, material, meshId ? nullptr : diffuseTexture, triCount, meshId ? 0u : descVal });
-		if (it != self.bucketStore.buckets.end() && it->second.totalInstances && it->second.instanceBuf)
+		if (it != self.bucketStore.buckets.end() && it->second.totalInstances && it->second.gpuResident.load(std::memory_order_acquire))
 			b = &it->second;
-		if (b) {
-			// Since draws are dispatched per shape, issue each bucket only once per
-			// frame and technique.
-			uint32_t descriptor = 0;
-			if (globals::game::currentPixelShader && *globals::game::currentPixelShader)
-				descriptor = (*globals::game::currentPixelShader)->id;
-			const uint64_t passKey = (static_cast<uint64_t>(pass->passEnum) << 32) | descriptor;
-
-			if (b->drawnFrame == frame && b->drawnPassKey == passKey)
-				return;
-			b->drawnFrame = frame;
-			b->drawnPassKey = passKey;
-		}
+		if (b && b->drawnFrame == frame && b->drawnPassKey == passKey)
+			return;
 	}
 	if (!b) {
 		drawVanilla();
 		return;
 	}
 
-	if (!b->cullVisible) {
+	if (b->cullState == GrassBucket::CullState::Invisible)
+		return;
+	if (b->cullState != GrassBucket::CullState::Ready) {
+		drawVanilla();
 		return;
 	}
 
+	auto fallbackBucket = [&]() {
+		b->cullState = GrassBucket::CullState::Unavailable;
+		b->queueOptimizationSafe.store(false, std::memory_order_release);
+		drawVanilla();
+	};
+
 	auto* rendererData = geometry->GetGeometryRuntimeData().rendererData;
 	if (!rendererData) {
-		drawVanilla();
+		fallbackBucket();
 		return;
 	}
 	auto* meshVB = reinterpret_cast<ID3D11Buffer*>(rendererData->vertexBuffer);
 	auto* indexB = reinterpret_cast<ID3D11Buffer*>(rendererData->indexBuffer);
-	if (!meshVB || !indexB) {
-		drawVanilla();
+	if (!meshVB || !indexB || !b->compactedBuf || !b->extrasSRV || !b->argsBuf) {
+		fallbackBucket();
 		return;
+	}
+
+	UINT mainStride = VertexStrideFromDesc(descVal);
+	if (!mainStride) {
+		fallbackBucket();
+		return;
+	}
+
+	std::array<const GrassMeshLibrary::LODMesh*, (size_t)GrassMeshLibrary::LODTier::kCount> lodMeshes{};
+	bool lodPreflightFailed = false;
+	{
+		std::scoped_lock lk(self.bucketStore.bucketMutex);
+		for (uint32_t tier = 0; tier < (uint32_t)GrassMeshLibrary::LODTier::kCount; ++tier) {
+			GrassBucket::LODBin& bin = b->lodBins[tier];
+			if (!bin.active)
+				continue;
+			lodMeshes[tier] = self.bucketStore.meshLibrary.GetLODMesh(b->meshId, (GrassMeshLibrary::LODTier)tier);
+			const auto* lod = lodMeshes[tier];
+			if (!lod || !lod->vertexBuffer || !lod->indexBuffer || !lod->meshStride ||
+				!bin.compactedBuf || !bin.extrasSRV || !bin.argsBuf) {
+				lodPreflightFailed = true;
+				break;
+			}
+		}
+	}
+	if (lodPreflightFailed) {
+		fallbackBucket();
+		return;
+	}
+
+	// Claim the bucket/pass only after the optimized path is known to be drawable.
+	// If validation fails above, every source shape retains its normal vanilla draw.
+	{
+		std::scoped_lock lk(self.bucketStore.bucketMutex);
+		if (b->drawnFrame == frame && b->drawnPassKey == passKey)
+			return;
+		b->drawnFrame = frame;
+		b->drawnPassKey = passKey;
 	}
 
 	if (!b->argsIndexCountWritten) {
@@ -1135,24 +1210,13 @@ void FoliageOptimizer::Hooks::DrawInstanceTriShape::thunk(RE::BSRenderPass* pass
 	ctx->IASetIndexBuffer(indexB, DXGI_FORMAT_R16_UINT, 0);
 
 	ID3D11Buffer* vbs[2] = { meshVB, nullptr };
-	UINT strides[2] = { VertexStrideFromDesc(descVal), kGrassStride };
+	UINT strides[2] = { mainStride, kGrassStride };
 	UINT offsets[2] = { 0, 0 };
-	if (!strides[0]) {
-		drawVanilla();
-		return;
-	}
 
 	vbs[1] = b->compactedBuf;
 	ctx->IASetVertexBuffers(0, 2, vbs, strides, offsets);
 	ctx->VSSetShaderResources(2, 1, &b->extrasSRV);
 	ctx->DrawIndexedInstancedIndirect(b->argsBuf, argsByteOffset);
-
-	std::array<const GrassMeshLibrary::LODMesh*, (size_t)GrassMeshLibrary::LODTier::kCount> lodMeshes{};
-	{
-		std::scoped_lock lk(self.bucketStore.bucketMutex);
-		for (uint32_t tier = 0; tier < (uint32_t)GrassMeshLibrary::LODTier::kCount; ++tier)
-			lodMeshes[tier] = self.bucketStore.meshLibrary.GetLODMesh(b->meshId, (GrassMeshLibrary::LODTier)tier);
-	}
 
 	for (uint32_t tier = 0; tier < (uint32_t)GrassMeshLibrary::LODTier::kCount; ++tier) {
 		GrassBucket::LODBin& bin = b->lodBins[tier];

@@ -2,8 +2,8 @@
 // Derived from Community Shaders 1.9.1 Grass Optimizations; adapted for PIXL Renderer.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// Always kPOST_ZPREPASS_COPY, never TerrainBlending's blendedDepthTexture: that one is produced at
-// end of frame and would be a frame stale here, which made grass flicker on fast camera movement.
+// Bound by HiZPyramid from the live main depth when ownership permits, with the post-Z-prepass
+// copy as a conservative fallback. Never use TerrainBlending's end-of-frame depth here.
 Texture2D<unorm float> SrcDepth : register(t0);
 
 RWTexture2D<float> HiZ : register(u0);

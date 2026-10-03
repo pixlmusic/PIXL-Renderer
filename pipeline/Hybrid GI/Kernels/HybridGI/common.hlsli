@@ -221,22 +221,62 @@ float3 ClampFireflies(float3 color, float clampLuminance)
 #	define FULLRES_LOAD(tex, px, texCoord, samp) tex.SampleLevel(samp, texCoord, 0)
 #	define OUT_FRAME_DIM (FrameDim * 0.5)
 #	define RCP_OUT_FRAME_DIM (RcpFrameDim * 2)
-#	define OUT_FRAME_SCALE (frameScale * 0.5)
+#	define OUT_FRAME_SCALE (OUT_FRAME_DIM * RcpTexDim)
 #elif defined(QUARTER_RES)
 #	define RES_MIP 2
 #	define READ_DEPTH(tex, px) tex.Load(int3(px, RES_MIP))
 #	define FULLRES_LOAD(tex, px, texCoord, samp) tex.SampleLevel(samp, texCoord, 0)
 #	define OUT_FRAME_DIM (FrameDim * 0.25)
 #	define RCP_OUT_FRAME_DIM (RcpFrameDim * 4)
-#	define OUT_FRAME_SCALE (frameScale * 0.25)
+#	define OUT_FRAME_SCALE (OUT_FRAME_DIM * RcpTexDim)
 #else
 #	define RES_MIP 0
 #	define READ_DEPTH(tex, px) tex[px]
 #	define FULLRES_LOAD(tex, px, texCoord, samp) tex[px]
 #	define OUT_FRAME_DIM FrameDim
 #	define RCP_OUT_FRAME_DIM RcpFrameDim
-#	define OUT_FRAME_SCALE frameScale
+#	define OUT_FRAME_SCALE (OUT_FRAME_DIM * RcpTexDim)
 #endif
+
+// HybridGI owns two coordinate domains at reduced resolution:
+//  * full-frame inputs (Skyrim GBuffer/motion/depth source), addressed by screen UV
+//  * compact internal resources (GI/radiance/normal/history), stored in the
+//    top-left OUT_FRAME_DIM footprint of full-sized allocations.
+// Keep these conversions explicit. Mixing FrameDim and OUT_FRAME_DIM was the
+// root cause of Half/Quarter mode sampling stale texels outside the compact
+// footprint while Full mode appeared correct.
+float2 FullFrameTextureUV(float2 screenUV)
+{
+	return screenUV * (FrameDim * RcpTexDim);
+}
+
+float2 InternalFrameTextureUV(float2 screenUV)
+{
+	return screenUV * (OUT_FRAME_DIM * RcpTexDim);
+}
+
+float2 InternalPixelTextureUV(float2 internalPixelCoord)
+{
+	return internalPixelCoord * RcpTexDim;
+}
+
+// Previous geometry is a temporal validation payload, not display colour.
+// Pack 16-bit fixed view depth + two 8-bit octahedral normal components into
+// R32_UINT. HybridGI fades by 50k units, so one-unit fixed precision is both
+// more accurate than R11G11B10_FLOAT at long range and friendlier to legacy FXC
+// than relying on half-float bit-conversion intrinsics in every translation unit.
+uint PackPrevGeometry(float viewDepth, float2 encodedWorldNormal)
+{
+	uint packedDepth = (uint)round(clamp(filterInf(filterNaN(viewDepth)), 0.0f, 65535.0f));
+	uint2 packedNormal = (uint2)round(saturate(encodedWorldNormal) * 255.0f);
+	return packedDepth | (packedNormal.x << 16) | (packedNormal.y << 24);
+}
+
+void UnpackPrevGeometry(uint packed, out float viewDepth, out float2 encodedWorldNormal)
+{
+	viewDepth = (float)(packed & 0xffffu);
+	encodedWorldNormal = float2((packed >> 16) & 255u, (packed >> 24) & 255u) * (1.0f / 255.0f);
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 

@@ -160,7 +160,7 @@ bool HiZPyramid::Build(ID3D11Device* device, ID3D11DeviceContext* ctx)
 	width = validW;
 	height = validH;
 
-	// One variant only, since the only source is the game's R24_UNORM_X8_TYPELESS prepass copy.
+	// One shader variant handles both the live main depth SRV and the compatible prepass fallback.
 	if (!baseCS && !baseCompileAttempted) {
 		baseCompileAttempted = true;
 		baseCS = static_cast<ID3D11ComputeShader*>(
@@ -216,6 +216,7 @@ bool HiZPyramid::Build(ID3D11Device* device, ID3D11DeviceContext* ctx)
 			dsv->Release();
 	}
 	globals::profiler->EndPass();
+	ctx->CSSetShader(nullptr, nullptr, 0);
 
 	// Each level is the exact max of the one above, so an instance of any on-screen size is testable against a fixed number of texels.
 	// One dispatch for the whole chain, every group reducing its own tile from LDS.
@@ -242,6 +243,7 @@ bool HiZPyramid::Build(ID3D11Device* device, ID3D11DeviceContext* ctx)
 		ID3D11UnorderedAccessView* spdNulls[6]{};
 		ctx->CSSetUnorderedAccessViews(0, 6, spdNulls, nullptr);
 		ctx->CSSetShaderResources(0, 1, &nullSRV);
+		ctx->CSSetShader(nullptr, nullptr, 0);
 		globals::profiler->EndPass();
 	}
 

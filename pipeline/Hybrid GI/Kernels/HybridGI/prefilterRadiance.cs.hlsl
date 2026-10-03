@@ -66,16 +66,15 @@ void ClampIsolatedRadiance4(inout float3 r0, inout float3 r1, inout float3 r2, i
 
 groupshared float3 g_scratchRadiance[8][8];
 [numthreads(8, 8, 1)] void main(uint2 dispatchThreadID : SV_DispatchThreadID, uint2 groupThreadID : SV_GroupThreadID) {
-	const float2 frameScale = FrameDim * RcpTexDim;
 
 	// MIP 0
 	const uint2 baseCoord = dispatchThreadID;
 	const uint2 pixCoord = baseCoord * 2;
-	const float2 uv = (pixCoord + .5) * RcpFrameDim;
+	const float2 uv = InternalPixelTextureUV(pixCoord + .5f);
 
-	float4 rad0 = srcRadiance.GatherRed(samplerPointClamp, uv * frameScale);
-	float4 rad1 = srcRadiance.GatherGreen(samplerPointClamp, uv * frameScale);
-	float4 rad2 = srcRadiance.GatherBlue(samplerPointClamp, uv * frameScale);
+	float4 rad0 = srcRadiance.GatherRed(samplerPointClamp, uv);
+	float4 rad1 = srcRadiance.GatherGreen(samplerPointClamp, uv);
+	float4 rad2 = srcRadiance.GatherBlue(samplerPointClamp, uv);
 
 	float3 radiance0 = float3(rad0.w, rad1.w, rad2.w);
 	float3 radiance1 = float3(rad0.z, rad1.z, rad2.z);

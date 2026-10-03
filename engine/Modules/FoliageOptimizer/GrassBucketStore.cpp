@@ -8,6 +8,10 @@
 
 void GrassBucketStore::SetupResources()
 {
+	pendingComplexDetections.clear();
+	complexCache.clear();
+	cachedComplexThreshold = -1.0f;
+	detectResult.reset();
 	{
 		D3D11_BUFFER_DESC bd{};
 		bd.ByteWidth = sizeof(uint32_t);
@@ -25,16 +29,6 @@ void GrassBucketStore::SetupResources()
 		detectResult->CreateUAV(uav);
 	}
 
-	{
-		D3D11_BUFFER_DESC bd{};
-		bd.ByteWidth = sizeof(uint32_t);
-		bd.Usage = D3D11_USAGE_STAGING;
-		bd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-		// Match the source buffer's structure so the copy works.
-		bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-		bd.StructureByteStride = sizeof(uint32_t);
-		detectStaging = std::make_unique<Buffer>(bd, nullptr, "FoliageOptimizer::DetectStaging");
-	}
 }
 
 void GrassBucketStore::ClearShaderCache()
@@ -43,6 +37,9 @@ void GrassBucketStore::ClearShaderCache()
 		detectCS->Release();
 	detectCS = nullptr;
 	detectCompileAttempted = false;
+	pendingComplexDetections.clear();
+	complexCache.clear();
+	cachedComplexThreshold = -1.0f;
 }
 
 ID3D11ComputeShader* GrassBucketStore::GetDetectCS()
@@ -81,13 +78,14 @@ void GrassBucketStore::ApplyPending(ID3D11Device* device, ID3D11DeviceContext* c
 		});
 	}
 
-	ApplyRemovals(rems);
+	ApplyRemovals(rems, caps);
 	ApplyCaptures(caps);
 	UploadDirtyBuckets(device, ctx);
 }
 
 void GrassBucketStore::RefreshComplexGrass(float threshold, ID3D11DeviceContext* ctx)
 {
+	PumpComplexDetections(ctx);
 	if (threshold == cachedComplexThreshold)
 		return;
 
@@ -101,8 +99,9 @@ void GrassBucketStore::StageRemoval(RE::BSMultiStreamInstanceTriShape* shape)
 {
 	if (!shape)
 		return;
+	const uint64_t serial = nextLifecycleSerial.fetch_add(1, std::memory_order_relaxed);
 	std::scoped_lock lk(pendingMutex);
-	pendingRemoves.push_back({ shape, nextLifecycleSerial++ });
+	pendingRemoves.push_back({ shape, serial, meshLibrary.GetShapeGeneration(shape) });
 }
 
 bool GrassBucketStore::ClaimQueueSlot(RE::BSMultiStreamInstanceTriShape* shape, uint32_t frame)
@@ -112,7 +111,8 @@ bool GrassBucketStore::ClaimQueueSlot(RE::BSMultiStreamInstanceTriShape* shape, 
 	auto it = shapeBucketId.find(shape);
 	// A bucket with no instance buffer falls back to vanilla per-shape drawing, so all shapes must still be queued. Checked here so the map does not need to track buffer state.
 	// Deliberately read without bucketMutex, which UpdateGrass holds whole and would serialise every culling job.
-	if (it == shapeBucketId.end() || !it->second->instanceBuf)
+	if (it == shapeBucketId.end() || !it->second->gpuResident.load(std::memory_order_acquire) ||
+		!it->second->queueOptimizationSafe.load(std::memory_order_acquire))
 		return true;
 
 	auto& lastQueued = it->second->lastQueuedFrame;
@@ -130,7 +130,7 @@ void GrassBucketStore::DiscardPending()
 	pendingRemoves.clear();
 }
 
-void GrassBucketStore::ApplyRemovals(const std::vector<PendingRemoval>& removes)
+void GrassBucketStore::ApplyRemovals(const std::vector<PendingRemoval>& removes, const std::vector<PendingCapture>& survivingCaptures)
 {
 	if (removes.empty())
 		return;
@@ -151,8 +151,17 @@ void GrassBucketStore::ApplyRemovals(const std::vector<PendingRemoval>& removes)
 			shapeBucketId.erase(removal.shape);
 	}
 
-	for (const auto& removal : removes)
-		meshLibrary.ForgetShape(removal.shape);
+	std::unordered_set<RE::BSMultiStreamInstanceTriShape*> recaptured;
+	recaptured.reserve(survivingCaptures.size());
+	for (const auto& capture : survivingCaptures)
+		recaptured.insert(capture.shape);
+
+	for (const auto& removal : removes) {
+		// A newer capture at an allocator-reused address owns the current model mapping.
+		// Do not let an older destruction event erase that new shape's identity.
+		if (!recaptured.contains(removal.shape))
+			meshLibrary.ForgetShape(removal.shape, removal.modelGeneration);
+	}
 
 	for (auto it = buckets.begin(); it != buckets.end();) {
 		auto& b = it->second;
@@ -211,6 +220,7 @@ void GrassBucketStore::ApplyRemovals(const std::vector<PendingRemoval>& removes)
 
 		++it;
 	}
+	PruneComplexCache();
 }
 
 void GrassBucketStore::ApplyCaptures(std::vector<PendingCapture>& captures)
@@ -420,6 +430,8 @@ bool GrassBucketStore::StageCapture(RE::BSMultiStreamInstanceTriShape* shape, co
 	if (!material)
 		return false;
 
+	const uint64_t lifecycleSerial = nextLifecycleSerial.fetch_add(1, std::memory_order_relaxed);
+
 	PendingCapture pc;
 	pc.shape = shape;
 	pc.material = material;
@@ -452,8 +464,8 @@ bool GrassBucketStore::StageCapture(RE::BSMultiStreamInstanceTriShape* shape, co
 		pc.localMax = lmx;
 	}
 
+	pc.lifecycleSerial = lifecycleSerial;
 	std::scoped_lock lk(pendingMutex);
-	pc.lifecycleSerial = nextLifecycleSerial++;
 	pendingCaptures.push_back(std::move(pc));
 	return true;
 }
@@ -548,6 +560,7 @@ void GrassBucketStore::RebuildBucket(GrassBucket& bucket, ID3D11Device* device, 
 	bucket.dirty = false;
 	bucket.rebuildFromSlice = UINT32_MAX;
 	bucket.firstNewSlice = UINT32_MAX;
+	bucket.gpuResident.store(bucket.instanceBuf && bucket.instanceSRV && bucket.originBuf && bucket.originSRV && bucket.compactedBuf && bucket.compactedUAV && bucket.extrasBuf && bucket.extrasUAV && bucket.extrasSRV && bucket.argsBuf && bucket.argsUAV && bucket.lodCounterBuf && bucket.lodCounterUAV, std::memory_order_release);
 }
 
 void GrassBucketStore::AppendNewSlices(GrassBucket& bucket, ID3D11DeviceContext* ctx)
@@ -608,6 +621,7 @@ void GrassBucketStore::AppendNewSlices(GrassBucket& bucket, ID3D11DeviceContext*
 	ctx->UpdateSubresource(bucket.originBuf, 0, &obox, originTail.data(), 0, 0);
 
 	bucket.firstNewSlice = UINT32_MAX;
+	bucket.gpuResident.store(bucket.instanceBuf && bucket.instanceSRV && bucket.originBuf && bucket.originSRV && bucket.compactedBuf && bucket.compactedUAV && bucket.extrasBuf && bucket.extrasUAV && bucket.extrasSRV && bucket.argsBuf && bucket.argsUAV && bucket.lodCounterBuf && bucket.lodCounterUAV, std::memory_order_release);
 }
 
 // The widest allocation is kGrassStride bytes per instance, so a larger capacity wraps its ByteWidth
@@ -886,15 +900,30 @@ bool GrassBucketStore::DetectComplexGrass(RE::NiSourceTexture* tex, ID3D11Device
 {
 	auto* rt = tex ? tex->rendererTexture : nullptr;
 	auto* resourceView = rt ? rt->resourceView : nullptr;
+	if (!tex || !resourceView)
+		return false;
+
 	if (auto it = complexCache.find(tex); it != complexCache.end() && it->second.resourceView == resourceView) {
-		it->second.complex = std::abs(it->second.normalLength - 1.0f) < cachedComplexThreshold;
-		return it->second.complex;
+		if (it->second.resolved)
+			it->second.complex = std::abs(it->second.normalLength - 1.0f) < cachedComplexThreshold;
+		return it->second.resolved && it->second.complex;
 	}
 
-	bool complex = false;
-	float normalLength = 0.0f;
+	ComplexEntry entry{ RE::NiPointer<RE::NiSourceTexture>(tex), resourceView, 0.0f, false, false };
+	complexCache.insert_or_assign(tex, entry);
 
-	if (GetDetectCS() && detectResult && detectStaging && resourceView) {
+	if (!GetDetectCS() || !detectResult || !ctx)
+		return false;
+
+	try {
+		D3D11_BUFFER_DESC bd{};
+		bd.ByteWidth = sizeof(uint32_t);
+		bd.Usage = D3D11_USAGE_STAGING;
+		bd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+		bd.StructureByteStride = sizeof(uint32_t);
+		auto staging = std::make_unique<Buffer>(bd, nullptr, "FoliageOptimizer::DetectStagingAsync");
+
 		UINT initialCount = 0;
 		ID3D11UnorderedAccessView* resultUAV = detectResult->uav.get();
 		ctx->CSSetUnorderedAccessViews(0, 1, &resultUAV, &initialCount);
@@ -903,23 +932,75 @@ bool GrassBucketStore::DetectComplexGrass(RE::NiSourceTexture* tex, ID3D11Device
 		ctx->Dispatch(1, 1, 1);
 
 		ID3D11UnorderedAccessView* nullUAV = nullptr;
-		ctx->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
 		ID3D11ShaderResourceView* nullSRV = nullptr;
+		ctx->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
 		ctx->CSSetShaderResources(0, 1, &nullSRV);
+		ctx->CopyResource(staging->resource.get(), detectResult->resource.get());
 
-		// Stalls once per unique texture on load rather than every frame or requiring a CPU readback of the full texture.
-		ctx->CopyResource(detectStaging->resource.get(), detectResult->resource.get());
-		D3D11_MAPPED_SUBRESOURCE m{};
-		if (SUCCEEDED(ctx->Map(detectStaging->resource.get(), 0, D3D11_MAP_READ, 0, &m))) {
-			// Compare using the decoded length from the shader to avoid requring a constant buffer
-			std::memcpy(&normalLength, m.pData, sizeof(float));
-			complex = std::abs(normalLength - 1.0f) < cachedComplexThreshold;
-			ctx->Unmap(detectStaging->resource.get(), 0);
-		}
+		pendingComplexDetections.push_back({ RE::NiPointer<RE::NiSourceTexture>(tex), resourceView, std::move(staging) });
+	} catch (...) {
+		complexCache.erase(tex);
+		logger::warn("[GRASS OPTIMIZATIONS] asynchronous complex-grass staging allocation failed");
 	}
 
-	complexCache.insert_or_assign(tex, ComplexEntry{ RE::NiPointer<RE::NiSourceTexture>(tex), resourceView, normalLength, complex });
-	return complex;
+	// Unknown classification is deliberately conservative: use the ordinary grass path
+	// until the tiny readback completes on a later frame rather than stalling cell loading.
+	return false;
+}
+
+void GrassBucketStore::PumpComplexDetections(ID3D11DeviceContext* ctx)
+{
+	if (!ctx)
+		return;
+
+	while (!pendingComplexDetections.empty()) {
+		auto& job = pendingComplexDetections.front();
+		if (!job.staging) {
+			pendingComplexDetections.pop_front();
+			continue;
+		}
+
+		D3D11_MAPPED_SUBRESOURCE m{};
+		const HRESULT hr = ctx->Map(job.staging->resource.get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &m);
+		if (hr == DXGI_ERROR_WAS_STILL_DRAWING)
+			break;
+		if (FAILED(hr)) {
+			complexCache.erase(job.keepAlive.get());
+			pendingComplexDetections.pop_front();
+			continue;
+		}
+
+		float normalLength = 0.0f;
+		std::memcpy(&normalLength, m.pData, sizeof(float));
+		ctx->Unmap(job.staging->resource.get(), 0);
+
+		auto it = complexCache.find(job.keepAlive.get());
+		if (it != complexCache.end() && it->second.resourceView == job.resourceView) {
+			it->second.normalLength = normalLength;
+			it->second.complex = std::abs(normalLength - 1.0f) < cachedComplexThreshold;
+			it->second.resolved = true;
+			for (auto& [key, bucket] : buckets) {
+				if (bucket.diffuseTexture.get() == job.keepAlive.get())
+					bucket.isComplex = it->second.complex;
+			}
+		}
+		pendingComplexDetections.pop_front();
+	}
+}
+
+void GrassBucketStore::PruneComplexCache()
+{
+	std::unordered_set<RE::NiSourceTexture*> live;
+	live.reserve(buckets.size() + pendingComplexDetections.size());
+	for (const auto& [key, bucket] : buckets) {
+		if (bucket.diffuseTexture)
+			live.insert(bucket.diffuseTexture.get());
+	}
+	for (const auto& job : pendingComplexDetections) {
+		if (job.keepAlive)
+			live.insert(job.keepAlive.get());
+	}
+	std::erase_if(complexCache, [&](const auto& entry) { return !live.contains(entry.first); });
 }
 
 bool GrassBucketStore::EnsureLODBin(GrassBucket& b, GrassMeshLibrary::LODTier tier, ID3D11Device* device)

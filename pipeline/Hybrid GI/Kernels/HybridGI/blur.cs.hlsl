@@ -88,7 +88,6 @@ float2x2 getRotationMatrix(float noise)
 	// Early exit if dispatch thread is outside frame bounds
 	if (any(dtid >= uint2(OUT_FRAME_DIM)))
 		return;
-	const float2 frameScale = FrameDim * RcpTexDim;
 
 	float radius = BlurRadius;
 #ifdef ATROUS_STEP_2
@@ -105,7 +104,8 @@ float2x2 getRotationMatrix(float noise)
 
 	float depth = READ_DEPTH(srcDepth, dtid);
 	float3 pos = ScreenToViewPosition(screenPos, depth);
-	float3 normal = GBuffer::DecodeNormal(FULLRES_LOAD(srcNormalRoughness, dtid, uv, samplerLinearClamp).xy);
+	float3 normal = GBuffer::DecodeNormal(
+		FULLRES_LOAD(srcNormalRoughness, dtid, FullFrameTextureUV(uv), samplerLinearClamp).xy);
 
 	const float2 pixelDirRBViewspaceSizeAtCenterZ = depth.xx * NDCToViewMul.xy * RCP_OUT_FRAME_DIM;
 	const float worldRadius = radius * pixelDirRBViewspaceSizeAtCenterZ.x;
@@ -175,6 +175,21 @@ float2x2 getRotationMatrix(float noise)
 	localMinCoCg = max(localMinCoCg, meanCoCg - varianceEnvelope * sigmaCoCg);
 	localMaxCoCg = min(localMaxCoCg, meanCoCg + varianceEnvelope * sigmaCoCg);
 
+#if defined(ATROUS_STEP_2) && defined(TEMPORAL_DENOISER)
+	// Make the optional second pass genuinely adaptive. Mature, locally stable
+	// history has already converged through temporal accumulation and pass one;
+	// running another 8-tap kernel there only spends bandwidth and can soften
+	// texture-scale bounce detail. Unstable/noisy pixels retain the full pass.
+	float relativeSigmaY = sigmaY / max(abs(meanY), 0.05f);
+	float chromaSigma = max(sigmaCoCg.x, sigmaCoCg.y);
+	if (historyFraction >= 0.75f && relativeSigmaY < 0.035f && chromaSigma < 0.02f) {
+		outIlY[dtid] = ilY;
+		outIlCoCg[dtid] = ilCoCg;
+		outAccumFrames[dtid] = accumFrames;
+		return;
+	}
+#endif
+
 	float4 ySum = ilY;
 	float2 coCgSum = ilCoCg;
 #if defined(TEMPORAL_DENOISER)
@@ -196,10 +211,10 @@ float2x2 getRotationMatrix(float noise)
 		float2 uvSample = screenPosSample;
 		uvSample = (floor(uvSample * OUT_FRAME_DIM) + 0.5) * RCP_OUT_FRAME_DIM;  // Snap to the pixel centre
 
-		float depthSample = srcDepth.SampleLevel(samplerPointClamp, uvSample * frameScale, RES_MIP);
+		float depthSample = srcDepth.SampleLevel(samplerPointClamp, FullFrameTextureUV(uvSample), RES_MIP);
 		float3 posSample = ScreenToViewPosition(screenPosSample, depthSample);
 
-		float4 normalRoughnessSample = srcNormalRoughness.SampleLevel(samplerPointClamp, uvSample * frameScale, 0);
+		float4 normalRoughnessSample = srcNormalRoughness.SampleLevel(samplerPointClamp, FullFrameTextureUV(uvSample), 0);
 		float3 normalSample = GBuffer::DecodeNormal(normalRoughnessSample.xy);
 
 		// geometry weight
@@ -208,14 +223,14 @@ float2x2 getRotationMatrix(float noise)
 		w *= 1 - saturate(FastMath::acosFast4(saturate(dot(normalSample, normal))) / halfAngle);
 
 		if (w > 1e-8) {
-			float4 sampleY = srcIlY.SampleLevel(samplerPointClamp, uvSample * OUT_FRAME_SCALE, 0);
+			float4 sampleY = srcIlY.SampleLevel(samplerPointClamp, InternalFrameTextureUV(uvSample), 0);
 			sampleY = clamp(sampleY, localMinY, localMaxY);
 			ySum += sampleY * w;
-			float2 sampleCoCg = srcIlCoCg.SampleLevel(samplerPointClamp, uvSample * OUT_FRAME_SCALE, 0);
+			float2 sampleCoCg = srcIlCoCg.SampleLevel(samplerPointClamp, InternalFrameTextureUV(uvSample), 0);
 			sampleCoCg = clamp(sampleCoCg, localMinCoCg, localMaxCoCg);
 			coCgSum += sampleCoCg * w;
 #if defined(TEMPORAL_DENOISER)
-			fSum += srcAccumFrames.SampleLevel(samplerPointClamp, uvSample * OUT_FRAME_SCALE, 0) * w;
+			fSum += srcAccumFrames.SampleLevel(samplerPointClamp, InternalFrameTextureUV(uvSample), 0) * w;
 #endif
 			wSum += w;
 		}

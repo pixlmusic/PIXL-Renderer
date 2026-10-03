@@ -5,6 +5,8 @@
 
 #include "GrassMeshLibrary.h"
 
+#include <cctype>
+
 namespace
 {
 	RE::BSTriShape* FindFirstTriShape(RE::NiAVObject* obj)
@@ -22,10 +24,23 @@ namespace
 		return nullptr;
 	}
 
-	/** @brief Returns the filename without directories or extension. */
-	std::string StemOf(const char* path)
+	std::string NormalizeModelPath(const char* path)
 	{
-		const std::string p = path;
+		std::string p = path ? path : "";
+		for (char& c : p) {
+			if (c == '/')
+				c = '\\';
+			else
+				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+		}
+		while (p.rfind(".\\", 0) == 0)
+			p.erase(0, 2);
+		return p;
+	}
+
+	/** @brief Returns the filename without directories or extension. */
+	std::string StemOf(const std::string& p)
+	{
 		const size_t slash = p.find_last_of("\\/");
 		const size_t start = slash == std::string::npos ? 0 : slash + 1;
 		const size_t dot = p.find_last_of('.');
@@ -39,46 +54,48 @@ void GrassMeshLibrary::RecordModelPath(RE::BSMultiStreamInstanceTriShape* shape,
 		return;
 
 	std::scoped_lock lk(stemMutex);
-	stemByShape.insert_or_assign(shape, StemOf(modelPath));
+	pathByShape.insert_or_assign(shape, ShapePathRecord{ NormalizeModelPath(modelPath), nextPathGeneration++ });
+	// The address may have been recycled for a new grass shape. Never retain the old ID.
+	idByShape.erase(shape);
 }
 
 uint32_t GrassMeshLibrary::ResolveMeshId(RE::BSMultiStreamInstanceTriShape* shape)
 {
 	if (!shape)
 		return 0;
+
+	std::scoped_lock lk(stemMutex);
 	if (auto it = idByShape.find(shape); it != idByShape.end())
 		return it->second;
 
-	// LoadGrassType records every grass type at creation, before any instance of it is captured.
-	std::string stem;
-	{
-		std::scoped_lock lk(stemMutex);
-		if (auto it = stemByShape.find(shape); it != stemByShape.end())
-			stem = it->second;
+	// Do not cache an unresolved result: a runtime-specific hook order may publish
+	// the model path slightly later.
+	auto pathIt = pathByShape.find(shape);
+	if (pathIt == pathByShape.end() || pathIt->second.path.empty())
+		return 0;
+	const std::string& sourcePath = pathIt->second.path;
+
+	const auto it = std::find(sourcePaths.begin(), sourcePaths.end(), sourcePath);
+	const uint32_t meshId = static_cast<uint32_t>(std::distance(sourcePaths.begin(), it)) + 1;
+	if (it == sourcePaths.end()) {
+		sourcePaths.push_back(sourcePath);
+		lodStems.push_back(StemOf(sourcePath));
 	}
 
-	uint32_t meshId = 0;
-	if (!stem.empty()) {
-		const auto it = std::find(stems.begin(), stems.end(), stem);
-		meshId = static_cast<uint32_t>(std::distance(stems.begin(), it)) + 1;  // ids are 1-based, with 0 reserved for unresolved shapes
-		if (it == stems.end())
-			stems.push_back(stem);
-	}
-
-	idByShape.emplace(shape, meshId);
+	idByShape.insert_or_assign(shape, meshId);
 	return meshId;
 }
 
 void GrassMeshLibrary::EnsureLODMeshes(uint32_t meshId)
 {
-	if (meshId == 0 || meshId > stems.size())
+	if (meshId == 0 || meshId > sourcePaths.size())
 		return;
 
-	if (lodMeshes.size() < stems.size())
-		lodMeshes.resize(stems.size());
+	if (lodMeshes.size() < sourcePaths.size())
+		lodMeshes.resize(sourcePaths.size());
 
 	for (uint32_t tier = 0; tier < (uint32_t)LODTier::kCount; ++tier)
-		LoadLODMesh(lodMeshes[meshId - 1][tier], stems[meshId - 1], (LODTier)tier);
+		LoadLODMesh(lodMeshes[meshId - 1][tier], lodStems[meshId - 1], (LODTier)tier);
 }
 
 void GrassMeshLibrary::LoadLODMesh(LODMesh& entry, const std::string& stem, LODTier tier)
@@ -136,9 +153,30 @@ const GrassMeshLibrary::LODMesh* GrassMeshLibrary::GetLODMesh(uint32_t meshId, L
 	return (tier == LODTier::kFar && middle.valid) ? &middle : nullptr;
 }
 
-void GrassMeshLibrary::ForgetShape(RE::BSMultiStreamInstanceTriShape* shape)
+uint64_t GrassMeshLibrary::GetShapeGeneration(RE::BSMultiStreamInstanceTriShape* shape) const
 {
-	idByShape.erase(shape);
+	if (!shape)
+		return 0;
 	std::scoped_lock lk(stemMutex);
-	stemByShape.erase(shape);
+	if (auto it = pathByShape.find(shape); it != pathByShape.end())
+		return it->second.generation;
+	return 0;
+}
+
+void GrassMeshLibrary::ForgetShape(RE::BSMultiStreamInstanceTriShape* shape, uint64_t expectedGeneration)
+{
+	if (!shape)
+		return;
+	// A zero generation means the dying shape never owned a published model record;
+	// it therefore has no authority to erase whatever may now live at this address.
+	if (expectedGeneration == 0)
+		return;
+	std::scoped_lock lk(stemMutex);
+	const auto it = pathByShape.find(shape);
+	if (it == pathByShape.end())
+		return;
+	if (it->second.generation != expectedGeneration)
+		return;
+	idByShape.erase(shape);
+	pathByShape.erase(it);
 }

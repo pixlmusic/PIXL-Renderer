@@ -29,15 +29,14 @@ float2 NormalMIPFilter(float2 enc0, float2 enc1, float2 enc2, float2 enc3)
 
 groupshared float2 g_scratchNormal[8][8];
 [numthreads(8, 8, 1)] void main(uint2 dispatchThreadID : SV_DispatchThreadID, uint2 groupThreadID : SV_GroupThreadID) {
-	const float2 frameScale = FrameDim * RcpTexDim;
 
 	// MIP 0
 	const uint2 baseCoord = dispatchThreadID;
 	const uint2 pixCoord = baseCoord * 2;
 	const float2 uv = (pixCoord + .5) * RCP_OUT_FRAME_DIM;
 
-	float4 nr0 = srcNormalRoughness.GatherRed(samplerPointClamp, uv * frameScale);
-	float4 nr1 = srcNormalRoughness.GatherGreen(samplerPointClamp, uv * frameScale);
+	float4 nr0 = srcNormalRoughness.GatherRed(samplerPointClamp, FullFrameTextureUV(uv));
+	float4 nr1 = srcNormalRoughness.GatherGreen(samplerPointClamp, FullFrameTextureUV(uv));
 
 	float2 normal0 = float2(nr0.w, nr1.w);
 	float2 normal1 = float2(nr0.z, nr1.z);

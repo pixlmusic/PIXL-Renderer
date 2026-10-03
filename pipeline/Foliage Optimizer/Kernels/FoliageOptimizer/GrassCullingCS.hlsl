@@ -128,11 +128,7 @@ float WindScalar(float basis, float timer)
     }
     const uint2 slice = SliceTable[SliceTableOffset + lo];
 
-    // Use the source index to keep dither decisions stable across slice changes.
     const uint idx = slice.x + (compactIdx - slice.y);
-
-    // Generate independent density and LOD dither values with one hash.
-    const uint2 rand = Random::pcg2d(uint2(idx, 0u));
 
     const uint base = idx * 32;
     const uint4 raw0 = Instances.Load4(base);
@@ -143,6 +139,14 @@ float WindScalar(float basis, float timer)
 
     const float4 og = Origins[idx];
     const float3 world = float3(localXY, localZ) + og.xyz;
+
+    // Buffer offsets change when earlier cells are compacted. Seed stochastic density/LOD
+    // decisions from immutable packed transform/origin data so surviving grass stays stable.
+    uint stableSeed = raw0.x ^ (raw0.y * 0x9E3779B9u) ^ (raw0.z * 0x85EBCA6Bu) ^ (raw1.z * 0xC2B2AE35u);
+    stableSeed ^= asuint(og.x) + 0x7F4A7C15u;
+    stableSeed ^= asuint(og.y) * 0x27D4EB2Du;
+    stableSeed ^= asuint(og.z) * 0x165667B1u;
+    const uint2 rand = Random::pcg2d(uint2(stableSeed, stableSeed ^ 0xA511E9B3u));
 
     const float3 dv = world - FrameBuffer::CameraPosAdjust.xyz;
     const float distSq = dot(dv, dv);
@@ -158,16 +162,17 @@ float WindScalar(float basis, float timer)
     if (distSq > effMaxDistSq)
         return;
 
-	[unroll]
-    for (uint p = 0; p < 6; ++p)
-    {
-        if (dot(FrustumPlanes[p].xyz, world) - FrustumPlanes[p].w < 0.0)
-            return;
-    }
-
     // Conservatively approximate the vertex shader's ScaleMask-based size variation.
     const float sizeVariance = f16tof32(raw1.z >> 16);
     const float instanceRadius = ModelRadius * (1.0 + max(sizeVariance, 0.0));
+
+	[unroll]
+    for (uint p = 0; p < 6; ++p)
+    {
+        // Sphere-plane rejection keeps cards whose centre is outside while geometry remains visible.
+        if (dot(FrustumPlanes[p].xyz, world) - FrustumPlanes[p].w < -instanceRadius)
+            return;
+    }
 
     const float projPx = (instanceRadius / dist) * ProjScale;
     const float pxScale = lerp(1.0, MinPixelScale, effCostBias);
@@ -212,27 +217,30 @@ float WindScalar(float basis, float timer)
             const int2 t0 = int2(floor(tcL - rTL));
             const int2 t1 = int2(floor(tcL + rTL));
 
-            // Test the sphere's nearest point; a camera inside it yields a non-occluded depth.
-            const float3 dvNear = dvC * (max(distC - occRadius, 0.0) / distC);
-            const float4 clipN = mul(FrameBuffer::CameraViewProj, float4(dvNear, 1.0));
-            const float nearZ = clipN.z / max(clipN.w, 1e-4);
-
-            float tileMax = 0.0;
-			[unroll] for (int y = 0; y < 3; ++y)
+            // A footprint crossing the trustworthy viewport edge cannot be proven occluded.
+            // Do not clamp it onto unrelated edge depth; simply keep the instance.
+            const bool footprintInside = all(t0 >= int2(0, 0)) && all(t1 < dimL);
+            if (footprintInside)
             {
-				[unroll] for (int x = 0; x < 3; ++x)
+                // Test the sphere's nearest point; a camera inside it yields a non-occluded depth.
+                const float3 dvNear = dvC * (max(distC - occRadius, 0.0) / distC);
+                const float4 clipN = mul(FrameBuffer::CameraViewProj, float4(dvNear, 1.0));
+                const float nearZ = clipN.z / max(clipN.w, 1e-4);
+
+                float tileMax = 0.0;
+				[unroll] for (int y = 0; y < 3; ++y)
                 {
-                    if (t0.x + x <= t1.x && t0.y + y <= t1.y)
+					[unroll] for (int x = 0; x < 3; ++x)
                     {
-                        const int2 t = clamp(t0 + int2(x, y), int2(0, 0), dimL - 1);
-                        tileMax = max(tileMax, HiZ.Load(int3(t, level)));
+                        if (t0.x + x <= t1.x && t0.y + y <= t1.y)
+                            tileMax = max(tileMax, HiZ.Load(int3(t0 + int2(x, y), level)));
                     }
                 }
-            }
 
-            // Cull only when the sphere is behind every sampled tile, allowing for depth error.
-            if (!PIXLVisibility::TestDepthVisibility(nearZ, tileMax, OcclusionBias))
-                return;
+                // Cull only when the sphere is behind every sampled tile, allowing for depth error.
+                if (!PIXLVisibility::TestDepthVisibility(nearZ, tileMax, OcclusionBias))
+                    return;
+            }
             }
         }
     }
@@ -253,8 +261,8 @@ float WindScalar(float basis, float timer)
     const float edgeStart = maxDist * EdgeFadeStart;
     const float edgeFade = saturate((maxDist - dist) / max(maxDist - edgeStart, 1e-4));
 
-    const float4 clip = mul(FrameBuffer::CameraViewProj, float4(dv, 1.0));
-    const float distFade = 1.0 - saturate((length(clip.xyz) - AlphaParam1) / AlphaParam2);
+    // Alpha parameters are Skyrim world distances, so keep this fade in world space.
+    const float distFade = 1.0 - saturate((dist - AlphaParam1) / max(AlphaParam2, 1e-4));
     const float spawnFade = saturate((FadeNow - og.w) * FadeInTimeRcp);
 
     const float fade = distFade * spawnFade * lodFade * edgeFade;

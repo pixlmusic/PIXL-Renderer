@@ -7,7 +7,7 @@
 Texture2D<half4> srcDiffuse : register(t0);
 Texture2D<half> srcCurrDepth : register(t1);
 Texture2D<half4> srcCurrNormal : register(t2);
-Texture2D<half3> srcPrevGeo : register(t3);  // maybe half-res
+Texture2D<uint> srcPrevGeo : register(t3);   // packed 16-bit depth + oct8 world normal
 Texture2D<float4> srcMotionVec : register(t4);
 Texture2D<unorm float> srcAccumFrames : register(t5);  // maybe half-res
 Texture2D<half> srcPrevAo : register(t6);              // maybe half-res
@@ -44,9 +44,10 @@ void readHistory(
 	if (any(screen_pos < 0) || any(screen_pos > 1))
 		return;
 
-	const half3 prev_geo = srcPrevGeo[pixCoord];
-	const float prev_depth = prev_geo.x;
-	const float3 prev_normal = GBuffer::DecodeNormal(prev_geo.yz);  // stored in world space
+	float prev_depth;
+	float2 prev_normal_encoded;
+	UnpackPrevGeometry(srcPrevGeo[pixCoord], prev_depth, prev_normal_encoded);
+	const float3 prev_normal = GBuffer::DecodeNormal(prev_normal_encoded);  // stored in world space
 
 	// Early reject: skip bilinear taps on a different surface before the
 	// expensive world-space reconstruction.  Use a wider threshold than the
@@ -89,14 +90,13 @@ void readHistory(
 };
 
 [numthreads(8, 8, 1)] void main(const uint2 pixCoord : SV_DispatchThreadID) {
-	const float2 frameScale = FrameDim * RcpTexDim;
 
 	const float2 uv = (pixCoord + .5) * RCP_OUT_FRAME_DIM;
 	const float2 screen_pos = uv;
 
 	float2 prev_screen_pos = screen_pos;
 #ifdef REPROJECTION
-	prev_screen_pos += FULLRES_LOAD(srcMotionVec, pixCoord, uv * frameScale, samplerLinearClamp).xy;
+	prev_screen_pos += FULLRES_LOAD(srcMotionVec, pixCoord, FullFrameTextureUV(uv), samplerLinearClamp).xy;
 #endif
 	float2 prev_uv = prev_screen_pos;
 
@@ -126,7 +126,7 @@ void readHistory(
 
 #ifdef REPROJECTION
 	if ((curr_depth <= DepthFadeRange.y) && !(any(prev_screen_pos < 0) || any(prev_screen_pos > 1))) {
-		float3 curr_normal = GBuffer::DecodeNormal(FULLRES_LOAD(srcCurrNormal, pixCoord, screen_pos * frameScale, samplerLinearClamp).xy);
+		float3 curr_normal = GBuffer::DecodeNormal(FULLRES_LOAD(srcCurrNormal, pixCoord, FullFrameTextureUV(screen_pos), samplerLinearClamp).xy);
 		curr_normal = normalize(ViewToWorldVector(curr_normal, FrameBuffer::CameraViewInverse));
 		float3 curr_pos = ScreenToViewPosition(screen_pos, curr_depth);
 		curr_pos = ViewToWorldPosition(curr_pos, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
@@ -172,13 +172,14 @@ void readHistory(
 	}
 #endif
 
-	half3 radiance = 0;
-#ifdef GI
-	radiance = Color::RadianceToLinear(FULLRES_LOAD(srcDiffuse, pixCoord, uv * frameScale, samplerLinearClamp).rgb * GIStrength);
+	// Canonical scene radiance is shared by diffuse GI, world-cache injection and
+	// Hybrid Reflections. Keep it independent of the diffuse-GI artistic strength
+	// and populate it even when the GI permutation itself is disabled.
+	half3 radiance = Color::RadianceToLinear(
+		FULLRES_LOAD(srcDiffuse, pixCoord, FullFrameTextureUV(uv), samplerLinearClamp).rgb);
 	radiance = filterNaN(radiance);
 	radiance = filterInf(radiance);
 	outRadianceDisocc[pixCoord] = radiance;
-#endif
 
 #ifdef TEMPORAL_DENOISER
 	// Accepted history has already passed motion, world-position, depth and normal

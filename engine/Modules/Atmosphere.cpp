@@ -228,10 +228,19 @@ Atmosphere::Settings Atmosphere::ResolveRuntimeSettings() const
 		settings.volumetricFogDistance,
 		std::clamp(fogFar * 1.15f, 18000.0f, 180000.0f),
 		strength);
-	resolved.volumetricFogNearFadeInDistance = std::lerp(
-		settings.volumetricFogNearFadeInDistance,
-		std::clamp(std::max(512.0f, fogNear * 0.18f), 512.0f, 3000.0f),
-		strength);
+	// Zero is an intentional user setting: it disables the near fade.  Do not
+	// replace it with an automatic 512-3000 unit weather fade, otherwise the
+	// froxel volume develops a visible moving boundary in front of the camera.
+	// An explicitly authored fade remains available and is adapted with weather
+	// as before.
+	if (settings.volumetricFogNearFadeInDistance > 0.0f) {
+		resolved.volumetricFogNearFadeInDistance = std::lerp(
+			settings.volumetricFogNearFadeInDistance,
+			std::clamp(std::max(512.0f, fogNear * 0.18f), 512.0f, 3000.0f),
+			strength);
+	} else {
+		resolved.volumetricFogNearFadeInDistance = 0.0f;
+	}
 
 	auto weatherMie = [](const RE::TESWeather* weather) {
 		float value = 0.52f;

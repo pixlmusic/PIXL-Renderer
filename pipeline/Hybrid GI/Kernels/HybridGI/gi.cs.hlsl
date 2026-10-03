@@ -56,7 +56,7 @@ RWTexture2D<unorm float> outAo : register(u0);
 RWTexture2D<float4> outY : register(u1);
 RWTexture2D<float2> outCoCg : register(u2);
 RWTexture2D<float4> outGISpecular : register(u3);
-RWTexture2D<half3> outPrevGeo : register(u4);
+RWTexture2D<uint> outPrevGeo : register(u4);
 RWTexture2D<float4> outBentVisibility : register(u5);
 
 float GetDepthFade(float depth)
@@ -92,13 +92,15 @@ float GetVisibilityFunctionSmithJointApprox(float roughness, float NdotV, float 
 }
 
 bool ReadWorldVoxelCascade(
-	float3 queryPositionWS, float3 receiverNormalWS, float3 sourceDirection, uint cascade,
+	float3 queryPositionWS, float3 receiverNormalWS, float3 sourceDirection, float3 cameraWS, uint cascade,
 	inout float3 irradiance, inout float occupancy, bool readRadiance)
 {
 	irradiance = 0.0;
 	occupancy = 0.0;
 	float cellSize = WorldCacheCellSize(cascade);
 	int3 cell = int3(floor(queryPositionWS / cellSize));
+	if (!WorldCacheCellInWindow(cell, cameraWS, cascade))
+		return false;
 	uint2 atlasCoord = WorldCacheAtlasCoord(cell, cascade);
 	uint metadata = srcWorldMetadata.Load(int3(atlasCoord, 0));
 	bool valid = (metadata & 0x00ffffffu) == WorldCacheHash(cell, cascade);
@@ -158,7 +160,7 @@ bool ReadWorldVoxel(
 	bool nearValid = false;
 
 	if (blend < 0.999) {
-		nearValid = ReadWorldVoxelCascade(queryPositionWS, receiverNormalWS, rayDirection, 0u,
+		nearValid = ReadWorldVoxelCascade(queryPositionWS, receiverNormalWS, rayDirection, cameraWS, 0u,
 			nearIrradiance, nearOccupancy, readRadiance);
 	}
 
@@ -170,7 +172,7 @@ bool ReadWorldVoxel(
 	} else {
 		float3 farIrradiance = 0.0;
 		float farOccupancy = 0.0;
-		bool farValid = ReadWorldVoxelCascade(queryPositionWS, receiverNormalWS, rayDirection, 1u,
+		bool farValid = ReadWorldVoxelCascade(queryPositionWS, receiverNormalWS, rayDirection, cameraWS, 1u,
 			farIrradiance, farOccupancy, readRadiance);
 
 		if (nearValid && farValid) {
@@ -358,6 +360,8 @@ float AdaptiveWorldCacheConfidence(float3 viewspacePosition)
 	float3 positionWS = ViewToWorldPosition(viewspacePosition, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
 	uint cascade = WorldCacheCascadeBlend(positionWS, cameraWS) >= 0.5f ? 1u : 0u;
 	int3 cell = int3(floor(positionWS / WorldCacheCellSize(cascade)));
+	if (!WorldCacheCellInWindow(cell, cameraWS, cascade))
+		return 0.0f;
 	uint2 atlasCoord = WorldCacheAtlasCoord(cell, cascade);
 	uint metadata = srcWorldMetadata.Load(int3(atlasCoord, 0));
 	if ((metadata & 0x00ffffffu) != WorldCacheHash(cell, cascade))
@@ -369,35 +373,46 @@ float AdaptiveWorldCacheConfidence(float3 viewspacePosition)
 }
 
 float ClassifyAdaptiveRayDemand(
-	uint2 dtid, float2 uv, float2 frameScale, float viewspaceZ, float3 viewspaceNormal)
+	uint2 dtid, float2 uv, float viewspaceZ, float3 viewspaceNormal)
 {
 	const bool validSurface = viewspaceZ > FP_Z && viewspaceZ < DepthFadeRange.y;
 	if (!validSurface)
 		return 0.0f;
 
-	const float coarseMip = min((float)RES_MIP + 1.0f, 4.0f);
-	float coarseZ = srcWorkingDepth.SampleLevel(samplerPointClamp, uv * frameScale, coarseMip);
+	const float coarseDepthMip = min((float)RES_MIP + 1.0f, 4.0f);
+	float coarseZ = srcWorkingDepth.SampleLevel(samplerPointClamp, FullFrameTextureUV(uv), coarseDepthMip);
 	float depthDemand = saturate(abs(coarseZ - viewspaceZ) / max(abs(viewspaceZ), 64.0f) * 24.0f);
 
-	float3 coarseNormal = GBuffer::DecodeNormal(srcNormal.SampleLevel(samplerPointClamp, uv * frameScale, coarseMip));
+	// srcNormal/srcRadiance are compact internal hierarchies whose mip 0 already
+	// represents OUT_FRAME_DIM. Their hierarchy therefore starts at mip 0 even
+	// when the full-resolution depth hierarchy starts at RES_MIP.
+	float3 coarseNormal = GBuffer::DecodeNormal(
+		srcNormal.SampleLevel(samplerPointClamp, InternalFrameTextureUV(uv), 1.0f));
 	float normalDemand = saturate((1.0f - abs(dot(viewspaceNormal, coarseNormal))) * 6.0f);
 
+#ifdef TEMPORAL_DENOISER
 	float accumulatedFrames = srcAccumFrames[dtid] * 255.0f;
 	// radianceDisocc already converts motion, depth/normal rejection and
 	// disocclusion into a reduced history count, so this consumes all four
 	// signals without adding another motion-vector binding to the GI pass.
 	float temporalDemand = 1.0f - saturate(accumulatedFrames * (1.0f / 8.0f));
+#else
+	// With temporal accumulation disabled srcAccumFrames is not an authoritative
+	// signal. Treat it as neutral instead of forcing every tile to maximum work.
+	float temporalDemand = 0.0f;
+#endif
 
-	const float fineRadianceMip = min((float)RES_MIP, 4.0f);
-	const float coarseRadianceMip = min(fineRadianceMip + 2.0f, 4.0f);
-	float fineLuminance = Luminance(srcRadiance.SampleLevel(samplerPointClamp, uv * frameScale, fineRadianceMip));
-	float coarseLuminance = Luminance(srcRadiance.SampleLevel(samplerPointClamp, uv * frameScale, coarseRadianceMip));
+	const float fineRadianceMip = 0.0f;
+	const float coarseRadianceMip = 2.0f;
+	float2 internalUV = InternalFrameTextureUV(uv);
+	float fineLuminance = Luminance(srcRadiance.SampleLevel(samplerPointClamp, internalUV, fineRadianceMip));
+	float coarseLuminance = Luminance(srcRadiance.SampleLevel(samplerPointClamp, internalUV, coarseRadianceMip));
 	float luminanceDemand = saturate(abs(fineLuminance - coarseLuminance) /
 		max(max(fineLuminance, coarseLuminance), 0.05f) * 1.5f);
 
-	float4 normalRoughness = FULLRES_LOAD(srcNormalRoughness, dtid, uv * frameScale, samplerLinearClamp);
+	float4 normalRoughness = FULLRES_LOAD(srcNormalRoughness, dtid, FullFrameTextureUV(uv), samplerLinearClamp);
 	float roughness = saturate(1.0f - normalRoughness.z);
-	float3 reflectance = FULLRES_LOAD(srcReflectance, dtid, uv * frameScale, samplerLinearClamp);
+	float3 reflectance = FULLRES_LOAD(srcReflectance, dtid, FullFrameTextureUV(uv), samplerLinearClamp);
 	float specularDemand = saturate((1.0f - roughness) * 1.5f) * saturate(Luminance(reflectance) * 4.0f);
 
 	float3 viewspacePosition = ScreenToViewPosition(uv, viewspaceZ);
@@ -417,7 +432,6 @@ void CalculateGI(
 	uint effectiveNumSlices, uint effectiveNumSteps,
 	out float o_ao, out sh2 o_currY, out float2 o_currCoCg, out float4 o_currGIAOSpecular, out float4 o_bentVisibility)
 {
-	const float2 frameScale = FrameDim * RcpTexDim;
 	float2 normalizedScreenPos = uv;
 
 	const float rcpNumSlices = rcp((float)effectiveNumSlices);
@@ -465,7 +479,7 @@ void CalculateGI(
 	}
 
 #ifdef GI
-	const float surfaceRoughness = max(0.05, saturate(1 - FULLRES_LOAD(srcNormalRoughness, dtid, uv * frameScale, samplerLinearClamp).z));
+	const float surfaceRoughness = max(0.05, saturate(1 - FULLRES_LOAD(srcNormalRoughness, dtid, FullFrameTextureUV(uv), samplerLinearClamp).z));
 #endif
 #if defined(GI_SPECULAR) && !defined(HYBRID_REFLECTIONS)
 	const float roughness = max(0.2, surfaceRoughness);
@@ -474,7 +488,10 @@ void CalculateGI(
 #endif
 
 	// [Optimization 1 & 9]: Precalculate constants for inside the slice/step loops
-	const float2 scaledOutFrameRcp = RCP_OUT_FRAME_DIM * OUT_FRAME_SCALE;
+	// Compact internal mip-0 resources are stored one texel per internal pixel
+	// in the top-left footprint of the full allocation. A pixel coordinate maps
+	// directly through RcpTexDim regardless of Full/Half/Quarter mode.
+	const float2 scaledOutFrameRcp = RcpTexDim;
 
 	for (uint slice = 0; slice < effectiveNumSlices; slice++) {
 		float phi = (Math::PI * rcpNumSlices) * (slice + noiseSlice);
@@ -523,21 +540,18 @@ void CalculateGI(
 				// outside the viewport, all later steps on that side are outside too.
 				[branch] if (any(sampleUV > 1.0) || any(sampleUV < 0.0)) break;
 
-				// SetupResources allocates exactly five levels (indices 0..4). Keep
-				// traversal explicit instead of relying on implicit sampler clamping.
-				float mipLevel = clamp(log2(s) + logLenOmega - 3.3, 0, 4);
-				float mipLevelRadiance = mipLevel;
-#if defined(HALF_RES)
-				mipLevel = max(mipLevel, 1);
-				mipLevelRadiance = max(mipLevelRadiance, 2);
-#elif defined(QUARTER_RES)
-				mipLevel = max(mipLevel, 2);
-				mipLevelRadiance = max(mipLevelRadiance, 3);
-#else
-				mipLevelRadiance = max(mipLevelRadiance, 1);
-#endif
+				// The ray footprint is measured in internal-output pixels. The depth
+				// pyramid is physically full-resolution, so translate that logical mip
+				// into its physical mip by RES_MIP. Normal/radiance pyramids are compact
+				// internal hierarchies and therefore stay in logical internal mip space.
+				float internalMipLevel = clamp(log2(s) + logLenOmega - 3.3, 0, 4);
+				float depthMipLevel = min(internalMipLevel + (float)RES_MIP, 4.0f);
+				// Full mode keeps the shipped mip-1 anti-firefly floor. Half/Quarter mip 0
+				// is already physically reduced, so adding another minimum mip would
+				// double-downsample the compact hierarchy and unnecessarily erase detail.
+				float mipLevelRadiance = max(internalMipLevel, RES_MIP == 0 ? 1.0f : 0.0f);
 
-				float SZ = srcWorkingDepth.SampleLevel(samplerPointClamp, sampleUV * frameScale, mipLevel);
+				float SZ = srcWorkingDepth.SampleLevel(samplerPointClamp, FullFrameTextureUV(sampleUV), depthMipLevel);
 				float3 samplePos = ScreenToViewPosition(sampleUV, SZ);
 				float3 sampleDelta = samplePos - pixCenterPos;
 
@@ -793,12 +807,16 @@ void CalculateGI(
 	float cacheDirectionalOcclusion = 0.0;
 	float3 cacheReflectionRadiance = 0.0;
 	float cacheReflectionHit = 0.0;
+	float screenMiss = 1.0f - saturate(giCoverage * rcpNumSlices);
 	if (WorldCacheEnabled != 0u) {
 		// Keep cache-only world coordinates out of the long horizon-loop lifetime.
 		float3 cameraWS = ViewToWorldPosition(0.0, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
 		float3 receiverPositionWS = ViewToWorldPosition(pixCenterPos, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
 		float3 receiverNormalWS = normalize(ViewToWorldVector(viewspaceNormal, FrameBuffer::CameraViewInverse));
-		const bool needCacheDiffuse = WorldCacheStrength > 1e-4f;
+		// The world cache is a missing-information fallback. If screen-space GI
+		// already covers virtually the whole hemisphere, do not pay up to dozens
+		// of voxel probes only to blend the result back to ~zero afterwards.
+		const bool needCacheDiffuse = WorldCacheStrength > 1e-4f && screenMiss > 0.05f;
 		const bool needCacheDirectional = WorldCacheDirectionalOcclusionEnabled != 0u &&
 			WorldCacheDirectionalOcclusionStrength > 1e-4f;
 		const bool needCacheDebug = DebugView >= 5u && DebugView <= 8u;
@@ -809,7 +827,6 @@ void CalculateGI(
 		}
 
 		if (needCacheDiffuse) {
-			float screenMiss = 1.0f - saturate(giCoverage * rcpNumSlices);
 			// The cache is learned from the same scene radiance as SSGI. It must fill
 			// missing directions, not add a permanent second copy underneath a valid
 			// screen hit. Require both missing screen coverage and several agreeing
@@ -833,6 +850,13 @@ void CalculateGI(
 				cacheReflectionRadiance, cacheReflectionHit);
 		}
 	}
+
+	// GIStrength is an artistic diffuse-indirect control, not ownership of the
+	// shared scene-radiance hierarchy. Apply it only when the diffuse transport
+	// estimate is consumed; world-cache storage and Hybrid Reflections remain in
+	// canonical scene-radiance units.
+	radianceY *= max(GIStrength, 0.0f);
+	radianceCoCg *= max(GIStrength, 0.0f);
 
 	if (DebugView >= 5u && DebugView <= 9u) {
 		float3 debugColor = 0.0;
@@ -896,7 +920,6 @@ void CalculateGI(
 		return;
 #endif
 
-	const float2 frameScale = FrameDim * RcpTexDim;
 	uint2 pxCoord = dtid;
 	float2 uv = (pxCoord + .5) * RCP_OUT_FRAME_DIM;
 
@@ -904,7 +927,7 @@ void CalculateGI(
 	float3 viewspaceNormal = float3(0.0f, 0.0f, 1.0f);
 	if (insideFrame) {
 		viewspaceZ = READ_DEPTH(srcWorkingDepth, pxCoord);
-		float2 normalSample = FULLRES_LOAD(srcNormal, pxCoord, uv * frameScale, samplerLinearClamp);
+		float2 normalSample = srcNormal.Load(int3(pxCoord, 0));
 		viewspaceNormal = GBuffer::DecodeNormal(normalSample);
 	}
 
@@ -916,7 +939,7 @@ void CalculateGI(
 	GroupMemoryBarrierWithGroupSync();
 
 	float localDemand = insideFrame ?
-		ClassifyAdaptiveRayDemand(pxCoord, uv, frameScale, viewspaceZ, viewspaceNormal) : 0.0f;
+		ClassifyAdaptiveRayDemand(pxCoord, uv, viewspaceZ, viewspaceNormal) : 0.0f;
 	uint quantizedDemand = (uint)round(saturate(localDemand) * 65535.0f);
 	InterlockedMax(gAdaptiveTileDemand, quantizedDemand);
 	GroupMemoryBarrierWithGroupSync();
@@ -932,7 +955,7 @@ void CalculateGI(
 #endif
 
 	half2 encodedWorldNormal = GBuffer::EncodeNormal(ViewToWorldVector(viewspaceNormal, FrameBuffer::CameraViewInverse));
-	outPrevGeo[pxCoord] = half3(viewspaceZ, encodedWorldNormal);
+	outPrevGeo[pxCoord] = PackPrevGeometry(viewspaceZ, encodedWorldNormal);
 
 	viewspaceZ *= 0.99920h;
 
@@ -997,7 +1020,7 @@ void CalculateGI(
 			// A single GatherRed supplies a compact 2x2 history envelope for AO.
 			// This replaces four scalar texture reads while remaining conservative
 			// enough to reject history leaking across a moving contact edge.
-			half4 aoHistoryQuad = (half4)srcPrevAo.GatherRed(samplerPointClamp, uv * OUT_FRAME_SCALE);
+			half4 aoHistoryQuad = (half4)srcPrevAo.GatherRed(samplerPointClamp, InternalFrameTextureUV(uv));
 
 			// Reject a current-frame spike against an outlier-resistant history
 			// reference. Using the neighbourhood maximum allowed one already-poisoned

@@ -4,6 +4,7 @@
 #include "Renderer/RendererMetadata.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <atomic>
 #include <filesystem>
 #include <string>
@@ -49,7 +50,7 @@ public:
 	/** @brief Releases and recompiles all HybridGI compute shaders. */
 	virtual void ClearShaderCache() override;
 	/** @brief Compiles all HybridGI compute shaders with current resolution and feature defines. */
-	void CompileComputeShaders();
+	void CompileComputeShaders(std::uint32_t a_shaderMask = 0xffffffffu);
 	/** @brief Checks whether all required compute shaders and the noise texture loaded successfully. */
 	bool ShadersOK() const;
 
@@ -72,6 +73,7 @@ public:
 	uint outputIlIdx = 0;
 	std::atomic_bool queuedResetHistory{ true };
 	std::atomic_bool queuedResetTemporalHistory{ false };
+	std::atomic_bool queuedResetWorldHistory{ false };
 
 	class MenuOpenCloseEventHandler : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
 	{
@@ -355,14 +357,38 @@ public:
 	winrt::com_ptr<ID3D11ComputeShader> hybridReflectionDenoiseCompute = nullptr;
 
 private:
+	void RecompileChangedShaders();
+	[[nodiscard]] bool CoreShadersOK() const;
+	[[nodiscard]] bool WorldCacheShadersOK() const;
+	[[nodiscard]] bool BlurShadersOK() const;
+	[[nodiscard]] bool ReflectionShadersOK() const;
+	[[nodiscard]] bool UpsampleShaderOK() const;
+
 	std::uint64_t temporalHistoryId = 0;
 	std::uint64_t worldHistoryId = 0;
 	float worldCacheClockAccumulator = 0.0f;
 	uint worldCacheClock = 0u;
 	// Decay is defined in fixed-rate world-cache ticks, not render frames. Keep
 	// the last swept tick so high-FPS sessions do not repeatedly dispatch the
-	// same 2,048-entry atlas sweep between clock advances.
+	// same 65,536-entry atlas sweep between clock advances.
 	uint lastWorldCacheDecayClock = 0xffffffffu;
+	// Runtime semantic/permutation snapshot. These settings change the meaning
+	// of temporal/cache history and therefore require deterministic invalidation.
+	bool runtimeConfigInitialized = false;
+	bool lastEnableGI = true;
+	bool lastEnableTemporalDenoiser = true;
+	bool lastEnableExperimentalSpecularGI = false;
+	bool lastEnableAdaptiveRayAllocation = false;
+	bool lastEnableWorldCache = true;
+	int lastResolutionMode = 0;
+	float lastWorldCacheCellSizeNear = 0.0f;
+	float lastWorldCacheCellSizeFar = 0.0f;
+	bool compiledShaderConfigInitialized = false;
+	int compiledResolutionMode = 0;
+	bool compiledTemporalDenoiser = true;
+	bool compiledGI = true;
+	bool compiledHybridReflections = false;
+	bool compiledAdaptiveRayAllocation = false;
 
 	struct DiagnosticRecord
 	{

@@ -21,7 +21,7 @@ float ReflectionLuminance(float3 c)
 
 float3 ReflectionSafeNormal(uint2 p, float2 uv)
 {
-    return GBuffer::DecodeNormal(FULLRES_LOAD(srcNormalRoughness, p, uv * (FrameDim * RcpTexDim), samplerLinearClamp).xy);
+    return GBuffer::DecodeNormal(FULLRES_LOAD(srcNormalRoughness, p, FullFrameTextureUV(uv), samplerLinearClamp).xy);
 }
 
 [numthreads(8, 8, 1)]
@@ -38,7 +38,7 @@ void main(uint2 dtid : SV_DispatchThreadID)
         return;
     }
 
-    float4 nr = FULLRES_LOAD(srcNormalRoughness, dtid, uv * (FrameDim * RcpTexDim), samplerLinearClamp);
+    float4 nr = FULLRES_LOAD(srcNormalRoughness, dtid, FullFrameTextureUV(uv), samplerLinearClamp);
     float3 centerNormal = GBuffer::DecodeNormal(nr.xy);
     float centerRoughness = saturate(1.0f - nr.z);
 
@@ -65,7 +65,7 @@ void main(uint2 dtid : SV_DispatchThreadID)
 
         float4 sampleValue = srcReflection[qu];
         float sampleDepth = READ_DEPTH(srcDepth, qu);
-        float4 sampleNR = FULLRES_LOAD(srcNormalRoughness, qu, quv * (FrameDim * RcpTexDim), samplerLinearClamp);
+        float4 sampleNR = FULLRES_LOAD(srcNormalRoughness, qu, FullFrameTextureUV(quv), samplerLinearClamp);
         float3 sampleNormal = GBuffer::DecodeNormal(sampleNR.xy);
         float sampleRoughness = saturate(1.0f - sampleNR.z);
 

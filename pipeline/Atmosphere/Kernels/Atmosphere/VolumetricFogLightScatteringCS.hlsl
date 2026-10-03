@@ -236,6 +236,17 @@ float3 ComputeSkyLightScattering(float3 positionWS, float3 viewDirection)
 	[branch] if (VolumetricFogHasIBL)
 		skyLighting = AmbientProbe::GetAmbientColorOccluded(skyDirection, skyVisibility);
 
+	// Extinction still attenuates the scene in areas where direct sunlight is
+	// occluded. SkyBounce/IBL visibility can legitimately approach zero there,
+	// but allowing volumetric colour to become black exposes a moving dark sheet
+	// at froxel/depth transitions. Retain a small atmospheric floor so
+	// low-extinction fog blends continuously in shadowed terrain without making
+	// the effect self-lit.
+	float3 ambientScatteringFloor =
+		SharedData::atmosphereSettings.fogInscatteringColor.rgb *
+		SharedData::atmosphereSettings.fogInscatteringColor.a * 0.08f;
+	skyLighting = max(skyLighting, ambientScatteringFloor);
+
 	float skyIntensity = SharedData::atmosphereSettings.volumetricSkyLightingIntensity;
 	if (Atmosphere::IsMapAtmosphereActive())
 		skyIntensity *= max(SharedData::atmosphereSettings.mapAmbientInscatteringMultiplier, 0.0f);

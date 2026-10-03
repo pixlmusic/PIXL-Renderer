@@ -51,8 +51,15 @@ float3 EstimateEmitterRadiance(float2 screenPos, float viewDepth, float3 renderP
     // Emitter lights are normally sparse. Bound pathological particle scenes so
     // cache injection cannot become more expensive than the primary lighting pass.
     uint lightCount = min(grid.lightCount, 48u);
+    uint emitterEnd = RadiantParticleLightStart + RadiantParticleLightCount;
     [loop] for (uint i = 0u; i < lightCount; ++i) {
-        Light light = srcRadiantLights[srcRadiantLightList[grid.offset + i]];
+        uint lightIndex = srcRadiantLightList[grid.offset + i];
+        // Only the authoritative transparent/particle-emitter interval may fill
+        // opaque scene-radiance gaps. Simple clustered lights outside this range
+        // are already represented by normal lighting and would be double-counted.
+        if (lightIndex < RadiantParticleLightStart || lightIndex >= emitterEnd)
+            continue;
+        Light light = srcRadiantLights[lightIndex];
         if ((light.lightFlags & LightFlags::Simple) == 0u)
             continue;
 
@@ -77,17 +84,18 @@ float3 EstimateEmitterRadiance(float2 screenPos, float viewDepth, float3 renderP
         emitterRadiance += lightEnergy * linearAlbedo;
     }
 
-    return max(filterInf(filterNaN(emitterRadiance *
-        (GIStrength * WorldCacheEmitterInjectionStrength))), 0.0f);
+    return max(filterInf(filterNaN(emitterRadiance * WorldCacheEmitterInjectionStrength)), 0.0f);
 }
 
-bool ReadPreviousVoxel(float3 queryWS, uint cascade, float3 receiverWS,
+bool ReadPreviousVoxel(float3 queryWS, uint cascade, float3 receiverWS, float3 cameraWS,
     out float3 incomingRadiance, out float occupancy)
 {
     incomingRadiance = 0.0f;
     occupancy = 0.0f;
     float cellSize = WorldCacheCellSize(cascade);
     int3 cell = int3(floor(queryWS / cellSize));
+    if (!WorldCacheCellInWindow(cell, cameraWS, cascade))
+        return false;
     uint2 coord = WorldCacheAtlasCoord(cell, cascade);
     uint meta = srcPrevWorldMetadata.Load(int3(coord, 0));
     if ((meta & 0x00ffffffu) != WorldCacheHash(cell, cascade))
@@ -113,7 +121,7 @@ bool ReadPreviousVoxel(float3 queryWS, uint cascade, float3 receiverWS,
     return occupancy > (1.0f / 255.0f) && leakWeight > 1e-3f;
 }
 
-float3 SampleSecondaryBounce(float3 worldPosition, float3 worldNormal, float3 albedo, uint cascade)
+float3 SampleSecondaryBounce(float3 worldPosition, float3 worldNormal, float3 albedo, uint cascade, float3 cameraWS)
 {
     if (WorldCacheSecondBounceEnabled == 0u || WorldCacheSecondBounceStrength <= 0.0f)
         return 0.0f;
@@ -137,7 +145,7 @@ float3 SampleSecondaryBounce(float3 worldPosition, float3 worldNormal, float3 al
         float3 query = worldPosition + dirs[i] * (cellSize * 1.5f);
         float3 sampleRadiance;
         float occupancy;
-        if (ReadPreviousVoxel(query, cascade, worldPosition, sampleRadiance, occupancy)) {
+        if (ReadPreviousVoxel(query, cascade, worldPosition, cameraWS, sampleRadiance, occupancy)) {
             float facing = saturate(dot(worldNormal, dirs[i]));
             float w = occupancy * lerp(0.35f, 1.0f, facing);
             incoming += sampleRadiance * w;
@@ -152,10 +160,12 @@ float3 SampleSecondaryBounce(float3 worldPosition, float3 worldNormal, float3 al
     return incoming * saturate(albedo) * (WorldCacheSecondBounceStrength / 3.14159265359f);
 }
 
-void InjectWorldVoxel(float3 worldPosition, float3 worldNormal, uint cascade, uint2 pixCoord, float viewDepth)
+void InjectWorldVoxel(float3 worldPosition, float3 worldNormal, float3 cameraWS, uint cascade, uint2 pixCoord, float viewDepth)
 {
     float cellSize = WorldCacheCellSize(cascade);
     int3 cell = int3(floor(worldPosition / cellSize));
+    if (!WorldCacheCellInWindow(cell, cameraWS, cascade))
+        return;
     uint2 coord = WorldCacheAtlasCoord(cell, cascade);
     uint hash = WorldCacheHash(cell, cascade);
 
@@ -188,13 +198,13 @@ void InjectWorldVoxel(float3 worldPosition, float3 worldNormal, uint cascade, ui
     // Selection itself needs depth/normals, not expensive emitter lighting.
     float2 screenPos = (pixCoord + 0.5f) * RCP_OUT_FRAME_DIM;
     float3 radiance = max(srcRadiance.Load(int3(pixCoord, 0)), 0.0f);
-    float3 albedo = saturate(FULLRES_LOAD(srcAlbedo, pixCoord, screenPos * (FrameDim * RcpTexDim), samplerLinearClamp));
+    float3 albedo = saturate(FULLRES_LOAD(srcAlbedo, pixCoord, FullFrameTextureUV(screenPos), samplerLinearClamp));
     // Transparent flames arrive after the opaque input. Seed from their existing
     // clustered proxies using max, never double-add already observed lighting.
     radiance = max(radiance, EstimateEmitterRadiance(screenPos, viewDepth,
         worldPosition - FrameBuffer::CameraPosAdjust.xyz, worldNormal, albedo));
 
-    radiance += SampleSecondaryBounce(worldPosition, worldNormal, albedo, cascade);
+    radiance += SampleSecondaryBounce(worldPosition, worldNormal, albedo, cascade, cameraWS);
     radiance = max(filterInf(filterNaN(radiance)), 0.0f);
 
     float clampValue = RadianceFireflyClamp > 0.0f ? RadianceFireflyClamp : 4.0f;
@@ -286,16 +296,10 @@ void main(const uint2 dispatchThreadID : SV_DispatchThreadID)
     float3 renderPosition = ViewToWorldPosition(viewPosition, FrameBuffer::CameraViewInverse);
     float3 worldPosition = renderPosition + FrameBuffer::CameraPosAdjust.xyz;
     float3 cameraWS = ViewToWorldPosition(0.0f, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
-    // A toroidal atlas only represents one contiguous 32-cell window. Remote
-    // geometry outside it must not overwrite nearer cells sharing the same slot.
-    int3 farOffset = int3(floor(worldPosition / WorldCacheCellSizeFar)) -
-        int3(floor(cameraWS / WorldCacheCellSizeFar));
-    if (any(farOffset < -16) || any(farOffset >= 16))
-        return;
-
-    float3 viewNormal = GBuffer::DecodeNormal(srcNormal.Load(int3(pixCoord, RES_MIP)));
+    // srcNormal mip 0 is already the compact internal-resolution normal field.
+    float3 viewNormal = GBuffer::DecodeNormal(srcNormal.Load(int3(pixCoord, 0)));
     float3 worldNormal = normalize(ViewToWorldVector(viewNormal, FrameBuffer::CameraViewInverse));
-    InjectWorldVoxel(worldPosition, worldNormal, 1u, pixCoord, viewDepth);
+    InjectWorldVoxel(worldPosition, worldNormal, cameraWS, 1u, pixCoord, viewDepth);
     if (WorldCacheCascadeBlend(worldPosition, cameraWS) < 1.0f)
-        InjectWorldVoxel(worldPosition, worldNormal, 0u, pixCoord, viewDepth);
+        InjectWorldVoxel(worldPosition, worldNormal, cameraWS, 0u, pixCoord, viewDepth);
 }

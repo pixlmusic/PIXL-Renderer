@@ -49,22 +49,32 @@ public:
 	/** @brief Returns the cached LOD mesh for a tier, or nullptr when none is loaded or it is unusable. The far tier falls back to the middle mesh. */
 	const LODMesh* GetLODMesh(uint32_t meshId, LODTier tier) const;
 
-	/** @brief Removes no longer valid shapes from the lookup caches to prevent IDs and LOD meshes from being associated with the wrong shape. */
-	void ForgetShape(RE::BSMultiStreamInstanceTriShape* shape);
+	/** @brief Returns the current model-path generation for a shape pointer, or 0 when unknown. */
+	uint64_t GetShapeGeneration(RE::BSMultiStreamInstanceTriShape* shape) const;
+
+	/** @brief Removes a shape only when the delayed destruction still refers to the recorded generation. */
+	void ForgetShape(RE::BSMultiStreamInstanceTriShape* shape, uint64_t expectedGeneration);
 
 private:
 	/** @brief Loads one tier's .nif into an entry, once. */
 	static void LoadLODMesh(LODMesh& entry, const std::string& stem, LODTier tier);
 
-	// Resolves shapes by id to their source-mesh stems, with stems[id - 1] since zero is invalid.
-	std::vector<std::string> stems;
+	// Mesh identity uses the normalized full relative model path so two mods may safely
+	// ship the same filename in different directories. IDs remain 1-based.
+	std::vector<std::string> sourcePaths;
+	// LOD lookup intentionally keeps the historical filename-stem convention.
+	std::vector<std::string> lodStems;
 	std::unordered_map<RE::BSMultiStreamInstanceTriShape*, uint32_t> idByShape;
 
-	// The only state here that crosses a thread boundary: RecordModelPath writes it from the game
-	// thread's LoadGrassType hook while ResolveMeshId reads it from the render thread. Every other
-	// member is reached from the render thread alone, under the store's bucketMutex, so it needs no
-	// lock of its own.
-	std::unordered_map<RE::BSMultiStreamInstanceTriShape*, std::string> stemByShape;
+	struct ShapePathRecord
+	{
+		std::string path;
+		uint64_t generation = 0;
+	};
+	// Model-path publication crosses from LoadGrassType to the render thread. Keep the
+	// resolved-id map under the same lock so allocator pointer reuse cannot return a stale ID.
+	std::unordered_map<RE::BSMultiStreamInstanceTriShape*, ShapePathRecord> pathByShape;
+	uint64_t nextPathGeneration = 1;
 	mutable std::mutex stemMutex;
 
 	// Parallel to stems, indexed by meshId - 1 then by LODTier. A deque to keep GetLODMesh's pointers valid after growth.
