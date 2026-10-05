@@ -11,6 +11,7 @@
 #include "Renderer/TemporalValidityGPU.h"
 #include "Renderer/TemporalContext.h"
 #include "Renderer/ReflectionContext.h"
+#include "Renderer/GPUWorkloadBudgeter.h"
 #include "Utils/D3D.h"
 
 #include "Modules/WorldProbes.h"
@@ -427,7 +428,11 @@ void Deferred::DeferredPasses()
 		sss.DrawSSS();
 
 	auto& worldProbes = globals::pipeline::worldProbes;
-	if (worldProbes.loaded)
+	const float reflectionWorkload = PIXL::Renderer::GPUWorkloadBudgeter::Get().GetScale(
+		PIXL::Renderer::WorkloadDomain::Reflections);
+	const std::uint32_t reflectionStride = reflectionWorkload >= 0.99f ? 1u : 2u;
+	if (worldProbes.loaded && (!globals::state || reflectionStride == 1u ||
+		(globals::state->frameCount % reflectionStride) == 0u))
 		worldProbes.UpdateCubemap();
 
 		auto& ambientProbe = globals::pipeline::ambientProbe;

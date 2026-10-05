@@ -1833,9 +1833,7 @@ void HybridGI::UpdateSB()
 			const auto& frameBuffer = globals::game::frameBufferCached;
 			const auto& projection = frameBuffer.GetCameraProj();
 			const auto temporalFrame = PIXL::Renderer::TemporalContext::Get().GetFrameSnapshot();
-			const bool sharedTemporalContinuity = temporalFrame.current.frameIndex == globals::state->frameCount &&
-				temporalFrame.current.viewType == PIXL::Renderer::ViewType::MainWorld &&
-				temporalFrame.previousFrameValid;
+			const bool sharedTemporalContinuity = PIXL::Renderer::TemporalContext::Get().IsMainWorldContinuous(globals::state->frameCount);
 			float4x4 currentInverseView = frameBuffer.GetCameraViewInverse();
 			float4x4 previousInverseView = currentInverseView;
 			if (temporalFrame.current.frameIndex == globals::state->frameCount) {

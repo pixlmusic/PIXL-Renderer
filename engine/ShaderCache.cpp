@@ -16,6 +16,70 @@
 #include "Plugin.h"
 
 #include <charconv>
+#include <fstream>
+#include <format>
+
+namespace
+{
+	// Cache mtimes are intentionally only a fast-path check: archive extraction,
+	// Vortex deployment and timestamp resolution can all make a valid source tree
+	// look newer or older than its compiled stages.  This content fingerprint is
+	// stored in Library.ini when metadata is written and is checked at startup.
+	std::string ComputeShaderSourceFingerprint()
+	{
+		constexpr std::uint64_t kOffset = 14695981039346656037ull;
+		constexpr std::uint64_t kPrime = 1099511628211ull;
+		std::uint64_t hash = kOffset;
+		std::error_code ec;
+		const std::filesystem::path root{ L"Data/Shaders" };
+		if (!std::filesystem::exists(root, ec))
+			return {};
+
+		std::vector<std::filesystem::path> files;
+		for (const auto& entry : std::filesystem::recursive_directory_iterator(root, ec)) {
+			if (ec) {
+				ec.clear();
+				continue;
+			}
+			if (!entry.is_regular_file(ec)) {
+				ec.clear();
+				continue;
+			}
+			const auto extension = entry.path().extension();
+			if (extension == L".hlsl" || extension == L".hlsli" || extension == L".ini")
+				files.push_back(entry.path());
+		}
+		std::ranges::sort(files, [&](const auto& lhs, const auto& rhs) {
+			return lhs.lexically_relative(root).generic_string() < rhs.lexically_relative(root).generic_string();
+		});
+
+		const auto mix = [&](const std::byte* data, std::size_t size) {
+			for (std::size_t i = 0; i < size; ++i) {
+				hash ^= std::to_integer<std::uint8_t>(data[i]);
+				hash *= kPrime;
+			}
+		};
+		std::array<char, 64 * 1024> buffer{};
+		for (const auto& path : files) {
+			const auto relative = path.lexically_relative(root).generic_string();
+			mix(reinterpret_cast<const std::byte*>(relative.data()), relative.size());
+			const char separator = '\0';
+			mix(reinterpret_cast<const std::byte*>(&separator), 1);
+			std::ifstream input(path, std::ios::binary);
+			if (!input)
+				return {};
+			while (input) {
+				input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+				const auto count = input.gcount();
+				if (count > 0)
+					mix(reinterpret_cast<const std::byte*>(buffer.data()), static_cast<std::size_t>(count));
+			}
+			if (!input.eof())
+				return {};
+		}
+		return std::format("{:016X}", hash);
+	}
+}
 
 namespace SIE
 {
@@ -2556,6 +2620,20 @@ namespace SIE
 				kPipelineShaderRevision, shaderRevision ? shaderRevision : "(missing)");
 			baseCacheValid = false;
 		}
+		const auto currentSourceFingerprint = ComputeShaderSourceFingerprint();
+		if (auto cachedFingerprint = ini.GetValue("Cache", "SourceFingerprint")) {
+			if (currentSourceFingerprint.empty() || strcmp(cachedFingerprint, currentSourceFingerprint.c_str()) != 0) {
+				logger::info("Disk cache outdated: shader source/include fingerprint changed (current: {}, cached: {})",
+					currentSourceFingerprint.empty() ? "unavailable" : currentSourceFingerprint,
+					cachedFingerprint);
+				baseCacheValid = false;
+			}
+		} else {
+			// Preserve the validated pre-fingerprint cache. It remains protected by
+			// the existing ABI/revision/module checks and will gain this field when
+			// the next cache metadata write occurs.
+			logger::info("Disk cache has no shader source fingerprint; retaining legacy-compatible cache");
+		}
 
 		// Validate every module independently. A module version/load-state change no
 		// longer destroys unrelated pipeline families: remove only the shader types
@@ -2740,6 +2818,8 @@ namespace SIE
 		ini.SetValue("Cache", "Layout", kPipelineCacheLayout);
 		ini.SetValue("Cache", "ShaderABI", kSharedShaderABI);
 		ini.SetValue("Cache", "ShaderRevision", kPipelineShaderRevision);
+		if (const auto sourceFingerprint = ComputeShaderSourceFingerprint(); !sourceFingerprint.empty())
+			ini.SetValue("Cache", "SourceFingerprint", sourceFingerprint.c_str());
 		ini.SaveFile(L"Data\\PIXL\\PipelineLibrary\\Library.ini");
 		logger::info("Saved PIXL pipeline library metadata (plugin version: {})", Plugin::VERSION.string());
 	}

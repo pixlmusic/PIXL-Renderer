@@ -201,6 +201,12 @@ namespace PIXL::Renderer
 		std::scoped_lock lock(mutex);
 		return frame;
 	}
+	bool TemporalContext::IsMainWorldContinuous(std::uint64_t frameIndex) const
+	{
+		std::scoped_lock lock(mutex);
+		return frame.current.frameIndex == frameIndex && frame.current.viewType == ViewType::MainWorld &&
+			frame.current.token.Valid() && frame.previousFrameValid && frame.frameInvalidations == 0;
+	}
 
 	TemporalDiagnostics TemporalContext::GetDiagnostics() const
 	{

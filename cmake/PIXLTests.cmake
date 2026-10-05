@@ -42,7 +42,7 @@ if(BUILD_TESTING)
 
     find_program(PIXL_TEST_POWERSHELL NAMES pwsh powershell)
     if(WIN32 AND PIXL_TEST_POWERSHELL)
-        foreach(_contract IN ITEMS RenderPassScheduler GPUResourceServices HookRegistry RendererMetadata LightTransportWorld ModuleRulesCache TemporalContext PixelAnnotations ReconstructionContext GPUWorkloadBudgeter ReflectionContext VolumetricContext)
+        foreach(_contract IN ITEMS RenderPassScheduler GPUResourceServices HookRegistry RendererMetadata LightTransportWorld ModuleRulesCache TemporalContext PixelAnnotations ReconstructionContext GPUWorkloadBudgeter ReflectionContext VolumetricContext ShaderCacheMetadata)
             add_test(
                 NAME PIXLContract${_contract}
                 COMMAND ${PIXL_TEST_POWERSHELL} -NoProfile -ExecutionPolicy Bypass

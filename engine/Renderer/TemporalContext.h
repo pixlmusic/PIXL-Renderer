@@ -149,6 +149,7 @@ namespace PIXL::Renderer
 		[[nodiscard]] bool IsHistoryValid(std::uint64_t id) const;
 
 		[[nodiscard]] TemporalFrameSnapshot GetFrameSnapshot() const;
+		[[nodiscard]] bool IsMainWorldContinuous(std::uint64_t frameIndex) const;
 		[[nodiscard]] TemporalDiagnostics GetDiagnostics() const;
 		[[nodiscard]] std::string GetLastInvalidationDetail() const;
 

@@ -1,5 +1,7 @@
 #include "VolumeOcclusion.h"
 
+#include "Renderer/GPUWorkloadBudgeter.h"
+
 #include "Globals.h"
 #include "State.h"
 #include "Utils/D3D.h"
@@ -78,6 +80,13 @@ void VolumeOcclusion::CopyShadowLightData()
 	TracyD3D11Zone(globals::state->tracyCtx, "VolumeOcclusion::CopyShadowLightData");
 
 	auto context = globals::d3d::context;
+	const float workloadScale = PIXL::Renderer::GPUWorkloadBudgeter::Get().GetScale(
+		PIXL::Renderer::WorkloadDomain::Volumetrics);
+	const std::uint32_t updateStride = workloadScale >= 0.99f ? 1u : 2u;
+	if (updateStride > 1u && globals::state && (globals::state->frameCount % updateStride) != 0u) {
+		SetSharedShadowMapSRV(context, shadowCopySRV);
+		return;
+	}
 
 	{
 		if (!globals::state->HasDirectionalShadows()) {

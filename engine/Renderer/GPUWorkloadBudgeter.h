@@ -8,7 +8,7 @@
 class Profiler;
 namespace PIXL::Renderer
 {
-	enum class WorkloadDomain : std::uint8_t { HybridGI, SkyBounce, Atmosphere, Reflections, GroundResponse, Water, CameraSuite, Reconstruction, Count };
+	enum class WorkloadDomain : std::uint8_t { HybridGI, SkyBounce, Atmosphere, Reflections, GroundResponse, Water, CameraSuite, Reconstruction, Volumetrics, Count };
 	struct WorkloadState { float lastMs{}, averageMs{}; std::uint8_t level{3}, maximumLevel{3}; std::uint32_t holdFrames{}; const char* reason{"stable"}; };
 	class GPUWorkloadBudgeter
 	{

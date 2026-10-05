@@ -2237,8 +2237,9 @@ bool ImageReconstruction::Upscale()
 	// Temporal continuity is renderer-owned. Backends consume a single typed
 	// history decision instead of independently estimating cuts and resolution
 	// changes (which previously disagreed with Auto-DOF and HybridGI).
-	if (reconstructionHistoryId != 0 &&
-		!PIXL::Renderer::TemporalContext::Get().IsHistoryValid(reconstructionHistoryId)) {
+	const bool sharedTemporalContinuity = PIXL::Renderer::TemporalContext::Get().IsMainWorldContinuous(state->frameCount);
+	if ((reconstructionHistoryId != 0 &&
+		!PIXL::Renderer::TemporalContext::Get().IsHistoryValid(reconstructionHistoryId)) || !sharedTemporalContinuity) {
 		pendingDLSSReset.store(true, std::memory_order_release);
 		pendingNeuralRenderingReset.store(true, std::memory_order_release);
 		FidelityFX::needsReset.store(true, std::memory_order_release);

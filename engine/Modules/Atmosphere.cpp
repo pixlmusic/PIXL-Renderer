@@ -752,9 +752,7 @@ void Atmosphere::Prepass()
 
 	const bool temporalReprojection = Util::GetTemporal();
 	const auto temporalFrame = PIXL::Renderer::TemporalContext::Get().GetFrameSnapshot();
-	const bool sharedTemporalContinuity = temporalFrame.current.frameIndex == globals::state->frameCount &&
-		temporalFrame.current.viewType == PIXL::Renderer::ViewType::MainWorld &&
-		temporalFrame.previousFrameValid;
+	const bool sharedTemporalContinuity = PIXL::Renderer::TemporalContext::Get().IsMainWorldContinuous(globals::state->frameCount);
 	const uint32_t lightingInputFlags =
 		(directionalShadowMap && directionalShadowLightData ? 1u : 0u) |
 		(depthSrv ? 2u : 0u) |
