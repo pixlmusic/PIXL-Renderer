@@ -59,10 +59,12 @@ namespace PIXL::Renderer
 		bool Enqueue(const OpticalReplayCommand& command) noexcept;
 		std::size_t ReplayOwner(void* owner, const FrameToken& token) noexcept;
 		std::size_t PendingCount() const noexcept { return count; }
+		OpticalRequirements PendingRequirements() const noexcept { return requirements; }
 
 	private:
 		std::array<OpticalReplayCommand, kCapacity> commands{};
 		std::size_t count{};
+		OpticalRequirements requirements{};
 		std::uint64_t frame{ FrameToken::kInvalidFrame };
 	};
 }

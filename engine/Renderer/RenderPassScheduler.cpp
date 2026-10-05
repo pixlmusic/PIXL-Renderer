@@ -51,6 +51,24 @@ namespace PIXL::Renderer
 			       (point == PassExecutionPoint::ReflectionsPrepass && module == "AmbientProbe") ||
 			       (point == PassExecutionPoint::Prepass && module == "Atmosphere");
 		}
+
+		QualityGroup LegacyQualityGroup(std::string_view module)
+		{
+			if (module == "GroundResponse" || module == "TerrainField" || module == "TerrainOcclusion" ||
+				module == "TerrainSeam" || module == "FoliageDynamics" || module == "FoliageOptimizer")
+				return QualityGroup::Terrain;
+			if (module == "Atmosphere" || module == "SkyVeil" || module == "VolumeOcclusion" ||
+				module == "RainResponse")
+				return QualityGroup::Atmosphere;
+			if (module == "WaterOptics" || module == "Waterbody" || module == "ContainedLiquids")
+				return QualityGroup::Water;
+			if (module == "ImageReconstruction" || module == "CameraSuite")
+				return QualityGroup::Reconstruction;
+			if (module == "HybridGI" || module == "AmbientProbe" || module == "WorldProbes" ||
+				module == "SkyBounce" || module == "RadiantGrid" || module == "LightVolumes")
+				return QualityGroup::Lighting;
+			return QualityGroup::Utility;
+		}
 	}
 
 	bool RenderPassContext::Read(RenderResource resource) const
@@ -134,7 +152,9 @@ namespace PIXL::Renderer
 				pass.allowedViews = point == PassExecutionPoint::ReflectionsPrepass ?
 					ViewBit(ViewType::Reflection) | ViewBit(ViewType::Cubemap) : ViewBit(ViewType::MainWorld);
 				pass.profilingEnabled = ProfileLegacyPass(moduleName, point);
-				pass.qualityGroup = QualityGroup::Utility;
+				pass.qualityGroup = LegacyQualityGroup(moduleName);
+				pass.resolutionDomain = point == PassExecutionPoint::ReflectionsPrepass ?
+					ResolutionDomain::Backing : ResolutionDomain::ActiveRender;
 				pass.execute = [module, callback](RenderPassContext&) { (module->*callback)(); };
 				RegisterPass(std::move(pass));
 			};

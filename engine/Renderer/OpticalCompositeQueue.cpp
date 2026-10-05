@@ -30,6 +30,7 @@ namespace PIXL::Renderer
 		for (auto& command : commands)
 			command = {};
 		count = 0;
+		requirements = 0;
 		frame = FrameToken::kInvalidFrame;
 	}
 
@@ -43,6 +44,9 @@ namespace PIXL::Renderer
 		for (std::size_t i = kept; i < count; ++i)
 			commands[i] = {};
 		count = kept;
+		requirements = 0;
+		for (std::size_t i = 0; i < count; ++i)
+			requirements |= commands[i].requirements;
 	}
 
 	bool OpticalCompositeQueue::Enqueue(const OpticalReplayCommand& command) noexcept
@@ -61,6 +65,7 @@ namespace PIXL::Renderer
 		if (count == commands.size())
 			return false;
 		commands[count++] = command;
+		requirements |= command.requirements;
 		return true;
 	}
 
