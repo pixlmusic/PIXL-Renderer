@@ -112,7 +112,7 @@ namespace WindowLife
     bool HasAuthoredPaneTexture() { return GetPaneSourceFlags() != 0u; }
     bool IsExplicitWindow() { return GetClass0().w > 0.5f; }
     bool HasDiffuseNamedWindow() { return GetClass0().w > 1.5f; }
-    bool SuppressAutoPOM() { return GetGlass1().w > 0.5f; }
+    bool SuppressPaneParallax() { return GetGlass1().w > 0.5f; }
     uint GetDebugMode() { return (uint)floor(GetRuntime1().x + 0.5f); }
 
     float3 SampleAuthoredPaneTexture(float2 materialUV)
@@ -582,16 +582,18 @@ namespace WindowLife
         float maskMip = clamp(log2(max(maskFootprint, 1.0f)),
                               0.0f, (float)(glowMipCount - 1u));
 
-        // Solitude and the other authored architectural window glow maps already
-        // encode glass as bright and frames/masonry as black. Treat that channel
-        // as authoritative. Fixed conservative thresholds keep user diffuse-mask
-        // tuning from expanding glass back onto frames while retaining small panes.
+        // Native glow and exact masks remain authoritative. Expose a bounded
+        // threshold/feather adjustment; the erosion and normal guards below
+        // continue to keep authored rooms off frames and masonry.
         float authoredLuma = max(glowLuma, 0.0f);
         if (HasExternalAuthoredMask()) {
             float3 authoredMask = SampleAuthoredPaneTexture(materialUV);
             authoredLuma = dot(max(authoredMask, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
         }
-        float glowPane = smoothstep(0.028f, 0.145f, authoredLuma);
+        float paneCentre = clamp(0.0865f + (GetSurface0().z - 0.15f) * 0.075f, 0.055f, 0.14f);
+        float paneHalfWidth = 0.0585f * clamp(GetSurface0().w / 0.15f, 0.55f, 1.65f);
+        float paneLow = max(paneCentre - paneHalfWidth, 0.006f);
+        float glowPane = smoothstep(paneLow, max(paneCentre + paneHalfWidth, paneLow + 0.02f), authoredLuma);
         // The surrounding erode stencil has twelve additional samples. On a
         // facade, most pixels are not luminous panes and can reject here.
         [branch] if (glowPane <= 1.0e-4f)

@@ -22,13 +22,13 @@ struct ContainedLiquids : RenderModule
     std::pair<std::string, std::vector<std::string>> GetModuleSummary() override
     { return {"Experimental contained-liquid optics for potions and verified clear-container beverages.", {"Effect-aware potion colours", "Clear-glass alcohol profiles", "Gravity-relative fill", "Inertial slosh"}}; }
     struct Settings {
-        bool Enabled = false;
-        float Fill = 0.75f, SloshStrength = 1.0f, Damping = 0.55f;
-        float Absorption = 1.0f, Refraction = 0.65f;
-        float BubbleStrength = 0.22f, InternalReflection = 0.45f;
+        bool Enabled = true;
+        float Fill = 0.70f, SloshStrength = 1.40f, Damping = 0.25f;
+        float Absorption = 1.0f, Refraction = 1.0f;
+        float BubbleStrength = 0.20f, InternalReflection = 1.0f;
         float SubsurfaceScattering = 0.55f;
-        float Emission = 0.18f;          // Magical potion emission.
-        float OrdinaryEmission = 0.0f;  // Alcohol/ordinary liquid emission; opt-in art control.
+        float Emission = 2.40f;          // Magical potion emission.
+        float OrdinaryEmission = 1.20f;  // Alcohol/ordinary liquid art control.
         float LabelPreservation = 0.90f;
         bool Freeze = false;
         int Debug = 0;
@@ -55,7 +55,7 @@ private:
     struct ObjectState {
         std::uintptr_t key{};
         std::uint32_t reference{}, frame{};
-        float time{};
+        float time{}, animationTime{}, bubbleTime{}, agitation{};
         RE::NiPoint3 position{}, velocity{}, angularVelocity{};
         std::array<RE::NiPoint3,3> basis{};
         float tilt[2]{}, speed[2]{};

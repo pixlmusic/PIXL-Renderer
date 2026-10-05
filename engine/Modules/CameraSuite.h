@@ -157,6 +157,7 @@ public:
 
 		// Experimental body-worn digital camera emulation. Disabled by default.
 		bool experimentalBodycam = false;
+		bool enableLensEffects = false;
 		float bodycamStrength = 0.75f;
 		float bodycamDistortion = 0.12f;
 		float bodycamNoise = 0.18f;
@@ -378,7 +379,7 @@ public:
 		float lookEnabled;
 		float lookOpacity;
 		float cameraInfluence;
-		float auxiliaryPassMask;          ///< 1=bloom pyramid, 2=local exposure, 4=Stormglass field
+		float auxiliaryPassMask;          ///< 1=bloom, 2=local exposure, 4=Stormglass, 8=independent lens finishing
 
 		float bloomEnabled;
 		float bloomStrength;

@@ -56,7 +56,7 @@ cbuffer PerFrame : register(b0)
 	float lookEnabled : packoffset(c10.x);
 	float lookOpacity : packoffset(c10.y);
 	float cameraInfluence : packoffset(c10.z);
-	float auxiliaryPassMask : packoffset(c10.w);
+	float auxiliaryPassMask : packoffset(c10.w); // 1=bloom, 2=local exposure, 4=Stormglass, 8=lens finishing
 
 	float bloomEnabled : packoffset(c11.x);
 	float bloomStrength : packoffset(c11.y);

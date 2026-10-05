@@ -37,7 +37,7 @@ struct WindowLife : RenderModule
                 T("feature.window_life.key_feature_1", "Old-glass Fresnel response, stable roughness/grime variation and restrained optical waviness"),
                 T("feature.window_life.key_feature_2", "Window classes keep silhouettes out of tiny, roof and awning panes"),
                 T("feature.window_life.key_feature_3", "Procedurally fitted, asynchronous occupants with varied articulated motion and depth parallax"),
-                T("feature.window_life.key_feature_4", "Window glass selectively overrides synthetic Auto-POM while retaining relief on frames and surrounding architecture")
+                T("feature.window_life.key_feature_4", "Window glass selectively suppresses parallax while retaining relief on frames and surrounding architecture")
             }
         };
     }
@@ -115,8 +115,8 @@ struct WindowLife : RenderModule
         // Distance LOD and pane discrimination.
         float DistanceFadeStart = 7162.0f;
         float DistanceFadeEnd = 16000.0f;
-        float PaneThreshold = 0.19f;
-        float PaneSoftness = 0.09f;
+        float PaneThreshold = 0.15f;
+        float PaneSoftness = 0.15f;
 
         // Stable procedural room grid and event cadence.
         // Owner-validated fallback calibration. Preserve this path while the
@@ -169,7 +169,7 @@ struct WindowLife : RenderModule
         float4 Runtime1{};
         // c4: x glass strength, y reflection boost, z target roughness, w transmission
         float4 Glass0{};
-        // c5: x dirt, y distortion, z normal retention, w suppress Auto-POM
+        // c5: x dirt, y distortion, z normal retention, w suppress pane parallax
         float4 Glass1{};
         // c6: x material tier [1..3], y glass evidence (2 diffuse, 1 other slot), z pane-source flags,
         //     w explicit window evidence (2 diffuse name, 1 paired glow, 0 other)

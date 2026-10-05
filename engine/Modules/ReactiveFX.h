@@ -46,7 +46,9 @@ struct ReactiveFX : RenderModule
 		Illusion,
 		Shout,
 		HeavyImpact,
-		Dwemer
+		Dwemer,
+		AmbientFire,
+		AmbientCandle
 	};
 
 	enum class ImpulseType : std::uint32_t
@@ -54,6 +56,18 @@ struct ReactiveFX : RenderModule
 		Radial,
 		Directional,
 		TravellingWave
+	};
+
+	enum class ParticleType : std::uint32_t
+	{
+		Spark = 0,
+		FrostCrystal = 1,
+		Fragment = 2,
+		SmokeDust = 3,
+		SoftPuff = 4,
+		MagicMote = 5,
+		HotStreak = 6,
+		LeafCard = 7
 	};
 
 	struct Settings
@@ -225,9 +239,9 @@ private:
 		std::uint32_t collisionBudget{};
 		std::uint32_t debugMode{};
 		float collisionEnabled{};
-		float reserved0{};
-		float pad0{};
-		float pad1{};
+		std::uint32_t activeImpulseCount{};
+		std::uint32_t collisionPhase{};
+		float opticalActive{};
 	};
 	STATIC_ASSERT_ALIGNAS_16(TuningData);
 	static_assert(sizeof(TuningData) == 64, "ReactiveFX tuning ABI mismatch");
@@ -263,19 +277,21 @@ private:
 	};
 
 	void ProcessQueuedEvents();
-	void SpawnEvent(const Event& event);
+	void QueueAmbientEmitters(float deltaTime);
+	void SpawnEvent(const Event& event, float primaryScale = 1.0f, float secondaryScale = 1.0f);
 	void AddImpulseForEvent(const Event& event);
 	void UploadSpawnCommands();
 	void UploadImpulses(float deltaTime);
 	void EnsureMask(std::uint32_t width, std::uint32_t height);
-	void EnsureSceneColorCopy(const D3D11_TEXTURE2D_DESC& sourceDesc);
+	void EnsureSceneColorCopy(const D3D11_TEXTURE2D_DESC& sourceDesc, std::uint32_t width, std::uint32_t height);
 	bool EnsureShaders();
 	Recipe ResolveRecipe(SourceType source, SurfaceType surface) const;
 	SourceType ClassifyMagic(const RE::MagicItem* magic) const;
 	void QueueDebugEvent(SourceType source, SurfaceType surface, ImpulseType impulse);
 
 	std::mutex eventMutex;
-	std::vector<Event> queuedEvents;
+	std::array<std::vector<Event>, 2> eventQueues{};
+	std::uint32_t producerQueue{};
 	std::vector<SpawnCommand> spawnCommands;
 	std::array<ActiveImpulse, kMaximumImpulses> impulses{};
 		std::uint32_t nextParticleSlot{};
@@ -285,8 +301,13 @@ private:
 	std::uint32_t droppedEvents{};
 	std::uint32_t droppedParticles{};
 	std::uint32_t lastEventSeed{ 1u };
+	std::uint32_t activeImpulseCount{};
+	std::uint32_t collisionPhase{};
+	std::uint32_t activeQuality{ ~0u };
 		float simulationTimeRemaining{};
+		float opticalTimeRemaining{};
 		float footstepCooldown{};
+		float ambientScanCountdown{};
 	SurfaceType lastSurface{ SurfaceType::Unknown };
 	SourceType lastSource{ SourceType::Unknown };
 
@@ -309,4 +330,5 @@ private:
 	bool resourceFailureLogged{};
 	bool eventSinksRegistered{};
 	bool wasEnabled{};
+	float resourceRetryDelay{};
 };

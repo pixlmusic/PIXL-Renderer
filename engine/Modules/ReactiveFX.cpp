@@ -14,6 +14,7 @@
 #include <array>
 #include <cmath>
 #include <cctype>
+#include <limits>
 #include <string>
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
@@ -75,20 +76,16 @@ namespace
 		return minimum + (maximum - minimum) * Random01(state);
 	}
 
-	std::string Lower(std::string_view text)
+	bool ContainsNoCase(std::string_view value, std::string_view needle)
 	{
-		std::string result;
-		result.reserve(text.size());
-		for (const char c : text)
-			result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-		return result;
-	}
-
-	bool ContainsAny(std::string_view value, std::initializer_list<std::string_view> needles)
-	{
-		for (const auto needle : needles) {
-			if (value.find(needle) != std::string_view::npos)
-				return true;
+		if (needle.empty() || needle.size() > value.size()) return false;
+		for (std::size_t offset = 0; offset + needle.size() <= value.size(); ++offset) {
+			bool match = true;
+			for (std::size_t i = 0; i < needle.size(); ++i) {
+				if (std::tolower(static_cast<unsigned char>(value[offset + i])) !=
+					std::tolower(static_cast<unsigned char>(needle[i]))) { match = false; break; }
+			}
+			if (match) return true;
 		}
 		return false;
 	}
@@ -189,6 +186,8 @@ const char* ReactiveFX::SourceName(SourceType source)
 	case SourceType::Shout: return "Shout";
 	case SourceType::HeavyImpact: return "Heavy Impact";
 	case SourceType::Dwemer: return "Dwemer";
+	case SourceType::AmbientFire: return "Ambient Fire";
+	case SourceType::AmbientCandle: return "Ambient Candle";
 	default: return "Unknown";
 	}
 }
@@ -258,15 +257,14 @@ ReactiveFX::SurfaceType ReactiveFX::ClassifyMaterial(const RE::BGSMaterialType* 
 		break;
 	}
 
-	const char* materialName = material->materialName.c_str();
-	const std::string fallback = materialName ? Lower(materialName) : std::string{};
-	if (ContainsAny(fallback, { "stone", "rock", "boulder" })) return SurfaceType::Stone;
-	if (ContainsAny(fallback, { "metal", "steel", "iron", "dwemer" })) return SurfaceType::Metal;
-	if (ContainsAny(fallback, { "wood", "timber" })) return SurfaceType::Wood;
-	if (fallback.find("snow") != std::string::npos) return SurfaceType::Snow;
-	if (fallback.find("ice") != std::string::npos) return SurfaceType::Ice;
-	if (fallback.find("mud") != std::string::npos) return SurfaceType::Mud;
-	if (fallback.find("dirt") != std::string::npos) return SurfaceType::Dirt;
+	const std::string_view fallback = material->materialName.c_str();
+	if (ContainsNoCase(fallback, "stone") || ContainsNoCase(fallback, "rock") || ContainsNoCase(fallback, "boulder")) return SurfaceType::Stone;
+	if (ContainsNoCase(fallback, "metal") || ContainsNoCase(fallback, "steel") || ContainsNoCase(fallback, "iron") || ContainsNoCase(fallback, "dwemer")) return SurfaceType::Metal;
+	if (ContainsNoCase(fallback, "wood") || ContainsNoCase(fallback, "timber")) return SurfaceType::Wood;
+	if (ContainsNoCase(fallback, "snow")) return SurfaceType::Snow;
+	if (ContainsNoCase(fallback, "ice")) return SurfaceType::Ice;
+	if (ContainsNoCase(fallback, "mud")) return SurfaceType::Mud;
+	if (ContainsNoCase(fallback, "dirt")) return SurfaceType::Dirt;
 	return SurfaceType::Unknown;
 }
 
@@ -289,22 +287,20 @@ ReactiveFX::SourceType ReactiveFX::ClassifyMagic(const RE::MagicItem* magic) con
 			return SourceType::Shock;
 	}
 
-	std::string identity;
-	if (const char* id = magic->GetFormEditorID(); id && *id)
-		identity = Lower(id);
-	if (ContainsAny(identity, { "fire", "flame", "burn" })) return SourceType::Fire;
-	if (ContainsAny(identity, { "frost", "ice", "freeze" })) return SourceType::Frost;
-	if (ContainsAny(identity, { "shock", "lightning", "electric" })) return SourceType::Shock;
-	if (ContainsAny(identity, { "restore", "heal" })) return SourceType::Restoration;
-	if (ContainsAny(identity, { "conjur", "summon", "raise" })) return SourceType::Conjuration;
-	if (ContainsAny(identity, { "illusion", "fear", "frenzy", "calm" })) return SourceType::Illusion;
-	if (ContainsAny(identity, { "dwemer", "dwarven", "centurion", "automaton" })) return SourceType::Dwemer;
+	const std::string_view identity = magic->GetFormEditorID() ? magic->GetFormEditorID() : "";
+	if (ContainsNoCase(identity, "fire") || ContainsNoCase(identity, "flame") || ContainsNoCase(identity, "burn")) return SourceType::Fire;
+	if (ContainsNoCase(identity, "frost") || ContainsNoCase(identity, "ice") || ContainsNoCase(identity, "freeze")) return SourceType::Frost;
+	if (ContainsNoCase(identity, "shock") || ContainsNoCase(identity, "lightning") || ContainsNoCase(identity, "electric")) return SourceType::Shock;
+	if (ContainsNoCase(identity, "restore") || ContainsNoCase(identity, "heal")) return SourceType::Restoration;
+	if (ContainsNoCase(identity, "conjur") || ContainsNoCase(identity, "summon") || ContainsNoCase(identity, "raise")) return SourceType::Conjuration;
+	if (ContainsNoCase(identity, "illusion") || ContainsNoCase(identity, "fear") || ContainsNoCase(identity, "frenzy") || ContainsNoCase(identity, "calm")) return SourceType::Illusion;
+	if (ContainsNoCase(identity, "dwemer") || ContainsNoCase(identity, "dwarven") || ContainsNoCase(identity, "centurion") || ContainsNoCase(identity, "automaton")) return SourceType::Dwemer;
 	return SourceType::Unknown;
 }
 
 void ReactiveFX::SetupResources()
 {
-	if (particles || resourceCreationAttempted || !globals::d3d::device || !globals::d3d::context)
+	if (particles || resourceCreationAttempted || resourceRetryDelay > 0.0f || !globals::d3d::device || !globals::d3d::context)
 		return;
 	resourceCreationAttempted = true;
 
@@ -337,6 +333,8 @@ void ReactiveFX::SetupResources()
 		const UINT clear[4]{};
 		globals::d3d::context->ClearUnorderedAccessViewUint(particles->uav.get(), clear);
 		EnsureShaders();
+		for (auto& queue : eventQueues) queue.reserve(kMaximumQueuedEvents);
+		spawnCommands.reserve(kMaximumSpawnCommands);
 		logger::info(
 			"[ReactiveFX] GPU foundation ready: particles={} spawnBatch={} impulses={} shaderReady={}",
 			kMaximumParticles,
@@ -351,6 +349,8 @@ void ReactiveFX::SetupResources()
 		impulseSRV = nullptr;
 		tuningCB.reset();
 		reactivePassReady = false;
+		resourceCreationAttempted = false;
+		resourceRetryDelay = 1.0f;
 		if (!resourceFailureLogged) {
 			logger::error("[ReactiveFX] Resource creation failed; module disabled safely: {}", e.what());
 			resourceFailureLogged = true;
@@ -409,15 +409,19 @@ void ReactiveFX::EnsureMask(std::uint32_t width, std::uint32_t height)
 	particleMask->CreateUAV(uavDesc);
 }
 
-void ReactiveFX::EnsureSceneColorCopy(const D3D11_TEXTURE2D_DESC& sourceDesc)
+void ReactiveFX::EnsureSceneColorCopy(const D3D11_TEXTURE2D_DESC& sourceDesc, std::uint32_t width, std::uint32_t height)
 {
-	if (sceneColorCopy && sceneColorCopy->desc.Width == sourceDesc.Width &&
-		sceneColorCopy->desc.Height == sourceDesc.Height &&
+	if (sourceDesc.SampleDesc.Count != 1 || width == 0 || height == 0)
+		throw std::runtime_error("ReactiveFX scene copy requires a single-sample active render extent");
+	if (sceneColorCopy && sceneColorCopy->desc.Width == width &&
+		sceneColorCopy->desc.Height == height &&
 		sceneColorCopy->desc.Format == sourceDesc.Format)
 		return;
 
 	sceneColorCopy.reset();
 	D3D11_TEXTURE2D_DESC copyDesc = sourceDesc;
+	copyDesc.Width = width;
+	copyDesc.Height = height;
 	copyDesc.MipLevels = 1;
 	copyDesc.ArraySize = 1;
 	copyDesc.Usage = D3D11_USAGE_DEFAULT;
@@ -441,8 +445,9 @@ void ReactiveFX::QueueEvent(const Event& event)
 		return;
 	}
 
-	if (auto* player = RE::PlayerCharacter::GetSingleton()) {
-		const RE::NiPoint3 delta = event.position - player->GetPosition();
+	const auto camera = globals::game::frameBufferCached.GetCameraPosAdjust();
+	if (Finite({ camera.x, camera.y, camera.z })) {
+		const RE::NiPoint3 delta = event.position - RE::NiPoint3{ camera.x, camera.y, camera.z };
 		if (Length(delta) > std::clamp(settings.MaximumDistance, 512.0f, 50000.0f))
 			return;
 	}
@@ -451,15 +456,15 @@ void ReactiveFX::QueueEvent(const Event& event)
 	sanitized.radius = std::clamp(sanitized.radius, 4.0f, 4096.0f);
 	sanitized.strength = std::clamp(sanitized.strength, 0.02f, 8.0f);
 	sanitized.direction = Normalize(sanitized.direction);
+	std::scoped_lock lock(eventMutex);
 	if (sanitized.seed == 0)
 		sanitized.seed = Hash(++lastEventSeed ^ sanitized.sourceFormID);
-
-	std::scoped_lock lock(eventMutex);
-	if (queuedEvents.size() >= kMaximumQueuedEvents) {
+	auto& queue = eventQueues[producerQueue];
+	if (queue.size() >= kMaximumQueuedEvents) {
 		++droppedEvents;
 		return;
 	}
-	queuedEvents.push_back(sanitized);
+	queue.push_back(sanitized);
 }
 
 void ReactiveFX::ApplyImpulse(
@@ -497,8 +502,8 @@ ReactiveFX::Recipe ReactiveFX::ResolveRecipe(SourceType source, SurfaceType surf
 	recipe.drag = 1.2f;
 	recipe.restitution = 0.34f;
 	recipe.friction = 0.42f;
-	recipe.primaryType = 2;
-	recipe.secondaryType = 3;
+        recipe.primaryType = static_cast<std::uint32_t>(ParticleType::Fragment);
+        recipe.secondaryType = static_cast<std::uint32_t>(ParticleType::SmokeDust);
 	recipe.collisionPrimary = true;
 	recipe.collisionSecondary = false;
 
@@ -510,6 +515,14 @@ ReactiveFX::Recipe ReactiveFX::ResolveRecipe(SourceType source, SurfaceType surf
 		recipe = { 42, 16, 110.0f, 620.0f, 0.45f, 2.2f, 0.8f, 3.4f,
 			{ 1.0f, 0.22f, 0.025f }, { 0.22f, 0.16f, 0.12f }, -0.08f, 0.72f,
 			0.28f, 0.25f, 6, 3, true, false, true, false };
+	} else if (source == SourceType::AmbientFire) {
+		recipe = { 3, 2, 70.0f, 200.0f, 0.45f, 1.45f, 0.45f, 1.3f,
+			{ 1.0f, 0.30f, 0.055f }, { 0.19f, 0.17f, 0.15f }, 0.28f, 0.42f,
+			0.31f, 0.38f, 6, 3, true, false, true, false };
+	} else if (source == SourceType::AmbientCandle) {
+		recipe = { 1, 1, 12.0f, 46.0f, 0.24f, 0.72f, 0.30f, 0.75f,
+			{ 1.0f, 0.68f, 0.24f }, { 0.54f, 0.53f, 0.51f }, -0.07f, 1.7f,
+			0.08f, 0.62f, 0, 3, true, false, false, false };
 	} else if (source == SourceType::Frost) {
 		recipe = { 38, 14, 90.0f, 480.0f, 0.55f, 1.9f, 1.0f, 5.2f,
 			{ 0.40f, 0.78f, 1.0f }, { 0.72f, 0.90f, 1.0f }, 0.72f, 0.55f,
@@ -567,8 +580,8 @@ ReactiveFX::Recipe ReactiveFX::ResolveRecipe(SourceType source, SurfaceType surf
 		recipe.drag = 0.36f;
 		recipe.restitution = 0.48f;
 		recipe.friction = 0.18f;
-		recipe.primaryType = 6;
-		recipe.secondaryType = 2;
+		recipe.primaryType = static_cast<std::uint32_t>(ParticleType::Spark);
+		recipe.secondaryType = static_cast<std::uint32_t>(ParticleType::Fragment);
 		recipe.additivePrimary = true;
 		recipe.collisionPrimary = true;
 		recipe.collisionSecondary = true;
@@ -584,16 +597,16 @@ ReactiveFX::Recipe ReactiveFX::ResolveRecipe(SourceType source, SurfaceType surf
 		recipe.lifetimeMax = 1.1f;
 		recipe.primaryColor = { 1.0f, 0.52f, 0.14f };
 		recipe.secondaryColor = { 0.58f, 0.55f, 0.49f };
-		recipe.primaryType = 0;
-		recipe.secondaryType = 2;
+		recipe.primaryType = static_cast<std::uint32_t>(ParticleType::Spark);
+		recipe.secondaryType = static_cast<std::uint32_t>(ParticleType::Fragment);
 		recipe.additivePrimary = true;
 		recipe.collisionPrimary = true;
 		recipe.collisionSecondary = true;
 	} else if (surface == SurfaceType::Wood && physicalSource) {
 		recipe.primaryColor = { 0.42f, 0.22f, 0.08f };
 		recipe.secondaryColor = { 0.24f, 0.16f, 0.09f };
-		recipe.primaryType = 2;
-		recipe.secondaryType = 3;
+		recipe.primaryType = static_cast<std::uint32_t>(ParticleType::Fragment);
+		recipe.secondaryType = static_cast<std::uint32_t>(ParticleType::SmokeDust);
 		recipe.primaryCount += 8;
 		recipe.collisionPrimary = true;
 	} else if ((surface == SurfaceType::Snow || surface == SurfaceType::Ice) &&
@@ -602,8 +615,8 @@ ReactiveFX::Recipe ReactiveFX::ResolveRecipe(SourceType source, SurfaceType surf
 			? float3{ 0.52f, 0.82f, 1.0f }
 			: float3{ 0.90f, 0.95f, 1.0f };
 		recipe.secondaryColor = { 0.72f, 0.82f, 0.92f };
-		recipe.primaryType = surface == SurfaceType::Ice ? 1u : 4u;
-		recipe.secondaryType = 4;
+		recipe.primaryType = static_cast<std::uint32_t>(surface == SurfaceType::Ice ? ParticleType::FrostCrystal : ParticleType::SoftPuff);
+		recipe.secondaryType = static_cast<std::uint32_t>(ParticleType::SoftPuff);
 		recipe.primaryCount += 12;
 		recipe.gravityScale = surface == SurfaceType::Ice ? 0.72f : 0.32f;
 		recipe.drag = surface == SurfaceType::Ice ? 0.48f : 1.7f;
@@ -625,8 +638,8 @@ ReactiveFX::Recipe ReactiveFX::ResolveRecipe(SourceType source, SurfaceType surf
 		} else {
 			recipe.primaryColor = { 0.38f, 0.28f, 0.17f };
 		}
-		recipe.primaryType = 2;
-		recipe.secondaryType = 3;
+		recipe.primaryType = static_cast<std::uint32_t>(ParticleType::Fragment);
+		recipe.secondaryType = static_cast<std::uint32_t>(ParticleType::SmokeDust);
 		recipe.additivePrimary = false;
 	} else if (surface == SurfaceType::Flesh) {
 		// Physical contact on flesh deliberately suppresses generic sparks/chips.
@@ -639,14 +652,14 @@ ReactiveFX::Recipe ReactiveFX::ResolveRecipe(SourceType source, SurfaceType surf
 			// Preserve incandescent embers but turn the secondary population into
 			// short-lived steam instead of recolouring the whole fire recipe blue.
 			recipe.secondaryColor = { 0.62f, 0.66f, 0.68f };
-			recipe.secondaryType = 3;
+			recipe.secondaryType = static_cast<std::uint32_t>(ParticleType::SmokeDust);
 			recipe.secondaryCount = std::max(recipe.secondaryCount, 28u);
 			recipe.collisionPrimary = false;
 		} else if (physicalSource || source == SourceType::Frost) {
 			recipe.primaryColor = { 0.52f, 0.72f, 0.82f };
 			recipe.secondaryColor = { 0.40f, 0.56f, 0.68f };
-			recipe.primaryType = 4;
-			recipe.secondaryType = 3;
+			recipe.primaryType = static_cast<std::uint32_t>(ParticleType::SoftPuff);
+			recipe.secondaryType = static_cast<std::uint32_t>(ParticleType::SmokeDust);
 			recipe.collisionPrimary = false;
 		}
 	}
@@ -674,8 +687,8 @@ ReactiveFX::Recipe ReactiveFX::ResolveRecipe(SourceType source, SurfaceType surf
 		recipe.drag = 1.15f;
 		recipe.restitution = 0.12f;
 		recipe.friction = 0.56f;
-		recipe.primaryType = 0;
-		recipe.secondaryType = 3;
+		recipe.primaryType = static_cast<std::uint32_t>(ParticleType::Spark);
+		recipe.secondaryType = static_cast<std::uint32_t>(ParticleType::SmokeDust);
 		recipe.additivePrimary = true;
 		recipe.additiveSecondary = false;
 		recipe.collisionPrimary = true;
@@ -706,8 +719,8 @@ ReactiveFX::Recipe ReactiveFX::ResolveRecipe(SourceType source, SurfaceType surf
 	recipe.drag = surface == SurfaceType::Mud ? 2.5f : 1.45f;
 	recipe.restitution = 0.14f;
 	recipe.friction = 0.72f;
-	recipe.primaryType = 2;
-	recipe.secondaryType = 7;
+		recipe.primaryType = static_cast<std::uint32_t>(ParticleType::Fragment);
+		recipe.secondaryType = static_cast<std::uint32_t>(ParticleType::LeafCard);
 	recipe.additivePrimary = false;
 	recipe.additiveSecondary = false;
 	recipe.collisionPrimary = true;
@@ -731,8 +744,8 @@ ReactiveFX::Recipe ReactiveFX::ResolveRecipe(SourceType source, SurfaceType surf
 		recipe.drag = 0.82f;
 		recipe.restitution = 0.28f;
 		recipe.friction = 0.58f;
-		recipe.primaryType = 2;
-	recipe.secondaryType = 2;
+	recipe.primaryType = static_cast<std::uint32_t>(ParticleType::Fragment);
+	recipe.secondaryType = static_cast<std::uint32_t>(ParticleType::Fragment);
 	recipe.additivePrimary = false;
 	recipe.additiveSecondary = false;
 	recipe.collisionPrimary = true;
@@ -743,7 +756,7 @@ ReactiveFX::Recipe ReactiveFX::ResolveRecipe(SourceType source, SurfaceType surf
 	return recipe;
 }
 
-void ReactiveFX::SpawnEvent(const Event& event)
+void ReactiveFX::SpawnEvent(const Event& event, float primaryScale, float secondaryScale)
 {
 	const Recipe recipe = ResolveRecipe(event.source, event.surface);
 	const auto quality = std::min(settings.Quality, 3u);
@@ -751,8 +764,8 @@ void ReactiveFX::SpawnEvent(const Event& event)
 	const std::uint32_t capacity = kParticleCaps[quality];
 	const std::uint32_t debrisCapacity = std::min(kHeroParticleReserve, capacity / 4u);
 	const std::uint32_t particleCapacity = capacity - debrisCapacity;
-	const std::uint32_t primaryCount = static_cast<std::uint32_t>(std::round(recipe.primaryCount * qualityScale));
-	const std::uint32_t secondaryCount = static_cast<std::uint32_t>(std::round(recipe.secondaryCount * qualityScale));
+	const std::uint32_t primaryCount = static_cast<std::uint32_t>(std::round(recipe.primaryCount * qualityScale * std::clamp(primaryScale, 0.0f, 1.0f)));
+	const std::uint32_t secondaryCount = static_cast<std::uint32_t>(std::round(recipe.secondaryCount * qualityScale * std::clamp(secondaryScale, 0.0f, 1.0f)));
 	const RE::NiPoint3 direction = Normalize(event.direction);
 	const RE::NiPoint3 tangent = Normalize(
 		std::abs(direction.z) < 0.88f ? RE::NiPoint3{ -direction.y, direction.x, 0.0f } : RE::NiPoint3{ 1.0f, 0.0f, 0.0f });
@@ -767,8 +780,10 @@ void ReactiveFX::SpawnEvent(const Event& event)
 		// the smoke close to each spark's launch path so it reads as a short-lived
 		// black trail instead of a separate pale cloud. Metal/metal recipes use
 		// type 2 for their secondary fragments and are deliberately unaffected.
-		const bool fireSmokeTrail = secondary && (recipe.primaryType == 0u || recipe.primaryType == 6u) &&
-			recipe.secondaryType == 3u && recipe.additivePrimary;
+		const bool fireSmokeTrail = secondary &&
+			(recipe.primaryType == static_cast<std::uint32_t>(ParticleType::Spark) ||
+				recipe.primaryType == static_cast<std::uint32_t>(ParticleType::HotStreak)) &&
+			recipe.secondaryType == static_cast<std::uint32_t>(ParticleType::SmokeDust) && recipe.additivePrimary;
 		for (std::uint32_t i = 0; i < count; ++i) {
 			if (spawnCommands.size() >= kMaximumSpawnCommands) {
 				droppedParticles += count - i;
@@ -825,7 +840,7 @@ void ReactiveFX::SpawnEvent(const Event& event)
 			particle.restitution = recipe.restitution;
 			particle.friction = recipe.friction;
 			particle.collisionThickness = std::clamp(particle.size * 2.0f, 2.0f, 18.0f);
-			particle.type = secondary ? recipe.secondaryType : recipe.primaryType;
+				particle.type = secondary ? recipe.secondaryType : recipe.primaryType;
 			const bool additive = secondary ? recipe.additiveSecondary : recipe.additivePrimary;
 			const bool collision = secondary ? recipe.collisionSecondary : recipe.collisionPrimary;
 			particle.flags = (additive ? 1u : 0u) | (collision ? 2u : 0u);
@@ -842,6 +857,8 @@ void ReactiveFX::SpawnEvent(const Event& event)
 	spawnPopulation(primaryCount, false);
 	spawnPopulation(secondaryCount, true);
 	simulationTimeRemaining = std::max(simulationTimeRemaining, recipe.lifetimeMax + 0.25f);
+	if (event.source == SourceType::Fire || event.source == SourceType::Frost)
+		opticalTimeRemaining = std::max(opticalTimeRemaining, recipe.lifetimeMax + 0.1f);
 	lastSurface = event.surface;
 	lastSource = event.source;
 }
@@ -853,14 +870,31 @@ void ReactiveFX::AddImpulseForEvent(const Event& event)
 		return;
 	}
 
-	auto& impulse = impulses[nextImpulseSlot++ % kMaximumImpulses].gpu;
+	std::size_t selected = kMaximumImpulses;
+	float leastUseful = std::numeric_limits<float>::max();
+	for (std::size_t i = 0; i < impulses.size(); ++i) {
+		const auto& candidate = impulses[i].gpu;
+		if (candidate.active == 0u) {
+			selected = i;
+			break;
+		}
+		const float remaining = std::max(candidate.duration - candidate.age, 0.0f);
+		const float usefulness = remaining * std::max(candidate.strength, 0.01f);
+		if (usefulness < leastUseful) {
+			leastUseful = usefulness;
+			selected = i;
+		}
+	}
+	if (selected >= impulses.size())
+		return;
+	auto& impulse = impulses[selected].gpu;
 	impulse = {};
 	impulse.position = { event.position.x, event.position.y, event.position.z };
 	impulse.radius = std::clamp(event.radius, 48.0f, 4096.0f);
 	const auto direction = Normalize(event.direction, { 1.0f, 0.0f, 0.0f });
 	impulse.direction = { direction.x, direction.y, direction.z };
 	impulse.strength = std::clamp(event.strength, 0.05f, 4.0f);
-	const bool shoutBurst = event.source == SourceType::Shout;
+	const bool shoutBurst = event.source == SourceType::Shout && event.impulse != ImpulseType::TravellingWave;
 	impulse.duration = shoutBurst ? 0.55f : (event.impulse == ImpulseType::TravellingWave ? 2.8f : 1.6f);
 	impulse.waveSpeed = shoutBurst ? 0.0f : (event.impulse == ImpulseType::TravellingWave
 		? std::clamp(event.radius / 1.15f, 220.0f, 1800.0f)
@@ -869,31 +903,69 @@ void ReactiveFX::AddImpulseForEvent(const Event& event)
 	impulse.active = 1u;
 	impulse.falloff = shoutBurst ? 1.1f : (event.impulse == ImpulseType::TravellingWave ? 1.6f : 2.2f);
 	impulse.verticalInfluence = event.source == SourceType::HeavyImpact ? 0.24f : 0.08f;
+	simulationTimeRemaining = std::max(simulationTimeRemaining, impulse.duration + 0.12f);
 }
 
 void ReactiveFX::ProcessQueuedEvents()
 {
-	std::vector<Event> events;
+	std::vector<Event>* events = nullptr;
 	{
 		std::scoped_lock lock(eventMutex);
-		events.swap(queuedEvents);
+		producerQueue = 1u - producerQueue;
+		events = &eventQueues[1u - producerQueue];
 	}
-	if (events.empty())
+	if (!events || events->empty())
 		return;
 
-	std::stable_sort(events.begin(), events.end(), [](const Event& left, const Event& right) {
-		return left.strength * left.radius > right.strength * right.radius;
+	const auto camera = globals::game::frameBufferCached.GetCameraPosAdjust();
+	const RE::NiPoint3 cameraPosition{ camera.x, camera.y, camera.z };
+	auto importance = [&](const Event& event) {
+		const float distance = Finite(cameraPosition) ? Length(event.position - cameraPosition) : 0.0f;
+		const float relevance = 1.0f / (1.0f + distance * 0.0025f);
+		const float sourceWeight = event.source == SourceType::AmbientFire || event.source == SourceType::AmbientCandle ? 0.30f :
+			event.source == SourceType::HeavyImpact || event.source == SourceType::Shout ? 1.35f :
+			event.source == SourceType::Fire || event.source == SourceType::Frost || event.source == SourceType::Shock ? 1.2f : 1.0f;
+		return event.strength * std::sqrt(std::max(event.radius, 1.0f)) * sourceWeight * relevance;
+	};
+	std::stable_sort(events->begin(), events->end(), [&](const Event& left, const Event& right) {
+		return importance(left) > importance(right);
 	});
 	const std::size_t eventBudget = std::array<std::size_t, 4>{ 8, 16, 32, 48 }[std::min(settings.Quality, 3u)];
-	if (events.size() > eventBudget) {
-		droppedEvents += static_cast<std::uint32_t>(events.size() - eventBudget);
-		events.resize(eventBudget);
+	if (events->size() > eventBudget) {
+		droppedEvents += static_cast<std::uint32_t>(events->size() - eventBudget);
+		events->resize(eventBudget);
 	}
 
-	for (const auto& event : events) {
-		SpawnEvent(event);
-		AddImpulseForEvent(event);
+	const float qualityScale = kSpawnScales[std::min(settings.Quality, 3u)];
+	std::array<std::uint32_t, 48> primary{};
+	std::array<std::uint32_t, 48> secondary{};
+	std::uint32_t totalPrimary = 0;
+	std::uint32_t totalSecondary = 0;
+	for (std::size_t i = 0; i < events->size(); ++i) {
+		const auto recipe = ResolveRecipe((*events)[i].source, (*events)[i].surface);
+		primary[i] = static_cast<std::uint32_t>(std::round(recipe.primaryCount * qualityScale));
+		secondary[i] = static_cast<std::uint32_t>(std::round(recipe.secondaryCount * qualityScale));
+		totalPrimary += primary[i];
+		totalSecondary += secondary[i];
 	}
+	const std::uint32_t primaryBudget = std::min<std::uint32_t>(kMaximumSpawnCommands, totalPrimary);
+	const std::uint32_t secondaryBudget = std::min<std::uint32_t>(kMaximumSpawnCommands - primaryBudget, totalSecondary);
+	std::uint32_t primaryRemaining = primaryBudget;
+	std::uint32_t secondaryRemaining = secondaryBudget;
+	std::uint32_t totalPrimaryRemaining = totalPrimary;
+	std::uint32_t totalSecondaryRemaining = totalSecondary;
+	for (std::size_t i = 0; i < events->size(); ++i) {
+		const std::uint32_t primaryQuota = totalPrimaryRemaining ? std::min(primary[i], (primaryRemaining + totalPrimaryRemaining - 1u) / totalPrimaryRemaining) : 0u;
+		const std::uint32_t secondaryQuota = totalSecondaryRemaining ? std::min(secondary[i], (secondaryRemaining + totalSecondaryRemaining - 1u) / totalSecondaryRemaining) : 0u;
+		primaryRemaining -= std::min(primaryRemaining, primaryQuota);
+		secondaryRemaining -= std::min(secondaryRemaining, secondaryQuota);
+		totalPrimaryRemaining -= primary[i];
+		totalSecondaryRemaining -= secondary[i];
+		SpawnEvent((*events)[i], primary[i] ? static_cast<float>(primaryQuota) / primary[i] : 0.0f,
+			secondary[i] ? static_cast<float>(secondaryQuota) / secondary[i] : 0.0f);
+		AddImpulseForEvent((*events)[i]);
+	}
+	events->clear();
 }
 
 void ReactiveFX::UploadSpawnCommands()
@@ -921,8 +993,10 @@ void ReactiveFX::UploadImpulses(float deltaTime)
 	}
 
 	std::array<GPUImpulse, kMaximumImpulses> upload{};
-	for (std::size_t i = 0; i < impulses.size(); ++i) {
-		upload[i] = impulses[i].gpu;
+	activeImpulseCount = 0;
+	for (const auto& active : impulses) {
+		if (active.gpu.active != 0u && activeImpulseCount < kMaximumImpulses)
+			upload[activeImpulseCount++] = active.gpu;
 	}
 	D3D11_MAPPED_SUBRESOURCE mapped{};
 	DX::ThrowIfFailed(globals::d3d::context->Map(impulseBuffer.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
@@ -930,8 +1004,78 @@ void ReactiveFX::UploadImpulses(float deltaTime)
 	globals::d3d::context->Unmap(impulseBuffer.get(), 0);
 }
 
+void ReactiveFX::QueueAmbientEmitters(float deltaTime)
+{
+	if (deltaTime <= 0.0f || (settings.ParticleIntensity <= 0.01f && settings.DebugMode == 0))
+		return;
+	ambientScanCountdown -= deltaTime;
+	if (ambientScanCountdown > 0.0f)
+		return;
+	ambientScanCountdown = 0.85f;
+	auto* player = RE::PlayerCharacter::GetSingleton();
+	auto* tes = RE::TES::GetSingleton();
+	if (!tes || !player || !player->GetParentCell() || !player->Get3D(false))
+		return;
+
+	struct Candidate
+	{
+		RE::NiPoint3 position{};
+		std::uint32_t formID{};
+		SourceType source{ SourceType::Unknown };
+		float distance{ std::numeric_limits<float>::max() };
+	};
+	std::array<Candidate, 6> nearest{};
+	const auto camera = globals::game::frameBufferCached.GetCameraPosAdjust();
+	const RE::NiPoint3 eye = Finite({ camera.x, camera.y, camera.z })
+		? RE::NiPoint3{ camera.x, camera.y, camera.z } : player->GetPosition();
+	tes->ForEachReferenceInRange(player, 1100.0f, [&](RE::TESObjectREFR* reference) {
+		if (!reference || reference->IsDisabled() || !reference->Get3D(false))
+			return RE::BSContainer::ForEachResult::kContinue;
+		auto* base = reference->GetBaseObject();
+		auto* light = base ? base->As<RE::TESObjectLIGH>() : nullptr;
+		if (!light || light->data.flags.any(RE::TES_LIGHT_FLAGS::kNegative, RE::TES_LIGHT_FLAGS::kOffByDefault))
+			return RE::BSContainer::ForEachResult::kContinue;
+		const std::string_view model = light->GetModel() ? light->GetModel() : "";
+		const std::string_view name = light->GetFullName() ? light->GetFullName() : "";
+		const bool candle = ContainsNoCase(model, "candle") || ContainsNoCase(name, "candle");
+		const bool fire = ContainsNoCase(model, "torch") || ContainsNoCase(model, "brazier") ||
+			ContainsNoCase(model, "campfire") || ContainsNoCase(name, "torch") ||
+			ContainsNoCase(name, "brazier") || ContainsNoCase(name, "campfire");
+		if (!candle && !fire)
+			return RE::BSContainer::ForEachResult::kContinue;
+		const auto position = reference->GetPosition();
+		const float distance = Length(position - eye);
+		if (!Finite(position) || !std::isfinite(distance) || distance > 950.0f)
+			return RE::BSContainer::ForEachResult::kContinue;
+		auto farthest = std::max_element(nearest.begin(), nearest.end(), [](const Candidate& a, const Candidate& b) {
+			return a.distance < b.distance;
+		});
+		if (distance < farthest->distance)
+			*farthest = { position, reference->GetFormID(), candle ? SourceType::AmbientCandle : SourceType::AmbientFire, distance };
+		return RE::BSContainer::ForEachResult::kContinue;
+	});
+	for (const auto& candidate : nearest) {
+		if (candidate.source == SourceType::Unknown)
+			continue;
+		Event event{};
+		event.position = candidate.position + RE::NiPoint3{ 0.0f, 0.0f,
+			candidate.source == SourceType::AmbientCandle ? 9.0f : 24.0f };
+		event.direction = { 0.0f, 0.0f, 1.0f };
+		event.radius = 16.0f;
+		event.strength = 0.55f;
+		event.source = candidate.source;
+		event.sourceFormID = candidate.formID;
+		QueueEvent(event);
+	}
+}
+
 void ReactiveFX::Prepass()
 {
+	const float deltaTime = globals::game::deltaTime && std::isfinite(*globals::game::deltaTime)
+		? std::clamp(*globals::game::deltaTime, 0.0f, 1.0f / 15.0f)
+		: 1.0f / 60.0f;
+	resourceRetryDelay = std::max(resourceRetryDelay - deltaTime, 0.0f);
+	opticalTimeRemaining = std::max(opticalTimeRemaining - deltaTime, 0.0f);
 	if (!settings.Enabled) {
 		if (wasEnabled) {
 			if (particles && particles->uav && globals::d3d::context) {
@@ -945,28 +1089,58 @@ void ReactiveFX::Prepass()
 			nextDebrisSlot = 0;
 			{
 				std::scoped_lock lock(eventMutex);
-				queuedEvents.clear();
+				for (auto& queue : eventQueues)
+					queue.clear();
 			}
 			simulationTimeRemaining = 0.0f;
+			opticalTimeRemaining = 0.0f;
+			activeImpulseCount = 0;
+			particleMaskFrame = ~0u;
+			activeQuality = ~0u;
+			ambientScanCountdown = 0.0f;
 			wasEnabled = false;
 		}
 		return;
 	}
 	wasEnabled = true;
+	const auto quality = std::min(settings.Quality, 3u);
+	if (activeQuality != quality) {
+		if (particles && particles->uav && globals::d3d::context) {
+			const UINT clear[4]{};
+			globals::d3d::context->ClearUnorderedAccessViewUint(particles->uav.get(), clear);
+		}
+		for (auto& impulse : impulses)
+			impulse.gpu = {};
+		activeImpulseCount = 0;
+		nextParticleSlot = 0;
+		nextDebrisSlot = 0;
+		particleMaskFrame = ~0u;
+		std::scoped_lock lock(eventMutex);
+		for (auto& queue : eventQueues)
+			queue.clear();
+		activeQuality = quality;
+	}
 	if (!particles)
 		SetupResources();
 	if (!particles || (!reactivePassReady && !EnsureShaders()))
 		return;
 
 	spawnCommands.clear();
+	QueueAmbientEmitters(deltaTime);
 	ProcessQueuedEvents();
-	UploadSpawnCommands();
-	const float deltaTime = globals::game::deltaTime && std::isfinite(*globals::game::deltaTime)
-		? std::clamp(*globals::game::deltaTime, 0.0f, 1.0f / 15.0f)
-		: 1.0f / 60.0f;
 	footstepCooldown = std::max(footstepCooldown - deltaTime, 0.0f);
 	simulationTimeRemaining = std::max(simulationTimeRemaining - deltaTime, 0.0f);
-	UploadImpulses(deltaTime);
+	try {
+		UploadSpawnCommands();
+		UploadImpulses(deltaTime);
+	} catch (const std::exception& e) {
+		spawnCommands.clear();
+		activeImpulseCount = 0;
+		if (!resourceFailureLogged) {
+			logger::error("[ReactiveFX] Per-frame GPU upload failed; skipping unsafe uploads: {}", e.what());
+			resourceFailureLogged = true;
+		}
+	}
 }
 
 void ReactiveFX::DrawReactiveFX()
@@ -985,8 +1159,9 @@ void ReactiveFX::DrawReactiveFX()
 	auto& main = renderer->GetRuntimeData().renderTargets[globals::deferred->forwardRenderTargets[0]];
 	auto& normal = renderer->GetRuntimeData().renderTargets[NORMALROUGHNESS];
 	ID3D11ShaderResourceView* depthSRV = Util::GetCurrentSceneDepthSRV(false);
-	if (!main.texture || !main.UAV || !normal.SRV || !depthSRV)
+	if (!main.texture || !main.UAV || !depthSRV)
 		return;
+	const bool collisionEnabled = settings.EnableParticleCollision && normal.SRV;
 	D3D11_TEXTURE2D_DESC mainDesc{};
 	main.texture->GetDesc(&mainDesc);
 	if (!mainDesc.Width || !mainDesc.Height)
@@ -995,10 +1170,18 @@ void ReactiveFX::DrawReactiveFX()
 		{ static_cast<float>(mainDesc.Width), static_cast<float>(mainDesc.Height) }, true);
 	const auto width = std::clamp(static_cast<std::uint32_t>(active.x), 1u, mainDesc.Width);
 	const auto height = std::clamp(static_cast<std::uint32_t>(active.y), 1u, mainDesc.Height);
-	EnsureMask(width, height);
-	EnsureSceneColorCopy(mainDesc);
-	if (!particleMask || !particleMask->srv || !particleMask->uav ||
-		!sceneColorCopy || !sceneColorCopy->srv)
+	try {
+		EnsureMask(width, height);
+		if (opticalTimeRemaining > 0.0f)
+			EnsureSceneColorCopy(mainDesc, width, height);
+	} catch (const std::exception& e) {
+		particleMaskFrame = ~0u;
+		if (!resourceFailureLogged) {
+			logger::error("[ReactiveFX] Optional frame resource unavailable; continuing without optical effects: {}", e.what());
+			resourceFailureLogged = true;
+		}
+	}
+	if (!particleMask || !particleMask->srv || !particleMask->uav)
 		return;
 
 	const auto quality = std::min(settings.Quality, 3u);
@@ -1014,11 +1197,17 @@ void ReactiveFX::DrawReactiveFX()
 	tuning.particleIntensity = std::clamp(settings.ParticleIntensity, 0.0f, 3.0f);
 	tuning.maximumDistance = std::clamp(settings.MaximumDistance, 512.0f, 50000.0f);
 	tuning.particleCapacity = particleCapacity;
-	tuning.spawnCount = static_cast<std::uint32_t>(spawnCommands.size());
-	tuning.collisionBudget = settings.EnableParticleCollision ? kCollisionCaps[quality] : 0u;
+	tuning.spawnCount = std::min<std::uint32_t>(static_cast<std::uint32_t>(spawnCommands.size()), kMaximumSpawnCommands);
+	tuning.activeImpulseCount = activeImpulseCount;
+	tuning.collisionPhase = collisionPhase++;
+	tuning.collisionBudget = collisionEnabled ? kCollisionCaps[quality] : 0u;
 	tuning.debugMode = std::min(settings.DebugMode, 4u);
-	tuning.collisionEnabled = settings.EnableParticleCollision ? 1.0f : 0.0f;
-	tuning.reserved0 = 1.0f;
+	tuning.collisionEnabled = collisionEnabled ? 1.0f : 0.0f;
+	tuning.opticalActive = opticalTimeRemaining > 0.0f && sceneColorCopy && sceneColorCopy->srv ? 1.0f : 0.0f;
+	if (tuning.particleIntensity <= 0.0001f && tuning.debugMode == 0u) {
+		particleMaskFrame = ~0u;
+		return;
+	}
 	tuningCB->Update(tuning);
 
 	ID3D11Buffer* constantBuffers[3]{ state->sharedDataCB->CB(), *globals::game::perFrame.get(), tuningCB->CB() };
@@ -1042,7 +1231,7 @@ void ReactiveFX::DrawReactiveFX()
 	}
 
 	globals::profiler->BeginPass("ReactiveFX::Simulate");
-	ID3D11ShaderResourceView* simulateViews[3]{ depthSRV, normal.SRV, impulseSRV.get() };
+	ID3D11ShaderResourceView* simulateViews[3]{ depthSRV, collisionEnabled ? normal.SRV : nullptr, impulseSRV.get() };
 	ID3D11UnorderedAccessView* particleUAV = particles->uav.get();
 	context->CSSetShaderResources(0, 3, simulateViews);
 	context->CSSetUnorderedAccessViews(0, 1, &particleUAV, nullptr);
@@ -1062,7 +1251,7 @@ void ReactiveFX::DrawReactiveFX()
 	context->CSSetShaderResources(0, 2, rasterViews);
 	context->CSSetUnorderedAccessViews(0, 1, &maskUAV, nullptr);
 	context->CSSetShader(buildMaskCS.get(), nullptr, 0);
-	context->Dispatch(particleCapacity, 1, 1);
+	context->Dispatch((particleCapacity + 63u) / 64u, 1, 1);
 	globals::profiler->EndPass();
 	particleMaskFrame = globals::state ? globals::state->frameCount : ~0u;
 	context->CSSetShaderResources(0, 2, nullViews);
@@ -1070,10 +1259,21 @@ void ReactiveFX::DrawReactiveFX()
 
 	globals::profiler->BeginPass("ReactiveFX::Composite");
 	// Keep the source immutable while the composite writes the destination UAV.
-	// Binding both views of the live scene target would be a D3D11 hazard and make
-	// screen-space heat/refraction offsets undefined.
-	context->CopyResource(sceneColorCopy->resource.get(), main.texture);
-	ID3D11ShaderResourceView* compositeViews[4]{ particleMask->srv.get(), depthSRV, impulseSRV.get(), sceneColorCopy->srv.get() };
+	// Copy only the active extent; small render targets must not pay for unused
+	// backing-texture pixels. Restore the exact OM set after the copy.
+	if (tuning.opticalActive > 0.5f) {
+		ID3D11RenderTargetView* savedRTVs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT]{};
+		ID3D11DepthStencilView* savedDSV = nullptr;
+		context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, savedRTVs, &savedDSV);
+		context->OMSetRenderTargets(0, nullptr, nullptr);
+		D3D11_BOX sourceBox{ 0, 0, 0, width, height, 1 };
+		context->CopySubresourceRegion(sceneColorCopy->resource.get(), 0, 0, 0, 0, main.texture, 0, &sourceBox);
+		context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, savedRTVs, savedDSV);
+		for (auto*& view : savedRTVs)
+			if (view) view->Release();
+		if (savedDSV) savedDSV->Release();
+	}
+	ID3D11ShaderResourceView* compositeViews[4]{ particleMask->srv.get(), depthSRV, impulseSRV.get(), sceneColorCopy ? sceneColorCopy->srv.get() : nullptr };
 	ID3D11UnorderedAccessView* mainUAV = main.UAV;
 	context->CSSetShaderResources(0, 4, compositeViews);
 	context->CSSetUnorderedAccessViews(0, 1, &mainUAV, nullptr);
@@ -1161,7 +1361,6 @@ void ReactiveFX::QueueFootstep(
 	event.strength = std::clamp(intensity * (0.35f + speed / 260.0f), 0.20f, 1.15f);
 	event.surface = surface;
 	event.source = SourceType::Footstep;
-	event.seed = ++lastEventSeed;
 	QueueEvent(event);
 	footstepCooldown = 0.075f;
 }
@@ -1187,6 +1386,12 @@ RE::BSEventNotifyControl ReactiveFX::HitEventSink::ProcessEvent(
 
 	Event effect{};
 	effect.position = event->target->GetPosition();
+	if (auto* actor = event->target->As<RE::Actor>()) {
+		// TESHitEvent exposes a target reference, not a reliable contact point.
+		// Keep the approximation inside the actor's body rather than spawning all
+		// melee sparks at the feet/reference origin.
+		effect.position.z += std::clamp(actor->GetHeight() * 0.5f, 24.0f, 72.0f);
+	}
 	if (event->cause)
 		effect.direction = Normalize(effect.position - event->cause->GetPosition());
 	else
@@ -1234,7 +1439,7 @@ RE::BSEventNotifyControl ReactiveFX::SpellCastEventSink::ProcessEvent(
 	effect.radius = 320.0f;
 	effect.strength = 1.25f;
 	effect.source = SourceType::Shout;
-	effect.surface = SurfaceType::Dirt;
+	effect.surface = SurfaceType::Unknown;
 	// A shout is a gameplay event, not a persistent radial scan. Keep the
 	// response as a short directional burst that disturbs nearby loose material.
 	effect.impulse = ImpulseType::Directional;
@@ -1317,6 +1522,8 @@ void ReactiveFX::DrawSettings()
 			QueueDebugEvent(SourceType::HeavyImpact, SurfaceType::Dirt, ImpulseType::Radial);
 		const auto qualityIndex = std::min(settings.Quality, 3u);
 		ImGui::Text("Particle capacity: %u | collision budget: %u", kParticleCaps[qualityIndex], kCollisionCaps[qualityIndex]);
+		ImGui::Text("Active impulses: %u | collision phase: %u", activeImpulseCount, collisionPhase);
+		ImGui::Text("Spawn commands: %zu | optical copy: %s", spawnCommands.size(), opticalTimeRemaining > 0.0f ? "active" : "idle");
 		ImGui::Text("Last event: %s -> %s", SourceName(lastSource), SurfaceName(lastSurface));
 		ImGui::Text("Dropped events: %u | dropped particles: %u", droppedEvents, droppedParticles);
 		ImGui::Text("GPU pass: %s", reactivePassReady ? "ready" : "unavailable");
@@ -1357,7 +1564,9 @@ void ReactiveFX::RestoreDefaultSettings()
 	settings.EnableVegetationResponse = false;
 	settings.VegetationResponse = 1.0f;
 	std::scoped_lock lock(eventMutex);
-	queuedEvents.clear();
+	for (auto& queue : eventQueues)
+		queue.clear();
+	producerQueue = 0;
 }
 
 void ReactiveFX::ClearShaderCache()

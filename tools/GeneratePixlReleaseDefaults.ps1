@@ -75,9 +75,9 @@ function Apply-QualityContract([object]$Config, [int]$Tier) {
     $gi.BlurRadius = @(3.0, 2.5, 2.0, 1.6)[$Tier]
     $gi.RadianceFireflyClamp = @(4.0, 5.0, 8.0, 12.0)[$Tier]
     $gi.ReflectionFireflyClamp = @(4.0, 6.0, 10.0, 16.0)[$Tier]
-    # Higher tiers inject more cache samples, so they can use a slower replacement
-    # rate for a steadier world-space anchor without sacrificing convergence.
-    $gi.WorldCacheTemporalResponse = @(0.08, 0.075, 0.07, 0.06)[$Tier]
+    # The cache should catch up as the player moves without depending on tier.
+    $gi.WorldCacheCellSizeFar = 384.0
+    $gi.WorldCacheTemporalResponse = 0.10
     $Config.'Contact Shadows'.SampleCount = @(1, 1, 4, 12)[$Tier]
     $Config.'Material Forge'.LocalContactShadowLightCount = @(1, 1, 2, 2)[$Tier]
     $Config.'Light Volumes'.ExteriorQuality = [Math]::Min($Tier, 2)

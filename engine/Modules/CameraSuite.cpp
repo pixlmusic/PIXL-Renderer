@@ -432,6 +432,7 @@ bool CameraSuite::DetectHDR()
 	X(motionBlurShutter) \
 	X(motionBlurMaxPixels) \
 	X(experimentalBodycam) \
+	X(enableLensEffects) \
 	X(bodycamStrength) \
 	X(bodycamDistortion) \
 	X(bodycamNoise) \
@@ -757,6 +758,7 @@ void CameraSuite::DrawSettings()
 				settings.cameraShoulder = 0.72f;
 				settings.cameraInfluence = 0.35f;
 				settings.experimentalBodycam = false;
+				settings.enableLensEffects = false;
 				changed = true;
 			}
 			DrawSettingsTooltip("Restores a neutral, palette-preserving physical-camera response. Applies immediately.");
@@ -773,6 +775,7 @@ void CameraSuite::DrawSettings()
 				settings.cameraShoulder = 0.82f;
 				settings.cameraInfluence = 0.65f;
 				settings.experimentalBodycam = false;
+				settings.enableLensEffects = false;
 				changed = true;
 			}
 			DrawSettingsTooltip("Uses stronger highlight protection and local adaptation with a restrained cinematic contrast curve. Applies immediately.");
@@ -805,8 +808,9 @@ void CameraSuite::DrawSettings()
 				settings.cameraAutoExposure = true;
 				settings.cameraExposureCompensationEV = 0.0f;
 				settings.cameraAdaptBrightToDark = 0.55f;
-				settings.cameraAdaptDarkToBright = 0.12f;
+				settings.cameraAdaptDarkToBright = 0.65f;
 				settings.experimentalBodycam = true;
+				settings.enableLensEffects = true;
 				settings.bodycamStrength = 0.82f;
 				settings.bodycamDistortion = 0.13f;
 				settings.bodycamNoise = 0.20f;
@@ -833,7 +837,7 @@ void CameraSuite::DrawSettings()
 
 			if (ImGui::CollapsingHeader("Camera Advanced")) {
 				changed |= ImGui::SliderFloat("Minimum Exposure", &settings.cameraMinExposureEV, -10.0f, 0.0f, "%+.1f EV", ImGuiSliderFlags_AlwaysClamp);
-				DrawSettingsTooltip("Darkest exposure the automatic meter may select. This bounds highlight protection in very bright scenes.");
+				DrawSettingsTooltip("Lower exposure limit. Automatic metering also stops 3.5 EV below your compensation to prevent bright objects blacking out the scene.");
 				changed |= ImGui::SliderFloat("Maximum Exposure", &settings.cameraMaxExposureEV, 0.0f, 10.0f, "%+.1f EV", ImGuiSliderFlags_AlwaysClamp);
 				DrawSettingsTooltip("Brightest exposure the automatic meter may select. This prevents extreme amplification in very dark scenes.");
 				changed |= ImGui::SliderFloat("Metering Low Percentile", &settings.cameraLowPercentile, 0.0f, 0.20f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
@@ -854,8 +858,21 @@ void CameraSuite::DrawSettings()
 				DrawSettingsTooltip("Shapes the highlight roll-off. Higher values create a broader, softer shoulder before the display peak.");
 			}
 
+			if (ImGui::CollapsingHeader("Lens Finishing")) {
+				changed |= ImGui::Checkbox("Enable Lens Finishing", &settings.enableLensEffects);
+				DrawSettingsTooltip("Enables the three independent lens controls below without requiring Bodycam. Off by default for a clean image.");
+				ImGui::BeginDisabled(!settings.enableLensEffects);
+				changed |= ImGui::SliderFloat("Low-Light Sensor Noise", &settings.bodycamNoise, 0.0f, 0.60f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+				DrawSettingsTooltip("Subtle gain-dependent grain in dark regions. Increases shader work only when enabled.");
+				changed |= ImGui::SliderFloat("Lens Vignette", &settings.bodycamVignette, 0.0f, 0.30f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+				DrawSettingsTooltip("Gently darkens the outer image. Keep low for natural gameplay visibility.");
+				changed |= ImGui::SliderFloat("Edge Aberration", &settings.bodycamChromaticAberration, 0.0f, 0.08f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+				DrawSettingsTooltip("Subtle edge-only colour separation. Requires two additional scene samples where active.");
+				ImGui::EndDisabled();
+			}
+
 			if (ImGui::CollapsingHeader("Experimental - Bodycam Emulation")) {
-				Util::Text::WrappedWarning("Experimental. Emulates a modern body-worn digital camera: wide-lens distortion, gain-dependent sensor noise, restrained chromatic aberration, highlight bloom, edge processing and aggressive exposure response. UI is intentionally left undistorted.");
+				Util::Text::WrappedWarning("Experimental. Emulates a modern body-worn digital camera with wide-lens distortion, highlight bloom and edge processing. Lens Finishing controls are separate. Exposure adaptation is bounded for gameplay stability. UI is intentionally left undistorted.");
 				changed |= ImGui::Checkbox("Enable Bodycam Emulation", &settings.experimentalBodycam);
 				DrawSettingsTooltip("Master switch for the stylized lens/sensor pass. Updates immediately and leaves UI rendering undistorted.");
 				if (settings.experimentalBodycam) {
@@ -863,12 +880,6 @@ void CameraSuite::DrawSettings()
 					DrawSettingsTooltip("Overall blend between the neutral camera output and the bodycam emulation.");
 					changed |= ImGui::SliderFloat("Wide Lens Distortion", &settings.bodycamDistortion, 0.0f, 0.30f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 					DrawSettingsTooltip("Radial wide-angle lens distortion applied near the image edges.");
-					changed |= ImGui::SliderFloat("Low-Light Sensor Noise", &settings.bodycamNoise, 0.0f, 0.60f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-					DrawSettingsTooltip("Gain-dependent sensor noise. It becomes more visible in dark regions and at brighter exposure gain.");
-					changed |= ImGui::SliderFloat("Lens Vignette", &settings.bodycamVignette, 0.0f, 0.30f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-					DrawSettingsTooltip("Darkens the image progressively toward the lens edges.");
-					changed |= ImGui::SliderFloat("Edge Aberration", &settings.bodycamChromaticAberration, 0.0f, 0.08f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-					DrawSettingsTooltip("Separates colour channels near the outer lens region. Keep low for a plausible digital-camera response.");
 					changed |= ImGui::SliderFloat("Digital Sharpness", &settings.bodycamSharpen, 0.0f, 0.35f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 					DrawSettingsTooltip("Adds restrained edge enhancement after lens and exposure processing.");
 					changed |= ImGui::SliderFloat("Exposure Aggressiveness", &settings.bodycamExposureAggressiveness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -1073,6 +1084,9 @@ void CameraSuite::LoadSettings(json& o_json)
 	};
 
 	settings = o_json;
+	// Older profiles had these optics implicitly tied to Bodycam. Preserve their
+	// appearance once, while new neutral profiles keep the independent pass off.
+	settings.enableLensEffects = o_json.value("enableLensEffects", settings.experimentalBodycam);
 	settings.enableColdLens = o_json.value("enableColdLens", settings.enableColdLens);
 	settings.coldLensStrength = o_json.value("coldLensStrength", settings.coldLensStrength);
 	settings.coldAltitudeStart = o_json.value("coldAltitudeStart", settings.coldAltitudeStart);
@@ -1261,6 +1275,7 @@ void CameraSuite::RestoreDefaultSettings()
 	settings.motionBlurShutter = 0.50f;
 	settings.motionBlurMaxPixels = 24.0f;
 	settings.experimentalBodycam = false;
+	settings.enableLensEffects = false;
 	settings.bodycamStrength = 0.75f;
 	settings.bodycamDistortion = 0.12f;
 	settings.bodycamNoise = 0.18f;
@@ -2336,7 +2351,7 @@ ID3D11Texture2D* CameraSuite::ComposeCleanCapture(ID3D11ShaderResourceView* scen
 	data.previewSDR = sdrPreview ? 1.f : 0.f;
 	// Clean captures can target a different scene than the previous presentation
 	// frame; never reuse stale low-resolution finishing surfaces.
-	data.auxiliaryPassMask = 0.0f;
+	data.auxiliaryPassMask = settings.enablePhysicalCamera && settings.enableLensEffects ? 8.0f : 0.0f;
 	hdrDataCB->Update(data);
 	if (dofControlCB)
 		dofControlCB->Update(dofControlData);
@@ -3470,7 +3485,8 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 	data.cameraInfluence = std::clamp(settings.cameraInfluence, 0.0f, 1.0f);
 	data.auxiliaryPassMask = (bloomPassReady ? 1.0f : 0.0f) +
 		(localExposurePassReady ? 2.0f : 0.0f) +
-		(stormglassPassReady ? 4.0f : 0.0f);
+		(stormglassPassReady ? 4.0f : 0.0f) +
+		(settings.enablePhysicalCamera && settings.enableLensEffects ? 8.0f : 0.0f);
 	data.bloomEnabled = settings.enableBloom ? 1.0f : 0.0f;
 	data.bloomStrength = std::clamp(settings.bloomStrength, 0.0f, 3.0f);
 	data.bloomThreshold = std::clamp(settings.bloomThreshold, 0.0f, 5.0f);

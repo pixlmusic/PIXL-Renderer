@@ -31,16 +31,14 @@ namespace ContainedLiquids
         return frac(sin(value * 127.1f + 311.7f) * 43758.5453f);
     }
 
+    float ProfileRadiusAtIndex(int index,DrawData d);
+
     float ProfileRadius(float z, DrawData d)
     {
         float coordinate=saturate((z+1.0f)*0.5f)*15.0f;
         int lower=(int)floor(coordinate);
         int upper=min(lower+1,15);
-        float radii[16]={d.profile0.x,d.profile0.y,d.profile0.z,d.profile0.w,
-            d.profile1.x,d.profile1.y,d.profile1.z,d.profile1.w,
-            d.profile2.x,d.profile2.y,d.profile2.z,d.profile2.w,
-            d.profile3.x,d.profile3.y,d.profile3.z,d.profile3.w};
-        return lerp(radii[lower],radii[upper],frac(coordinate));
+        return lerp(ProfileRadiusAtIndex(lower,d),ProfileRadiusAtIndex(upper,d),frac(coordinate));
     }
 
     float ProfileRadiusAtIndex(int index,DrawData d)
@@ -177,6 +175,7 @@ namespace ContainedLiquids
         float profileEntry,profileExit;
         if (!IntersectProfile(o,v,entry,exit,d,profileEntry,profileExit)) { Miss(d); return; }
         entry=profileEntry;exit=profileExit;
+        const float wallEntry=entry;
         if (d.optics.z==1) {bottle=float3(0,0.8f,0.9f);alpha=1;return;}
         float denom=dot(ray,d.plane.xyz);
         float height=dot(origin,d.plane.xyz)-d.plane.w;
@@ -192,21 +191,24 @@ namespace ContainedLiquids
         if (distance<=1e-4f || !isfinite(distance)) { Miss(d); return; }
         float thickness=min(distance/max(d.optics.w,0.01f),20.0f);
         float3 n=d.plane.xyz;
-        float3 entryLocal=o+v*entry;
+        float3 entryLocal=o+v*wallEntry;
         float3 profileNormalLocal=ProfileNormal(entryLocal,d);
         float3 profileNormal=normalize(
-            d.axisX.xyz*profileNormalLocal.x+
-            d.axisY.xyz*profileNormalLocal.y+
-            d.axisZ.xyz*profileNormalLocal.z);
+            d.axisX.xyz*(profileNormalLocal.x/max(d.axisX.w,0.01f))+
+            d.axisY.xyz*(profileNormalLocal.y/max(d.axisY.w,0.01f))+
+            d.axisZ.xyz*(profileNormalLocal.z/max(d.axisZ.w,0.01f)));
         float meniscus=0.0f;
         if (surface) {
             // Keep ripple phase in fitted bottle-local coordinates. Using the
             // camera-relative surface position made a stationary liquid crawl
             // through its glass whenever the camera moved.
             float3 surfaceLocal=o+v*surfaceT;
-            float2 waves=float2(cos(dot(surfaceLocal.xy,float2(1.7f,0.8f))+d.dynamics.x*5.2f),
-                cos(dot(surfaceLocal.xy,float2(-0.6f,2.1f))-d.dynamics.x*6.7f));
-            n=normalize(n+float3(waves*d.dynamics.y*0.014f,0));
+            float2 waves=float2(cos(dot(surfaceLocal.xy,float2(8.3f,2.6f))+d.dynamics.x*5.2f),
+                cos(dot(surfaceLocal.xy,float2(-3.8f,9.1f))-d.dynamics.x*6.7f));
+            float2 fineWaves=float2(cos(dot(surfaceLocal.xy,float2(17.0f,-5.0f))-d.dynamics.x*8.1f),
+                cos(dot(surfaceLocal.xy,float2(4.0f,15.0f))+d.dynamics.x*7.3f));
+            float2 ripple=(waves+fineWaves*0.28f)*(0.008f+d.dynamics.y*0.045f)/max(d.appearance.w,0.6f);
+            n=normalize(n+d.axisX.xyz*ripple.x+d.axisY.xyz*ripple.y);
             float wallRadius=max(ProfileRadius(surfaceLocal.z,d),0.02f);
             meniscus=smoothstep(0.72f,0.98f,length(surfaceLocal.xy)/wallRadius);
             n=normalize(lerp(n,profileNormal,meniscus*0.22f));
@@ -272,7 +274,8 @@ namespace ContainedLiquids
         // Inner-glass reflection responds to scene light on the complete liquid
         // body, with finite energy and no additional scene texture reads.
         float profileNV=saturate(abs(dot(profileNormal,-ray)));
-        float glassF0=(glassIOR-1.0f)*(glassIOR-1.0f)/((glassIOR+1.0f)*(glassIOR+1.0f));
+        float glassF0=(glassIOR-liquidIOR)*(glassIOR-liquidIOR)/
+            ((glassIOR+liquidIOR)*(glassIOR+liquidIOR));
         float profileFresnel=BRDF::F_Schlick(glassF0.xxx,profileNV).x*max(d.detail.y,0.0f);
         float profileNL=saturate(dot(profileNormal,lightDirection));
         liquid=lerp(liquid,liquid+max(ambient,0)*0.35f+max(lightColor,0)*profileNL,
@@ -280,7 +283,8 @@ namespace ContainedLiquids
         // Light travelling from liquid toward air can exceed the critical angle.
         // Reinforce reflection only in that bounded grazing region.
         float criticalCos=sqrt(saturate(1.0f-1.0f/(liquidIOR*liquidIOR)));
-        float tir=1.0f-smoothstep(max(criticalCos-0.10f,0.0f),min(criticalCos+0.03f,1.0f),profileNV);
+        float tir=surface?1.0f-smoothstep(max(criticalCos-0.10f,0.0f),min(criticalCos+0.03f,1.0f),
+            saturate(abs(dot(n,-ray)))):0.0f;
         liquid+=tir*max(d.detail.y,0.0f)*(max(ambient,0.0f)*0.12f+originalBottle*0.06f);
 
         // Cheap single-scatter approximation: light arriving from behind the
@@ -313,56 +317,73 @@ namespace ContainedLiquids
         // slowly but retain an object-stable layout and contribute only a small
         // reflective rim, avoiding noisy per-frame sparkle.
         float bubbleMask=0.0f;
+        float popRipple=0.0f;
         float3 bubbleNormalAccum=0.0f;
         float bubbleRefractionWeight=0.0f;
-        [unroll] for (int bubbleIndex=0;bubbleIndex<6;++bubbleIndex) {
+        [loop] for (int bubbleIndex=0;bubbleIndex<6;++bubbleIndex) {
+            if (d.detail.x<0.002f || d.dynamics.w<0.02f) break;
             float key=d.detail.z+bubbleIndex*1.731f;
             float viscosity=max(d.appearance.w,0.5f);
             float movement=saturate(d.dynamics.y*0.85f);
-            float riseRate=(0.014f+0.004f*bubbleIndex)*(1.0f+movement*0.85f)/viscosity;
-            float bubbleZ=frac(Hash11(key+5.1f)+d.dynamics.x*riseRate)*1.55f-0.78f;
-            // Fit every bubble to the local bottle section. The former fixed
-            // XY cylinder put most bubbles outside narrow potion profiles, so
-            // even a maximum UI setting often produced no visible intersection.
-            float localWall=max(ProfileRadius(bubbleZ,d),0.04f);
+            float riseRate=(0.12f+0.025f*bubbleIndex)/viscosity;
+            float age=frac(Hash11(key+5.1f)+d.opticalColor.w*riseRate);
+            float3 upWorld=float3(0,0,1);
+            float3 upLocal=float3(dot(upWorld,d.axisX.xyz)/d.axisX.w,
+                dot(upWorld,d.axisY.xyz)/d.axisY.w,dot(upWorld,d.axisZ.xyz)/d.axisZ.w);
+            upLocal*=rsqrt(max(dot(upLocal,upLocal),1.0e-6f));
             float angle=Hash11(key+2.7f)*6.28318530718f;
-            float radial=sqrt(Hash11(key+4.9f))*localWall*0.62f;
-            // Slosh tilts the bubble stream toward the instantaneous liquid
-            // plane. The displacement is world/object stable and bounded, so
-            // shaking a bottle changes the path without making bubbles crawl
-            // with the camera.
-            float2 sloshOffset=d.plane.xy*(0.035f+movement*0.08f)*(bubbleZ+0.82f);
-            float3 bubbleCenter=float3(cos(angle)*radial+sloshOffset.x,
-                sin(angle)*radial+sloshOffset.y,bubbleZ);
-            float bubbleRadius=lerp(0.035f,0.085f,Hash11(key+8.4f)) *
-                saturate(localWall/0.28f);
-            float3 bubbleOrigin=o-bubbleCenter;
-            float bubbleA=dot(v,v);
-            float bubbleB=dot(bubbleOrigin,v);
-            float bubbleDiscriminant=bubbleB*bubbleB-bubbleA*
+            float radial=sqrt(Hash11(key+4.9f))*0.37f;
+            float3 tangent=normalize(cross(upLocal,abs(upLocal.z)>0.8f?
+                float3(0,1,0):float3(0,0,1)));
+            float3 bitangent=cross(upLocal,tangent);
+            float3 bubbleLocal=upLocal*(age*1.30f-0.65f)+
+                radial*(tangent*cos(angle)+bitangent*sin(angle));
+            if (!InsideProfile(bubbleLocal,d)) continue;
+            float3 bubbleWorld=d.center.xyz+d.axisX.xyz*(bubbleLocal.x*d.axisX.w)+
+                d.axisY.xyz*(bubbleLocal.y*d.axisY.w)+d.axisZ.xyz*(bubbleLocal.z*d.axisZ.w);
+            float bubbleRadius=min(d.axisX.w,d.axisY.w)*
+                lerp(0.034f,0.072f,Hash11(key+8.4f))*(1.0f+movement*0.35f);
+            float belowSurface=d.plane.w-dot(bubbleWorld-d.center.xyz,d.plane.xyz);
+            if (belowSurface<=0.0f) continue;
+            float popFade=saturate(belowSurface/max(bubbleRadius*1.5f,0.01f));
+            bubbleRadius*=saturate(popFade*2.0f);
+            if (surface && belowSurface<bubbleRadius*3.0f) {
+                float3 delta=ray*surfaceT-bubbleWorld;
+                delta-=d.plane.xyz*dot(delta,d.plane.xyz);
+                float ring=length(delta)/max(bubbleRadius,0.01f);
+                popRipple=max(popRipple,(1.0f-smoothstep(0.75f,1.25f,ring))*
+                    smoothstep(0.35f,0.75f,ring)*(1.0f-popFade));
+            }
+            float3 bubbleOrigin=-bubbleWorld;
+            float bubbleB=dot(bubbleOrigin,ray);
+            float bubbleDiscriminant=bubbleB*bubbleB-
                 (dot(bubbleOrigin,bubbleOrigin)-bubbleRadius*bubbleRadius);
             if (bubbleDiscriminant>0.0f) {
-                float bubbleT=(-bubbleB-sqrt(bubbleDiscriminant))/max(bubbleA,1.0e-7f);
+                float bubbleT=-bubbleB-sqrt(bubbleDiscriminant);
                 if (bubbleT>=entry && bubbleT<=exit) {
-                    float3 bubbleNormal=normalize(bubbleOrigin+v*bubbleT);
-                    float bubbleRim=pow(1.0f-saturate(abs(dot(bubbleNormal,normalize(v)))),2.5f);
-                    bubbleMask=max(bubbleMask,0.35f+0.65f*bubbleRim);
-                    bubbleNormalAccum+=bubbleNormal*(0.35f+0.65f*bubbleRim);
-                    bubbleRefractionWeight+=0.35f+0.65f*bubbleRim;
+                    float3 bubbleNormal=normalize(bubbleOrigin+ray*bubbleT);
+                    float bubbleRim=pow(1.0f-saturate(abs(dot(bubbleNormal,ray))),2.5f);
+                    float weight=(0.35f+0.65f*bubbleRim)*popFade;
+                    bubbleMask=max(bubbleMask,weight);
+                    bubbleNormalAccum+=bubbleNormal*weight;
+                    bubbleRefractionWeight+=weight;
                 }
             }
         }
-        bubbleMask*=saturate(d.detail.x)*saturate(thickness*0.8f);
+        bubbleMask*=saturate(d.detail.x*(1.5f+d.dynamics.y*1.4f))*saturate(thickness*0.8f);
+        liquid+=popRipple*saturate(d.detail.x)*
+            (max(lightColor,0)*0.12f+max(ambient,0)*0.06f);
         if (bubbleRefractionWeight>1.0e-4f && bubbleMask>1.0e-4f) {
             float3 bubbleNormal=normalize(bubbleNormalAccum/max(bubbleRefractionWeight,1.0e-4f));
-            float3 bubbleRay=refract(ray,bubbleNormal,1.0f/1.333f);
+            float3 bubbleRay=refract(ray,bubbleNormal,liquidIOR);
             if (dot(bubbleRay,bubbleRay)<1.0e-6f) bubbleRay=reflect(ray,bubbleNormal);
             float3 bubbleViewRay=mul((float3x3)FrameBuffer::CameraView,ray);
             float3 bubbleViewRefracted=mul((float3x3)FrameBuffer::CameraView,normalize(bubbleRay));
             float2 bubbleOffset=clamp((bubbleViewRefracted.xy-bubbleViewRay.xy)*
                 (1.2f+thickness*0.12f),-0.75f.xx,0.75f.xx);
             float3 bubbleScene=SampleCrop(pixel+bubbleOffset,d);
-            float bubbleF0=(1.333f-1.0f)*(1.333f-1.0f)/((1.333f+1.0f)*(1.333f+1.0f));
+            float bubbleF0=(liquidIOR-1.0f)*(liquidIOR-1.0f)/
+                ((liquidIOR+1.0f)*(liquidIOR+1.0f));
             float bubbleFresnel=BRDF::F_Schlick(bubbleF0.xxx,
                 saturate(abs(dot(bubbleNormal,-ray)))).x;
             liquid=lerp(liquid,lerp(liquid,bubbleScene,0.45f),

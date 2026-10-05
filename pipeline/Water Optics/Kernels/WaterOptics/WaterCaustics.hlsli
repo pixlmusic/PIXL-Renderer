@@ -27,6 +27,17 @@ namespace WaterOptics
 		return frac(uv * tiling + velocity * SharedData::Timer);
 	}
 
+	float2 WarpReceiverUV(float2 waterWorldXY, float2 uv, float receiverHeight)
+	{
+		// A cheap water-normal proxy: two slow, world-anchored waves bend the
+		// projected footprint without sampling the water material on every receiver.
+		float2 phase = float2(
+			dot(waterWorldXY, float2(0.012f, 0.007f)),
+			dot(waterWorldXY, float2(-0.006f, 0.015f)));
+		float2 bend = sin(phase + SharedData::Timer * float2(0.43f, -0.31f));
+		return uv + bend * lerp(0.003f, 0.010f, saturate(receiverHeight / 300.0f));
+	}
+
 	float SampleCaustics(float2 uv)
 	{
 		return WaterCaustics.Sample(SampColorSampler, uv).x;
@@ -93,53 +104,44 @@ namespace WaterOptics
 		float shoreFactorCaustics = saturate(causticsDistToWater / 64.0);
 		float waterDataValid = waterData.w > -1.0e20f ? 1.0f : 0.0f;
 
-		// Reference-style receiver caustics: the water surface is treated as a
-		// moving refractive projector, so a nearby wall/rock/shore receiver can
-		// receive a soft reflected pattern instead of only the submerged path. This
-		// uses PIXL's existing world-stable caustic atlas and water tile lookup; it
-		// does not add a second zone buffer or per-light draw pass.
-		if (SharedData::waterOpticsSettings.EnableEnhancedCaustics != 0 &&
-			waterDataValid > 0.0f && causticsDistToWater < 0.0f)
-		{
+		// WaterData exposes the tile height rather than a per-pixel water footprint.
+		// Keep the useful above-water projection, but limit it to a short receiver
+		// zone and fade by the projected footprint so it cannot become a world-sized
+		// decal on snow or terrain elsewhere in the tile.
+		const float maxAboveWaterHeight = 300.0f;
+		if (causticsDistToWater < 0.0f && waterDataValid > 0.0f &&
+			SharedData::waterOpticsSettings.EnableEnhancedCaustics != 0) {
 			float receiverHeight = -causticsDistToWater;
-			float receiverFade = 1.0f - smoothstep(4.0f, 1200.0f, receiverHeight);
-			if (receiverFade > 0.0f)
-			{
-				float3 sunDirection = normalize(SharedData::DirLightDirection.xyz);
-				float sunElevation = smoothstep(0.03f, 0.24f, sunDirection.z);
-				float2 absolutePosition = worldPosition.xy + FrameBuffer::CameraPosAdjust.xy;
-				float2 projectedPosition = absolutePosition - sunDirection.xy *
-					receiverHeight / max(sunDirection.z, 0.20f);
-				float2 receiverUV = projectedPosition * 0.0042f;
-				float2 receiverDispersion = float2(0.55f, 0.80f) *
-					(0.012f * saturate(SharedData::waterOpticsSettings.CausticsDispersion));
-				float3 receiverLayerA = SampleMovingReceiverCaustics(
-					receiverUV, receiverDispersion, normalize(float2(0.73f, 0.41f)) * 0.095f, 1.0f, 0.0f);
-				float3 receiverLayerB = SampleMovingReceiverCaustics(
-					receiverUV, receiverDispersion, normalize(float2(-0.37f, 0.82f)) * -0.067f, -0.57f, 1.0f);
-				float3 receiverLayerC = SampleMovingReceiverCaustics(
-					receiverUV * 0.52f + float2(0.17f, 0.31f), receiverDispersion * 0.35f,
-					normalize(float2(0.19f, -0.61f)) * 0.041f, 1.0f, 2.0f);
-				float3 receiverPattern = CombineCausticLayers(
-					CombineCausticLayers(receiverLayerA, receiverLayerB), receiverLayerC);
-				float normalResponse = lerp(0.30f, 1.0f,
-					saturate(abs(dot(normalize(receiverNormal), sunDirection))));
-				float depthResponse = exp(-receiverHeight / 720.0f);
-				// Receiver caustics are a lighting multiplier, not a bloom layer. Keep
-				// the broad fold response visible on indoor floors while retaining a
-				// bounded highlight-only contribution.
-				float3 receiverEnergy = receiverPattern / max(CausticAtlasMean, 1e-4f);
-				float3 contrast = max(receiverEnergy - 0.38f.xxx, 0.0f.xxx);
-				float3 broadEnergy = saturate(receiverEnergy * 0.30f);
-				float boost = dot(contrast, float3(0.2126f, 0.7152f, 0.0722f)) *
-					SharedData::waterOpticsSettings.CausticsVisibility *
-					SharedData::waterOpticsSettings.CausticsStrength *
-					 receiverFade * depthResponse * sunElevation * normalResponse * 0.34f;
-				boost += dot(broadEnergy, float3(0.2126f, 0.7152f, 0.0722f)) *
-					SharedData::waterOpticsSettings.CausticsVisibility *
-					SharedData::waterOpticsSettings.CausticsStrength *
-					receiverFade * depthResponse * sunElevation * normalResponse * 0.18f;
-				result *= 1.0f + min(boost, 1.15f);
+			float3 sunDirection = normalize(SharedData::DirLightDirection.xyz);
+			float safeSunZ = max(sunDirection.z, 0.38f);
+			float2 projectedOffset = sunDirection.xy * (receiverHeight / safeSunZ);
+			float heightFade = 1.0f - smoothstep(16.0f, maxAboveWaterHeight, receiverHeight);
+			float footprintFade = 1.0f - smoothstep(64.0f, 260.0f, length(projectedOffset));
+			float receiverFade = heightFade * footprintFade;
+			float3 reflectedDirection = normalize(float3(-sunDirection.xy, max(sunDirection.z, 0.0f)));
+			float3 normal = normalize(receiverNormal);
+			// Water-bounced light arrives from below. Upward terrain is not a receiver.
+			float normalResponse = saturate(dot(normal, -reflectedDirection)) *
+				(1.0f - smoothstep(0.02f, 0.35f, normal.z));
+			float sunVisibility = saturate(sunDirection.z * 4.0f);
+			if (receiverFade > 0.0f && normalResponse > 0.0f && sunVisibility > 0.0f) {
+				float2 absolutePosition = worldPosition.xy + FrameBuffer::CameraPosAdjust.xy + projectedOffset;
+				float2 causticsUV = WarpReceiverUV(absolutePosition, absolutePosition * 0.005f, receiverHeight);
+				float2 dispersionOffset = float2(0.6f, 0.8f) *
+					(0.018f * saturate(receiverHeight / maxAboveWaterHeight));
+				float2 causticsUV1 = PanCausticsUV(causticsUV, 0.10f, 1.0f);
+				float2 causticsUV2 = PanCausticsUV(causticsUV, 0.20f, -0.5f);
+				float3 caustics = CombineCausticLayers(
+					SampleFocusedCaustics(causticsUV1, dispersionOffset),
+					SampleFocusedCaustics(causticsUV2, dispersionOffset));
+				float softness = saturate(receiverHeight / maxAboveWaterHeight) * 0.30f;
+				float broad = SampleCaustics(PanCausticsUV(causticsUV * 0.58f, 0.05f, 1.0f));
+				caustics = lerp(caustics, broad.xxx, softness);
+				float visibility = max(SharedData::waterOpticsSettings.CausticsVisibility, 0.0f);
+				float strength = clamp(SharedData::waterOpticsSettings.CausticsStrength, 0.0f, 2.0f);
+				float3 folds = max(caustics / CausticAtlasMean - 0.72f.xxx, 0.0f.xxx);
+				result = 1.0f.xxx + min(folds * visibility * strength * receiverFade *
+					normalResponse * sunVisibility * 0.34f, 1.25f.xxx);
 			}
 		}
 
@@ -238,10 +240,7 @@ namespace WaterOptics
 		float waterHeight = waterData.w;
 		float receiverHeight = worldPosition.z - waterHeight;
 		float lightHeight = lightPosition.z - waterHeight;
-		// Skyrim's water grid is coarse and many indoor emitters sit just above
-		// the water plane. The stricter reference exclusion band made this path
-		// disappear for cave floors, shallow pools and particle lights.
-		if (receiverHeight < 2.0f || receiverHeight > 560.0f || lightHeight <= 0.5f)
+		if (receiverHeight > 300.0f || receiverHeight < -560.0f || lightHeight <= 0.5f)
 			return 1.0.xxx;
 
 		// Mirror the local emitter beneath the water plane. The line from that
@@ -260,19 +259,22 @@ namespace WaterOptics
 		// projected footprint of a refracted emitter. Expand the caustic footprint
 		// modestly so torches and magic lights can reach a nearby cave floor without
 		// turning the entire water volume into a light decal.
-		float radius = max(lightRadius * 1.75f, 96.0f);
-		float sourceCoverage = 1.0f - smoothstep(radius * 0.20f, radius * 1.45f, sourcePath);
-		float receiverFade = 1.0f - smoothstep(4.0f, 1200.0f, receiverHeight);
+		float radius = max(lightRadius * 1.25f, 40.0f);
+		float sourceCoverage = 1.0f - smoothstep(radius * 0.20f, radius * 1.20f, sourcePath);
+		float receiverFade = 1.0f - smoothstep(16.0f, 300.0f, receiverHeight);
 		float3 reflectedDirection = normalize(worldPosition - waterPoint);
-		// Oblique walls and ceilings can still receive refracted light. Retain a
-		// small grazing response without turning the effect into a flat decal.
-		float normalResponse = lerp(0.22f, 1.0f,
-			saturate(abs(dot(normalize(receiverNormal), reflectedDirection))));
+		float3 normal = normalize(receiverNormal);
+		float normalResponse = receiverHeight >= 0.0f
+			? saturate(dot(normal, -reflectedDirection)) * (1.0f - smoothstep(0.02f, 0.35f, normal.z))
+			: lerp(0.22f, 1.0f, saturate(abs(dot(normal, reflectedDirection))));
 		float sourceLuminance = dot(max(lightColor, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
 		if (sourceCoverage <= 0.0f || receiverFade <= 0.0f || normalResponse <= 0.0f || sourceLuminance <= 1.0e-4f)
 			return 1.0.xxx;
 
-		float2 projectedUV = waterPoint.xy * 0.0042f;
+		float2 absoluteWaterPoint = waterPoint.xy + FrameBuffer::CameraPosAdjust.xy;
+		float2 projectedUV = absoluteWaterPoint * 0.0042f;
+		if (receiverHeight > 0.0f)
+			projectedUV = WarpReceiverUV(absoluteWaterPoint, projectedUV, receiverHeight);
 		float2 dispersion = float2(0.55f, 0.80f) *
 			(0.012f * saturate(SharedData::waterOpticsSettings.CausticsDispersion));
 		float3 layerA = SampleMovingReceiverCaustics(

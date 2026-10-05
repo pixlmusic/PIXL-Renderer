@@ -125,13 +125,18 @@ void main(uint3 dtid : SV_DispatchThreadID)
     target = PixlCameraFinite(target) && target > 0.0f ? target : exp2(clamp(safeExposureCompensationEV, safeMinExposureEV, safeMaxExposureEV));
     float targetEV = clamp(log2(max(target, 1e-6f)), safeMinExposureEV, safeMaxExposureEV);
 
+    // A bright object must not meter the entire playable scene into near-black.
+    // Keep the wide manual range, but bound automatic metering relative to the
+    // photographer's intentional compensation.
+    if (cameraAutoExposure > 0.5f)
+        targetEV = max(targetEV, min(safeMaxExposureEV, max(safeMinExposureEV, safeExposureCompensationEV - 3.5f)));
+
     if (bodycamEnabled > 0.5f) {
         float safeBodyStrength = PixlCameraFinite(bodycamStrength) ? saturate(bodycamStrength) : 0.0f;
         float safeBodyAggressiveness = PixlCameraFinite(bodycamExposureAggressiveness) ? saturate(bodycamExposureAggressiveness) : 0.0f;
         float body = safeBodyStrength * safeBodyAggressiveness;
-        // Subtle sensor-style exposure hunting, intentionally below a tenth of
-        // a stop at maximum strength.
-        targetEV += sin((float)frameIndex * 0.071f) * 0.045f * body;
+        // Bodycam character comes from its optics, not perpetual exposure hunting.
+        targetEV += sin((float)frameIndex * 0.071f) * 0.008f * body;
         targetEV = clamp(targetEV, safeMinExposureEV, safeMaxExposureEV);
     }
 
@@ -150,9 +155,13 @@ void main(uint3 dtid : SV_DispatchThreadID)
     if (bodycamEnabled > 0.5f) {
         float safeBodyStrength = PixlCameraFinite(bodycamStrength) ? saturate(bodycamStrength) : 0.0f;
         float safeBodyAggressiveness = PixlCameraFinite(bodycamExposureAggressiveness) ? saturate(bodycamExposureAggressiveness) : 0.0f;
-        float speedup = lerp(1.0f, 3.0f, safeBodyStrength * safeBodyAggressiveness);
+        float speedup = lerp(1.0f, 1.25f, safeBodyStrength * safeBodyAggressiveness);
         tau /= speedup;
     }
+	// In particular, saved Bodycam presets must not turn a 0.12 s slider value
+	// into a near-instant darkening response.
+	if (bodycamEnabled > 0.5f && target < previous)
+		tau = max(tau, 0.65f);
 
     float dt = clamp(PIXLPhysicalCameraFiniteOr(deltaTime, 0.0f), 0.0f, 0.1f);
     float blend = 1.0f - exp(-dt / tau);
@@ -162,6 +171,6 @@ void main(uint3 dtid : SV_DispatchThreadID)
     errorEV = sign(errorEV) * max(abs(errorEV) - 0.02f, 0.0f);
     // Stops/sec, not a per-frame multiplier. Brightening responds promptly;
     // darkening cannot produce the old frame-rate-dependent plunges.
-    float stepEV = clamp(errorEV * blend, -4.0f * dt, 6.0f * dt);
+    float stepEV = clamp(errorEV * blend, -0.85f * dt, 3.0f * dt);
     Exposure[uint2(0, 0)] = exp2(clamp(previousEV + stepEV, safeMinExposureEV, safeMaxExposureEV));
 }

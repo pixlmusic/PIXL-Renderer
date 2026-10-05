@@ -131,10 +131,10 @@ public:
 		uint WorldCacheSampleCount = 8;
 		float WorldCacheStrength = static_cast<float>(PIXL::Metadata::Settings::HybridWorldCacheStrength.defaultValue);
 		float WorldCacheCellSizeNear = 96.f;
-		float WorldCacheCellSizeFar = 512.f;
+		float WorldCacheCellSizeFar = 384.f;
 		float WorldCacheRadius = 1536.f;
 		float WorldCacheLeakReduction = 0.82f;
-		float WorldCacheTemporalResponse = 0.07f;
+		float WorldCacheTemporalResponse = 0.10f;
 		bool EnableEmitterInjection = true;
 		float EmitterInjectionStrength = 0.65f;
 		bool EnableWorldCacheSecondBounce = true;

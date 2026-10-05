@@ -1789,6 +1789,27 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// Passed to the shared direct-lighting adapter so it can keep authored Complex
 	// Materials out of the legacy physical GGX conversion.
 	bool pixlComplexMaterialForPhysicalLighting = false;
+	float pixlWindowParallaxWeight = 1.0f;
+	float pixlWindowPrePane = -1.0f;
+#	if defined(PIXL_WINDOW_LIFE_ACTIVE) && (defined(EMAT) || defined(PIXL_AUTO_PARALLAX))
+	// Decide pane ownership before any authored or synthetic POM changes the UV.
+	// A window atlas may share one draw with relief-bearing stone and wood.
+	[branch] if (WindowLife::IsCandidate() && WindowLife::SuppressPaneParallax() && !SharedData::InMapMenu)
+	{
+		float4 paneColor = TexColorSampler.SampleBias(SampColorSampler, uv, SharedData::MipBias);
+		float4 paneNormal = TexNormalSampler.SampleBias(SampNormalSampler, uv, SharedData::MipBias);
+		float paneGlowLuma = 0.0f;
+		[branch] if (WindowLife::HasGameGlowTexture()) {
+			float3 paneGlow = Color::Glowmap(TexGlowSampler.Sample(SampGlowSampler, uv).xyz);
+			paneGlowLuma = dot(max(paneGlow, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
+		}
+		pixlWindowPrePane = WindowLife::PaneMask(paneColor.rgb, paneNormal, paneGlowLuma, uv);
+		pixlWindowParallaxWeight = 1.0f - smoothstep(0.02f, 0.34f, pixlWindowPrePane);
+#		if defined(EMAT)
+		parallaxShadowQuality *= pixlWindowParallaxWeight;
+#		endif
+	}
+#	endif
 
 #	if defined(EMAT)
 #		if defined(PARALLAX) && (defined(SKINNED) || !defined(MODELSPACENORMALS))
@@ -1797,10 +1818,15 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		// Mark them before the generic fallback pass so synthetic luminance POM never
 		// competes with the real height field.
 		authoredParallaxAvailable = true;
-		mipLevel = MaterialLayers::GetMipLevel(uv, TexParallaxSampler);
-		uv = MaterialLayers::GetParallaxCoords(viewPosition.z, uv, mipLevel, viewDirection, tbnTr, screenNoise, TexParallaxSampler, SampParallaxSampler, 0, displacementParams, pixelOffset);
-		if (SharedData::materialLayerSettings.EnableShadows && parallaxShadowQuality > 0.0)
-			sh0 = TexParallaxSampler.SampleLevel(SampParallaxSampler, uv, mipLevel).x;
+		[branch] if (pixlWindowParallaxWeight > 1.0e-4f) {
+			float2 undisplacedUV = uv;
+			mipLevel = MaterialLayers::GetMipLevel(uv, TexParallaxSampler);
+			uv = MaterialLayers::GetParallaxCoords(viewPosition.z, uv, mipLevel, viewDirection, tbnTr, screenNoise, TexParallaxSampler, SampParallaxSampler, 0, displacementParams, pixelOffset);
+			uv = lerp(undisplacedUV, uv, pixlWindowParallaxWeight);
+			pixelOffset *= pixlWindowParallaxWeight;
+			if (SharedData::materialLayerSettings.EnableShadows && parallaxShadowQuality > 0.0)
+				sh0 = TexParallaxSampler.SampleLevel(SampParallaxSampler, uv, mipLevel).x;
+		}
 	}
 #		endif  // defined(PARALLAX) && (defined(SKINNED) || !defined(MODELSPACENORMALS))
 
@@ -1838,12 +1864,21 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 		if (complexMaterial) {
 			if (envMaskHasAuthoredHeight) {
-				complexMaterialParallax = true;
 				authoredParallaxAvailable = true;
-				mipLevel = MaterialLayers::GetMipLevel(uv, TexEnvMaskSampler);
-				uv = MaterialLayers::GetParallaxCoords(viewPosition.z, uv, mipLevel, viewDirection, tbnTr, screenNoise, TexEnvMaskSampler, SampTerrainParallaxSampler, 3, displacementParams, pixelOffset);
-				if (SharedData::materialLayerSettings.EnableShadows && parallaxShadowQuality > 0.0)
-					sh0 = TexEnvMaskSampler.SampleLevel(SampEnvMaskSampler, uv, mipLevel).w;
+				complexMaterialParallax = pixlWindowParallaxWeight > 1.0e-4f;
+#				if defined(PIXL_WINDOW_LIFE_ACTIVE)
+				complexMaterialParallax = complexMaterialParallax &&
+					SharedData::materialLayerSettings.EnableParallax;
+#				endif
+				[branch] if (complexMaterialParallax) {
+					float2 undisplacedUV = uv;
+					mipLevel = MaterialLayers::GetMipLevel(uv, TexEnvMaskSampler);
+					uv = MaterialLayers::GetParallaxCoords(viewPosition.z, uv, mipLevel, viewDirection, tbnTr, screenNoise, TexEnvMaskSampler, SampTerrainParallaxSampler, 3, displacementParams, pixelOffset);
+					uv = lerp(undisplacedUV, uv, pixlWindowParallaxWeight);
+					pixelOffset *= pixlWindowParallaxWeight;
+					if (SharedData::materialLayerSettings.EnableShadows && parallaxShadowQuality > 0.0)
+						sh0 = TexEnvMaskSampler.SampleLevel(SampEnvMaskSampler, uv, mipLevel).w;
+				}
 				complexMaterialColor = TexEnvMaskSampler.Sample(SampEnvMaskSampler, uv);
 			} else {
 				complexMaterialColor = envMaskSample;
@@ -1868,7 +1903,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// Complex-material alpha is the higher-priority authored height contract. If a
 	// texture set also exposes a PBR displacement slot, do not march both fields:
 	// authored PBR is the next fallback, then Auto-POM handles incomplete sets.
-	[branch] if (SharedData::materialLayerSettings.EnableParallax && !authoredParallaxAvailable && (PBRFlags & PBR::Flags::HasDisplacement) != 0)
+	[branch] if (SharedData::materialLayerSettings.EnableParallax && !authoredParallaxAvailable &&
+		pixlWindowParallaxWeight > 1.0e-4f && (PBRFlags & PBR::Flags::HasDisplacement) != 0)
 	{
 		PBRParallax = true;
 		authoredParallaxAvailable = true;
@@ -1894,8 +1930,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		{
 			displacementParams.HeightScale *= PBRParams1.y;
 		}
+		float2 undisplacedUV = uv;
 		mipLevel = MaterialLayers::GetMipLevel(uv, TexParallaxSampler);
 		uv = MaterialLayers::GetParallaxCoords(viewPosition.z, uv, mipLevel, refractedViewDirection, tbnTr, screenNoise, TexParallaxSampler, SampParallaxSampler, 0, displacementParams, pixelOffset);
+		uv = lerp(undisplacedUV, uv, pixlWindowParallaxWeight);
+		pixelOffset *= pixlWindowParallaxWeight;
 		if (SharedData::materialLayerSettings.EnableShadows && parallaxShadowQuality > 0.0)
 			sh0 = TexParallaxSampler.SampleLevel(SampParallaxSampler, uv, mipLevel).x;
 	}
@@ -1928,28 +1967,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		endif
 
 #	if defined(PIXL_WINDOW_LIFE_ACTIVE)
-	// PIXL WL2A AUTO-POM GLASS SUPPRESSION
-	float pixlWindowAutoPOMWeight = 1.0f;
-	// Window atlases may contain wood/stone and glass in one material. Suppress
-	// synthetic relief on pane pixels only, never on the complete draw/material.
-	[branch] if (autoParallaxAllowed && WindowLife::IsCandidate() && WindowLife::SuppressAutoPOM())
-	{
-		float4 pixlWindowPreColor = TexColorSampler.SampleBias(SampColorSampler, uv, SharedData::MipBias);
-		float4 pixlWindowPreNormal = TexNormalSampler.SampleBias(SampNormalSampler, uv, SharedData::MipBias);
-		float pixlWindowPreGlowLuma = 0.0f;
-		[branch] if (WindowLife::HasGameGlowTexture())
-		{
-			float3 pixlWindowPreGlow = Color::Glowmap(TexGlowSampler.Sample(SampGlowSampler, uv).xyz);
-			pixlWindowPreGlowLuma = dot(max(pixlWindowPreGlow, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
-		}
-		float pixlWindowPrePane = WindowLife::PaneMask(
-			pixlWindowPreColor.rgb, pixlWindowPreNormal, pixlWindowPreGlowLuma, uv);
-		// A binary cutoff switched UVs and virtual depth between flat glass and
-		// displaced paint under temporal jitter. Fade relief out before the pane
-		// owns the pixel, preserving full relief on opaque frame texels.
-		pixlWindowAutoPOMWeight = 1.0f - smoothstep(0.02f, 0.34f, pixlWindowPrePane);
-		autoParallaxAllowed = pixlWindowAutoPOMWeight > 1.0e-4f;
-	}
+	autoParallaxAllowed = autoParallaxAllowed && pixlWindowParallaxWeight > 1.0e-4f;
 #	endif
 	[branch] if (autoParallaxAllowed)
 	{
@@ -2012,9 +2030,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			}
 #			endif
 #			if defined(PIXL_WINDOW_LIFE_ACTIVE)
-			autoParallaxCandidateUV = lerp(autoParallaxSourceUV, autoParallaxCandidateUV, pixlWindowAutoPOMWeight);
-			autoParallaxStrength *= pixlWindowAutoPOMWeight;
-			pixelOffset *= pixlWindowAutoPOMWeight;
+			autoParallaxCandidateUV = lerp(autoParallaxSourceUV, autoParallaxCandidateUV, pixlWindowParallaxWeight);
+			autoParallaxStrength *= pixlWindowParallaxWeight;
+			pixelOffset *= pixlWindowParallaxWeight;
 #			endif
 			uv = autoParallaxCandidateUV;
 			autoParallaxApplied = autoParallaxStrength > 1e-5f;
@@ -2907,8 +2925,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// surface/interior branches (which can disagree at quad boundaries).
 	float pixlWindowPane = 0.0f;
 	[branch] if (WindowLife::IsCandidate() && !SharedData::InMapMenu &&
-		abs(viewPosition.z) < max(WindowLife::GetSurface0().y, WindowLife::GetSurface0().x + 1.0f))
-		pixlWindowPane = WindowLife::PaneMask(rawBaseColor.rgb, normalColor, pixlWindowGlowLuma, uv);
+		abs(viewPosition.z) < max(WindowLife::GetSurface0().y, WindowLife::GetSurface0().x + 1.0f)) {
+		[branch] if (pixlWindowParallaxWeight <= 1.0e-4f &&
+			pixlWindowPrePane >= 0.0f && all(abs(uv - uvOriginal) < 1.0e-7f))
+			pixlWindowPane = pixlWindowPrePane;
+		else
+			pixlWindowPane = WindowLife::PaneMask(rawBaseColor.rgb, normalColor, pixlWindowGlowLuma, uv);
+	}
 	WindowLife::SurfaceResult pixlWindowSurface = WindowLife::EvaluateSurface(
 		input.WorldPosition.xyz,
 		viewDirection,
@@ -4219,7 +4242,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 #	if defined(WATER_OPTICS)
-	dirLightColor *= WaterOptics::ComputeCaustics(waterData, input.WorldPosition.xyz, worldNormal.xyz);
+	float3 pixlDirectionalWaterBounce = 0.0f.xxx;
+	float3 pixlDirectionalCausticFactor = WaterOptics::ComputeCaustics(waterData, input.WorldPosition.xyz, worldNormal.xyz);
+	if (waterData.w > -1.0e20f && input.WorldPosition.z > waterData.w)
+		pixlDirectionalWaterBounce = max(pixlDirectionalCausticFactor - 1.0f.xxx, 0.0f.xxx) * dirLightColor * 0.42f;
+	else
+		dirLightColor *= pixlDirectionalCausticFactor;
 #	endif
 
 	// Apply world shadow (terrain shadows, cloud shadows) directly to light color
@@ -4416,6 +4444,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 	lightsDiffuseColor += dirLightOutput.diffuse;
+#	if defined(WATER_OPTICS)
+	// Reflected water light reaches walls and bridge undersides even where the
+	// direct sun/moon Lambert term (or its receiver shadow) is zero.
+	lightsDiffuseColor += pixlDirectionalWaterBounce / Math::PI;
+#	endif
 	lightsSpecularColor += dirLightOutput.specular;
 #	if defined(MATERIAL_FORGE)
 	coatLightsDiffuseColor += dirLightOutput.coatDiffuse;
@@ -4547,9 +4580,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			continue;
 		float3 lightColor = Color::PointLight(PointLightColor[lightIndex].xyz) * intensityMultiplier;
 #		if defined(WATER_OPTICS)
-		lightColor *= WaterOptics::ComputeLocalReceiverCaustics(
+		float3 pixlLocalWaterBounce = 0.0f.xxx;
+		float3 pixlLocalCausticFactor = WaterOptics::ComputeLocalReceiverCaustics(
 			waterData, input.WorldPosition.xyz, worldNormal.xyz,
 			PointLightPosition[lightIndex].xyz, lightColor, PointLightPosition[lightIndex].w);
+		if (waterData.w > -1.0e20f && input.WorldPosition.z > waterData.w)
+			pixlLocalWaterBounce = max(pixlLocalCausticFactor - 1.0f.xxx, 0.0f.xxx) * lightColor * 0.32f;
+		else
+			lightColor *= pixlLocalCausticFactor;
 #		endif
 		float lightShadow = 1.f;
 		if (!pixlGroundRaisedShell &&
@@ -4616,6 +4654,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			EvaluateWetnessLighting(wetnessNormal, pointLightContext, waterRoughnessSpecular, pointLightOutput);
 #			endif
 		lightsDiffuseColor += pointLightOutput.diffuse;
+#		if defined(WATER_OPTICS)
+		lightsDiffuseColor += pixlLocalWaterBounce / Math::PI;
+#		endif
 		lightsSpecularColor += pointLightOutput.specular;
 #			if defined(MATERIAL_FORGE)
 		coatLightsDiffuseColor += pointLightOutput.coatDiffuse;
@@ -4737,9 +4778,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		const bool isPointLightLinear = light.lightFlags & RadiantGrid::LightFlags::Linear;
 		float3 lightColor = Color::PointLight(light.color.xyz, isPointLightLinear) * intensityMultiplier * light.fade;
 #		if defined(WATER_OPTICS)
-		lightColor *= WaterOptics::ComputeLocalReceiverCaustics(
+		float3 pixlLocalWaterBounce = 0.0f.xxx;
+		float3 pixlLocalCausticFactor = WaterOptics::ComputeLocalReceiverCaustics(
 			waterData, input.WorldPosition.xyz, worldNormal.xyz,
 			light.positionWS.xyz, lightColor, light.radius);
+		if (waterData.w > -1.0e20f && input.WorldPosition.z > waterData.w)
+			pixlLocalWaterBounce = max(pixlLocalCausticFactor - 1.0f.xxx, 0.0f.xxx) * lightColor * 0.32f;
+		else
+			lightColor *= pixlLocalCausticFactor;
 #		endif
 		float lightShadow = 1.0;
 
@@ -4846,6 +4892,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #			endif
 
 		lightsDiffuseColor += pointLightOutput.diffuse;
+#		if defined(WATER_OPTICS)
+		lightsDiffuseColor += pixlLocalWaterBounce / Math::PI;
+#		endif
 		lightsSpecularColor += pointLightOutput.specular;
 #			if defined(MATERIAL_FORGE)
 		coatLightsDiffuseColor += pointLightOutput.coatDiffuse;

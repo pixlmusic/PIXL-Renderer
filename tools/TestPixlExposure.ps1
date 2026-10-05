@@ -16,7 +16,7 @@ function StepExposure([double]$previousEV, [double]$targetEV, [double]$dt, [doub
     $errorEV = $targetEV - $previousEV
     $errorEV = [Math]::Sign($errorEV) * [Math]::Max([Math]::Abs($errorEV) - 0.02, 0.0)
     $step = $errorEV * (1.0 - [Math]::Exp(-$dt / $tau))
-    $step = [Math]::Max(-4.0 * $dt, [Math]::Min(6.0 * $dt, $step))
+    $step = [Math]::Max(-0.85 * $dt, [Math]::Min(3.0 * $dt, $step))
     return $previousEV + $step
 }
 foreach ($target in @(-3.0, 3.0)) {
@@ -25,12 +25,12 @@ foreach ($target in @(-3.0, 3.0)) {
         $value = 0.0
         for ($frame = 0; $frame -lt $fps; ++$frame) {
             $previous = $value
-            $value = StepExposure $value $target (1.0 / $fps) 0.18
+            $value = StepExposure $value $target (1.0 / $fps) $(if ($target -lt 0) { 0.65 } else { 0.18 })
             if (($target -lt 0 -and ($value -gt $previous -or $value -lt $target)) -or
                 ($target -gt 0 -and ($value -lt $previous -or $value -gt $target))) {
                 throw 'Exposure response is not monotonic / overshoots.'
             }
-            $limit = $(if ($target -lt 0) { 4.0 } else { 6.0 }) / $fps
+            $limit = $(if ($target -lt 0) { 0.85 } else { 3.0 }) / $fps
             if ([Math]::Abs($value - $previous) -gt ($limit + 1e-9)) { throw 'Exposure slew limit exceeded.' }
         }
         $finalValues += $value

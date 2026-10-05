@@ -71,7 +71,7 @@ namespace {
     {
         return model && (ContainsNoCase(model, "\\potions\\") ||
             HasAny(model, { "potion", "bottle", "wine", "mead", "ale", "beer", "brandy", "rum",
-                "skooma", "sujamma", "flin", "shein", "matze", "waterflask" }));
+                "skooma", "sujamma", "flin", "shein", "matze", "waterflask", "tankard", "mug" }));
     }
 
     bool IsAlcoholModel(const char* model, const char* itemName)
@@ -83,11 +83,45 @@ namespace {
     bool IsLikelyLiquidGeometry(const char* geometry)
     {
         if (!geometry || !*geometry) return false;
-        if (HasAny(geometry, { "cork", "stopper", "cap", "label", "tag", "rope" })) return false;
-        // The draw hook runs before expensive owner/model classification, so this
-        // positive gate prevents unrelated opaque geometry from consuming the
-        // fixed 32-pass replay budget.
-        return HasAny(geometry, { "potion", "bottle", "wine", "mead", "ale", "beer", "skooma", "liquid" });
+        if (HasAny(geometry, { "cork", "stopper", "cap", "label", "tag", "rope", "wicker",
+            "basket", "woven", "wood", "leather", "wrap", "handle", "metal", "wick" })) return false;
+        // The draw hook uses this name hint before checking the owner/model.
+        return HasAny(geometry, { "potion", "bottle", "wine", "mead", "ale", "beer", "skooma", "liquid",
+            "glass", "crystal", "body", "vessel", "cup", "tankard", "mug" });
+    }
+
+    bool IsExcludedLiquidGeometry(const char* name)
+    {
+        return !name || HasAny(name, { "cork", "stopper", "cap", "label", "tag", "rope",
+            "wicker", "basket", "woven", "wood", "leather", "wrap", "handle", "metal", "wick" });
+    }
+
+    RE::AlchemyItem* FindLiquidOwner(RE::BSGeometry* geometry)
+    {
+        auto* node=static_cast<RE::NiAVObject*>(geometry);
+        for (int depth=0;node && depth<64;++depth,node=node->parent) {
+            if (auto* owner=node->GetUserData()) {
+                auto* base=owner->GetBaseObject();
+                return base?base->As<RE::AlchemyItem>():nullptr;
+            }
+        }
+        return nullptr;
+    }
+
+    bool IsCandidateLiquidGeometry(RE::BSGeometry* geometry)
+    {
+        if (!geometry || IsExcludedLiquidGeometry(geometry->name.c_str())) return false;
+        const char* name=geometry->name.c_str();
+        if (!IsLikelyLiquidGeometry(name) &&
+            !HasAny(name,{"trishape","bsgeometry","geometry","shape"})) return false;
+        // Many vanilla beverage bodies have only a generic NiTriShape name.
+        // Owner/model evidence admits them to the bounded replay queue; the
+        // profile fit still decides whether any liquid can actually be drawn.
+        auto* item=FindLiquidOwner(geometry);
+        const char* model=item?item->GetModel():nullptr;
+        return item && IsSupportedContainerModel(model) &&
+            (!HasAny(model,{"wicker","basket","woven","wood","leather","wrapped"}) ||
+                HasAny(name,{"glass","crystal"}));
     }
 
     float ActorValueScore(const RE::AlchemyItem* item, RE::ActorValue actorValue)
@@ -143,7 +177,7 @@ namespace {
             return {{0.08f,0.68f,0.82f},{0.22f,0.018f,0.025f},LiquidFamily::RedWine,false,0.28f,1.22f,1.36f};
         if (HasAny(model, { "wine", "mead", "ale", "beer", "brandy", "rum", "sujamma", "flin", "shein", "matze" }) ||
             HasAny(name, { "wine", "mead", "ale", "beer", "brandy", "rum", "sujamma", "flin", "shein", "matze" }))
-            return {{0.08f,0.24f,0.72f},{0.26f,0.105f,0.018f},LiquidFamily::PaleAlcohol,false,0.38f,1.12f,1.36f};
+            return {{0.08f,0.24f,0.72f},{0.26f,0.105f,0.018f},LiquidFamily::PaleAlcohol,false,0.80f,1.12f,1.36f};
         return {{0.08f,0.055f,0.035f},{0.025f,0.045f,0.055f},LiquidFamily::Ordinary,false,0.12f,1.0f,1.333f};
     }
 
@@ -278,16 +312,16 @@ namespace {
 void ContainedLiquids::LoadSettings(json& j)
 {
     settings = j;
-    settings.Fill=Safe(settings.Fill,0.02f,0.98f,0.75f);
-    settings.SloshStrength=Safe(settings.SloshStrength,0,2,1);
-    settings.Damping=Safe(settings.Damping,0.25f,0.95f,0.55f);
+    settings.Fill=Safe(settings.Fill,0.02f,0.98f,0.70f);
+    settings.SloshStrength=Safe(settings.SloshStrength,0,2,1.40f);
+    settings.Damping=Safe(settings.Damping,0.25f,0.95f,0.25f);
     settings.Absorption=Safe(settings.Absorption,0,3,1);
-    settings.Refraction=Safe(settings.Refraction,0,2,0.65f);
-    settings.BubbleStrength=Safe(settings.BubbleStrength,0,1,0.22f);
-    settings.InternalReflection=Safe(settings.InternalReflection,0,1.5f,0.45f);
+    settings.Refraction=Safe(settings.Refraction,0,2,1.0f);
+    settings.BubbleStrength=Safe(settings.BubbleStrength,0,1,0.20f);
+    settings.InternalReflection=Safe(settings.InternalReflection,0,1.5f,1.0f);
     settings.SubsurfaceScattering=Safe(settings.SubsurfaceScattering,0,2,0.55f);
-    settings.Emission=Safe(settings.Emission,0,3,0.18f);
-    settings.OrdinaryEmission=Safe(settings.OrdinaryEmission,0,3,0.0f);
+    settings.Emission=Safe(settings.Emission,0,3,2.40f);
+    settings.OrdinaryEmission=Safe(settings.OrdinaryEmission,0,3,1.20f);
     settings.LabelPreservation=Safe(settings.LabelPreservation,0,1,0.90f);
     settings.Debug=0; settings.Freeze=false;
     ClearHistory();
@@ -307,7 +341,7 @@ void ContainedLiquids::Reset()
 }
 void ContainedLiquids::DrawSettings()
 {
-    ImGui::TextWrapped("Experimental. Supports live world potions and clear beverage bottles whose mesh can be fitted safely. Opaque, wicker and wrapped containers retain their authored appearance. Magicka is blue, stamina green, health red; alcohol is non-emissive by default.");
+    ImGui::TextWrapped("Experimental. Supports live world potions and verified beverage bodies whose mesh can be fitted safely. Separate wicker, labels and stoppers retain their authored appearance; opaque or ambiguous bodies fall back to Skyrim. Alcohol is non-emissive by default.");
     if (ImGui::Checkbox("Enable contained liquids", &settings.Enabled)) ClearHistory();
     ImGui::BeginDisabled(!settings.Enabled);
     ImGui::SliderFloat("Fill level", &settings.Fill,0.02f,0.98f,"%.2f");
@@ -319,7 +353,7 @@ void ContainedLiquids::DrawSettings()
     if (auto t=Util::HoverTooltipWrapper()) ImGui::TextUnformatted("Controls how rapidly light is absorbed along a ray through the liquid.");
     ImGui::SliderFloat("Refraction strength", &settings.Refraction,0,2);
     ImGui::SliderFloat("Bubbles", &settings.BubbleStrength,0,1);
-    if (auto t=Util::HoverTooltipWrapper()) ImGui::TextUnformatted("Adds restrained, stable bubbles inside the liquid. Higher values add shader work only to matched bottles.");
+    if (auto t=Util::HoverTooltipWrapper()) ImGui::TextUnformatted("Rising bubbles accelerate with movement, fade at the surface and leave small pop ripples. Higher values add shader work only to matched bottles.");
     ImGui::SliderFloat("Internal reflection", &settings.InternalReflection,0,1.5f);
     if (auto t=Util::HoverTooltipWrapper()) ImGui::TextUnformatted("Controls reflected light at the liquid and inner-glass boundaries.");
     ImGui::SliderFloat("Subsurface scattering", &settings.SubsurfaceScattering,0,2);
@@ -327,7 +361,7 @@ void ContainedLiquids::DrawSettings()
     ImGui::SliderFloat("Magic emission", &settings.Emission,0,3);
     if (auto t=Util::HoverTooltipWrapper()) ImGui::TextUnformatted("Controls glow for magical potions. Their effect-derived colour also controls the emitted tint.");
     ImGui::SliderFloat("Alcohol / ordinary emission", &settings.OrdinaryEmission,0,3);
-    if (auto t=Util::HoverTooltipWrapper()) ImGui::TextUnformatted("Defaults to zero. Raise deliberately to fake restrained bounced light from wine, alcohol, water, or other non-magical liquids.");
+    if (auto t=Util::HoverTooltipWrapper()) ImGui::TextUnformatted("Adds art-directed light from ordinary liquids. The current release default follows the verified live preset; lower this for physically non-emissive alcohol and water.");
     ImGui::SliderFloat("Label preservation", &settings.LabelPreservation,0,1);
     if (auto t=Util::HoverTooltipWrapper()) ImGui::TextUnformatted("Keeps opaque painted label and stopper detail in front of the liquid during the replay pass.");
     if (ImGui::TreeNode("Debug / contained liquids")) {
@@ -396,7 +430,9 @@ bool ContainedLiquids::CaptureScene(GPUData& data)
     if (!std::isfinite(rx)||!std::isfinite(ry)||std::max(rx,ry)<1.5f||std::max(rx,ry)>246.0f) return false;
     const UINT width=std::min(static_cast<UINT>(std::ceil(rx*2+16)),desc.Width);
     const UINT height=std::min(static_cast<UINT>(std::ceil(ry*2+16)),desc.Height);
-    if (std::max(rx,ry)<8.0f) {data.optics.y=0;data.dynamics.y=0;}
+    const float projectedRadius=std::max(rx,ry);
+    data.detail.x*=std::clamp((projectedRadius-6.0f)/12.0f,0.0f,1.0f);
+    if (projectedRadius<8.0f) {data.optics.y=0;data.dynamics.y=0;}
     const UINT requestedLeft=static_cast<UINT>(std::clamp(px-width*0.5f,0.0f,static_cast<float>(desc.Width-width)));
     const UINT requestedTop=static_cast<UINT>(std::clamp(py-height*0.5f,0.0f,static_cast<float>(desc.Height-height)));
     pendingReactiveRegion={requestedLeft,requestedTop,requestedLeft+width,requestedTop+height,
@@ -425,8 +461,9 @@ bool ContainedLiquids::CaptureScene(GPUData& data)
     }
     // Cache one generous frame-local tile. Nearby bottles reuse this immutable
     // pre-liquid scene region instead of copying the same render target again.
-    const UINT tileWidth=std::min(cropSize,desc.Width);
-    const UINT tileHeight=std::min(cropSize,desc.Height);
+    const auto align16=[](UINT value) { return (value+15u)&~15u; };
+    const UINT tileWidth=std::min({cropSize,desc.Width,align16(std::max(width+64u,96u))});
+    const UINT tileHeight=std::min({cropSize,desc.Height,align16(std::max(height+64u,96u))});
     const UINT left=static_cast<UINT>(std::clamp(px-tileWidth*0.5f,0.0f,
         static_cast<float>(desc.Width-tileWidth)));
     const UINT top=static_cast<UINT>(std::clamp(py-tileHeight*0.5f,0.0f,
@@ -455,7 +492,7 @@ void ContainedLiquids::SetupGeometry(RE::BSRenderPass* pass)
         ID3D11ShaderResourceView* views[2]{dataSRV.get(),sceneSRV.get()};ctx->PSSetShaderResources(120,2,views);return;
     }
     ID3D11ShaderResourceView* empty[2]{}; ctx->PSSetShaderResources(120,2,empty);
-    if (!settings.Enabled || !buffer || !dataSRV || !globals::state || !globals::state->inWorld ||
+    if (!settings.Enabled || !buffer || !dataSRV || !globals::state || !globals::deferred || !globals::state->inWorld ||
         globals::state->activeReflections || globals::deferred->deferredPass || globals::state->isMapMenuOpen || !pass || !pass->geometry || !pass->shaderProperty) return;
     const auto frame=globals::state->frameCount;
     auto* player=globals::game::player;
@@ -464,13 +501,13 @@ void ContainedLiquids::SetupGeometry(RE::BSRenderPass* pass)
     if (contextID!=cell->GetFormID()) { ClearHistory(); contextID=cell->GetFormID(); }
     if (lastFrame!=frame) { matches=0; lastFrame=frame; }
     auto* geometry=pass->geometry;
-    if (!IsLikelyLiquidGeometry(geometry->name.c_str())) return;
+    if (!IsCandidateLiquidGeometry(geometry)) return;
     RE::TESObjectREFR* owner=nullptr;
-    auto* node=static_cast<RE::NiAVObject*>(geometry);
-    for (int depth=0;node && depth<64;++depth,node=node->parent) {
+    int ownerDepth=0;
+    for (auto* node=static_cast<RE::NiAVObject*>(geometry);node && ownerDepth<64;node=node->parent,++ownerDepth) {
         if ((owner=node->GetUserData())) break;
     }
-    auto* potion=owner&&owner->GetBaseObject()?owner->GetBaseObject()->As<RE::AlchemyItem>():nullptr;
+    auto* potion=FindLiquidOwner(geometry);
     const char* model=potion?potion->GetModel():nullptr;
     if (!potion || !IsSupportedContainerModel(model)) return;
     const auto style=ClassifyLiquid(potion,model);
@@ -478,8 +515,8 @@ void ContainedLiquids::SetupGeometry(RE::BSRenderPass* pass)
     // opaque sleeve in one draw. Without authored submesh metadata there is no
     // stable way to put a procedural volume behind only the glass. Fail closed
     // for those containers; explicit clear/glass/crystal assets remain eligible.
-    if (HasAny(model,{"wicker","basket","woven","wood","leather","wrapped","wrap"}) ||
-        HasAny(geometry->name.c_str(),{"wicker","basket","woven","wood","leather","wrapped","wrap"})) return;
+    if (HasAny(model,{"wicker","basket","woven","wood","leather","wrapped","wrap"}) &&
+        !HasAny(geometry->name.c_str(),{"glass","crystal"})) return;
     // Alcohol meshes are often named only winebottle/meadbottle and do not
     // contain a "glass" token. Admit those known beverage families, while
     // retaining the clear/glass gate for otherwise generic ordinary liquids.
@@ -487,6 +524,8 @@ void ContainedLiquids::SetupGeometry(RE::BSRenderPass* pass)
         !IsAlcoholModel(model, potion->GetFullName())) return;
     auto* material=static_cast<RE::BSLightingShaderMaterialBase*>(pass->shaderProperty->material);
     if (!material || !material->textureSet) return;
+    const char* diffuse=material->textureSet->GetTexturePath(RE::BSTextureSet::Texture::kDiffuse);
+    if (HasAny(diffuse,{"label","cork","stopper","wicker","basket","woven","wood","leather","rope"})) return;
     const auto& tr=geometry->world;
     if (!Finite(tr.translate)||!std::isfinite(tr.scale)||tr.scale<0.01f||tr.scale>20.0f) return;
     const float localBound=geometry->worldBound.radius/tr.scale;
@@ -517,6 +556,8 @@ void ContainedLiquids::SetupGeometry(RE::BSRenderPass* pass)
     std::uint64_t profileKey=HashText(1469598103934665603ull,model);
     profileKey=HashText(profileKey,geometry->name.c_str());
     profileKey^=static_cast<std::uint64_t>(std::lround(localBound*1024.0f))*0x9E3779B185EBCA87ull;
+    if (auto* shape=geometry->AsTriShape())
+        profileKey^=static_cast<std::uint64_t>(shape->GetTrishapeRuntimeData().vertexCount)*0xC2B2AE3D27D4EB4Full;
     if (!state->profileValid || state->profileKey!=profileKey) {
         ProfileCacheEntry* cached=nullptr;
         ProfileCacheEntry* replacement=&profileCache[0];
@@ -561,6 +602,10 @@ void ContainedLiquids::SetupGeometry(RE::BSRenderPass* pass)
                 rawAngular-state->angularVelocity)*angularBlend;
             if (Length(angular)<0.01f) angular={};
             const float forcing=Length(accel)/784.0f+Length(angular)*0.08f;
+            state->agitation=std::clamp(state->agitation*std::exp(-dt*2.2f/std::max(style.viscosity,0.5f))+
+                std::min(forcing,1.0f)*dt*3.0f,0.0f,1.0f);
+            state->animationTime=std::fmod(state->animationTime+dt,4096.0f);
+            state->bubbleTime=std::fmod(state->bubbleTime+dt*(1.0f+state->agitation*2.2f),4096.0f);
             if (state->sleeping && forcing>0.012f) {state->sleeping=false;state->sleepTime=0.0f;}
             if (!state->sleeping) {
                 const float targets[2]={
@@ -601,7 +646,9 @@ void ContainedLiquids::SetupGeometry(RE::BSRenderPass* pass)
         state->radialProfile,profilePlane,settings.Fill);
     data.plane={n.x,n.y,n.z,fillOffset};
     data.optics={settings.Absorption,settings.Refraction,static_cast<float>(settings.Debug),tr.scale};
-    data.dynamics={now,std::min(1.0f,std::abs(state->speed[0])+std::abs(state->speed[1])),replaying?1.0f:0.0f,std::clamp((1600.0f-distance)/400.0f,0.0f,1.0f)};
+    data.dynamics={state->animationTime,std::clamp(state->agitation*1.8f+
+        (std::abs(state->speed[0])+std::abs(state->speed[1]))*0.35f,0.0f,1.0f),
+        replaying?1.0f:0.0f,std::clamp((1600.0f-distance)/400.0f,0.0f,1.0f)};
     data.profile0={state->radialProfile[0],state->radialProfile[1],state->radialProfile[2],state->radialProfile[3]};
     data.profile1={state->radialProfile[4],state->radialProfile[5],state->radialProfile[6],state->radialProfile[7]};
     data.profile2={state->radialProfile[8],state->radialProfile[9],state->radialProfile[10],state->radialProfile[11]};
@@ -613,7 +660,7 @@ void ContainedLiquids::SetupGeometry(RE::BSRenderPass* pass)
     // the final lane for viscosity so bubble buoyancy and meniscus settling
     // respond to the same liquid-family physics as the CPU slosh solver.
     data.appearance={settings.SubsurfaceScattering,emission,settings.LabelPreservation,style.viscosity};
-    data.opticalColor={style.absorption.x,style.absorption.y,style.absorption.z,style.magical?1.0f:0.0f};
+    data.opticalColor={style.absorption.x,style.absorption.y,style.absorption.z,state->bubbleTime};
     data.liquidColor={style.tint.x,style.tint.y,style.tint.z,style.liquidIOR};
     if (!CaptureScene(data)) {
         if (!captureFailureLogged) {
@@ -642,15 +689,15 @@ void ContainedLiquids::PostPostLoad()
     stl::write_vfunc<0x6,Hook>(RE::VTABLE_BSLightingShader[0]);
     // Same verified RenderPassImmediately call site used by TerrainSeam; chain it.
     stl::write_thunk_call<DrawHook>(REL::RelocationID(100852,107642).address()+REL::Relocate(0x29E,0x28F));
-    logger::info("[ContainedLiquids] Clear-container hook installed; opaque/wrapped beverages fail closed");
+    logger::info("[ContainedLiquids] Container hook installed; ambiguous opaque bodies fail closed");
 }
 void ContainedLiquids::DrawHook::thunk(RE::BSRenderPass* pass,std::uint32_t technique,bool alphaTest,std::uint32_t flags)
 {
     auto& module=globals::pipeline::containedLiquids;
-    if (module.loaded && module.settings.Enabled && !module.replaying && globals::state &&
+    if (module.loaded && module.settings.Enabled && !module.replaying && globals::state && globals::deferred &&
         globals::state->inWorld && !globals::state->activeReflections && globals::deferred->deferredPass &&
         pass && pass->geometry && pass->shader && pass->shader->shaderType.get()==RE::BSShader::Type::Lighting &&
-        IsLikelyLiquidGeometry(pass->geometry->name.c_str())) {
+        IsCandidateLiquidGeometry(pass->geometry)) {
         if (module.pendingFrame!=globals::state->frameCount) {module.pendingCount=0;module.pendingFrame=globals::state->frameCount;}
         bool duplicate=false;
         for (size_t i=0;i<module.pendingCount;++i) if (module.pending[i].pass->geometry==pass->geometry) duplicate=true;
@@ -660,7 +707,8 @@ void ContainedLiquids::DrawHook::thunk(RE::BSRenderPass* pass,std::uint32_t tech
 }
 void ContainedLiquids::ReplayAfterDeferred()
 {
-    if (!settings.Enabled || !pendingCount || pendingFrame!=globals::state->frameCount) {pendingCount=0;return;}
+    if (!settings.Enabled || !pendingCount || !globals::state || pendingFrame!=globals::state->frameCount ||
+        !globals::d3d::context || !globals::game::renderer || !globals::game::shadowState) {pendingCount=0;return;}
     auto* ctx=globals::d3d::context;
     auto* renderer=globals::game::renderer;
     auto& shadow=globals::game::shadowState->GetRuntimeData();

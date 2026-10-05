@@ -180,9 +180,9 @@ void WindowLife::DrawSettings()
 			ImGui::TextWrapped("Controls mip-filtered grime, rain streaks and cold-weather haze. The response uses live PIXL precipitation state and remains attached to the glass in world space.");
 		}
 		ImGui::EndDisabled();
-		ImGui::Checkbox(T("feature.window_life.suppress_autopom", "Keep Auto-POM Off Glass Panes"), &settings.SuppressWindowAutoPOM);
+		ImGui::Checkbox(T("feature.window_life.suppress_autopom", "Keep Parallax Off Glass Panes"), &settings.SuppressWindowAutoPOM);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::TextWrapped("%s", T("feature.window_life.suppress_autopom_tooltip", "Suppresses synthetic Object Auto-POM only on detected pane pixels. Window frames and surrounding architecture keep their normal material depth."));
+			ImGui::TextWrapped("%s", T("feature.window_life.suppress_autopom_tooltip", "Suppresses authored, complex-material and synthetic parallax on detected pane pixels. Frames and surrounding architecture retain their material depth."));
 		}
 	}
 
@@ -256,6 +256,7 @@ void WindowLife::DrawSettings()
 		}
 		ImGui::SliderFloat(T("feature.window_life.pane_threshold", "Pane Threshold"), &settings.PaneThreshold, 0.0f, 0.55f, "%.2f");
 		ImGui::SliderFloat(T("feature.window_life.pane_softness", "Pane Mask Softness"), &settings.PaneSoftness, 0.03f, 0.50f, "%.2f");
+		Util::AddTooltip("Feathers authored glow/exact-mask panes as well as procedural panes. Frame and stone erosion guards stay active; higher values soften the transition, not the room artwork.");
 		ImGui::SliderFloat(T("feature.window_life.fade_start", "Distance Fade Start"), &settings.DistanceFadeStart, 256.0f, 10000.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat(T("feature.window_life.fade_end", "Distance Fade End"), &settings.DistanceFadeEnd, 512.0f, 16000.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
 		settings.DistanceFadeEnd = std::max(settings.DistanceFadeEnd, settings.DistanceFadeStart + 1.0f);

@@ -200,8 +200,8 @@ float3 LoadBodycamScene(float2 uv, uint2 dim)
 	float2 warped = BodycamUV(uv, dim);
     float3 center = LoadSceneLinear(warped, dim);
 	float3 result = center;
-	if (bodycamEnabled >= 0.5f) {
-		float strength = saturate(bodycamStrength);
+	bool lensEffectsEnabled = auxiliaryPassMask >= 8.0f;
+	if (lensEffectsEnabled && bodycamChromaticAberration > 1.0e-4f) {
 		float aspect = max((float)dim.x / max((float)dim.y, 1.0f), 1.0f);
 		float2 radial = warped * 2.0f - 1.0f;
 		radial.x *= aspect;
@@ -209,7 +209,7 @@ float3 LoadBodycamScene(float2 uv, uint2 dim)
 		float2 dir = r > 1e-5f ? radial / r : 0.0f;
 		dir.x /= aspect;
 		float edge = smoothstep(0.28f, 1.28f, r);
-		float2 ca = dir * edge * edge * max(bodycamChromaticAberration, 0.0f) * 0.008f * strength;
+		float2 ca = dir * edge * edge * max(bodycamChromaticAberration, 0.0f) * 0.008f;
 		float3 plus = LoadSceneLinear(saturate(warped + ca), dim);
 		float3 minus = LoadSceneLinear(saturate(warped - ca), dim);
 		result = float3(plus.r, center.g, minus.b);
@@ -648,6 +648,7 @@ float3 ApplyPhysicalCamera(float2 uv, uint2 dim, float exposure, bool hdrOutput,
         ? max(LocalExposureTex.SampleLevel(LinearClampSampler, warped, 0.0f), 0.25f)
         : 1.0f;
 
+    bool lensEffectsEnabled = auxiliaryPassMask >= 8.0f;
     if (bodycamEnabled > 0.5f) {
         float strength = saturate(bodycamStrength);
 		float3 broad0 = LoadSceneLinear(saturate(warped + float2(12.0f, 0.0f) * px), dim);
@@ -693,12 +694,11 @@ float3 ApplyPhysicalCamera(float2 uv, uint2 dim, float exposure, bool hdrOutput,
 		scene += max(bloom, 0.0f) * max(bloomStrength, 0.0f) * 0.28f;
 	}
 
-    if (bodycamEnabled > 0.5f) {
-        float strength = saturate(bodycamStrength);
+    if (lensEffectsEnabled && bodycamNoise > 1.0e-4f) {
         float lum = PixlLuminance(scene);
         float lowLight = saturate(1.0f - lum / 0.28f);
         float sensorGain = saturate(log2(max(exposure, 1.0f) + 1.0f) / 6.0f);
-        float noiseAmp = max(bodycamNoise, 0.0f) * strength * lowLight * (0.008f + 0.018f * sensorGain);
+        float noiseAmp = max(bodycamNoise, 0.0f) * lowLight * (0.008f + 0.018f * sensorGain);
         uint2 pixel = uint2(saturate(uv) * float2(dim));
         float n = PixlRandom01(pixel, frameIndex) - 0.5f;
         float nc = PixlRandom01(pixel.yx + uint2(37u, 19u), frameIndex + 17u) - 0.5f;
@@ -712,10 +712,10 @@ float3 ApplyPhysicalCamera(float2 uv, uint2 dim, float exposure, bool hdrOutput,
     float3 mapped = scene * (mappedLum / lum);
     mapped = PixlSaturatePreserveHue(mapped, cameraSaturation);
 
-    if (bodycamEnabled > 0.5f) {
+    if (lensEffectsEnabled && bodycamVignette > 1.0e-4f) {
         float2 p = uv * 2.0f - 1.0f;
         float vignette = smoothstep(0.35f, 1.10f, dot(p, p));
-        mapped *= 1.0f - vignette * max(bodycamVignette, 0.0f) * saturate(bodycamStrength);
+        mapped *= 1.0f - vignette * max(bodycamVignette, 0.0f);
     }
 
     return max(mapped, 0.0f);

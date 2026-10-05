@@ -21,7 +21,10 @@ $cases = @(@(), @('DO_ALPHA_TEST'), @('ENVMAP'), @('GLOWMAP'), @('MATERIAL_FORGE
     @('MATERIAL_LAYERS'), @('MATERIAL_LAYERS', 'GLOWMAP'),
     @('MATERIAL_LAYERS', 'ENVMAP', 'DEFERRED'),
     @('MATERIAL_LAYERS', 'DO_ALPHA_TEST'),
-    @('MATERIAL_LAYERS', 'MATERIAL_FORGE'))
+    @('MATERIAL_LAYERS', 'MATERIAL_FORGE'),
+    @('MATERIAL_LAYERS', 'PARALLAX'),
+    @('MATERIAL_LAYERS', 'ENVMAP'),
+    @('MATERIAL_LAYERS', 'PARALLAX', 'ENVMAP'))
 for ($i = 0; $i -lt $cases.Count; ++$i) {
     $args = @('/nologo','/WX','/Ges','/O3','/T','ps_5_0','/E','main','/I',$ShaderRoot)
     foreach ($define in (@('WINPC','DX11','PSHADER','PIXL_WINDOW_LIFE') + $cases[$i])) { $args += @('/D',$define) }

@@ -10,6 +10,8 @@ param(
     [string]$AllowedOutputRoot = "",
     [ValidateSet("LIVE-TEST", "RELEASE-CANDIDATE", "RELEASE")]
     [string]$Channel = "LIVE-TEST",
+    [ValidateSet("", "r2")]
+    [string]$PackageRevision = "",
     [ValidateRange(0, 9)]
     [int]$CompressionLevel = 7,
     [switch]$SkipPipelineLibrary,
@@ -276,7 +278,12 @@ if ($includePipelineLibrary) {
         $moduleText = Get-Content -LiteralPath $descriptor.FullName -Raw
         $id = [regex]::Match($moduleText, '(?m)^\s*Id\s*=\s*([^\r\n]+)').Groups[1].Value.Trim()
         $version = [regex]::Match($moduleText, '(?m)^\s*Version\s*=\s*([^\r\n]+)').Groups[1].Value.Trim()
-        if (!$cacheSections.ContainsKey($id) -or $cacheSections[$id]['Version'] -ne $version) { throw "Stale/missing module cache identity: $id (expected $version)" }
+        if (!$cacheSections.ContainsKey($id)) { throw "Missing module cache identity: $id" }
+        # Runtime ValidateCache ignores the version of an unloaded module; its
+        # cached Enabled=false entry must not block packaging a valid library.
+        if ($cacheSections[$id]['Enabled'] -ieq 'true' -and $cacheSections[$id]['Version'] -ne $version) {
+            throw "Stale module cache identity: $id (expected $version)"
+        }
     }
     foreach ($stage in Get-ChildItem -LiteralPath $pipelineRoot -File -Recurse -Filter '*.pixlbin') {
         $relative = $stage.FullName.Substring($pipelineRoot.TrimEnd('\').Length + 1)
@@ -358,8 +365,8 @@ $manifestFiles = Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object
 }
 [ordered]@{
     product = "PIXL Renderer"
-    title = "PIXL Renderer v1.0.6"
-    version = "1.0.6"
+    title = "PIXL Renderer v1.0.6$PackageRevision"
+    version = "1.0.6$PackageRevision"
     requirements = @([ordered]@{
         id = "EngineFixes"
         path = "SKSE/Plugins/EngineFixes.dll"
