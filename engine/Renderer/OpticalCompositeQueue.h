@@ -65,6 +65,7 @@ namespace PIXL::Renderer
 		std::array<OpticalReplayCommand, kCapacity> commands{};
 		std::size_t count{};
 		OpticalRequirements requirements{};
+		OpticalRequirements loggedRequirements{};
 		std::uint64_t frame{ FrameToken::kInvalidFrame };
 	};
 }

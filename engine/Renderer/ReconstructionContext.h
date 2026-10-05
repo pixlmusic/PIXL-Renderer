@@ -41,6 +41,11 @@ namespace PIXL::Renderer
 		std::size_t contributors{};
 		bool valid{}, depth{}, motion{}, annotations{}, reactive{}, transparency{}, temporalValid{};
 	};
+	struct ContributorDiagnostics
+	{
+		std::string name;
+		ReactiveContributionKind kind{ ReactiveContributionKind::Other };
+	};
 
 	class ReconstructionContext
 	{
@@ -62,6 +67,7 @@ namespace PIXL::Renderer
 		[[nodiscard]] ReconstructionFrame Acquire() const;
 		[[nodiscard]] ReconstructionFrame Acquire(const FrameToken& token) const;
 		[[nodiscard]] ReconstructionDiagnostics GetDiagnostics() const;
+		[[nodiscard]] std::vector<ContributorDiagnostics> GetContributorDiagnostics() const;
 		static std::string_view ToString(ReconstructionBackend backend) noexcept;
 	private:
 		struct Contributor { std::uint64_t id{}; std::string name; ReactiveContributionKind kind{}; ReactiveContributor callback; };

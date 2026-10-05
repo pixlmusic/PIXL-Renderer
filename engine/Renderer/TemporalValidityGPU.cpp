@@ -54,6 +54,8 @@ namespace PIXL::Renderer
 		lastEpoch = {};
 		activeX = activeY = 0;
 		creationFailed = false;
+		lastLoggedAvailable = false;
+		lastLoggedAnnotations = false;
 	}
 
 	bool TemporalValidityGPU::EnsureResources(ID3D11Device* device, std::uint32_t nextWidth, std::uint32_t nextHeight)
@@ -157,6 +159,14 @@ namespace PIXL::Renderer
 		attemptedEpoch = token.resources;
 		if (!resourcesReady)
 			return false;
+		const bool available = IsAvailable();
+		const bool annotationsAvailable = AnnotationsAvailable();
+		if (available != lastLoggedAvailable || annotationsAvailable != lastLoggedAnnotations) {
+			logger::info("[PIXL TemporalGPU] availability changed: TemporalValidity={} Annotations={}",
+				available ? "Active" : "Unavailable", annotationsAvailable ? "Active" : "Unavailable");
+			lastLoggedAvailable = available;
+			lastLoggedAnnotations = annotationsAvailable;
+		}
 		if (activeX != extent.active.x || activeY != extent.active.y) {
 			lastFrame = FrameToken::kInvalidFrame;
 			activeX = extent.active.x;

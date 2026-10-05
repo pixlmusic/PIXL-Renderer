@@ -60,6 +60,9 @@ namespace PIXL::Renderer
 		// Registration is setup-time only. Holding the registry lock avoids a
 		// per-frame std::function snapshot/allocation on this hot path.
 		std::scoped_lock lock(mutex);
+		if (!expectedToken.Valid() || expectedToken.view != ViewType::MainWorld || !expectedExtent.Valid() ||
+			width != expectedExtent.active.width || height != expectedExtent.active.height)
+			return;
 		for (const auto& contributor : contributors)
 			contributor.callback(target, width, height);
 	}
@@ -96,6 +99,15 @@ namespace PIXL::Renderer
 		return { frame.backend, frame.renderWidth, frame.renderHeight, frame.outputWidth, frame.outputHeight,
 			contributors.size(), frame.renderWidth != 0 && frame.renderHeight != 0, frame.depth != nullptr, frame.motion != nullptr,
 			frame.annotations.valid, frame.reactive != nullptr, frame.transparency != nullptr, frame.temporalValid };
+	}
+	std::vector<ContributorDiagnostics> ReconstructionContext::GetContributorDiagnostics() const
+	{
+		std::scoped_lock lock(mutex);
+		std::vector<ContributorDiagnostics> result;
+		result.reserve(contributors.size());
+		for (const auto& contributor : contributors)
+			result.push_back({ contributor.name, contributor.kind });
+		return result;
 	}
 	std::string_view ReconstructionContext::ToString(ReconstructionBackend backend) noexcept
 	{

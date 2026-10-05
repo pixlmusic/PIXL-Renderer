@@ -26,6 +26,7 @@
 #include "Renderer/TemporalContext.h"
 #include "Renderer/PixelAnnotations.h"
 #include "Renderer/ReconstructionContext.h"
+#include "Renderer/TemporalValidityGPU.h"
 #include "Renderer/GPUWorkloadBudgeter.h"
 #include "Renderer/VisibilityContext.h"
 #include "Modules/SkinOptics.h"
@@ -314,6 +315,15 @@ void State::Setup()
 	auto& passScheduler = PIXL::Renderer::RenderPassScheduler::Get();
 	passScheduler.RegisterLegacyModulePasses(RenderModule::GetModuleList());
 	passScheduler.NotifyResourcesRecreated();
+	const auto passDiagnostics = passScheduler.GetDiagnostics();
+	logger::info("[PIXL Pipeline] scheduler legacy-pass-records={} typed/native=0 TemporalGPU={} Annotations={} OpticalQueue={} Adaptive={}",
+		passDiagnostics.size(),
+		PIXL::Renderer::TemporalValidityGPU::Get().IsAvailable() ? "Active" : "Deferred",
+		PIXL::Renderer::TemporalValidityGPU::Get().AnnotationsAvailable() ? "Active" : "Deferred",
+		"Ready", PIXL::Renderer::GPUWorkloadBudgeter::Get().IsEnabled() ? "Enabled" : "Disabled");
+	for (const auto& contributor : PIXL::Renderer::ReconstructionContext::Get().GetContributorDiagnostics())
+		logger::info("[PIXL Pipeline] reconstruction contributor: {} ({})", contributor.name,
+			static_cast<unsigned>(contributor.kind));
 
 	// Load per-weather settings after features are setup
 	globals::weatherManager->LoadPerWeatherSettingsFromDisk();

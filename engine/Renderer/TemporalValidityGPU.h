@@ -26,6 +26,8 @@ namespace PIXL::Renderer
 			ID3D11Buffer* sharedData, ID3D11Buffer* frameData,
 			bool historyValid);
 		void Invalidate() noexcept;
+		[[nodiscard]] bool IsAvailable() const noexcept { return shader != nullptr && confidenceUAV != nullptr; }
+		[[nodiscard]] bool AnnotationsAvailable() const noexcept { return annotationUAV != nullptr; }
 
 	private:
 		bool EnsureResources(ID3D11Device* device, std::uint32_t width, std::uint32_t height);
@@ -49,5 +51,7 @@ namespace PIXL::Renderer
 		std::uint32_t activeX{};
 		std::uint32_t activeY{};
 		bool creationFailed{};
+		bool lastLoggedAvailable{};
+		bool lastLoggedAnnotations{};
 	};
 }

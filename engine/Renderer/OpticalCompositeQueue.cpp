@@ -31,6 +31,7 @@ namespace PIXL::Renderer
 			command = {};
 		count = 0;
 		requirements = 0;
+		loggedRequirements = 0;
 		frame = FrameToken::kInvalidFrame;
 	}
 
@@ -47,6 +48,10 @@ namespace PIXL::Renderer
 		requirements = 0;
 		for (std::size_t i = 0; i < count; ++i)
 			requirements |= commands[i].requirements;
+		if (requirements != loggedRequirements) {
+			logger::debug("[PIXL Optical] frame requirements changed: 0x{:X}", requirements);
+			loggedRequirements = requirements;
+		}
 	}
 
 	bool OpticalCompositeQueue::Enqueue(const OpticalReplayCommand& command) noexcept
@@ -66,6 +71,10 @@ namespace PIXL::Renderer
 			return false;
 		commands[count++] = command;
 		requirements |= command.requirements;
+		if (requirements != loggedRequirements) {
+			logger::debug("[PIXL Optical] frame requirements changed: 0x{:X}", requirements);
+			loggedRequirements = requirements;
+		}
 		return true;
 	}
 
