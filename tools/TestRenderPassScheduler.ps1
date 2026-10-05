@@ -32,7 +32,7 @@ foreach ($field in @(
 
 $deferred = 'engine\Deferred.cpp'
 foreach ($point in @('ReflectionsPrepass', 'EarlyPrepass', 'Prepass')) {
-    $schedulerCall = if ($point -eq 'EarlyPrepass') { 'scheduler\.Execute' } else { 'RenderPassScheduler::Get\(\)\.Execute' }
+    $schedulerCall = '(?:scheduler\.Execute|RenderPassScheduler::Get\(\)\.Execute)'
     Require-Text $deferred ($schedulerCall + "\(PIXL::Renderer::PassExecutionPoint::" + $point + "\)") "scheduler execution point $point"
     Require-Text $deferred ('ForEachLoadedModule\("' + $point) "legacy fallback $point"
 }

@@ -19,6 +19,7 @@
 #include "MaterialLayers.h"
 #include "Renderer/QualityProfiles.h"
 #include "Renderer/LightTransportWorld.h"
+#include "Renderer/RenderPassScheduler.h"
 #include "Renderer/TemporalContext.h"
 #include "Renderer/GPUWorkloadBudgeter.h"
 #include "Renderer/ReflectionContext.h"
@@ -1832,11 +1833,14 @@ void HybridGI::UpdateSB()
 			const auto& frameBuffer = globals::game::frameBufferCached;
 			const auto& projection = frameBuffer.GetCameraProj();
 			const auto temporalFrame = PIXL::Renderer::TemporalContext::Get().GetFrameSnapshot();
+			const bool sharedTemporalContinuity = temporalFrame.current.frameIndex == globals::state->frameCount &&
+				temporalFrame.current.viewType == PIXL::Renderer::ViewType::MainWorld &&
+				temporalFrame.previousFrameValid;
 			float4x4 currentInverseView = frameBuffer.GetCameraViewInverse();
 			float4x4 previousInverseView = currentInverseView;
 			if (temporalFrame.current.frameIndex == globals::state->frameCount) {
 				std::memcpy(&currentInverseView, temporalFrame.current.inverseView.data(), sizeof(temporalFrame.current.inverseView));
-				if (temporalFrame.previousFrameValid)
+				if (sharedTemporalContinuity)
 					std::memcpy(&previousInverseView, temporalFrame.previous.inverseView.data(), sizeof(temporalFrame.previous.inverseView));
 			}
 			const float projectionX = std::abs(projection._11) > 1e-6f ? projection._11 : 1.0f;
@@ -1919,8 +1923,9 @@ void HybridGI::UpdateSB()
 		data.DebugGain = std::clamp(settings.DebugGain, 0.1f, 16.0f);
 		data.WorldCacheTemporalResponse = std::clamp(settings.WorldCacheTemporalResponse, 0.02f, 1.0f);
 		auto& radiantGrid = globals::pipeline::radiantGrid;
-		const auto sharedLights = PIXL::Renderer::LightTransportWorld::Get().AcquireLocalLights();
-		const bool sharedLightsReady = globals::state && sharedLights.ValidFor(globals::state->frameCount);
+		const auto lightToken = PIXL::Renderer::RenderPassScheduler::Get().CurrentToken();
+		const auto sharedLights = PIXL::Renderer::LightTransportWorld::Get().AcquireLocalLights(lightToken);
+		const bool sharedLightsReady = sharedLights.ValidFor(lightToken);
 		const bool radiantGridFallbackReady = radiantGrid.loaded && radiantGrid.lights &&
 			radiantGrid.lightIndexList && radiantGrid.lightGrid;
 		const std::uint32_t emitterStart = sharedLightsReady ? sharedLights.emitterStart : radiantGrid.particleLightBufferStart;
@@ -1947,7 +1952,9 @@ void HybridGI::UpdateSB()
 		data.ReflectionMaxRoughness = std::clamp(settings.ReflectionMaxRoughness, 0.05f, 1.0f);
 		data.ReflectionMaxDistance = std::clamp(settings.ReflectionMaxDistance, 256.0f, 8192.0f);
 		data.ReflectionThickness = std::clamp(settings.ReflectionThickness, 2.0f, 96.0f);
-		data.ReflectionSteps = std::clamp(settings.ReflectionSteps, 8u, 64u);
+		const float reflectionWorkload = PIXL::Renderer::GPUWorkloadBudgeter::Get().GetScale(
+			PIXL::Renderer::WorkloadDomain::Reflections);
+		data.ReflectionSteps = std::clamp(static_cast<uint>(std::lround(settings.ReflectionSteps * reflectionWorkload)), 8u, 64u);
 		data.ReflectionTemporalResponse = std::clamp(settings.ReflectionTemporalResponse, 0.04f, 0.5f);
 		data.ReflectionFireflyClamp = std::clamp(settings.ReflectionFireflyClamp, 1.0f, 32.0f);
 		data.ReflectionWorldFallbackStrength = std::clamp(settings.ReflectionWorldFallbackStrength, 0.0f, 1.0f);
@@ -2290,8 +2297,9 @@ void HybridGI::DrawHybridGI()
 			srvs.at(7) = texWorldCachePreviousSH2->srv.get();
 			srvs.at(8) = texWorldCachePreviousNormal->srv.get();
 			auto& radiantGrid = globals::pipeline::radiantGrid;
-			const auto sharedLights = PIXL::Renderer::LightTransportWorld::Get().AcquireLocalLights();
-			const bool sharedLightsReady = globals::state && sharedLights.ValidFor(globals::state->frameCount);
+			const auto lightToken = PIXL::Renderer::RenderPassScheduler::Get().CurrentToken();
+			const auto sharedLights = PIXL::Renderer::LightTransportWorld::Get().AcquireLocalLights(lightToken);
+			const bool sharedLightsReady = sharedLights.ValidFor(lightToken);
 			srvs.at(9) = !settings.EnableEmitterInjection ? nullptr : sharedLightsReady ?
 				sharedLights.lights.get() : radiantGrid.loaded && radiantGrid.lights ? radiantGrid.lights->srv.get() : nullptr;
 			srvs.at(10) = !settings.EnableEmitterInjection ? nullptr : sharedLightsReady ?
@@ -2502,7 +2510,8 @@ void HybridGI::DrawHybridGI()
 	if (reflectionActive && texGiSpecular[outputSpecIdx] && texGiSpecular[outputSpecIdx]->srv) {
 		reflectionFrame.radianceConfidence = texGiSpecular[outputSpecIdx]->srv;
 		reflectionFrame.width = resolution[0]; reflectionFrame.height = resolution[1];
-		reflectionFrame.traceSteps = settings.ReflectionSteps;
+		reflectionFrame.traceSteps = std::clamp(static_cast<uint>(std::lround(settings.ReflectionSteps *
+			PIXL::Renderer::GPUWorkloadBudgeter::Get().GetScale(PIXL::Renderer::WorkloadDomain::Reflections))), 8u, 64u);
 		reflectionFrame.maxDistance = settings.ReflectionMaxDistance;
 		reflectionFrame.maxRoughness = settings.ReflectionMaxRoughness;
 		reflectionFrame.thickness = settings.ReflectionThickness;
@@ -2515,9 +2524,11 @@ void HybridGI::DrawHybridGI()
 	PIXL::Renderer::ReflectionContext::Get().Publish(std::move(reflectionFrame));
 
 	if (worldCacheActive && texWorldCacheSH0 && texWorldCacheSH0->srv) {
-		PIXL::Renderer::LightTransportWorld::Get().PublishProbe(
+		const auto& lightView = PIXL::Renderer::RenderPassScheduler::Get().CurrentView();
+		PIXL::Renderer::LightTransportWorld::Get().PublishProbe(lightView.token, lightView.extent,
 			PIXL::Renderer::ProbeKind::WorldIrradiance, texWorldCacheSH0->srv.get(),
-			texWorldCacheSH0->desc.Width, texWorldCacheSH0->desc.Height);
+			texWorldCacheSH0->desc.Width, texWorldCacheSH0->desc.Height, 1,
+			PIXL::Renderer::CoordinateSpace::CameraRelativeWorld, PIXL::Renderer::ResolutionDomain::Backing);
 	}
 
 	// cleanup

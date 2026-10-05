@@ -9,6 +9,8 @@
 #include "State.h"
 #include "Util.h"
 #include "Deferred.h"
+#include "Renderer/OpticalCompositeQueue.h"
+#include "Renderer/RenderPassScheduler.h"
 #include <d3d11_1.h>
 #include <cmath>
 #include <cctype>
@@ -329,14 +331,16 @@ void ContainedLiquids::LoadSettings(json& j)
 void ContainedLiquids::SaveSettings(json& j) { j=settings; }
 void ContainedLiquids::ClearHistory()
 {
-    objects={};lastFrame=~0u;matches=0;pendingCount=0;preparedPass=nullptr;
+    objects={};lastFrame=~0u;matches=0;preparedPass=nullptr;
+    PIXL::Renderer::OpticalCompositeQueue::Get().DropOwner(this);
     sceneCaptureFrame=~0u;sceneCaptureSource=0;sceneCaptureWidth=sceneCaptureHeight=0;
+    reactiveRegionCount=0;reactiveRegionFrame=~0u;
 }
 void ContainedLiquids::Reset()
 {
     // RenderModule::Reset is called EVERY present, despite its old API comment.
     // Preserve spring state across ordinary frames; discard only frame-owned passes.
-    pendingCount=0;preparedPass=nullptr;matches=0;
+    preparedPass=nullptr;matches=0;
     if (!settings.Enabled || (globals::game::ui && (globals::game::ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) || globals::game::ui->IsMenuOpen(RE::MainMenu::MENU_NAME)))) ClearHistory();
 }
 void ContainedLiquids::DrawSettings()
@@ -507,6 +511,10 @@ void ContainedLiquids::SetupGeometry(RE::BSRenderPass* pass)
     for (auto* node=static_cast<RE::NiAVObject*>(geometry);node && ownerDepth<64;node=node->parent,++ownerDepth) {
         if ((owner=node->GetUserData())) break;
     }
+    // Geometry-name hints are intentionally broad so modded beverage bodies can
+    // be considered, but they do not prove that the draw belongs to a live
+    // reference.  Fail closed before any owner-dependent cache/history access.
+    if (!owner) return;
     auto* potion=FindLiquidOwner(geometry);
     const char* model=potion?potion->GetModel():nullptr;
     if (!potion || !IsSupportedContainerModel(model)) return;
@@ -698,56 +706,58 @@ void ContainedLiquids::DrawHook::thunk(RE::BSRenderPass* pass,std::uint32_t tech
         globals::state->inWorld && !globals::state->activeReflections && globals::deferred->deferredPass &&
         pass && pass->geometry && pass->shader && pass->shader->shaderType.get()==RE::BSShader::Type::Lighting &&
         IsCandidateLiquidGeometry(pass->geometry)) {
-        if (module.pendingFrame!=globals::state->frameCount) {module.pendingCount=0;module.pendingFrame=globals::state->frameCount;}
-        bool duplicate=false;
-        for (size_t i=0;i<module.pendingCount;++i) if (module.pending[i].pass->geometry==pass->geometry) duplicate=true;
-        if (!duplicate && module.pendingCount<module.pending.size()) module.pending[module.pendingCount++]={pass,technique,flags,alphaTest};
+        const auto token=PIXL::Renderer::RenderPassScheduler::Get().CurrentToken();
+        PIXL::Renderer::OpticalCompositeQueue::Get().Enqueue({
+            token,pass,pass->geometry,&module,&ContainedLiquids::ReplayQueuedDraw,
+            technique,flags,
+            PIXL::Renderer::OpticalBit(PIXL::Renderer::OpticalRequirement::SceneColor) |
+            PIXL::Renderer::OpticalBit(PIXL::Renderer::OpticalRequirement::OpaqueDepth) |
+            PIXL::Renderer::OpticalBit(PIXL::Renderer::OpticalRequirement::Reactive) |
+            PIXL::Renderer::OpticalBit(PIXL::Renderer::OpticalRequirement::InternalVolume) |
+            PIXL::Renderer::OpticalBit(PIXL::Renderer::OpticalRequirement::GlassShell) |
+            PIXL::Renderer::OpticalBit(PIXL::Renderer::OpticalRequirement::AuthoredDecals) |
+            PIXL::Renderer::OpticalBit(PIXL::Renderer::OpticalRequirement::ContainedLiquid),
+            alphaTest });
     }
     func(pass,technique,alphaTest,flags); // Original opaque/depth/shadow behavior is never skipped.
 }
 void ContainedLiquids::ReplayAfterDeferred()
 {
-    if (!settings.Enabled || !pendingCount || !globals::state || pendingFrame!=globals::state->frameCount ||
-        !globals::d3d::context || !globals::game::renderer || !globals::game::shadowState) {pendingCount=0;return;}
-    auto* ctx=globals::d3d::context;
-    auto* renderer=globals::game::renderer;
-    auto& shadow=globals::game::shadowState->GetRuntimeData();
-    ID3D11RenderTargetView* saved[8]{}; ID3D11DepthStencilView* savedDepth=nullptr;
-    ctx->OMGetRenderTargets(8,saved,&savedDepth);
-    ID3D11RenderTargetView* forward[4]{};
-    for (int i=0;i<4;++i) {
-        auto id=shadow.renderTargets[i];
-        if (id!=RE::RENDER_TARGET::kNONE) forward[i]=renderer->GetRuntimeData().renderTargets[id].RTV;
-    }
-    auto* depth=renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN].views[0];
-    ctx->OMSetRenderTargets(4,forward,depth);
-    replaying=true;
-    const auto count=pendingCount;
-    // Passes belong to this frame's live accumulator, as in TerrainSeam replay.
-    // No pointer is retained for a later frame or dereferenced after unload.
-    for (size_t i=0;i<count;++i) {
-        const auto draw=pending[i];
-        preparedPass=nullptr;
-        SetupGeometry(draw.pass);
-        if (preparedPass) DrawHook::func(draw.pass,draw.technique,draw.alphaTest,draw.flags);
-        preparedPass=nullptr;
-    }
-    replaying=false;pendingCount=0;
+    if (!settings.Enabled || !globals::state) return;
+    const auto count=PIXL::Renderer::OpticalCompositeQueue::Get().ReplayOwner(
+        this,PIXL::Renderer::RenderPassScheduler::Get().CurrentToken());
     if (count && !replayLogged) {
         logger::info("[ContainedLiquids] Replayed %zu captured bottle draw(s) after deferred lighting", count);
         replayLogged=true;
     }
-    ID3D11ShaderResourceView* empty[2]{};ctx->PSSetShaderResources(120,2,empty);
-    ctx->OMSetRenderTargets(8,saved,savedDepth);
-    for (auto* rtv:saved) if (rtv) rtv->Release();
-    if (savedDepth) savedDepth->Release();
-    shadow.stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
+    if (globals::d3d::context) {
+        ID3D11ShaderResourceView* empty[2]{};
+        globals::d3d::context->PSSetShaderResources(120,2,empty);
+    }
+}
+
+void ContainedLiquids::ReplayQueuedDraw(void* owner,RE::BSRenderPass* pass,
+    std::uint32_t technique,bool alphaTest,std::uint32_t flags)
+{
+    auto* module=static_cast<ContainedLiquids*>(owner);
+    module->replaying=true;
+    module->preparedPass=nullptr;
+    try {
+        module->SetupGeometry(pass);
+        if (module->preparedPass) DrawHook::func(pass,technique,alphaTest,flags);
+    } catch (...) {
+        module->preparedPass=nullptr;
+        module->replaying=false;
+        throw;
+    }
+    module->preparedPass=nullptr;
+    module->replaying=false;
 }
 
 void ContainedLiquids::MarkReconstructionReactive(ID3D11UnorderedAccessView* target,
     std::uint32_t width,std::uint32_t height)
 {
-    if (!target || !globals::state || reactiveRegionFrame!=globals::state->frameCount ||
+    if (!settings.Enabled || !target || !globals::state || !globals::d3d::context || reactiveRegionFrame!=globals::state->frameCount ||
         !reactiveRegionCount || !width || !height) return;
     winrt::com_ptr<ID3D11DeviceContext1> context1;
     if (FAILED(globals::d3d::context->QueryInterface(IID_PPV_ARGS(context1.put()))) || !context1) return;
@@ -756,13 +766,11 @@ void ContainedLiquids::MarkReconstructionReactive(ID3D11UnorderedAccessView* tar
     for (std::size_t i=0;i<reactiveRegionCount && count<rectangles.size();++i) {
         const auto& source=reactiveRegions[i];
         if (!source.sourceWidth || !source.sourceHeight) continue;
-        const float scaleX=static_cast<float>(width)/source.sourceWidth;
-        const float scaleY=static_cast<float>(height)/source.sourceHeight;
+        // Capture bounds already use active viewport pixels, like the encode
+        // dispatch. Do not scale them again by the backing-texture dimensions.
         D3D11_RECT rectangle{
-            static_cast<LONG>(std::floor(source.left*scaleX)),
-            static_cast<LONG>(std::floor(source.top*scaleY)),
-            static_cast<LONG>(std::ceil(source.right*scaleX)),
-            static_cast<LONG>(std::ceil(source.bottom*scaleY))};
+            static_cast<LONG>(source.left),static_cast<LONG>(source.top),
+            static_cast<LONG>(source.right),static_cast<LONG>(source.bottom)};
         rectangle.left=std::clamp<LONG>(rectangle.left,0,width);
         rectangle.top=std::clamp<LONG>(rectangle.top,0,height);
         rectangle.right=std::clamp<LONG>(rectangle.right,0,width);

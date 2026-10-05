@@ -1,0 +1,83 @@
+flowchart TD
+    A[SKSE plugin load] --> B[Settings/defaults/overrides]
+    B --> C[Module registry and Module.ini validation]
+    C --> D[PostPostLoad/DataLoaded hooks]
+    D --> E[D3D11 device and swap-chain creation]
+    E --> F[Resource setup and shader-cache validation]
+
+    F --> G[Present hook: State.Reset]
+    G --> H[Frame snapshot: SharedData b5 / FeatureData b6 / FrameBuffer b12]
+    H --> I[Main_RenderShadowMaps]
+    I --> J[EarlyPrepass scheduler]
+    J --> K[Main_RenderWorld_Start]
+    K --> L[Deferred target remap and Prepass scheduler]
+    L --> M[Skyrim geometry through shader hooks]
+    M --> N[Albedo/specular/reflectance/normal/masks/motion/depth]
+    N --> O[Blended decals and Terrain Seam boundary]
+    O --> P[EndDeferred: restore forward targets]
+
+    P --> Q[Material Layers effects depth]
+    Q --> R[Hybrid GI / probes / SSS / indirect lighting]
+    R --> S[DeferredCompositeCS]
+    S --> T[Main color + final normals/TAA mask + motion]
+    T --> U[Distant Life]
+    U --> V[Reactive FX]
+    V --> W[Rain runoff / late world-probe work]
+    W --> X[Contained Liquids replay]
+
+    X --> PW[Pre-water depth copy after EndDeferred]
+    PW --> FW[Skyrim forward water/transparency/effects]
+    FW --> AC{Runtime reconstruction method}
+    AC -->|FSR/DLSS| Z[PixelAnnotations base]
+    Z --> Y[Image Reconstruction encode: explicit CS b5]
+    Y --> AA[Reactive contributors]
+    AA --> AB[Depth/motion/reactive/transparency publication]
+    AB --> BC{Backend dispatch succeeds}
+    AC -->|NONE| AD[Native image-space path]
+    AC -->|TAA| AE[TAA path]
+    BC -->|FSR success| AF[FSR path: upscale depth]
+    BC -->|DLSS success| AG[DLSS path: upscale depth/sharpen]
+    BC -->|failure| AD
+    AG --> AH{Optional neural/frame generation}
+    AH --> AI[Capability-gated side path]
+
+    AD --> AJ[Skyrim ISHDR]
+    AE --> AJ
+    AF --> AJ
+    AI --> AJ
+    AJ --> AK[CameraSuite HDR/camera finishing]
+    AK --> AL[Output compute or safe framebuffer copy]
+    AL --> AM[Swap-chain back buffer]
+    AM --> AN[IDXGISwapChain::Present]
+
+    subgraph Temporal[Temporal and annotation services]
+        T1[TemporalContext]
+        T2[RenderOrigin epoch]
+        T3[PixelAnnotations]
+        T4[ReconstructionContext]
+    end
+    H -. current/previous matrices .-> T1
+    H -. discontinuity .-> T2
+    T1 -. history validity .-> Y
+    S -. base masks .-> T3
+    Y -. publish base .-> T3
+    T4 -. reactive contributors .-> AA
+
+    subgraph Depth[Depth and collision resources]
+        D1[Main depth]
+        D2[POST_ZPREPASS_COPY]
+        D3[Effects depth]
+        D4[Terrain Seam depth]
+        D5[Normal/roughness]
+        D6[Refraction normals]
+    end
+    N --> D1
+    PW --> D2
+    Q --> D3
+    O --> D4
+    N --> D5
+    E --> D6
+    D1 --> R
+    D2 -. earlier prepass copy or Terrain Seam .-> V
+    D5 --> V
+    D1 --> Y

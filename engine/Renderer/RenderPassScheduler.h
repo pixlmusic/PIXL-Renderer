@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include "FrameGraphTypes.h"
+
 #include <cstdint>
 #include <functional>
 #include <span>
@@ -79,9 +81,13 @@ namespace PIXL::Renderer
 	{
 	public:
 		bool HistoryValid() const noexcept { return historyValid; }
-		std::uint32_t Width() const noexcept { return width; }
-		std::uint32_t Height() const noexcept { return height; }
+		std::uint32_t Width() const noexcept { return extent.active.width; }
+		std::uint32_t Height() const noexcept { return extent.active.height; }
 		std::uint64_t FrameIndex() const noexcept { return frameIndex; }
+		const FrameToken& Token() const noexcept { return token; }
+		const ViewContext& View() const noexcept { return view; }
+		const RenderExtent& Extent() const noexcept { return extent; }
+		const DepthView* Depth() const noexcept { return depth; }
 
 		// Native scheduler passes use these accessors to make their declared
 		// resource use developer-verifiable. Legacy callbacks retain direct DX11
@@ -94,13 +100,15 @@ namespace PIXL::Renderer
 		const ResourceUsage* reads{};
 		const ResourceUsage* writes{};
 		std::string_view passName{};
+		FrameToken token{};
+		ViewContext view{};
+		RenderExtent extent{};
+		const DepthView* depth{};
 		std::uint64_t frameIndex{};
-		std::uint32_t width{};
-		std::uint32_t height{};
 		bool historyValid{};
 	};
 
-	struct PassDesc
+	struct PassDescriptor
 	{
 		PassId id{};
 		std::string name;
@@ -112,12 +120,20 @@ namespace PIXL::Renderer
 		std::vector<PassId> dependencies;
 		std::function<void(RenderPassContext&)> execute;
 		std::function<void(SchedulerEvent)> notify;
+		ViewMask allowedViews{ AllViews };
+		DepthEpoch requiredDepth{ DepthEpoch::None };
+		ResolutionDomain resolutionDomain{ ResolutionDomain::ActiveRender };
+		bool requiresCurrentFrame{ true };
 		bool temporal{};
 		bool optional{ true };
 		bool enabled{ true };
 		bool profilingEnabled{};
 		QualityGroup qualityGroup{ QualityGroup::Utility };
 	};
+
+	// Source compatibility for native/legacy registrations while the scheduler
+	// metadata migrates to the more explicit PassDescriptor name.
+	using PassDesc = PassDescriptor;
 
 	struct PassDiagnostics
 	{
@@ -153,6 +169,12 @@ namespace PIXL::Renderer
 		bool Execute(PassExecutionPoint point);
 
 		void BeginFrame(std::uint64_t frameIndex, std::uint32_t width, std::uint32_t height, bool historyValid);
+		void BeginFrame(std::uint64_t frameIndex, const RenderExtent& extent, bool historyValid);
+		ViewContext BeginView(ViewType type, bool advancesMainTemporal = false);
+		ViewContext BeginView(ViewType type, const RenderExtent& viewExtent, bool advancesMainTemporal = false);
+		void SetViewContext(const ViewContext& view);
+		void PublishDepth(DepthView depth);
+		const DepthView* GetDepth(DepthEpoch epoch = DepthEpoch::None) const noexcept;
 		void InvalidateHistory(std::string_view reason);
 		void NotifyResourcesRecreated();
 
@@ -160,6 +182,9 @@ namespace PIXL::Renderer
 		bool IsHistoryValid() const noexcept { return historyValid; }
 		std::uint64_t HistoryEpoch() const noexcept { return historyEpoch; }
 		std::uint64_t ResourceEpoch() const noexcept { return resourceEpoch; }
+		const FrameToken& CurrentToken() const noexcept { return currentView.token; }
+		const ViewContext& CurrentView() const noexcept { return currentView; }
+		const RenderExtent& CurrentExtent() const noexcept { return extent; }
 		std::span<const std::string> ValidationMessages() const noexcept { return validationMessages; }
 		std::vector<PassDiagnostics> GetDiagnostics() const;
 
@@ -171,7 +196,7 @@ namespace PIXL::Renderer
 	private:
 		struct PassRecord
 		{
-			PassDesc desc;
+			PassDescriptor desc;
 			std::uint64_t registrationOrder{};
 			std::uint64_t invocationCount{};
 			float lastCpuMs{};
@@ -193,8 +218,10 @@ namespace PIXL::Renderer
 		std::uint64_t frameIndex{};
 		std::uint64_t historyEpoch{};
 		std::uint64_t resourceEpoch{};
-		std::uint32_t width{};
-		std::uint32_t height{};
+		std::uint32_t nextViewSerial{};
+		RenderExtent extent{};
+		ViewContext currentView{};
+		std::vector<DepthView> depthViews;
 		bool historyValid{};
 		bool frameObserved{};
 		bool ready{};

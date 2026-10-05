@@ -5,6 +5,7 @@
 #include "I18n/I18n.h"
 #include "Menu/ThemeManager.h"
 #include "Renderer/LightTransportWorld.h"
+#include "Renderer/RenderPassScheduler.h"
 #include "Shadercache.h"
 #include "State.h"
 #include "Utils/ExternalEmittance.h"
@@ -401,7 +402,8 @@ void RadiantGrid::Prepass()
 	TracyD3D11Zone(globals::state->tracyCtx, "RadiantGrid Prepass");
 	state->BeginPerfEvent("RadiantGrid Prepass");
 	UpdateLights();
-	PIXL::Renderer::LightTransportWorld::Get().PublishLocalLights(
+	const auto& lightView = PIXL::Renderer::RenderPassScheduler::Get().CurrentView();
+	PIXL::Renderer::LightTransportWorld::Get().PublishLocalLights(lightView.token, lightView.extent,
 		lights->srv.get(), lightIndexList->srv.get(), lightGrid->srv.get(),
 		particleLightBufferStart, particleLightBufferCount, lightCount);
 

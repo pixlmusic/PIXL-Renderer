@@ -65,32 +65,73 @@ namespace PIXL::Renderer
 		views.frame = frame;
 	}
 
+	void PixelAnnotations::BeginFrame(const FrameToken& token, const RenderExtent& extent)
+	{
+		if (!token.Valid() || token.view != ViewType::MainWorld || !extent.Valid())
+			return;
+		std::scoped_lock lock(mutex);
+		if (views.frame != token.frame)
+			views = {};
+		views.frame = token.frame;
+		views.token = token;
+		views.extent = extent;
+	}
+
 	void PixelAnnotations::PublishBase(ID3D11ShaderResourceView* material, ID3D11ShaderResourceView* normalWater,
 		ID3D11ShaderResourceView* taa, std::uint32_t width, std::uint32_t height)
 	{
 		std::scoped_lock lock(mutex);
+		views.reactiveMask = nullptr;
+		views.transparencyMask = nullptr;
 		views.deferredMaterialMask.copy_from(material);
 		views.normalWaterMask.copy_from(normalWater);
 		views.temporalAAMask.copy_from(taa);
 		views.width = width;
 		views.height = height;
-		views.valid = material && normalWater && taa && width && height;
+		views.valid = material && normalWater && taa && width && height &&
+			(!views.extent.Valid() || (views.extent.active.width == width && views.extent.active.height == height));
 	}
 
 	void PixelAnnotations::PublishReconstruction(ID3D11ShaderResourceView* reactive,
 		ID3D11ShaderResourceView* transparency, std::uint32_t width, std::uint32_t height)
 	{
 		std::scoped_lock lock(mutex);
+		if (!views.valid || views.width != width || views.height != height) {
+			views.reactiveMask = nullptr;
+			views.transparencyMask = nullptr;
+			return;
+		}
 		views.reactiveMask.copy_from(reactive);
 		views.transparencyMask.copy_from(transparency);
 		views.width = width;
 		views.height = height;
 	}
 
+	void PixelAnnotations::PublishCompact(const FrameToken& token, const RenderExtent& extent,
+		ID3D11ShaderResourceView* compactClassFlags)
+	{
+		std::scoped_lock lock(mutex);
+		views.compactClassFlags = nullptr;
+		if (!compactClassFlags || !token.Valid() || token.view != ViewType::MainWorld ||
+			token.frame != views.frame || !extent.Valid() ||
+			(views.token.Valid() && (!token.Matches(views.token) || !extent.SameAllocation(views.extent) ||
+				!extent.SameActiveRegion(views.extent))))
+			return;
+		views.compactClassFlags.copy_from(compactClassFlags);
+		views.token = token;
+		views.extent = extent;
+	}
+
 	FrameAnnotationViews PixelAnnotations::Acquire() const
 	{
 		std::scoped_lock lock(mutex);
 		return views;
+	}
+
+	void PixelAnnotations::Invalidate()
+	{
+		std::scoped_lock lock(mutex);
+		views = {};
 	}
 
 	std::string_view PixelAnnotations::ToString(MaterialClass material) noexcept

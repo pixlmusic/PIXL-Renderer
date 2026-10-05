@@ -28,6 +28,11 @@ namespace PIXL::Renderer
 
 	void TemporalContext::BeginFrame(const TemporalFrameInput& input)
 	{
+		if (input.viewType != ViewType::MainWorld ||
+			(input.token.Valid() && (input.token.view != ViewType::MainWorld || input.token.frame != input.frameIndex ||
+				!input.extent.Valid() || input.extent.active.width != input.renderWidth ||
+				input.extent.active.height != input.renderHeight)))
+			return;
 		std::vector<std::pair<TemporalInvalidationReason, std::function<void(TemporalInvalidationReason)>>> callbacks;
 		{
 			std::scoped_lock lock(mutex);
@@ -36,6 +41,8 @@ namespace PIXL::Renderer
 
 			TemporalInvalidationMask reasons = 0;
 			if (initialized) {
+				if (input.frameIndex != frame.current.frameIndex + 1)
+					reasons |= TemporalMask(TemporalInvalidationReason::CameraCut);
 				if (input.worldContext != frame.current.worldContext)
 					reasons |= TemporalMask(TemporalInvalidationReason::WorldspaceChange);
 				if (input.renderOriginEpoch != frame.current.renderOriginEpoch || input.renderOriginShifted)
@@ -52,10 +59,19 @@ namespace PIXL::Renderer
 			}
 
 			frame.previous = initialized ? frame.current : input;
+			// Previous-frame transforms are metadata; only MotionContext owns guide
+			// views. Do not expose borrowed pointers after their owning frame retires.
+			frame.previous.motionVectors = nullptr;
+			frame.previous.disocclusion = nullptr;
 			frame.current = input;
-			frame.frameInvalidations = reasons;
-			frame.previousFrameValid = initialized && reasons == 0;
+			// External invalidation may happen between render snapshots. Carry it
+			// into the next snapshot without invoking reset callbacks a second time.
+			frame.frameInvalidations = reasons | pendingFrameInvalidations;
+			pendingFrameInvalidations = 0;
+			frame.previousFrameValid = initialized && frame.frameInvalidations == 0;
 			frame.motion = {};
+			frame.motion.token = input.token;
+			frame.motion.extent = input.extent;
 			if (input.motionVectors) {
 				frame.motion.motionVectors.copy_from(input.motionVectors);
 				frame.motion.valid = true;
@@ -82,14 +98,28 @@ namespace PIXL::Renderer
 				callback(reason);
 	}
 
-	void TemporalContext::PublishDisocclusion(ID3D11ShaderResourceView* resource, std::uint32_t width, std::uint32_t height)
+	void TemporalContext::PublishDisocclusion(const FrameToken& token, ID3D11ShaderResourceView* resource,
+		std::uint32_t width, std::uint32_t height)
 	{
 		std::scoped_lock lock(mutex);
 		frame.motion.disocclusion = nullptr;
-		if (resource)
+		if (resource && token.Matches(frame.current.token) && token.view == ViewType::MainWorld && width && height &&
+			width == frame.current.renderWidth && height == frame.current.renderHeight)
 			frame.motion.disocclusion.copy_from(resource);
-		frame.motion.width = width;
-		frame.motion.height = height;
+	}
+
+	void TemporalContext::PublishGPUConfidence(const FrameToken& token, const RenderExtent& extent,
+		ID3D11ShaderResourceView* resource)
+	{
+		std::scoped_lock lock(mutex);
+		frame.motion.confidenceDisocclusion = nullptr;
+		frame.motion.disocclusion = nullptr;
+		if (!resource || !token.Matches(frame.current.token) || token.view != ViewType::MainWorld ||
+			!extent.Valid() || !extent.SameAllocation(frame.current.extent) ||
+			!extent.SameActiveRegion(frame.current.extent))
+			return;
+		frame.motion.confidenceDisocclusion.copy_from(resource);
+		frame.motion.disocclusion.copy_from(resource);
 	}
 
 	void TemporalContext::Invalidate(TemporalInvalidationReason reason, std::string_view detail)
@@ -100,7 +130,13 @@ namespace PIXL::Renderer
 		{
 			std::scoped_lock lock(mutex);
 			frame.frameInvalidations |= TemporalMask(reason);
+			pendingFrameInvalidations |= TemporalMask(reason);
 			frame.previousFrameValid = false;
+			if (reason == TemporalInvalidationReason::DeviceReset) {
+				frame.motion = {};
+				frame.current.motionVectors = frame.previous.motionVectors = nullptr;
+				frame.current.disocclusion = frame.previous.disocclusion = nullptr;
+			}
 			lastInvalidationDetail.assign(detail);
 			InvalidateLocked(reason, callbacks);
 		}

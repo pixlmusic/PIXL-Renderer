@@ -7,7 +7,11 @@
 #include "GPUResourceServices.h"
 #include "LightTransportWorld.h"
 #include "TemporalContext.h"
+#include "TemporalValidityGPU.h"
+#include "OpticalCompositeQueue.h"
 #include "VisibilityContext.h"
+#include "PixelAnnotations.h"
+#include "ReconstructionContext.h"
 
 #include "Globals.h"
 #include "Profiler.h"
@@ -79,6 +83,8 @@ namespace PIXL::Renderer
 		prepassOrder.clear();
 		validationMessages.clear();
 		historyReason.clear();
+		depthViews.clear();
+		currentView = {};
 		nextRegistrationOrder = 0;
 		ready = false;
 	}
@@ -125,6 +131,8 @@ namespace PIXL::Renderer
 				pass.reads = std::move(reads);
 				pass.writes = std::move(writes);
 				pass.optional = true;
+				pass.allowedViews = point == PassExecutionPoint::ReflectionsPrepass ?
+					ViewBit(ViewType::Reflection) | ViewBit(ViewType::Cubemap) : ViewBit(ViewType::MainWorld);
 				pass.profilingEnabled = ProfileLegacyPass(moduleName, point);
 				pass.qualityGroup = QualityGroup::Utility;
 				pass.execute = [module, callback](RenderPassContext&) { (module->*callback)(); };
@@ -241,6 +249,11 @@ namespace PIXL::Renderer
 	{
 		if (!ready)
 			return false;
+		if (!frameObserved || !currentView.Valid() || currentView.token.frame != frameIndex ||
+			currentView.token.resources.value != resourceEpoch) {
+			logger::error("[PIXL Scheduler] {} rejected: no valid current-frame view context", ToString(point));
+			return false;
+		}
 		const auto& order = point == PassExecutionPoint::ReflectionsPrepass ? reflectionOrder :
 		                    point == PassExecutionPoint::EarlyPrepass ? earlyOrder : prepassOrder;
 		for (const auto index : order) {
@@ -248,14 +261,29 @@ namespace PIXL::Renderer
 			auto& pass = record.desc;
 			if (!pass.enabled || record.failed || (pass.owner && !pass.owner->loaded))
 				continue;
+			if ((pass.allowedViews & ViewBit(currentView.type)) == 0)
+				continue;
+			if (pass.requiresCurrentFrame && currentView.token.frame != frameIndex)
+				continue;
+			if (pass.temporal && !currentView.advancesMainTemporal)
+				continue;
+			const auto* depth = GetDepth(pass.requiredDepth);
+			if (pass.requiredDepth != DepthEpoch::None && !depth) {
+				logger::warn("[PIXL Scheduler] Pass '{}' skipped: required depth epoch {} is unavailable for the current view",
+					pass.name, static_cast<unsigned>(pass.requiredDepth));
+				continue;
+		}
 
 			RenderPassContext context{};
 			context.reads = &pass.reads;
 			context.writes = &pass.writes;
 			context.passName = pass.name;
+			context.token = currentView.token;
+			context.view = currentView;
+			context.extent = currentView.extent;
+			context.extent.domain = pass.resolutionDomain;
+			context.depth = depth;
 			context.frameIndex = frameIndex;
-			context.width = width;
-			context.height = height;
 			context.historyValid = historyValid;
 
 			const auto start = pass.profilingEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
@@ -290,7 +318,25 @@ namespace PIXL::Renderer
 
 	void RenderPassScheduler::BeginFrame(std::uint64_t nextFrameIndex, std::uint32_t nextWidth, std::uint32_t nextHeight, bool nextHistoryValid)
 	{
-		if (frameObserved && (nextWidth != width || nextHeight != height)) {
+		RenderExtent nextExtent{};
+		nextExtent.backingWidth = nextWidth;
+		nextExtent.backingHeight = nextHeight;
+		nextExtent.active = { 0, 0, nextWidth, nextHeight };
+		nextExtent.outputWidth = nextWidth;
+		nextExtent.outputHeight = nextHeight;
+		BeginFrame(nextFrameIndex, nextExtent, nextHistoryValid);
+	}
+
+	void RenderPassScheduler::BeginFrame(std::uint64_t nextFrameIndex, const RenderExtent& nextExtent, bool nextHistoryValid)
+	{
+		if (!nextExtent.Valid()) {
+			logger::error("[PIXL Scheduler] Invalid render extent rejected for frame {}", nextFrameIndex);
+			return;
+		}
+		if (resourceEpoch == 0)
+			resourceEpoch = 1;
+		const bool extentChanged = frameObserved && !nextExtent.SameAllocation(extent);
+		if (extentChanged) {
 			++resourceEpoch;
 			GPUResourceServices::Get().OnResolutionChanged();
 			LightTransportWorld::Get().Invalidate("render resolution changed");
@@ -299,11 +345,80 @@ namespace PIXL::Renderer
 		}
 		if (!nextHistoryValid && (!frameObserved || historyValid))
 			InvalidateHistory("global render continuity invalidated");
+		const bool newFrame = !frameObserved || nextFrameIndex != frameIndex;
 		frameIndex = nextFrameIndex;
-		width = nextWidth;
-		height = nextHeight;
+		extent = nextExtent;
 		historyValid = nextHistoryValid;
 		frameObserved = true;
+		if (newFrame || extentChanged) {
+			nextViewSerial = 0;
+			depthViews.clear();
+			currentView = {};
+		}
+	}
+
+	ViewContext RenderPassScheduler::BeginView(ViewType type, bool advancesMainTemporal)
+	{
+		return BeginView(type, extent, advancesMainTemporal);
+	}
+
+	ViewContext RenderPassScheduler::BeginView(ViewType type, const RenderExtent& viewExtent, bool advancesMainTemporal)
+	{
+		ViewContext view{};
+		if (!frameObserved || !viewExtent.Valid())
+			return view;
+		// EarlyPrepass and Prepass are separate Skyrim hooks for the same main view.
+		// Keep one publication token across them so early resources remain current.
+		if (type == ViewType::MainWorld && currentView.type == type &&
+			currentView.Valid() && currentView.token.frame == frameIndex &&
+			currentView.token.resources.value == resourceEpoch &&
+			currentView.extent.SameAllocation(viewExtent) &&
+			currentView.extent.SameActiveRegion(viewExtent)) {
+			currentView.advancesMainTemporal |= advancesMainTemporal;
+			return currentView;
+		}
+		view.type = type;
+		view.extent = viewExtent;
+		view.advancesMainTemporal = type == ViewType::MainWorld && advancesMainTemporal;
+		view.token = { frameIndex, { resourceEpoch }, type, ++nextViewSerial };
+		SetViewContext(view);
+		return currentView;
+	}
+
+	void RenderPassScheduler::SetViewContext(const ViewContext& view)
+	{
+		if (!view.Valid() || view.token.frame != frameIndex || view.token.resources.value != resourceEpoch ||
+			(view.type == ViewType::MainWorld && !view.extent.SameAllocation(extent))) {
+			logger::error("[PIXL Scheduler] Rejected stale or incompatible view context");
+			return;
+		}
+		currentView = view;
+		depthViews.clear();
+	}
+
+	void RenderPassScheduler::PublishDepth(DepthView depth)
+	{
+		if (!currentView.Valid() || !depth.ValidFor(currentView.token) || !depth.extent.SameAllocation(currentView.extent)) {
+			logger::error("[PIXL Scheduler] Rejected stale or incompatible depth publication");
+			return;
+		}
+		if (const auto found = std::ranges::find_if(depthViews, [&](const DepthView& existing) { return existing.epoch == depth.epoch; });
+			found != depthViews.end()) {
+			*found = std::move(depth);
+		} else if (depthViews.size() < 8) {
+			depthViews.push_back(std::move(depth));
+		} else {
+			logger::error("[PIXL Scheduler] Depth publication capacity exceeded");
+		}
+	}
+
+	const DepthView* RenderPassScheduler::GetDepth(DepthEpoch epoch) const noexcept
+	{
+		for (const auto& depth : depthViews) {
+			if ((epoch == DepthEpoch::None || depth.epoch == epoch) && depth.ValidFor(currentView.token, epoch))
+				return &depth;
+		}
+		return nullptr;
 	}
 
 	void RenderPassScheduler::InvalidateHistory(std::string_view reason)
@@ -322,9 +437,15 @@ namespace PIXL::Renderer
 	void RenderPassScheduler::NotifyResourcesRecreated()
 	{
 		++resourceEpoch;
+		currentView = {};
+		depthViews.clear();
+		OpticalCompositeQueue::Get().Invalidate();
 		GPUResourceServices::Get().OnResourcesRecreated(globals::d3d::device, globals::d3d::context);
 		LightTransportWorld::Get().Invalidate("renderer resources recreated");
 		TemporalContext::Get().Invalidate(TemporalInvalidationReason::DeviceReset, "renderer resources recreated");
+		TemporalValidityGPU::Get().Invalidate();
+		PixelAnnotations::Get().Invalidate();
+		ReconstructionContext::Get().Invalidate();
 		Notify(SchedulerEvent::ResourcesRecreated);
 	}
 

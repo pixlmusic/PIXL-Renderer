@@ -6,6 +6,7 @@
 #include "State.h"
 #include "WeatherVariableRegistry.h"
 #include "Renderer/LightTransportWorld.h"
+#include "Renderer/RenderPassScheduler.h"
 
 #include "Globals.h"
 
@@ -335,10 +336,13 @@ void AmbientProbe::Prepass()
 	}
 
 	auto& lightTransport = PIXL::Renderer::LightTransportWorld::Get();
-	lightTransport.PublishProbe(PIXL::Renderer::ProbeKind::AmbientEnvironmentSH,
-		envIBLTexture->srv.get(), envIBLTexture->desc.Width, envIBLTexture->desc.Height);
-	lightTransport.PublishProbe(PIXL::Renderer::ProbeKind::AmbientSkySH,
-		skyIBLTexture->srv.get(), skyIBLTexture->desc.Width, skyIBLTexture->desc.Height);
+	const auto& lightView = PIXL::Renderer::RenderPassScheduler::Get().CurrentView();
+	lightTransport.PublishProbe(lightView.token, lightView.extent, PIXL::Renderer::ProbeKind::AmbientEnvironmentSH,
+		envIBLTexture->srv.get(), envIBLTexture->desc.Width, envIBLTexture->desc.Height, 1,
+		PIXL::Renderer::CoordinateSpace::View, PIXL::Renderer::ResolutionDomain::Backing);
+	lightTransport.PublishProbe(lightView.token, lightView.extent, PIXL::Renderer::ProbeKind::AmbientSkySH,
+		skyIBLTexture->srv.get(), skyIBLTexture->desc.Width, skyIBLTexture->desc.Height, 1,
+		PIXL::Renderer::CoordinateSpace::View, PIXL::Renderer::ResolutionDomain::Backing);
 }
 
 void AmbientProbe::SetupResources()

@@ -121,6 +121,9 @@ public:
 		float2 trueSamplingDim;
 		float2 pad0;
 	};
+	static_assert(sizeof(JitterCB) == 16, "Depth-upscale b0 layout mismatch");
+	static_assert(sizeof(UpscalingDataCB) == 16, "Reconstruction encode b0 layout mismatch");
+	static_assert(offsetof(UpscalingDataCB, pad0) == 8, "Reconstruction encode b0 padding mismatch");
 
 	ConstantBuffer* jitterCB = nullptr;
 	ConstantBuffer* upscalingDataCB = nullptr;
@@ -191,7 +194,7 @@ public:
 
 	UpscaleMethod GetUpscaleMethod() const;
 
-	void CheckResources(UpscaleMethod a_upscalemethod);
+	void CheckResources(UpscaleMethod a_upscalemethod, bool resourcesRecreated = false);
 	void CreateUpscalingTextureResources(UpscaleMethod a_upscalemethod);
 	void DestroyUpscalingTextureResources(UpscaleMethod a_upscalemethod);
 
@@ -217,7 +220,7 @@ public:
 
 	void ConfigureTAA();
 	void ConfigureUpscaling(RE::BSGraphics::State* a_state);
-	void Upscale();
+	bool Upscale();
 
 	// Offline Director supersampling. The normal temporal path already jitters,
 	// but its phase count can repeat during a long frozen capture. Director pins
@@ -284,7 +287,7 @@ public:
 
 	void CopySharedD3D12Resources(bool a_useNeuralGuides = false);
 	void PostDisplay();
-	void PerformUpscaling();
+	bool PerformUpscaling();
 	void UpscaleDepth();
 
 	/**

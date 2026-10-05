@@ -15,11 +15,18 @@
 namespace PIXL::Renderer
 {
 	enum class ReconstructionBackend : std::uint8_t { Native, TAA, DLSS, FSR, Neural };
+	enum class ReactiveContributionKind : std::uint8_t
+	{
+		Other, Water, Refraction, WindowInterior, Magic, Fire, Particles, Precipitation, Foliage, ContainedLiquid
+	};
 	using ReactiveContributor = std::function<void(ID3D11UnorderedAccessView*, std::uint32_t, std::uint32_t)>;
 
 	struct ReconstructionFrame
 	{
 		winrt::com_ptr<ID3D11ShaderResourceView> depth, motion, reactive, transparency, exposure;
+		winrt::com_ptr<ID3D11ShaderResourceView> confidenceDisocclusion;
+		FrameToken token{};
+		RenderExtent extent{};
 		FrameAnnotationViews annotations;
 		ReconstructionBackend backend{ ReconstructionBackend::Native };
 		std::uint32_t renderWidth{}, renderHeight{}, outputWidth{}, outputHeight{};
@@ -39,17 +46,29 @@ namespace PIXL::Renderer
 	{
 	public:
 		static ReconstructionContext& Get();
+		// Clears the published frame at the start of a new render frame while
+		// preserving the setup-time contributor registry.
+		void BeginFrame(std::uint64_t frame);
+		void BeginFrame(const FrameToken& token, const RenderExtent& extent);
+		void Invalidate();
 		std::uint64_t RegisterReactiveContributor(std::string name, ReactiveContributor callback);
+		std::uint64_t RegisterReactiveContributor(std::string name, ReactiveContributionKind kind,
+			ReactiveContributor callback);
 		void UnregisterReactiveContributor(std::uint64_t id);
 		void ApplyReactiveContributors(ID3D11UnorderedAccessView* target, std::uint32_t width, std::uint32_t height) const;
+		void ApplyReactiveContributors(const FrameToken& token, const RenderExtent& extent,
+			ID3D11UnorderedAccessView* target, std::uint32_t width, std::uint32_t height) const;
 		void Publish(ReconstructionFrame frame);
 		[[nodiscard]] ReconstructionFrame Acquire() const;
+		[[nodiscard]] ReconstructionFrame Acquire(const FrameToken& token) const;
 		[[nodiscard]] ReconstructionDiagnostics GetDiagnostics() const;
 		static std::string_view ToString(ReconstructionBackend backend) noexcept;
 	private:
-		struct Contributor { std::uint64_t id{}; std::string name; ReactiveContributor callback; };
+		struct Contributor { std::uint64_t id{}; std::string name; ReactiveContributionKind kind{}; ReactiveContributor callback; };
 		mutable std::mutex mutex;
 		ReconstructionFrame frame;
+		FrameToken expectedToken{};
+		RenderExtent expectedExtent{};
 		std::vector<Contributor> contributors;
 		std::uint64_t nextId{ 1 };
 	};

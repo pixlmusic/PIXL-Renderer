@@ -286,7 +286,7 @@ void FidelityFX::CreateFSRResources()
 	}
 	memset(fsrScratchBuffer, 0, scratchBufferSize);
 
-	FfxInterface fsrInterface;
+	FfxInterface fsrInterface{};
 	if (ffxGetInterfaceDX11(&fsrInterface, fsrDevice, fsrScratchBuffer, scratchBufferSize, numContexts) != FFX_OK) {
 		logger::critical("[FidelityFX] Failed to initialize FSR3 backend interface!");
 		free(fsrScratchBuffer);
@@ -302,7 +302,7 @@ void FidelityFX::CreateFSRResources()
 	uint32_t renderWidth = (uint32_t)renderSize.x;
 	uint32_t renderHeight = (uint32_t)renderSize.y;
 
-	FfxFsr3ContextDescription contextDescription;
+	FfxFsr3ContextDescription contextDescription{};
 	contextDescription.maxRenderSize.width = renderWidth;
 	contextDescription.maxRenderSize.height = renderHeight;
 	contextDescription.maxUpscaleSize.width = displayWidth;
@@ -330,6 +330,8 @@ void FidelityFX::CreateFSRResources()
 
 void FidelityFX::DestroyFSRResources()
 {
+	if (!fsrScratchBuffer)
+		return;
 	if (ffxFsr3ContextDestroy(&fsrContext[0]) != FFX_OK)
 		logger::critical("[FidelityFX] Failed to destroy FSR3 context!");
 
@@ -361,8 +363,10 @@ FfxResource ffxGetResource(ID3D11Resource* dx11Resource,
 	return resource;
 }
 
-void FidelityFX::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_depth, ID3D11Resource* a_reactiveMask, ID3D11Resource* a_transparencyCompositionMask, ID3D11Resource* a_motionVectors, float a_sharpness, bool a_resetHistory)
+bool FidelityFX::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_depth, ID3D11Resource* a_reactiveMask, ID3D11Resource* a_transparencyCompositionMask, ID3D11Resource* a_motionVectors, float a_sharpness, bool a_resetHistory)
 {
+	if (!fsrScratchBuffer || !a_upscalingTexture || !a_depth || !a_motionVectors)
+		return false;
 	auto context = globals::d3d::context;
 	auto state = globals::state;
 
@@ -404,9 +408,13 @@ void FidelityFX::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_d
 	dispatchParameters.preExposure = 1.0f;
 	dispatchParameters.flags = 0;
 
+	bool succeeded = false;
 	__try {
-		if (ffxFsr3ContextDispatchUpscale(&fsrContext[0], &dispatchParameters) != FFX_OK)
-			logger::critical("[FidelityFX] Failed to dispatch imageReconstruction!");
+		succeeded = ffxFsr3ContextDispatchUpscale(&fsrContext[0], &dispatchParameters) == FFX_OK;
+		if (!succeeded && !fsrDispatchCrashLogged) {
+			logger::error("[FidelityFX] Failed to dispatch imageReconstruction; keeping the current scene");
+			fsrDispatchCrashLogged = true;
+		}
 	} __except (EXCEPTION_EXECUTE_HANDLER) {
 		if (!fsrDispatchCrashLogged) {
 			logger::critical("[FidelityFX] FSR3 dispatch crashed - another graphics injector may be interfering with swapchain or compute operations.");
@@ -416,4 +424,5 @@ void FidelityFX::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_d
 
 	if (state->frameAnnotations)
 		state->EndPerfEvent();
+	return succeeded;
 }

@@ -20,10 +20,12 @@
 #include "Modules/DialogueFocus.h"
 #include "Modules/PulseProfiler.h"
 #include "Renderer/RenderPassScheduler.h"
+#include "Renderer/OpticalCompositeQueue.h"
 #include "Renderer/GPUResourceServices.h"
 #include "Renderer/LightTransportWorld.h"
 #include "Renderer/TemporalContext.h"
 #include "Renderer/PixelAnnotations.h"
+#include "Renderer/ReconstructionContext.h"
 #include "Renderer/GPUWorkloadBudgeter.h"
 #include "Renderer/VisibilityContext.h"
 #include "Modules/SkinOptics.h"
@@ -227,6 +229,8 @@ bool State::HandlePostProcessing(RE::RENDER_TARGET a_input, RE::RENDER_TARGET a_
  */
 void State::Reset()
 {
+	// Raw render passes are valid only inside the current Skyrim accumulator frame.
+	PIXL::Renderer::OpticalCompositeQueue::Get().BeginFrame(static_cast<std::uint64_t>(frameCount) + 1u);
 	globals::profiler->EndFrame();
 	PIXL::Renderer::GPUWorkloadBudgeter::Get().Update(*globals::profiler,
 		static_cast<float>(RE::GetSecondsSinceLastFrame()));
@@ -234,7 +238,7 @@ void State::Reset()
 	PIXL::Renderer::LightTransportWorld::Get().BeginFrame(static_cast<std::uint64_t>(frameCount) + 1u);
 
 	RenderModule::ForEachLoadedModule("Reset", [](RenderModule* feature) { feature->Reset(); });
-	if (!globals::game::ui->GameIsPaused())
+	if (globals::game::ui && !globals::game::ui->GameIsPaused())
 		timer += RE::GetSecondsSinceLastFrame();
 
 	// Cache menu open states once per frame to avoid repeated IsMenuOpen calls
@@ -1146,7 +1150,8 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 					cameraAbsolute.x, cameraAbsolute.y, cameraAbsolute.z, renderOrigin.Discontinuity());
 			}
 		}
-		{
+		if (PIXL::Renderer::RenderPassScheduler::Get().CurrentView().type == PIXL::Renderer::ViewType::MainWorld &&
+			PIXL::Renderer::RenderPassScheduler::Get().CurrentToken().frame == frameCount) {
 			auto copyMatrix = [](const Matrix& source) {
 				std::array<float, 16> result{};
 				static_assert(sizeof(Matrix) >= sizeof(result));
@@ -1164,6 +1169,9 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 			const std::uint32_t cameraMode = playerCamera && playerCamera->IsInFirstPerson() ? 1u : 2u;
 			const auto& frame = globals::game::frameBufferCached;
 			PIXL::Renderer::TemporalContext::Get().BeginFrame({
+				.token = PIXL::Renderer::RenderPassScheduler::Get().CurrentToken(),
+				.extent = PIXL::Renderer::RenderPassScheduler::Get().CurrentExtent(),
+				.viewType = PIXL::Renderer::ViewType::MainWorld,
 				.view = copyMatrix(frame.GetCameraView()),
 				.projection = copyMatrix(frame.GetCameraProj()),
 				.viewProjection = copyMatrix(frame.GetCameraViewProj()),
@@ -1184,7 +1192,15 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 				.verticalFov = Util::GetVerticalFOVRad(),
 				.renderOriginShifted = renderOrigin.ShiftedThisFrame()
 			});
-			PIXL::Renderer::PixelAnnotations::Get().BeginFrame(frameCount);
+			PIXL::Renderer::PixelAnnotations::Get().BeginFrame(
+				PIXL::Renderer::RenderPassScheduler::Get().CurrentToken(),
+				PIXL::Renderer::RenderPassScheduler::Get().CurrentExtent());
+			// Clear only the previous frame's reconstruction publication. This is
+			// deliberately paired with the authoritative frame snapshot rather than
+			// Present: presentation still consumes the frame just rendered.
+			PIXL::Renderer::ReconstructionContext::Get().BeginFrame(
+				PIXL::Renderer::RenderPassScheduler::Get().CurrentToken(),
+				PIXL::Renderer::RenderPassScheduler::Get().CurrentExtent());
 		}
 		data.RenderCoordinates = renderOrigin.GetGPUData(engineOrigin, previousEngineOrigin);
 		data.Timer = timer;

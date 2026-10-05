@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "FrameGraphTypes.h"
+
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -47,6 +49,9 @@ namespace PIXL::Renderer
 
 	struct TemporalFrameInput
 	{
+		FrameToken token{};
+		RenderExtent extent{};
+		ViewType viewType{ ViewType::MainWorld };
 		std::array<float, 16> view{};
 		std::array<float, 16> projection{};
 		std::array<float, 16> viewProjection{};
@@ -71,8 +76,12 @@ namespace PIXL::Renderer
 
 	struct MotionContext
 	{
+		FrameToken token{};
+		RenderExtent extent{};
 		winrt::com_ptr<ID3D11ShaderResourceView> motionVectors;
 		winrt::com_ptr<ID3D11ShaderResourceView> disocclusion;
+		// R = geometric disocclusion, G = reusable history confidence.
+		winrt::com_ptr<ID3D11ShaderResourceView> confidenceDisocclusion;
 		std::uint32_t width{};
 		std::uint32_t height{};
 		bool valid{};
@@ -126,7 +135,10 @@ namespace PIXL::Renderer
 		static TemporalContext& Get();
 
 		void BeginFrame(const TemporalFrameInput& input);
-		void PublishDisocclusion(ID3D11ShaderResourceView* resource, std::uint32_t width, std::uint32_t height);
+		void PublishDisocclusion(const FrameToken& token, ID3D11ShaderResourceView* resource,
+			std::uint32_t width, std::uint32_t height);
+		void PublishGPUConfidence(const FrameToken& token, const RenderExtent& extent,
+			ID3D11ShaderResourceView* resource);
 		void Invalidate(TemporalInvalidationReason reason, std::string_view detail = {});
 
 		std::uint64_t RegisterHistory(HistoryDesc desc);
@@ -160,6 +172,7 @@ namespace PIXL::Renderer
 		std::vector<HistoryEntry> histories;
 		std::string lastInvalidationDetail;
 		std::uint64_t nextHistoryId{ 1 };
+		TemporalInvalidationMask pendingFrameInvalidations{};
 		bool initialized{};
 	};
 }

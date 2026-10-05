@@ -92,12 +92,9 @@ private:
     ReactiveRegion pendingReactiveRegion{};
     std::uint32_t lastFrame = ~0u, contextID{}, matches{};
     bool matchedLogged{}, failureLogged{}, captureFailureLogged{}, replayLogged{};
-    struct PendingDraw { RE::BSRenderPass* pass{}; std::uint32_t technique{}, flags{}; bool alphaTest{}; };
-    std::array<PendingDraw,32> pending{};
-    std::size_t pendingCount{};
-    std::uint32_t pendingFrame=~0u;
     bool replaying=false;
     RE::BSRenderPass* preparedPass=nullptr;
+    static void ReplayQueuedDraw(void*,RE::BSRenderPass*,std::uint32_t,bool,std::uint32_t);
     bool CaptureScene(GPUData&);
     struct Hook {
         static void thunk(RE::BSShader*, RE::BSRenderPass*, std::uint32_t);

@@ -85,6 +85,9 @@ namespace PIXL::Renderer
 				return { entry.resource.get(), index, entry.generation };
 			}
 		}
+		if (textures.size() >= kMaxPooledTextures &&
+			std::ranges::all_of(textures, [](const TextureEntry& entry) { return entry.inUse; }))
+			return {};
 
 		TextureEntry entry{};
 		entry.desc = a_desc;
@@ -105,8 +108,12 @@ namespace PIXL::Renderer
 			return { empty->resource.get(), index, empty->generation };
 		}
 		if (textures.size() >= kMaxPooledTextures) {
-			auto oldest = std::ranges::min_element(textures, {}, &TextureEntry::lastUsedFrame);
-			if (oldest == textures.end() || oldest->inUse)
+			auto oldest = textures.end();
+			for (auto candidate = textures.begin(); candidate != textures.end(); ++candidate) {
+				if (!candidate->inUse && (oldest == textures.end() || candidate->lastUsedFrame < oldest->lastUsedFrame))
+					oldest = candidate;
+			}
+			if (oldest == textures.end())
 				return {};
 			entry.generation = oldest->generation + 1u;
 			*oldest = std::move(entry);
@@ -152,6 +159,9 @@ namespace PIXL::Renderer
 				return { entry.resource.get(), index, entry.generation };
 			}
 		}
+		if (buffers.size() >= kMaxPooledBuffers &&
+			std::ranges::all_of(buffers, [](const BufferEntry& entry) { return entry.inUse; }))
+			return {};
 
 		BufferEntry entry{};
 		entry.desc = a_desc;
@@ -172,8 +182,12 @@ namespace PIXL::Renderer
 			return { empty->resource.get(), index, empty->generation };
 		}
 		if (buffers.size() >= kMaxPooledBuffers) {
-			auto oldest = std::ranges::min_element(buffers, {}, &BufferEntry::lastUsedFrame);
-			if (oldest == buffers.end() || oldest->inUse)
+			auto oldest = buffers.end();
+			for (auto candidate = buffers.begin(); candidate != buffers.end(); ++candidate) {
+				if (!candidate->inUse && (oldest == buffers.end() || candidate->lastUsedFrame < oldest->lastUsedFrame))
+					oldest = candidate;
+			}
+			if (oldest == buffers.end())
 				return {};
 			entry.generation = oldest->generation + 1u;
 			*oldest = std::move(entry);

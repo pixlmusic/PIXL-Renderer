@@ -751,6 +751,10 @@ void Atmosphere::Prepass()
 	const bool hasSkyBounce = skyBounce.loaded && skyBounce.texProbeArray;
 
 	const bool temporalReprojection = Util::GetTemporal();
+	const auto temporalFrame = PIXL::Renderer::TemporalContext::Get().GetFrameSnapshot();
+	const bool sharedTemporalContinuity = temporalFrame.current.frameIndex == globals::state->frameCount &&
+		temporalFrame.current.viewType == PIXL::Renderer::ViewType::MainWorld &&
+		temporalFrame.previousFrameValid;
 	const uint32_t lightingInputFlags =
 		(directionalShadowMap && directionalShadowLightData ? 1u : 0u) |
 		(depthSrv ? 2u : 0u) |
@@ -766,6 +770,7 @@ void Atmosphere::Prepass()
 
 	const bool temporalHistoryValid =
 		temporalReprojection &&
+		sharedTemporalContinuity &&
 		hasLightScatteringHistory &&
 		temporalHistoryId != 0 &&
 		PIXL::Renderer::TemporalContext::Get().IsHistoryValid(temporalHistoryId) &&
@@ -814,11 +819,11 @@ void Atmosphere::Prepass()
 	cb.clipToWorld = globals::game::frameBufferCached.GetCameraViewProjUnjittered().Invert();
 
 	for (uint32_t i = 0; i < std::size(cb.frameJitterOffsets); i++) {
-		const uint32_t temporalFrame = (globals::state->frameCount - i) & 1023u;
+		const uint32_t temporalJitterFrame = (globals::state->frameCount - i) & 1023u;
 		cb.frameJitterOffsets[i] = {
-			temporalReprojection ? Halton(temporalFrame, 2) : 0.5f,
-			temporalReprojection ? Halton(temporalFrame, 3) : 0.5f,
-			temporalReprojection ? Halton(temporalFrame, 5) : 0.5f,
+			temporalReprojection ? Halton(temporalJitterFrame, 2) : 0.5f,
+			temporalReprojection ? Halton(temporalJitterFrame, 3) : 0.5f,
+			temporalReprojection ? Halton(temporalJitterFrame, 5) : 0.5f,
 			0.0f
 		};
 	}

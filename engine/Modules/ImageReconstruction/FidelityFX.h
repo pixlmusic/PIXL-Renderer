@@ -28,7 +28,7 @@ public:
 
 	ffx::Context swapChainContext{};
 	ffx::Context frameGenContext;
-	FfxFsr3Context fsrContext[2];
+	FfxFsr3Context fsrContext[2]{};
 
 	bool featureFSR3FG = false;
 
@@ -76,7 +76,7 @@ public:
 	 * @param a_motionVectors Per-pixel motion vectors for temporal reprojection.
 	 * @param a_sharpness RCAS sharpening strength applied after imageReconstruction.
 	 */
-	void Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_depth, ID3D11Resource* a_reactiveMask, ID3D11Resource* a_transparencyCompositionMask, ID3D11Resource* a_motionVectors, float a_sharpness, bool a_resetHistory);
+	bool Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_depth, ID3D11Resource* a_reactiveMask, ID3D11Resource* a_transparencyCompositionMask, ID3D11Resource* a_motionVectors, float a_sharpness, bool a_resetHistory);
 
 private:
 	// FSR scratch buffer - needs to be freed in DestroyFSRResources

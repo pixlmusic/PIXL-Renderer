@@ -44,13 +44,15 @@ RWTexture2D<float> DepthOutput : register(u3);
 	{
 		[unroll] for (int activityX = -1; activityX <= 1; activityX++)
 		{
+			if (activityX == 0 && activityY == 0)
+				continue;
 			int2 activityPos = int2(dispatchID.xy) + int2(activityX, activityY);
 			if (all(activityPos >= 0) && all(activityPos < int2(TrueSamplingDim)))
-				neighborhoodActivity = max(
-					neighborhoodActivity,
-					(MaterialMasks[activityPos].x <= 1.0e-5f
-						? saturate(MaterialMasks[activityPos].y)
-						: 0.0f));
+			{
+				float2 neighborMaterial = MaterialMasks[activityPos].xy;
+				neighborhoodActivity = max(neighborhoodActivity,
+					neighborMaterial.x <= 1.0e-5f ? saturate(neighborMaterial.y) : 0.0f);
+			}
 		}
 	}
 
@@ -64,6 +66,10 @@ RWTexture2D<float> DepthOutput : register(u3);
 #if defined(DLSS)
 	float depth = DepthMask[dispatchID.xy];
 	float2 motionVector = MotionVectorMask[dispatchID.xy];
+	if (!all(isfinite(motionVector))) {
+		motionVector = 0.0;
+		reactiveMask = 1.0;
+	}
 	float2 dilatedMotionVector = motionVector;
 
 	// Skyrim's standard depth is 0 at the near plane and 1 at clear/far sky.
@@ -96,8 +102,11 @@ RWTexture2D<float> DepthOutput : register(u3);
 			// linearize only that sample after the loop.  This avoids 25 divisions per
 			// pixel in a full-screen pass while retaining world-space validation.
 			if (neighborDepth < closestDeviceDepth) {
+				float2 neighborMotion = MotionVectorMask[samplePos].xy;
+				if (!all(isfinite(neighborMotion)))
+					continue;
 				closestDeviceDepth = neighborDepth;
-				dilatedMotionVector = MotionVectorMask[samplePos].xy;
+				dilatedMotionVector = neighborMotion;
 				foundCandidate = true;
 			}
 		}

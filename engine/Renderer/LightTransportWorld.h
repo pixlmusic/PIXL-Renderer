@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "FrameGraphTypes.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -35,10 +37,19 @@ namespace PIXL::Renderer
 		std::uint32_t totalLightCount{};
 		std::uint64_t frame{};
 		std::uint64_t epoch{};
+		FrameToken token{};
+		RenderExtent extent{};
+		CoordinateSpace space{ CoordinateSpace::CameraRelativeWorld };
+		ResolutionDomain domain{ ResolutionDomain::ActiveRender };
 
 		[[nodiscard]] bool ValidFor(std::uint64_t expectedFrame) const noexcept
 		{
 			return frame == expectedFrame && lights && lightIndices && lightGrid;
+		}
+		[[nodiscard]] bool ValidFor(const FrameToken& expected) const noexcept
+		{
+			return expected.view == ViewType::MainWorld && token.Matches(expected) &&
+				extent.Valid() && ValidFor(expected.frame);
 		}
 	};
 
@@ -50,6 +61,16 @@ namespace PIXL::Renderer
 		std::uint32_t depth{};
 		std::uint64_t frame{};
 		std::uint64_t epoch{};
+		FrameToken token{};
+		RenderExtent extent{};
+		CoordinateSpace space{ CoordinateSpace::Unknown };
+		ResolutionDomain domain{ ResolutionDomain::Unknown };
+
+		[[nodiscard]] bool ValidFor(const FrameToken& expected) const noexcept
+		{
+			return resource && expected.view == ViewType::MainWorld && token.Matches(expected) &&
+				extent.Valid() && frame == expected.frame;
+		}
 	};
 
 	struct LightTransportDiagnostics
@@ -80,7 +101,16 @@ namespace PIXL::Renderer
 			std::uint32_t emitterStart,
 			std::uint32_t emitterCount,
 			std::uint32_t totalLightCount);
+		void PublishLocalLights(
+			const FrameToken& token, const RenderExtent& extent,
+			ID3D11ShaderResourceView* lights,
+			ID3D11ShaderResourceView* lightIndices,
+			ID3D11ShaderResourceView* lightGrid,
+			std::uint32_t emitterStart,
+			std::uint32_t emitterCount,
+			std::uint32_t totalLightCount);
 		[[nodiscard]] LocalLightingView AcquireLocalLights() const;
+		[[nodiscard]] LocalLightingView AcquireLocalLights(const FrameToken& expected) const;
 
 		void PublishProbe(
 			ProbeKind kind,
@@ -88,7 +118,13 @@ namespace PIXL::Renderer
 			std::uint32_t width,
 			std::uint32_t height,
 			std::uint32_t depth = 1);
+		void PublishProbe(
+			const FrameToken& token, const RenderExtent& extent, ProbeKind kind,
+			ID3D11ShaderResourceView* resource,
+			std::uint32_t width, std::uint32_t height,
+			std::uint32_t depth, CoordinateSpace space, ResolutionDomain domain);
 		[[nodiscard]] ProbeView AcquireProbe(ProbeKind kind) const;
+		[[nodiscard]] ProbeView AcquireProbe(ProbeKind kind, const FrameToken& expected) const;
 		[[nodiscard]] LightTransportDiagnostics GetDiagnostics() const;
 
 		static std::string_view ToString(ProbeKind kind);

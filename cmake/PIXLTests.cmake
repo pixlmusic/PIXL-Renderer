@@ -28,6 +28,18 @@ if(BUILD_TESTING)
     pixl_add_portable_test(PIXLTestRendererMetadata
         "${CMAKE_SOURCE_DIR}/tools/TestRendererMetadata.cpp")
 
+    if(WIN32)
+        pixl_add_portable_test(PIXLTestPipelineHandoffs
+            "${CMAKE_SOURCE_DIR}/tools/TestPipelineHandoffs.cpp"
+            "${CMAKE_SOURCE_DIR}/engine/Renderer/TemporalContext.cpp"
+			"${CMAKE_SOURCE_DIR}/engine/Renderer/D3D11BindingScope.cpp"
+            "${CMAKE_SOURCE_DIR}/engine/Renderer/PixelAnnotations.cpp"
+            "${CMAKE_SOURCE_DIR}/engine/Renderer/LightTransportWorld.cpp"
+            "${CMAKE_SOURCE_DIR}/engine/Renderer/ReconstructionContext.cpp")
+        target_compile_definitions(PIXLTestPipelineHandoffs PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        target_link_libraries(PIXLTestPipelineHandoffs PRIVATE d3d11 runtimeobject)
+    endif()
+
     find_program(PIXL_TEST_POWERSHELL NAMES pwsh powershell)
     if(WIN32 AND PIXL_TEST_POWERSHELL)
         foreach(_contract IN ITEMS RenderPassScheduler GPUResourceServices HookRegistry RendererMetadata LightTransportWorld ModuleRulesCache TemporalContext PixelAnnotations ReconstructionContext GPUWorkloadBudgeter ReflectionContext VolumetricContext)
@@ -72,4 +84,7 @@ if(BUILD_TESTING)
             PIXLTestRendererMetadata
         USES_TERMINAL
         COMMENT "Running PIXL portable CTest validation")
+    if(TARGET PIXLTestPipelineHandoffs)
+        add_dependencies(PIXL-Portable-Tests PIXLTestPipelineHandoffs)
+    endif()
 endif()

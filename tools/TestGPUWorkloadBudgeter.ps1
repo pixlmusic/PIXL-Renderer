@@ -7,4 +7,6 @@ Require 'engine\Renderer\GPUWorkloadBudgeter.cpp' 'kHold\s*=\s*120' 'minimum hol
 Require 'engine\Renderer\GPUWorkloadBudgeter.cpp' '1\.10f[\s\S]*\.72f' 'asymmetric hysteresis'
 Require 'engine\Renderer\GPUWorkloadBudgeter.h' 'bool enabled\{\}' 'disabled by default'
 Require 'engine\Modules\HybridGI.cpp' 'GPUWorkloadBudgeter::Get\(\)\.GetScale' 'representative workload migration'
+Require 'engine\Modules\SkyBounce.cpp' 'updateStride' 'bounded SkyBounce cadence'
+Require 'engine\Modules\SkyBounce.cpp' 'updateProbeField' 'retained SkyBounce publication when cadence skips'
 Write-Host 'PASS: bounded opt-in GPU workload budgeter and HybridGI runtime scaling validated.'

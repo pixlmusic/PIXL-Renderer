@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "FrameGraphTypes.h"
+
 #include <cstdint>
 #include <mutex>
 #include <string_view>
@@ -18,6 +20,10 @@ namespace PIXL::Renderer
 		Unknown, Terrain, Rock, Wood, Metal, Grass, Foliage, Skin, Hair, Cloth,
 		Glass, ContainedLiquid, Water, Snow, Mud, Emissive, Particle, Sky, WindowInterior
 	};
+	static_assert(static_cast<std::uint8_t>(MaterialClass::Terrain) == 1);
+	static_assert(static_cast<std::uint8_t>(MaterialClass::Skin) == 7);
+	static_assert(static_cast<std::uint8_t>(MaterialClass::Water) == 12);
+	static_assert(static_cast<std::uint8_t>(MaterialClass::Sky) == 17);
 
 	enum class AnnotationFlag : std::uint16_t
 	{
@@ -50,6 +56,9 @@ namespace PIXL::Renderer
 
 	struct FrameAnnotationViews
 	{
+		winrt::com_ptr<ID3D11ShaderResourceView> compactClassFlags;
+		FrameToken token{};
+		RenderExtent extent{};
 		winrt::com_ptr<ID3D11ShaderResourceView> deferredMaterialMask;
 		winrt::com_ptr<ID3D11ShaderResourceView> normalWaterMask;
 		winrt::com_ptr<ID3D11ShaderResourceView> temporalAAMask;
@@ -69,10 +78,14 @@ namespace PIXL::Renderer
 		static std::string_view ToString(MaterialClass material) noexcept;
 
 		void BeginFrame(std::uint64_t frame);
+		void BeginFrame(const FrameToken& token, const RenderExtent& extent);
+		void Invalidate();
 		void PublishBase(ID3D11ShaderResourceView* materialMask, ID3D11ShaderResourceView* normalWaterMask,
 			ID3D11ShaderResourceView* temporalAAMask, std::uint32_t width, std::uint32_t height);
 		void PublishReconstruction(ID3D11ShaderResourceView* reactiveMask,
 			ID3D11ShaderResourceView* transparencyMask, std::uint32_t width, std::uint32_t height);
+		void PublishCompact(const FrameToken& token, const RenderExtent& extent,
+			ID3D11ShaderResourceView* compactClassFlags);
 		[[nodiscard]] FrameAnnotationViews Acquire() const;
 
 	private:

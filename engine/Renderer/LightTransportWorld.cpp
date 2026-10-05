@@ -56,10 +56,32 @@ namespace PIXL::Renderer
 		localLights.epoch = epoch;
 	}
 
+	void LightTransportWorld::PublishLocalLights(
+		const FrameToken& token, const RenderExtent& extent,
+		ID3D11ShaderResourceView* lights, ID3D11ShaderResourceView* lightIndices,
+		ID3D11ShaderResourceView* lightGrid, std::uint32_t emitterStart,
+		std::uint32_t emitterCount, std::uint32_t totalLightCount)
+	{
+		if (!token.Valid() || token.view != ViewType::MainWorld || !extent.Valid())
+			return;
+		PublishLocalLights(lights, lightIndices, lightGrid, emitterStart, emitterCount, totalLightCount);
+		std::scoped_lock lock(mutex);
+		if (localLights.frame == token.frame && frame == token.frame && localLights.lights) {
+			localLights.token = token;
+			localLights.extent = extent;
+		}
+	}
+
 	LocalLightingView LightTransportWorld::AcquireLocalLights() const
 	{
 		std::scoped_lock lock(mutex);
 		return localLights;
+	}
+
+	LocalLightingView LightTransportWorld::AcquireLocalLights(const FrameToken& expected) const
+	{
+		std::scoped_lock lock(mutex);
+		return localLights.ValidFor(expected) ? localLights : LocalLightingView{};
 	}
 
 	void LightTransportWorld::PublishProbe(
@@ -85,6 +107,25 @@ namespace PIXL::Renderer
 		probe.epoch = epoch;
 	}
 
+	void LightTransportWorld::PublishProbe(
+		const FrameToken& token, const RenderExtent& extent, ProbeKind kind,
+		ID3D11ShaderResourceView* resource, std::uint32_t width,
+		std::uint32_t height, std::uint32_t depth,
+		CoordinateSpace space, ResolutionDomain domain)
+	{
+		if (!token.Valid() || token.view != ViewType::MainWorld || !extent.Valid())
+			return;
+		PublishProbe(kind, resource, width, height, depth);
+		const auto index = static_cast<std::size_t>(kind);
+		std::scoped_lock lock(mutex);
+		if (index < probes.size() && probes[index].frame == token.frame && frame == token.frame && probes[index].resource) {
+			probes[index].token = token;
+			probes[index].extent = extent;
+			probes[index].space = space;
+			probes[index].domain = domain;
+		}
+	}
+
 	ProbeView LightTransportWorld::AcquireProbe(ProbeKind kind) const
 	{
 		const auto index = static_cast<std::size_t>(kind);
@@ -92,6 +133,15 @@ namespace PIXL::Renderer
 			return {};
 		std::scoped_lock lock(mutex);
 		return probes[index];
+	}
+
+	ProbeView LightTransportWorld::AcquireProbe(ProbeKind kind, const FrameToken& expected) const
+	{
+		const auto index = static_cast<std::size_t>(kind);
+		if (index >= probes.size())
+			return {};
+		std::scoped_lock lock(mutex);
+		return probes[index].ValidFor(expected) ? probes[index] : ProbeView{};
 	}
 
 	LightTransportDiagnostics LightTransportWorld::GetDiagnostics() const

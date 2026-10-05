@@ -10,6 +10,8 @@
 #include "ShaderCache.h"
 #include "State.h"
 #include "Renderer/LightTransportWorld.h"
+#include "Renderer/RenderPassScheduler.h"
+#include "Renderer/GPUWorkloadBudgeter.h"
 #include "Renderer/RenderOrigin.h"
 #include "Utils/D3D.h"
 
@@ -291,8 +293,14 @@ void SkyBounce::Prepass()
 	if (!context || !renderer || !probeUpdateCompute || !comparisonSampler ||
 		!texOcclusion || !texProbeArray || !texAccumFramesArray || !texShadowBitmask || !texShadowVisibility)
 		return;
+	const float workloadScale = PIXL::Renderer::GPUWorkloadBudgeter::Get().GetScale(
+		PIXL::Renderer::WorkloadDomain::SkyBounce);
+	const std::uint32_t updateStride = workloadScale >= 0.99f ? 1u :
+		std::clamp(static_cast<std::uint32_t>(std::lround(1.0f / std::max(workloadScale, 0.5f))), 1u, 2u);
+	const bool updateProbeField = updateStride == 1u ||
+		(globals::state->frameCount % updateStride) == 0u;
 
-	{
+	if (updateProbeField) {
 		auto& esramDepthStencil = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kVOLUMETRIC_LIGHTING_SHADOWMAPS_ESRAM];
 		auto* directionalShadowSRV = shadowCascadeSRV && globals::deferred && globals::deferred->directionalShadowLights ?
 			globals::deferred->directionalShadowLights->srv.get() : nullptr;
@@ -337,9 +345,11 @@ void SkyBounce::Prepass()
 		}
 	}
 
-	PIXL::Renderer::LightTransportWorld::Get().PublishProbe(
+	const auto& lightView = PIXL::Renderer::RenderPassScheduler::Get().CurrentView();
+	PIXL::Renderer::LightTransportWorld::Get().PublishProbe(lightView.token, lightView.extent,
 		PIXL::Renderer::ProbeKind::SkyVisibility, texProbeArray->srv.get(),
-		probeArrayDims[0], probeArrayDims[1], probeArrayDims[2]);
+		probeArrayDims[0], probeArrayDims[1], probeArrayDims[2],
+		PIXL::Renderer::CoordinateSpace::CameraRelativeWorld, PIXL::Renderer::ResolutionDomain::Backing);
 
 	// Set PS shader resources
 	{

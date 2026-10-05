@@ -5,6 +5,7 @@ param(
     [string]$SurfaceTidesSourceArchive = "",
     [string]$OutputDirectory = "",
     [string]$ArchivePath = "",
+    [string]$PackageVersion = "1.0.6",
     [ValidateSet("", "r2")][string]$ReleaseRevision = "",
     [ValidateRange(0, 9)][int]$CompressionLevel = 7
 )
@@ -14,8 +15,9 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $base = (Resolve-Path -LiteralPath $BasePackageDirectory).Path
 $surface = (Resolve-Path -LiteralPath $SurfaceTidesSource).Path
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$packageIdentity = "$PackageVersion$ReleaseRevision"
 $allowedRoot = [IO.Path]::GetFullPath((Join-Path $repo 'dist'))
-if (!$OutputDirectory) { $OutputDirectory = Join-Path $allowedRoot "PIXL-Renderer-1.0.6-FOMOD-$stamp" }
+if (!$OutputDirectory) { $OutputDirectory = Join-Path $allowedRoot "PIXL-Renderer-$packageIdentity-FOMOD-$stamp" }
 if (!$ArchivePath) { $ArchivePath = "$OutputDirectory.zip" }
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 $archive = [IO.Path]::GetFullPath($ArchivePath)
@@ -100,19 +102,26 @@ $bridgeDocs = Join-Path $bridge 'SKSE\Plugins\PIXL\Documentation\SurfaceTidesBri
 Copy-Tree $base $core
 Copy-Tree (Join-Path $repo 'installer\PIXLRenderer\fomod') (Join-Path $output 'fomod')
 Copy-Tree (Join-Path $repo 'installer\PIXLRenderer\images') (Join-Path $output 'fomod\images')
-if ($ReleaseRevision) {
-    $infoPath = Join-Path $output 'fomod\info.xml'
-    $configPath = Join-Path $output 'fomod\ModuleConfig.xml'
-    $infoText = (Get-Content -LiteralPath $infoPath -Raw).
-        Replace('MachineVersion="1.0.6.0">1.0.6<', 'MachineVersion="1.0.6.2">1.0.6r2<')
-    $configText = (Get-Content -LiteralPath $configPath -Raw).
-        Replace('<moduleName>PIXL Renderer 1.0.6</moduleName>', '<moduleName>PIXL Renderer 1.0.6r2</moduleName>').
-        Replace('Welcome to PIXL Renderer 1.0.6.', 'Welcome to PIXL Renderer 1.0.6r2.')
-    if ($infoText -notmatch '1\.0\.6r2' -or $configText -notmatch '1\.0\.6r2') {
-        throw 'Could not stamp the r2 FOMOD identity.'
-    }
-    Set-Content -LiteralPath $infoPath -Value $infoText -Encoding utf8
-    Set-Content -LiteralPath $configPath -Value $configText -Encoding utf8
+$infoPath = Join-Path $output 'fomod\info.xml'
+$configPath = Join-Path $output 'fomod\ModuleConfig.xml'
+$infoText = Get-Content -LiteralPath $infoPath -Raw
+$infoText = [regex]::Replace($infoText, '<Version MachineVersion="[^"]+">[^<]+</Version>', ('<Version MachineVersion="{0}.0">{1}</Version>' -f $PackageVersion, $packageIdentity))
+$configText = (Get-Content -LiteralPath $configPath -Raw).
+    Replace('PIXL Renderer 1.0.6', "PIXL Renderer $packageIdentity").
+    Replace('1.0.6.', "$packageIdentity.")
+if ($infoText -notmatch [regex]::Escape($packageIdentity) -or $configText -notmatch [regex]::Escape($packageIdentity)) {
+    throw "Could not stamp the $packageIdentity FOMOD identity."
+}
+Set-Content -LiteralPath $infoPath -Value $infoText -Encoding utf8
+Set-Content -LiteralPath $configPath -Value $configText -Encoding utf8
+
+$manifestPath = Join-Path $core 'PIXL-RENDERER.manifest.json'
+if (Test-Path -LiteralPath $manifestPath) {
+    $coreManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $coreManifest.title = "PIXL Renderer v$packageIdentity"
+    $coreManifest.version = $packageIdentity
+    $coreManifest.channel = 'BETA'
+    $coreManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding utf8
 }
 Copy-Item -LiteralPath (Join-Path $repo 'installer\PIXLRenderer\PIXL-INSTALLER-NOTICE.md') -Destination (Join-Path $core 'PIXL-INSTALLER-NOTICE.md')
 
@@ -133,7 +142,7 @@ if ($SurfaceTidesSourceArchive) {
     Write-Host "SurfaceTides source companion (upload separately; never nest it): $sourceArchive"
 }
 
-& (Join-Path $repo 'tools\TestPixlFomod.ps1') -PackageDirectory $output -SchemaPath (Join-Path $surface 'tools\fomod\ModConfig5.0.xsd') -ExpectedVersion "1.0.6$ReleaseRevision"
+& (Join-Path $repo 'tools\TestPixlFomod.ps1') -PackageDirectory $output -SchemaPath (Join-Path $surface 'tools\fomod\ModConfig5.0.xsd') -ExpectedVersion $packageIdentity
 
 $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
 if (!(Test-Path -LiteralPath $sevenZip)) { throw '7-Zip is required to create the release archive.' }

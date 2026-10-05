@@ -7,6 +7,9 @@
 #include "State.h"
 #include "Renderer/RenderOrigin.h"
 #include "Renderer/RenderPassScheduler.h"
+#include "Renderer/D3D11BindingScope.h"
+#include "Renderer/TemporalValidityGPU.h"
+#include "Renderer/TemporalContext.h"
 #include "Renderer/ReflectionContext.h"
 #include "Utils/D3D.h"
 
@@ -24,6 +27,29 @@
 #include "Modules/DistantLife.h"
 
 #include "Hooks.h"
+
+namespace
+{
+	PIXL::Renderer::RenderExtent CurrentMainExtent()
+	{
+		PIXL::Renderer::RenderExtent extent{};
+		const auto* graphics = globals::game::graphicsState;
+		if (!graphics || !graphics->screenWidth || !graphics->screenHeight)
+			return extent;
+		extent.backingWidth = graphics->screenWidth;
+		extent.backingHeight = graphics->screenHeight;
+		extent.outputWidth = graphics->screenWidth;
+		extent.outputHeight = graphics->screenHeight;
+		const auto renderSize = Util::ConvertToDynamic(float2{
+			static_cast<float>(extent.backingWidth), static_cast<float>(extent.backingHeight) });
+		if (!std::isfinite(renderSize.x) || !std::isfinite(renderSize.y))
+			return {};
+		extent.active = { 0, 0,
+			static_cast<std::uint32_t>(std::clamp(renderSize.x, 1.0f, static_cast<float>(extent.backingWidth))),
+			static_cast<std::uint32_t>(std::clamp(renderSize.y, 1.0f, static_cast<float>(extent.backingHeight))) };
+		return extent;
+	}
+}
 
 struct DepthStates
 {
@@ -204,6 +230,21 @@ void Deferred::ReflectionsPrepasses()
 		return;
 
 	auto state = globals::state;
+	auto& scheduler = PIXL::Renderer::RenderPassScheduler::Get();
+	scheduler.BeginFrame(state->frameCount, CurrentMainExtent(), PIXL::RenderOrigin::Get().HistoryValid());
+	auto cubeExtent = CurrentMainExtent();
+	if (auto* renderer = globals::game::renderer) {
+		const auto& cubeDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kCUBEMAP_REFLECTIONS];
+		if (cubeDepth.texture) {
+			D3D11_TEXTURE2D_DESC desc{};
+			cubeDepth.texture->GetDesc(&desc);
+			cubeExtent.backingWidth = desc.Width;
+			cubeExtent.backingHeight = desc.Height;
+			cubeExtent.active = { 0, 0, desc.Width, desc.Height };
+			cubeExtent.domain = PIXL::Renderer::ResolutionDomain::Backing;
+		}
+	}
+	scheduler.BeginView(PIXL::Renderer::ViewType::Cubemap, cubeExtent);
 
 	state->activeReflections = true;
 	state->UpdateSharedData(false, false);
@@ -213,7 +254,7 @@ void Deferred::ReflectionsPrepasses()
 
 	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);  // Run OMSetRenderTargets again
 
-	if (!PIXL::Renderer::RenderPassScheduler::Get().Execute(PIXL::Renderer::PassExecutionPoint::ReflectionsPrepass))
+	if (!scheduler.Execute(PIXL::Renderer::PassExecutionPoint::ReflectionsPrepass))
 		RenderModule::ForEachLoadedModule("ReflectionsPrepass", [](RenderModule* feature) { feature->ReflectionsPrepass(); }, true);
 }
 
@@ -227,6 +268,9 @@ void Deferred::EarlyPrepasses()
 	if (!shaderCache->IsEnabled())
 		return;
 
+	auto& scheduler = PIXL::Renderer::RenderPassScheduler::Get();
+	scheduler.BeginFrame(globals::state->frameCount, CurrentMainExtent(), PIXL::RenderOrigin::Get().HistoryValid());
+	scheduler.BeginView(PIXL::Renderer::ViewType::MainWorld, true);
 	globals::state->UpdateSharedData(false, true);
 
 	auto context = globals::d3d::context;
@@ -237,13 +281,6 @@ void Deferred::EarlyPrepasses()
 	// Shadow maps have just been rendered — upload BSShadowDirectionalLight data to t98.
 	CopyShadowLightData();
 
-	auto& scheduler = PIXL::Renderer::RenderPassScheduler::Get();
-	const auto* graphicsState = globals::game::graphicsState;
-	scheduler.BeginFrame(
-		globals::state->frameCount,
-		graphicsState ? graphicsState->screenWidth : 0u,
-		graphicsState ? graphicsState->screenHeight : 0u,
-		PIXL::RenderOrigin::Get().HistoryValid());
 	if (!scheduler.Execute(PIXL::Renderer::PassExecutionPoint::EarlyPrepass))
 		RenderModule::ForEachLoadedModule("EarlyPrepass", [](RenderModule* feature) { feature->EarlyPrepass(); }, true);
 }
@@ -260,8 +297,26 @@ void Deferred::PrepassPasses()
 
 	auto context = globals::d3d::context;
 	context->OMSetRenderTargets(0, nullptr, nullptr);  // Unbind all bound render targets
+	auto& scheduler = PIXL::Renderer::RenderPassScheduler::Get();
+	if (scheduler.CurrentView().type != PIXL::Renderer::ViewType::MainWorld ||
+		scheduler.CurrentToken().frame != globals::state->frameCount)
+		scheduler.BeginView(PIXL::Renderer::ViewType::MainWorld, true);
+	if (auto* renderer = globals::game::renderer) {
+		const auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+		if (depth.depthSRV && scheduler.CurrentToken().Valid()) {
+			PIXL::Renderer::DepthView publication{};
+			publication.srv.copy_from(depth.depthSRV);
+			publication.token = scheduler.CurrentToken();
+			publication.extent = scheduler.CurrentExtent();
+			publication.epoch = PIXL::Renderer::DepthEpoch::LiveMain;
+			D3D11_SHADER_RESOURCE_VIEW_DESC desc{};
+			depth.depthSRV->GetDesc(&desc);
+			publication.format = desc.Format;
+			scheduler.PublishDepth(std::move(publication));
+		}
+	}
 
-	if (!PIXL::Renderer::RenderPassScheduler::Get().Execute(PIXL::Renderer::PassExecutionPoint::Prepass))
+	if (!scheduler.Execute(PIXL::Renderer::PassExecutionPoint::Prepass))
 		RenderModule::ForEachLoadedModule("Prepass", [](RenderModule* feature) { feature->Prepass(); }, true);
 }
 
@@ -338,6 +393,7 @@ void Deferred::DeferredPasses()
 	auto reflectance = renderer->GetRuntimeData().renderTargets[REFLECTANCE];
 
 	auto motionVectors = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
+	auto taaMask = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kTEMPORAL_AA_MASK];
 
 	bool interior = Util::IsInterior();
 	// Geometry/decal visibility is already complete. Effects-only relief must
@@ -438,6 +494,20 @@ void Deferred::DeferredPasses()
 		context->CSSetConstantBuffers(13, 1, buffers);
 
 		context->CSSetShader(nullptr, nullptr, 0);
+	}
+
+	// Dedicated rain runoff is composited after the opaque/deferred scene is
+	auto* frameBuffer = *globals::game::perFrame;
+	if (depth.depthSRV && normalRoughness.SRV && motionVectors.SRV &&
+		globals::state->sharedDataCB && frameBuffer) {
+		auto& scheduler = PIXL::Renderer::RenderPassScheduler::Get();
+		const auto temporal = PIXL::Renderer::TemporalContext::Get().GetFrameSnapshot();
+		PIXL::Renderer::TemporalValidityGPU::Get().Resolve(
+			globals::d3d::device, context, scheduler.CurrentToken(), scheduler.CurrentExtent(),
+			depth.depthSRV, normalRoughness.SRV, motionVectors.SRV,
+			masks.SRV, normals.SRV, taaMask.SRV,
+			globals::state->sharedDataCB->CB(), frameBuffer,
+			temporal.previousFrameValid);
 	}
 
 	// Dedicated rain runoff is composited after the opaque/deferred scene is
@@ -869,11 +939,50 @@ void Deferred::Hooks::Main_RenderWorld_BlendedDecals::thunk(RE::BSShaderAccumula
 	// Copy depth from before water
 	auto renderer = globals::game::renderer;
 	auto context = globals::d3d::context;
+	if (!renderer || !context)
+		return;
 
 	auto depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 	auto depthCopy = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
-
-	context->CopyResource(depthCopy.texture, depth.texture);
+	if (depth.texture && depthCopy.texture) {
+		D3D11_TEXTURE2D_DESC sourceDesc{};
+		D3D11_TEXTURE2D_DESC destinationDesc{};
+		depth.texture->GetDesc(&sourceDesc);
+		depthCopy.texture->GetDesc(&destinationDesc);
+		const bool compatible =
+			sourceDesc.Width == destinationDesc.Width &&
+			sourceDesc.Height == destinationDesc.Height &&
+			sourceDesc.MipLevels == destinationDesc.MipLevels &&
+			sourceDesc.ArraySize == destinationDesc.ArraySize &&
+			sourceDesc.Format == destinationDesc.Format &&
+			sourceDesc.SampleDesc.Count == destinationDesc.SampleDesc.Count &&
+			sourceDesc.SampleDesc.Quality == destinationDesc.SampleDesc.Quality;
+		if (compatible && depthCopy.texture != depth.texture) {
+			PIXL::Renderer::ScopedD3D11BindingState bindings(context);
+			if (bindings.PrepareForCopy(depth.texture, depthCopy.texture)) {
+				context->CopyResource(depthCopy.texture, depth.texture);
+				auto& scheduler = PIXL::Renderer::RenderPassScheduler::Get();
+				if (depthCopy.depthSRV && scheduler.CurrentToken().Valid() &&
+					scheduler.CurrentView().type == PIXL::Renderer::ViewType::MainWorld) {
+					PIXL::Renderer::DepthView publication{};
+					publication.srv.copy_from(depthCopy.depthSRV);
+					publication.token = scheduler.CurrentToken();
+					publication.extent = scheduler.CurrentExtent();
+					publication.epoch = PIXL::Renderer::DepthEpoch::PreWater;
+					D3D11_SHADER_RESOURCE_VIEW_DESC desc{};
+					depthCopy.depthSRV->GetDesc(&desc);
+					publication.format = desc.Format;
+					scheduler.PublishDepth(std::move(publication));
+				}
+			}
+		} else if (!compatible) {
+			static bool loggedIncompatibleDepthCopy = false;
+			if (!loggedIncompatibleDepthCopy) {
+				logger::warn("[PIXL Deferred] Pre-water depth copy skipped: incompatible depth resources");
+				loggedIncompatibleDepthCopy = true;
+			}
+		}
+	}
 
 	// After this point, water starts rendering
 };

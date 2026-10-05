@@ -15,6 +15,7 @@
 #include "Renderer/TemporalContext.h"
 #include "Renderer/PixelAnnotations.h"
 #include "Renderer/ReconstructionContext.h"
+#include "Renderer/RenderPassScheduler.h"
 #include "Utils/Game.h"
 #include "Utils/UI.h"
 #include <Windows.h>
@@ -1112,14 +1113,14 @@ void ImageReconstruction::DestroyUpscalingTextureResources(UpscaleMethod a_upsca
 	}
 }
 
-void ImageReconstruction::CheckResources(UpscaleMethod a_upscalemethod)
+void ImageReconstruction::CheckResources(UpscaleMethod a_upscalemethod, bool resourcesRecreated)
 {
 	static auto previousUpscaleMode = UpscaleMethod::kTAA;
 	static bool previousFrameGenMode = false;
 
 	bool frameGenModeCurrent = (settings.frameGenerationMode && d3d12SwapChainActive);
 	bool frameGenModeChanged = frameGenModeCurrent != previousFrameGenMode;
-	bool upscaleModeChanged = (previousUpscaleMode != a_upscalemethod);
+	bool upscaleModeChanged = resourcesRecreated || (previousUpscaleMode != a_upscalemethod);
 
 	if (upscaleModeChanged || frameGenModeChanged) {
 		logger::debug("[ImageReconstruction] Resource change detected - Upscale: {} ({}) -> {} ({}), FrameGen: {} -> {} (d3d12Active={})",
@@ -1127,7 +1128,8 @@ void ImageReconstruction::CheckResources(UpscaleMethod a_upscalemethod)
 
 		// Destroy previous imageReconstruction method resources (only if they were actually active)
 		if (upscaleModeChanged) {
-			DestroyUpscalingTextureResources(a_upscalemethod);
+			// Target recreation must discard old-size masks even with the same backend.
+			DestroyUpscalingTextureResources(resourcesRecreated ? UpscaleMethod::kNONE : a_upscalemethod);
 
 			// Only destroy SDK resources if the previous method was actually performing imageReconstruction
 			if (previousUpscalingWasActive) {
@@ -1479,9 +1481,13 @@ void ImageReconstruction::SetupResources()
 	DX::ThrowIfFailed(globals::d3d::device->CreateDepthStencilState(&depthStencilDesc, upscaleDepthStencilState.put()));
 
 	// Create jitter offset constant buffer for depth imageReconstruction
+	delete jitterCB;
+	jitterCB = nullptr;
 	jitterCB = new ConstantBuffer(ConstantBufferDesc<JitterCB>());
 
 	// Create imageReconstruction data constant buffer for encode textures compute shader
+	delete upscalingDataCB;
+	upscalingDataCB = nullptr;
 	upscalingDataCB = new ConstantBuffer(ConstantBufferDesc<UpscalingDataCB>());
 
 	// Create blend state for depth imageReconstruction
@@ -1506,7 +1512,7 @@ void ImageReconstruction::SetupResources()
 	rasterizerDesc.AntialiasedLineEnable = false;
 	DX::ThrowIfFailed(globals::d3d::device->CreateRasterizerState(&rasterizerDesc, upscaleRasterizerState.put()));
 
-	CheckResources(GetUpscaleMethod());
+	CheckResources(GetUpscaleMethod(), true);
 
 	rcas.Initialize();
 
@@ -1529,13 +1535,15 @@ void ImageReconstruction::SetupResources()
 	}
 	if (containedLiquidReactiveContributorId == 0) {
 		containedLiquidReactiveContributorId = PIXL::Renderer::ReconstructionContext::Get().RegisterReactiveContributor(
-			"ContainedLiquids", [](ID3D11UnorderedAccessView* target, std::uint32_t width, std::uint32_t height) {
+			"ContainedLiquids", PIXL::Renderer::ReactiveContributionKind::ContainedLiquid,
+			[](ID3D11UnorderedAccessView* target, std::uint32_t width, std::uint32_t height) {
 				globals::pipeline::containedLiquids.MarkReconstructionReactive(target, width, height);
 			});
 	}
 	if (reactiveFXContributorId == 0) {
 		reactiveFXContributorId = PIXL::Renderer::ReconstructionContext::Get().RegisterReactiveContributor(
-			"ReactiveFX", [](ID3D11UnorderedAccessView* target, std::uint32_t width, std::uint32_t height) {
+			"ReactiveFX", PIXL::Renderer::ReactiveContributionKind::Particles,
+			[](ID3D11UnorderedAccessView* target, std::uint32_t width, std::uint32_t height) {
 				globals::pipeline::reactiveFX.MarkReconstructionReactive(target, width, height);
 			});
 	}
@@ -2211,7 +2219,7 @@ ImageReconstruction::BlurResources ImageReconstruction::GetBlurResources() const
 	return {};
 }
 
-void ImageReconstruction::Upscale()
+bool ImageReconstruction::Upscale()
 {
 	ZoneScoped;
 	auto upscaleMethod = GetUpscaleMethod();
@@ -2221,9 +2229,9 @@ void ImageReconstruction::Upscale()
 	auto renderer = globals::game::renderer;
 	auto deferred = globals::deferred;
 	if (!state || !context || !renderer || !deferred || !globals::profiler ||
-		!globals::game::graphicsState || !upscalingDataCB ||
+		!globals::game::graphicsState || !upscalingDataCB || !state->sharedDataCB ||
 		!reactiveMaskTexture || !transparencyCompositionMaskTexture) {
-		return;
+		return false;
 	}
 
 	// Temporal continuity is renderer-owned. Backends consume a single typed
@@ -2235,14 +2243,11 @@ void ImageReconstruction::Upscale()
 		pendingNeuralRenderingReset.store(true, std::memory_order_release);
 		FidelityFX::needsReset.store(true, std::memory_order_release);
 	}
-	const bool resetReconstructionHistory = pendingDLSSReset.exchange(false, std::memory_order_acq_rel);
-
-	context->OMSetRenderTargets(0, nullptr, nullptr);  // Unbind all bound render targets
-
 	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
 	auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
-	if (!main.texture || !motionVector.SRV) {
-		return;
+	if (!main.texture || !motionVector.texture || !motionVector.SRV ||
+		!reactiveMaskTexture->uav || !transparencyCompositionMaskTexture->uav) {
+		return false;
 	}
 	auto& temporalAAMask = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kTEMPORAL_AA_MASK];
 	auto& normals = renderer->GetRuntimeData().renderTargets[deferred->forwardRenderTargets[2]];
@@ -2250,19 +2255,27 @@ void ImageReconstruction::Upscale()
 	auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 	auto* encodeShader = GetEncodeTexturesCS();
 	if (!temporalAAMask.SRV || !normals.SRV || !materialMasks.SRV || !depth.depthSRV || !encodeShader)
-		return;
+		return false;
 	const auto renderSizeForAnnotations = Util::ConvertToDynamic(float2{
 		(float)globals::game::graphicsState->screenWidth,
 		(float)globals::game::graphicsState->screenHeight });
+	if (!std::isfinite(renderSizeForAnnotations.x) || !std::isfinite(renderSizeForAnnotations.y) ||
+		renderSizeForAnnotations.x < 1.0f || renderSizeForAnnotations.y < 1.0f)
+		return false;
 	PIXL::Renderer::PixelAnnotations::Get().PublishBase(
 		materialMasks.SRV, normals.SRV, temporalAAMask.SRV,
 		static_cast<std::uint32_t>(renderSizeForAnnotations.x),
 		static_cast<std::uint32_t>(renderSizeForAnnotations.y));
 	const auto annotations = PIXL::Renderer::PixelAnnotations::Get().Acquire();
 	if (upscaleMethod == UpscaleMethod::kDLSS && (!motionVectorCopyTexture || !motionVectorCopyTexture->uav))
-		return;
+		return false;
 	if (upscaleMethod == UpscaleMethod::kFSR && (!fsrDepthTexture || !fsrDepthTexture->uav))
-		return;
+		return false;
+	// Do not consume a pending reset or unbind Skyrim outputs on a failed preflight.
+	const bool resetReconstructionHistory = pendingDLSSReset.exchange(false, std::memory_order_acq_rel);
+	context->OMSetRenderTargets(0, nullptr, nullptr);
+	if (globals::game::shadowState)
+		globals::game::shadowState->GetRuntimeData().stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
 
 	{
 		globals::profiler->BeginPass("ImageReconstruction::EncodeTextures");
@@ -2288,6 +2301,10 @@ void ImageReconstruction::Upscale()
 		upscalingDataCB->Update(upscalingData);
 		auto upscalingBuffer = upscalingDataCB->CB();
 		context->CSSetConstantBuffers(0, 1, &upscalingBuffer);
+		// Late particle/runoff passes clear CS b5. Depth linearization must not
+		// inherit their cleanup state when conditioning reconstruction motion.
+		auto sharedBuffer = state->sharedDataCB->CB();
+		context->CSSetConstantBuffers(5, 1, &sharedBuffer);
 
 		// u2 (MotionVectorOutput): DLSS only — 5x5 dilated MVec for ghosting reduction.
 		ID3D11UnorderedAccessView* uavs[4] = {
@@ -2308,6 +2325,7 @@ void ImageReconstruction::Upscale()
 
 		ID3D11Buffer* nullBuffer = nullptr;
 		context->CSSetConstantBuffers(0, 1, &nullBuffer);
+		context->CSSetConstantBuffers(5, 1, &nullBuffer);
 
 		ID3D11ComputeShader* shader = nullptr;
 		context->CSSetShader(shader, nullptr, 0);
@@ -2315,18 +2333,22 @@ void ImageReconstruction::Upscale()
 		// Moving/refractive bottle interiors are composited after opaque lighting.
 		// Mark their tight projected regions current-frame reactive so DLSS/FSR do
 		// not accumulate stale liquid/refraction history around the glass silhouette.
+		const auto reconstructionToken = PIXL::Renderer::RenderPassScheduler::Get().CurrentToken();
+		const auto reconstructionExtent = PIXL::Renderer::RenderPassScheduler::Get().CurrentExtent();
 		PIXL::Renderer::ReconstructionContext::Get().ApplyReactiveContributors(
-			reactiveMaskTexture->uav.get(), renderWidth, renderHeight);
+			reconstructionToken, reconstructionExtent, reactiveMaskTexture->uav.get(), renderWidth, renderHeight);
 		PIXL::Renderer::PixelAnnotations::Get().PublishReconstruction(
 			reactiveMaskTexture->srv.get(), transparencyCompositionMaskTexture->srv.get(),
 			renderWidth, renderHeight);
-		PIXL::Renderer::TemporalContext::Get().PublishDisocclusion(
-			reactiveMaskTexture->srv.get(), renderWidth, renderHeight);
+		// Reactivity does not establish geometric disocclusion.
 		const auto temporalFrame = PIXL::Renderer::TemporalContext::Get().GetFrameSnapshot();
 		const auto backend = upscaleMethod == UpscaleMethod::kDLSS ? PIXL::Renderer::ReconstructionBackend::DLSS :
 			upscaleMethod == UpscaleMethod::kFSR ? PIXL::Renderer::ReconstructionBackend::FSR :
 			PIXL::Renderer::ReconstructionBackend::Native;
 		PIXL::Renderer::ReconstructionFrame reconstructionFrame{};
+		reconstructionFrame.token = PIXL::Renderer::RenderPassScheduler::Get().CurrentToken();
+		reconstructionFrame.extent = PIXL::Renderer::RenderPassScheduler::Get().CurrentExtent();
+		reconstructionFrame.confidenceDisocclusion = temporalFrame.motion.confidenceDisocclusion;
 		reconstructionFrame.depth.copy_from(depth.depthSRV);
 		reconstructionFrame.motion.copy_from(motionVector.SRV);
 		reconstructionFrame.reactive = reactiveMaskTexture->srv;
@@ -2350,26 +2372,32 @@ void ImageReconstruction::Upscale()
 		state->BeginPerfEvent("ImageReconstruction");
 		TracyD3D11Zone(globals::state->tracyCtx, "ImageReconstruction Dispatch");
 
+		bool succeeded = false;
 		if (upscaleMethod == UpscaleMethod::kDLSS) {
-			streamline.Upscale(main.texture, reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVectorCopyTexture->resource.get(), resetReconstructionHistory);
+			succeeded = streamline.Upscale(main.texture, reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVectorCopyTexture->resource.get(), resetReconstructionHistory);
 		} else if (upscaleMethod == UpscaleMethod::kFSR) {
-			fidelityFX.Upscale(main.texture, fsrDepthTexture->resource.get(), reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVector.texture, settings.sharpnessFSR, resetReconstructionHistory);
+			succeeded = fidelityFX.Upscale(main.texture, fsrDepthTexture->resource.get(), reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVector.texture, settings.sharpnessFSR, resetReconstructionHistory);
 		}
-		if ((upscaleMethod == UpscaleMethod::kDLSS || upscaleMethod == UpscaleMethod::kFSR) &&
-			reconstructionHistoryId != 0) {
-			PIXL::Renderer::TemporalContext::Get().SetHistoryValid(reconstructionHistoryId);
-		}
+		if (reconstructionHistoryId != 0)
+			PIXL::Renderer::TemporalContext::Get().SetHistoryValid(reconstructionHistoryId, succeeded);
 
 		state->EndPerfEvent();
 		globals::profiler->EndPass();
+		if (!succeeded) {
+			pendingDLSSReset.store(true, std::memory_order_release);
+			PIXL::Renderer::ReconstructionContext::Get().Invalidate();
+			return false;
+		}
 	}
+	return true;
 }
 
-void ImageReconstruction::PerformUpscaling()
+bool ImageReconstruction::PerformUpscaling()
 {
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "ImageReconstruction");
-	Upscale();
+	if (!Upscale())
+		return false;
 	UpscaleDepth();
 
 	auto& runtimeData = globals::game::graphicsState->GetRuntimeData();
@@ -2379,6 +2407,7 @@ void ImageReconstruction::PerformUpscaling()
 
 	// Updates the PerFrame constant buffer so that dynamic resolution settings are disabled
 	UpdateCameraData();
+	return true;
 }
 
 void ImageReconstruction::UpscaleDepth()
@@ -2625,16 +2654,16 @@ void ImageReconstruction::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_th
 	if (useFrameGeneration)
 		imageReconstruction.CopySharedD3D12Resources(false);
 
-	if (upscaleMethod != UpscaleMethod::kNONE && upscaleMethod != UpscaleMethod::kTAA)
+	const bool upscaled = upscaleMethod != UpscaleMethod::kNONE && upscaleMethod != UpscaleMethod::kTAA &&
 		imageReconstruction.PerformUpscaling();
 
 	// NR consumes PIXL's encoded/dilated DLSS motion guide. Copy it only after
 	// EncodeTexturesCS has produced the current frame, while preserving the raw
 	// pre-upscale guide path required by frame generation.
-	if (useNeuralRendering)
+	if (useNeuralRendering && upscaled)
 		imageReconstruction.CopySharedD3D12Resources(true);
 
-	if (upscaleMethod == UpscaleMethod::kDLSS)
+	if (upscaleMethod == UpscaleMethod::kDLSS && upscaled)
 		imageReconstruction.ApplySharpening();
 
 	Util::SetTemporal(upscaleMethod == UpscaleMethod::kTAA);
