@@ -74,6 +74,9 @@ void main(uint3 dtid : SV_DispatchThreadID)
             uint cumulative = 0u;
             float weightedLog = 0.0f;
 			uint accepted = 0u;
+			float medianLogLum = 0.0f;
+			bool medianFound = false;
+			uint medianCut = total / 2u;
 			// Ignore isolated emissives/specular peaks; broad highlights still meter.
 			// Protect broad bright regions, not a tiny candle/specular point. With
 			// uniform spatial weights this requires roughly 5% frame coverage.
@@ -101,12 +104,22 @@ void main(uint3 dtid : SV_DispatchThreadID)
 					float t = (float)i / 255.0f;
 					highlightLum = exp2(lerp(PIXL_HISTOGRAM_LOG_MIN, PIXL_HISTOGRAM_LOG_MAX, t));
 				}
+				if (!medianFound && end >= medianCut) {
+					float t = (float)i / 255.0f;
+					medianLogLum = lerp(PIXL_HISTOGRAM_LOG_MIN, PIXL_HISTOGRAM_LOG_MAX, t);
+					medianFound = true;
+				}
 				cumulative = end;
             }
 
             if (accepted > 0u) {
                 float avgLogLum = weightedLog / (float)accepted;
-                float avgLum = exp2(avgLogLum);
+				// DSLR-style evaluative metering: retain the broad trimmed frame
+				// average, but anchor it to the median zone luminance. This rejects a
+				// moving candle/window/specular cluster without returning to a precise
+				// centre-weighted spot meter.
+				float evaluativeLogLum = medianFound ? lerp(avgLogLum, medianLogLum, 0.42f) : avgLogLum;
+				float avgLum = exp2(evaluativeLogLum);
                 // 18% scene key. Exposure compensation remains a photographic
                 // stop adjustment layered on top of scene metering.
 				target = (0.18f / max(avgLum, 1e-5f)) * exp2(safeExposureCompensationEV);
@@ -160,8 +173,9 @@ void main(uint3 dtid : SV_DispatchThreadID)
     float blend = 1.0f - exp(-dt / tau);
     float previousEV = log2(previous);
     float errorEV = targetEV - previousEV;
-    // A soft 0.02-stop deadband rejects histogram-bin chatter without a snap.
-    errorEV = sign(errorEV) * max(abs(errorEV) - 0.02f, 0.0f);
+    // A soft 0.06-stop deadband rejects slow histogram-bin hunting without a
+    // visible snap. Broad scene changes still exceed it and adapt normally.
+    errorEV = sign(errorEV) * max(abs(errorEV) - 0.06f, 0.0f);
     // Stops/sec, not a per-frame multiplier. Brightening responds promptly;
     // darkening cannot produce the old frame-rate-dependent plunges.
     float stepEV = clamp(errorEV * blend, -4.0f * dt, 6.0f * dt);

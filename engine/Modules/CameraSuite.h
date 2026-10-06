@@ -565,6 +565,7 @@ public:
 	Texture2D* cameraHistogramTexture = nullptr;  // 256-bin R32_UINT log-luminance histogram
 	Texture2D* cameraExposureTexture = nullptr;   // 1x1 R32_FLOAT adapted exposure multiplier
 	Texture2D* cameraLocalExposureTexture = nullptr;  // Quarter-resolution R16_FLOAT local exposure gain
+	Texture2D* cameraLocalExposureHistoryTexture = nullptr;  // Previous stabilized local gain
 	Texture2D* bloomHalfTexture = nullptr;
 	Texture2D* bloomQuarterTexture = nullptr;
 	Texture2D* bloomEighthTexture = nullptr;

@@ -1032,3 +1032,15 @@ Active source-release review complete: **all enumerated rows accounted**. Unreso
 | `tools/TestVolumetricContext.ps1` | Validation | Development only | Executed static contract test | Yes | New | Local source inspection only | Guards depth rejection and composite contracts | Test-only | Add runtime resource fixture if D3D abstraction permits |
 | `docs/architecture/SHARED_INFO_PHASE_6_VOLUMETRICS.md` | Documentation | Yes | Architecture/resource/ABI review | Yes | New | N/A | N/A | N/A | Maintain with later emitter migration |
 | `docs/architecture/SHARED_INFO_PHASES_1_TO_6.md` | Documentation | Yes | Consolidated migration review | Yes | New | N/A | N/A | N/A | Record future shared-service phases separately |
+
+## 2026-10-07 Camera stability follow-up
+
+| Path | Subsystem | Active | Review method | Reviewed | Modified | Security reviewed | Fidelity reviewed | Performance reviewed | Future suggestions |
+|---|---|---:|---|---|---:|---|---|---|---|
+| `engine/Modules/CameraSuite.cpp` | Camera presentation | Yes | Runtime call-path, resource lifetime and binding trace | Yes | Yes | Existing local resources only; no external input | Independent motion-blur gate and stable local exposure | One quarter-scale R16 history; no added pass/readback | Live flyby and camera-rotation validation |
+| `engine/Modules/CameraSuite.h` | Camera resource ownership | Yes | CPU/GPU lifetime review | Yes | Yes | Module-owned pointer released on recreation/shutdown | Neutral history initialization | Persistent quarter-scale allocation | Consider motion-reprojected local field only if screen-local lag is visible |
+| `pipeline/Camera Suite/Kernels/CameraSuite/PhysicalCameraExposureCS.hlsl` | Global exposure | Yes | Histogram/reduction numerical audit and strict FXC | Yes | Yes | Finite guards retained | Median-anchored evaluative meter; broader deadband | Same dispatch and memory traffic | Live candle/window/snow comparison |
+| `pipeline/Camera Suite/Kernels/CameraSuite/PhysicalCameraLocalExposureCS.hlsl` | Local exposure | Yes | Binding, temporal stability and strict FXC | Yes | Yes | Bounds and finite guards retained | Removes single-frame half-stop local flashes | One history read per quarter-res pixel | Add guide-aware rejection only if live motion shows lag |
+| `tools/TestPixlExposure.ps1` | Validation | Development only | Reference recurrence and strict FXC | Yes | Yes | Local-only compiler invocation | Covers global/local exposure permutations | Test-only | Add deterministic local-EV recurrence fixture |
+| `tools/TestReconstructionSafety.ps1` | Validation | Development only | Source contract execution | Yes | Yes | Local source inspection | Guards motion/local exposure wiring | Test-only | Add runtime D3D fixture if practical |
+| `tools/StagePixlRendererStandalone.ps1` | Packaging | Development only | Runtime/cache contract comparison | Yes | Yes | Local package paths only | No visual effect | Allows validated disabled-module cache sections | Keep synchronized with `RenderModule::ValidateCache` |

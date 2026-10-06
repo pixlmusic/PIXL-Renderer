@@ -276,7 +276,16 @@ if ($includePipelineLibrary) {
         $moduleText = Get-Content -LiteralPath $descriptor.FullName -Raw
         $id = [regex]::Match($moduleText, '(?m)^\s*Id\s*=\s*([^\r\n]+)').Groups[1].Value.Trim()
         $version = [regex]::Match($moduleText, '(?m)^\s*Version\s*=\s*([^\r\n]+)').Groups[1].Value.Trim()
-        if (!$cacheSections.ContainsKey($id) -or $cacheSections[$id]['Version'] -ne $version) { throw "Stale/missing module cache identity: $id (expected $version)" }
+        if (!$cacheSections.ContainsKey($id)) { throw "Missing module cache identity: $id" }
+        $cachedEnabled = $cacheSections[$id]['Enabled'] -match '^(?i:true|1|yes|on)$'
+        # RenderModule::ValidateCache intentionally ignores a module version while
+        # that module is disabled: no permutations containing its define can be
+        # active, and an unloaded module may not have populated its runtime version
+        # string when Library.ini is finalized. Mirror that runtime contract here.
+        # Once enabled, exact version identity remains mandatory.
+        if ($cachedEnabled -and $cacheSections[$id]['Version'] -ne $version) {
+            throw "Stale/missing enabled module cache identity: $id (expected $version)"
+        }
     }
     foreach ($stage in Get-ChildItem -LiteralPath $pipelineRoot -File -Recurse -Filter '*.pixlbin') {
         $relative = $stage.FullName.Substring($pipelineRoot.TrimEnd('\').Length + 1)

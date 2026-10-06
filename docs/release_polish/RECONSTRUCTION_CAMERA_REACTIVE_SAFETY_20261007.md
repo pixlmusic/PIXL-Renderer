@@ -121,3 +121,33 @@ display-space vectors; DLSS/reactive edge captures; neural guide visualization;
 performance comparison for dense particle bursts. Rejected broad GPU instancing
 rewrite, private NGX parameter guesses, cache resets, quality increases and
 unsolicited changes to user's neural settings. No measured performance claims.
+
+## Morning live-test follow-up
+
+The validated run confirmed the water-exit first-use hitch is gone, submerged fog
+and reflection changes are visually sound, and the guarded ReactiveFX path did not
+reproduce the spell crash. Directional caustics are accepted; local-light caustics
+still need deliberate torch/spell coverage testing.
+
+Motion blur was still absent for two independent reasons. The live profile had
+`enableModernMotionBlur=false`, and the runtime enable bit was incorrectly gated
+by the Enhanced Depth of Field gameplay predicate. Motion blur only shares main
+scene depth with DOF, so that dependency is removed. Menu, pause, map, photo-mode
+isolation, valid-depth and user-setting guards remain. Motion blur remains opt-in;
+the live test profile must enable it before visual certification.
+
+The flyby capture showed shadowed surfaces briefly appearing roughly half a stop
+brighter. No evidence justified changing Skyrim's shadow mask or Lighting shader.
+The stronger source-backed cause was the quarter-resolution local exposure field:
+it was rebuilt independently every frame and could jump by its full +/-0.5 EV
+range when a sun patch, window or emissive crossed its sparse bilateral footprint.
+The field now ping-pongs through a persistent quarter-resolution R16 history and
+settles in EV space with bounded rates and a small deadband. Global metering now
+blends its trimmed log mean with the frame median and uses a 0.06-stop deadband,
+making it less sensitive to isolated candle/window clusters while preserving broad
+scene adaptation. This is temporal stabilization, not a shadow-rendering change.
+
+Release build and 24/24 CTests pass. Exposure/local-exposure strict compute
+validation passes in SDR/HDR permutations. The new history adds one quarter-scale
+R16 texture and no fullscreen pass or CPU readback. Flyby exposure stability and
+motion-blur strength require live Skyrim validation.
