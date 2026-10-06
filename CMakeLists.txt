@@ -1,4 +1,11 @@
-cmake_minimum_required(VERSION 4.2)
+# Portable validation does not load the Skyrim/DX11 build graph and only needs
+# CMake 3.21 features. Keep the full renderer's existing 4.2 policy/tooling
+# baseline while allowing GitHub's portable job to configure on 3.31.x.
+if(PIXL_PORTABLE_TESTS_ONLY)
+    cmake_minimum_required(VERSION 3.21)
+else()
+    cmake_minimum_required(VERSION 4.2)
+endif()
 
 set(VCPKG_BUILD_TYPE release CACHE STRING "")
 
