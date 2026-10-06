@@ -821,7 +821,7 @@ void CameraSuite::DrawSettings()
 			DrawSettingsTooltip("Enables the experimental body-worn digital-camera profile. This is a stylized preset and is not the recommended neutral rendering mode.");
 
 			changed |= ImGui::Checkbox("Automatic Exposure", &settings.cameraAutoExposure);
-			DrawSettingsTooltip("Meters scene luminance from the camera histogram and adapts exposure over time. Disable for a fixed exposure offset.");
+			DrawSettingsTooltip("Uses broad, equally weighted frame metering with bright/dark outlier rejection, so a small centred candle does not dominate the room. Disable for a fixed exposure offset.");
 			changed |= ImGui::SliderFloat("Exposure Compensation", &settings.cameraExposureCompensationEV, -4.0f, 4.0f, "%+.2f EV", ImGuiSliderFlags_AlwaysClamp);
 			DrawSettingsTooltip("Offsets the physical-camera exposure in stops. Positive values brighten the scene; negative values preserve more highlight headroom.");
 			changed |= ImGui::SliderFloat("Highlight Protection", &settings.cameraHighlightProtection, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -1457,6 +1457,10 @@ void CameraSuite::SetupResources()
 	}
 
 	SetupCameraFinishingResources(hdrTexture->desc);
+	// Avoid synchronous shader creation at the first rain/water surface break.
+	// Resources are persistent; this runs during renderer setup, not each exit.
+	if (settings.enableStormglass)
+		GetStormglassFieldCS();
 	if (dofHistoryId == 0) {
 		dofHistoryId = PIXL::Renderer::TemporalContext::Get().RegisterHistory({
 			.name = "Auto-DOF focus and CoC",
@@ -2216,7 +2220,8 @@ void CameraSuite::DispatchHDROutput(ID3D11ShaderResourceView* sceneSRV, ID3D11Sh
 {
 	auto context = globals::d3d::context;
 	auto computeShader = GetHDROutputCS();
-	if (!computeShader || !uav)
+	if (!computeShader || !uav || !context || !globals::state ||
+		!globals::state->sharedDataCB || !*globals::game::perFrame.get())
 		return;
 
 	ID3D11ShaderResourceView* views[12] = {
@@ -2248,6 +2253,16 @@ void CameraSuite::DispatchHDROutput(ID3D11ShaderResourceView* sceneSRV, ID3D11Sh
 
 	ID3D11Buffer* cbs[2] = { hdrDataCB->CB(), dofControlCB ? dofControlCB->CB() : nullptr };
 	context->CSSetConstantBuffers(0, ARRAYSIZE(cbs), cbs);
+	// Present/ImGui/upscalers may have cleared CS state. Depth linearization and
+	// camera motion require these buffers even with DOF disabled. Do not inherit
+	// b5/b12 from an unrelated previous compute pass; restore only these changes.
+	winrt::com_ptr<ID3D11Buffer> previousShared, previousFrame;
+	context->CSGetConstantBuffers(5, 1, previousShared.put());
+	context->CSGetConstantBuffers(12, 1, previousFrame.put());
+	ID3D11Buffer* shared = globals::state->sharedDataCB->CB();
+	ID3D11Buffer* frame = *globals::game::perFrame.get();
+	context->CSSetConstantBuffers(5, 1, &shared);
+	context->CSSetConstantBuffers(12, 1, &frame);
 
 	context->CSSetShader(computeShader, nullptr, 0);
 
@@ -2270,6 +2285,10 @@ void CameraSuite::DispatchHDROutput(ID3D11ShaderResourceView* sceneSRV, ID3D11Sh
 	cbs[0] = nullptr;
 	cbs[1] = nullptr;
 	context->CSSetConstantBuffers(0, ARRAYSIZE(cbs), cbs);
+	shared = previousShared.get();
+	frame = previousFrame.get();
+	context->CSSetConstantBuffers(5, 1, &shared);
+	context->CSSetConstantBuffers(12, 1, &frame);
 
 	context->CSSetShader(nullptr, nullptr, 0);
 }
@@ -2991,6 +3010,8 @@ void CameraSuite::RunCameraFinishingPasses(ID3D11ShaderResourceView* sceneSRV)
 	localExposurePassReady = false;
 	bloomPassReady = false;
 	stormglassPassReady = false;
+	if (!globals::state || !globals::state->sharedDataCB || !globals::d3d::context || !*globals::game::perFrame.get())
+		return;
 
 	const bool wantsPhysicalCamera = settings.enablePhysicalCamera;
 	const bool wantsDof = settings.enableEnhancedDepthOfField && !UsesCinematicDoF() &&
@@ -3019,6 +3040,13 @@ void CameraSuite::RunCameraFinishingPasses(ID3D11ShaderResourceView* sceneSRV)
 	ID3D11SamplerState* sampler = lookSampler.get();
 
 	RunDepthOfFieldPasses(sceneSRV);
+	winrt::com_ptr<ID3D11Buffer> finishingShared, finishingFrame;
+	context->CSGetConstantBuffers(5, 1, finishingShared.put());
+	context->CSGetConstantBuffers(12, 1, finishingFrame.put());
+	ID3D11Buffer* shared = globals::state->sharedDataCB->CB();
+	ID3D11Buffer* frame = *globals::game::perFrame.get();
+	context->CSSetConstantBuffers(5, 1, &shared);
+	context->CSSetConstantBuffers(12, 1, &frame);
 
 	auto dispatchPass = [&](const char* profilerName,
 		ID3D11ComputeShader* shader,
@@ -3109,6 +3137,10 @@ void CameraSuite::RunCameraFinishingPasses(ID3D11ShaderResourceView* sceneSRV)
 	ID3D11Buffer* nullCB = nullptr;
 	context->CSSetSamplers(0, 1, &nullSampler);
 	context->CSSetConstantBuffers(0, 1, &nullCB);
+	shared = finishingShared.get();
+	frame = finishingFrame.get();
+	context->CSSetConstantBuffers(5, 1, &shared);
+	context->CSSetConstantBuffers(12, 1, &frame);
 }
 
 ID3D11ComputeShader* CameraSuite::GetUIBrightnessCS()
@@ -3516,7 +3548,11 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 			waterData.deepWaterColor.blue * byteToUnit,
 			1.0f
 		};
-		data.submergedFogAmount = std::clamp(waterData.underwaterFogAmount, 0.0f, 1.0f);
+		// ENB-oriented water records may leave native fog at zero. PIXL's enabled
+		// submerged optics still needs a conservative optical density in that case.
+		const float authoredFog = waterData.underwaterFogAmount;
+		data.submergedFogAmount = std::isfinite(authoredFog) && authoredFog > 1.0e-4f ?
+			std::clamp(authoredFog, 0.0f, 1.0f) : 0.35f;
 	}
 
 	// PIXL/Director presentation owns the optional DOF path only when explicitly enabled and when an

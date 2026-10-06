@@ -18,7 +18,8 @@ $kernels = @(
     'prefilterDepths.cs.hlsl', 'prefilterRadiance.cs.hlsl', 'prefilterNormal.cs.hlsl',
     'radianceDisocc.cs.hlsl', 'gi.cs.hlsl', 'blur.cs.hlsl', 'blur.cs.hlsl',
     'upsample.cs.hlsl', 'worldCacheInject.cs.hlsl', 'worldCacheDecay.cs.hlsl',
-    'hybridReflection.cs.hlsl', 'hybridReflectionDenoise.cs.hlsl', 'worldCacheInject.cs.hlsl'
+    'hybridReflection.cs.hlsl', 'hybridReflectionDenoise.cs.hlsl', 'worldCacheInject.cs.hlsl',
+    'prefilterDepths.cs.hlsl'
 )
 foreach ($resolution in 0..2) {
     foreach ($mask in 0..15) {
@@ -34,6 +35,7 @@ foreach ($resolution in 0..2) {
             if ($index -eq 0) { $kernelDefines += 'LINEAR_FILTER' }
             if ($index -eq 6) { $kernelDefines += 'ATROUS_STEP_2' }
             if ($index -eq 12) { $kernelDefines += 'WORLD_CACHE_SELECT' }
+            if ($index -eq 13) { $kernelDefines += 'MIN_FILTER' }
             $jobs.Add([pscustomobject]@{ path = 'HybridGI/' + $kernels[$index]; defines = $kernelDefines })
         }
     }

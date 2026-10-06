@@ -1450,6 +1450,8 @@ void ImageReconstruction::ConfigureUpscaling(RE::BSGraphics::State* a_viewport)
 
 void ImageReconstruction::SetupResources()
 {
+	dlssFrameReady = false;
+	dx12SwapChain.neuralGuidesReady = false;
 	QueryPerformanceFrequency(&qpf);
 
 	auto renderer = globals::game::renderer;
@@ -1559,6 +1561,11 @@ void ImageReconstruction::ClearShaderCache()
 
 void ImageReconstruction::CopySharedD3D12Resources(bool a_useNeuralGuides)
 {
+	if (a_useNeuralGuides) {
+		dx12SwapChain.neuralGuidesReady = false;
+		if (!HasCurrentDLSSFrame() || !copyDepthToSharedBufferPS || !GetUpscaleVS())
+			return;
+	}
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "ImageReconstruction - Copy Shared D3D12 Resources");
 	globals::state->BeginPerfEvent("Copy Shared D3D12 Resources");
@@ -1640,6 +1647,10 @@ void ImageReconstruction::CopySharedD3D12Resources(bool a_useNeuralGuides)
 	context->OMSetRenderTargets(0, nullptr, nullptr);
 	context->PSSetShader(nullptr, nullptr, 0);
 	context->VSSetShader(nullptr, nullptr, 0);
+	if (a_useNeuralGuides) {
+		dx12SwapChain.neuralGuideFrame = globals::state->frameCount;
+		dx12SwapChain.neuralGuidesReady = true;
+	}
 
 	globals::state->EndPerfEvent();
 }
@@ -2211,8 +2222,14 @@ ImageReconstruction::BlurResources ImageReconstruction::GetBlurResources() const
 	return {};
 }
 
+bool ImageReconstruction::HasCurrentDLSSFrame() const
+{
+	return dlssFrameReady && globals::state && dlssFrameIndex == globals::state->frameCount;
+}
+
 void ImageReconstruction::Upscale()
 {
+	dlssFrameReady = false;
 	ZoneScoped;
 	auto upscaleMethod = GetUpscaleMethod();
 
@@ -2235,7 +2252,8 @@ void ImageReconstruction::Upscale()
 		pendingNeuralRenderingReset.store(true, std::memory_order_release);
 		FidelityFX::needsReset.store(true, std::memory_order_release);
 	}
-	const bool resetReconstructionHistory = pendingDLSSReset.exchange(false, std::memory_order_acq_rel);
+	// Keep reset pending across resource/shader early-outs. Consume it only when
+	// a backend is actually about to evaluate, and restore it on DLSS failure.
 
 	context->OMSetRenderTargets(0, nullptr, nullptr);  // Unbind all bound render targets
 
@@ -2320,15 +2338,15 @@ void ImageReconstruction::Upscale()
 		PIXL::Renderer::PixelAnnotations::Get().PublishReconstruction(
 			reactiveMaskTexture->srv.get(), transparencyCompositionMaskTexture->srv.get(),
 			renderWidth, renderHeight);
-		PIXL::Renderer::TemporalContext::Get().PublishDisocclusion(
-			reactiveMaskTexture->srv.get(), renderWidth, renderHeight);
+		// Reactive coverage is a colour-history hint, not geometric disocclusion.
 		const auto temporalFrame = PIXL::Renderer::TemporalContext::Get().GetFrameSnapshot();
 		const auto backend = upscaleMethod == UpscaleMethod::kDLSS ? PIXL::Renderer::ReconstructionBackend::DLSS :
 			upscaleMethod == UpscaleMethod::kFSR ? PIXL::Renderer::ReconstructionBackend::FSR :
 			PIXL::Renderer::ReconstructionBackend::Native;
 		PIXL::Renderer::ReconstructionFrame reconstructionFrame{};
 		reconstructionFrame.depth.copy_from(depth.depthSRV);
-		reconstructionFrame.motion.copy_from(motionVector.SRV);
+		reconstructionFrame.motion.copy_from(upscaleMethod == UpscaleMethod::kDLSS ?
+			motionVectorCopyTexture->srv.get() : motionVector.SRV);
 		reconstructionFrame.reactive = reactiveMaskTexture->srv;
 		reconstructionFrame.transparency = transparencyCompositionMaskTexture->srv;
 		reconstructionFrame.annotations = PIXL::Renderer::PixelAnnotations::Get().Acquire();
@@ -2350,14 +2368,24 @@ void ImageReconstruction::Upscale()
 		state->BeginPerfEvent("ImageReconstruction");
 		TracyD3D11Zone(globals::state->tracyCtx, "ImageReconstruction Dispatch");
 
+		bool historyEvaluated = false;
 		if (upscaleMethod == UpscaleMethod::kDLSS) {
-			streamline.Upscale(main.texture, reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVectorCopyTexture->resource.get(), resetReconstructionHistory);
+			const bool resetReconstructionHistory = pendingDLSSReset.exchange(false, std::memory_order_acq_rel);
+			historyEvaluated = streamline.Upscale(main.texture, reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVectorCopyTexture->resource.get(), resetReconstructionHistory);
+			dlssFrameReady = historyEvaluated;
+			if (historyEvaluated)
+				dlssFrameIndex = state->frameCount;
+			else {
+				pendingDLSSReset.store(true, std::memory_order_release);
+				pendingNeuralRenderingReset.store(true, std::memory_order_release);
+			}
 		} else if (upscaleMethod == UpscaleMethod::kFSR) {
+			const bool resetReconstructionHistory = pendingDLSSReset.exchange(false, std::memory_order_acq_rel);
 			fidelityFX.Upscale(main.texture, fsrDepthTexture->resource.get(), reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVector.texture, settings.sharpnessFSR, resetReconstructionHistory);
+			historyEvaluated = true; // Existing FSR failure/fallback contract retained.
 		}
-		if ((upscaleMethod == UpscaleMethod::kDLSS || upscaleMethod == UpscaleMethod::kFSR) &&
-			reconstructionHistoryId != 0) {
-			PIXL::Renderer::TemporalContext::Get().SetHistoryValid(reconstructionHistoryId);
+		if (reconstructionHistoryId != 0) {
+			PIXL::Renderer::TemporalContext::Get().SetHistoryValid(reconstructionHistoryId, historyEvaluated);
 		}
 
 		state->EndPerfEvent();
@@ -2545,6 +2573,8 @@ void ImageReconstruction::UpscaleDepth()
 
 void ImageReconstruction::ApplySharpening()
 {
+	if (!HasCurrentDLSSFrame())
+		return; // Never resolve the previous frame's sharpener output after a failure.
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "ImageReconstruction - Sharpening");
 

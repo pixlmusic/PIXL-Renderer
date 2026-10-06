@@ -106,6 +106,8 @@ public:
 	// use the existing full-resource contract.
 	UINT neuralGuideWidth = 0;
 	UINT neuralGuideHeight = 0;
+	std::uint64_t neuralGuideFrame = 0;
+	bool neuralGuidesReady = false;
 
 	// Published only after the D3D12 queue has completed a successful neural
 	// frame and the D3D11 fence wait has been queued. Consumers use the serial to

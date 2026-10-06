@@ -53,11 +53,13 @@ void main(uint2 dtid : SV_DispatchThreadID, uint2 gtid : SV_GroupThreadID)
                         float logLum = clamp(log2(lum), PIXL_HISTOGRAM_LOG_MIN, PIXL_HISTOGRAM_LOG_MAX);
                         float histogramRange = max(PIXL_HISTOGRAM_LOG_RANGE, 1e-5f);
                         uint bin = min(255u, (uint)((logLum - PIXL_HISTOGRAM_LOG_MIN) * (255.0f / histogramRange) + 0.5f));
-                        float2 screenUV = (float2(pixel) + 0.5f) / float2(width, height);
-                        float2 edgeDistance = abs(screenUV * 2.0f - 1.0f);
-                        float centerWeight = saturate(1.0f - max(edgeDistance.x, edgeDistance.y));
-                        uint meterWeight = 1u + (uint)(3.0f * centerWeight * centerWeight + 0.5f);
-                        InterlockedAdd(LocalHistogram[bin], meterWeight);
+                        // Broad evaluative metering: every sampled cell has an
+                        // equal vote across the frame (and its equal-area zones).
+                        // The old 4:1 centre bias let a distant candle count like
+                        // a much larger bright region when aimed at directly.
+                        // Percentile trimming rejects isolated bright/dark cells;
+                        // no additional histogram, attachment or pass is needed.
+                        InterlockedAdd(LocalHistogram[bin], 1u);
                     }
                 }
             }

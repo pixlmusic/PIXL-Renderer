@@ -827,6 +827,11 @@ float3 GetWaterSpecularColor(PS_INPUT input, float3 normal, float3 viewDirection
 	float3 R = reflect(viewDirection, WaterParams.y * normal + float3(0, 0, 1 - WaterParams.y));
 	float waterRoughness = 0.0f;
 #			if USE_PIXL_WATER_OPTICS
+	// Reflection law requires a unit normal. Blending wave normals with the
+	// planar normal without renormalizing distorts the reflected direction.
+	float3 reflectionNormal = WaterParams.y * normal + float3(0, 0, 1 - WaterParams.y);
+	reflectionNormal *= rsqrt(max(dot(reflectionNormal, reflectionNormal), 1e-6f));
+	R = reflect(viewDirection, reflectionNormal);
 	float normalVariance = max(dot(ddx_coarse(normal), ddx_coarse(normal)), dot(ddy_coarse(normal), ddy_coarse(normal)));
 	waterRoughness = clamp(0.045f + sqrt(saturate(normalVariance)) * 0.35f, 0.045f, 0.65f);
 #			endif
@@ -890,7 +895,9 @@ float3 GetWaterSpecularColor(PS_INPUT input, float3 normal, float3 viewDirection
 	float3 finalSsrReflectionColor = max(0, ssrReflectionColor.xyz);
 	float ssrFraction = saturate(ssrReflectionColor.w * distanceFactor * ssrAmount);
 #			if USE_PIXL_WATER_OPTICS
-	float2 edgeDistance = min(ssrReflectionUvDR, 1.0f.xx - ssrReflectionUvDR);
+	// Confidence belongs to active-view UV, not backing texture UV. At reduced
+	// render scale the right/bottom edges otherwise retain invalid SSR history.
+	float2 edgeDistance = min(ssrReflectionUv, 1.0f.xx - ssrReflectionUv);
 	float edgeConfidence = smoothstep(0.0f, 0.06f, min(edgeDistance.x, edgeDistance.y));
 	float luminanceReference = max(Color::RGBToLuminance(reflectionColor), 0.05f);
 	float luminanceSSR = Color::RGBToLuminance(finalSsrReflectionColor);
@@ -902,7 +909,9 @@ float3 GetWaterSpecularColor(PS_INPUT input, float3 normal, float3 viewDirection
 	finalSsrReflectionColor *= min(1.0f, (luminanceReference * ssrLuminanceCeiling) / max(luminanceSSR, 1e-4f));
 	// Boost confidence rather than raw radiance, preserving reflected colour and
 	// the cubemap fallback while making valid on-screen detail more authoritative.
-	ssrFraction = (1.0f - exp2(-ssrFraction * surfaceSsrStrength * 1.25f)) * edgeConfidence * saturate(1.0f - waterRoughness * 0.50f);
+	// The old exponential capped even a perfect hit at ~58% for strength=1.
+	// Trust valid screen detail while retaining smooth cube fallback at misses.
+	ssrFraction = saturate(ssrFraction * surfaceSsrStrength) * edgeConfidence * saturate(1.0f - waterRoughness * 0.50f);
 #			endif
 	reflectionColor = lerp(reflectionColor, finalSsrReflectionColor, ssrFraction);
 #			endif

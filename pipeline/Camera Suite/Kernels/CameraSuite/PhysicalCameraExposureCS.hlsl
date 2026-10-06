@@ -75,7 +75,9 @@ void main(uint3 dtid : SV_DispatchThreadID)
             float weightedLog = 0.0f;
 			uint accepted = 0u;
 			// Ignore isolated emissives/specular peaks; broad highlights still meter.
-			uint highlightCut = max(1u, (uint)((float)total * 0.98f));
+			// Protect broad bright regions, not a tiny candle/specular point. With
+			// uniform spatial weights this requires roughly 5% frame coverage.
+			uint highlightCut = max(1u, (uint)((float)total * 0.95f));
 			float highlightLum = 0.0f;
 
             [loop]

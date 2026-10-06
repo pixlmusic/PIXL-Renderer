@@ -4085,6 +4085,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #	if defined(RAIN_RESPONSE) || defined(WATER_OPTICS)
 	float4 waterData = SharedData::GetWaterData(input.WorldPosition.xyz);
+#	if defined(WATER_OPTICS)
+	WaterOptics::SetReceiverFootprint(input.WorldPosition.xyz);
+#	endif
 #	endif
 #	if defined(RAIN_RESPONSE)
 	float waterHeight = waterData.w;
@@ -4219,7 +4222,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 #	if defined(WATER_OPTICS)
-	dirLightColor *= WaterOptics::ComputeCaustics(waterData, input.WorldPosition.xyz, worldNormal.xyz);
+	float3 pixlDirectionalWaterBounce = 0.0f.xxx;
+	float3 pixlDirectionalCausticFactor = WaterOptics::ComputeCaustics(waterData, input.WorldPosition.xyz, worldNormal.xyz);
+	if (waterData.w > -1.0e20f && input.WorldPosition.z > waterData.w)
+		pixlDirectionalWaterBounce = max(pixlDirectionalCausticFactor - 1.0f.xxx, 0.0f.xxx) * dirLightColor * 0.42f;
+	else
+		dirLightColor *= pixlDirectionalCausticFactor;
 #	endif
 
 	// Apply world shadow (terrain shadows, cloud shadows) directly to light color
@@ -4416,6 +4424,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 	lightsDiffuseColor += dirLightOutput.diffuse;
+#	if defined(WATER_OPTICS)
+	// Reflected water light reaches walls and bridge undersides even where the
+	// direct sun/moon Lambert term (or its receiver shadow) is zero.
+	lightsDiffuseColor += pixlDirectionalWaterBounce / Math::PI;
+#	endif
 	lightsSpecularColor += dirLightOutput.specular;
 #	if defined(MATERIAL_FORGE)
 	coatLightsDiffuseColor += dirLightOutput.coatDiffuse;
@@ -4547,9 +4560,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			continue;
 		float3 lightColor = Color::PointLight(PointLightColor[lightIndex].xyz) * intensityMultiplier;
 #		if defined(WATER_OPTICS)
-		lightColor *= WaterOptics::ComputeLocalReceiverCaustics(
+		float3 pixlLocalWaterBounce = 0.0f.xxx;
+		float3 pixlLocalCausticFactor = WaterOptics::ComputeLocalReceiverCaustics(
 			waterData, input.WorldPosition.xyz, worldNormal.xyz,
 			PointLightPosition[lightIndex].xyz, lightColor, PointLightPosition[lightIndex].w);
+		if (waterData.w > -1.0e20f && input.WorldPosition.z > waterData.w)
+			pixlLocalWaterBounce = max(pixlLocalCausticFactor - 1.0f.xxx, 0.0f.xxx) * lightColor * 0.32f;
+		else
+			lightColor *= pixlLocalCausticFactor;
 #		endif
 		float lightShadow = 1.f;
 		if (!pixlGroundRaisedShell &&
@@ -4616,6 +4634,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			EvaluateWetnessLighting(wetnessNormal, pointLightContext, waterRoughnessSpecular, pointLightOutput);
 #			endif
 		lightsDiffuseColor += pointLightOutput.diffuse;
+#		if defined(WATER_OPTICS)
+		lightsDiffuseColor += pixlLocalWaterBounce / Math::PI;
+#		endif
 		lightsSpecularColor += pointLightOutput.specular;
 #			if defined(MATERIAL_FORGE)
 		coatLightsDiffuseColor += pointLightOutput.coatDiffuse;
@@ -4737,9 +4758,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		const bool isPointLightLinear = light.lightFlags & RadiantGrid::LightFlags::Linear;
 		float3 lightColor = Color::PointLight(light.color.xyz, isPointLightLinear) * intensityMultiplier * light.fade;
 #		if defined(WATER_OPTICS)
-		lightColor *= WaterOptics::ComputeLocalReceiverCaustics(
+		float3 pixlLocalWaterBounce = 0.0f.xxx;
+		float3 pixlLocalCausticFactor = WaterOptics::ComputeLocalReceiverCaustics(
 			waterData, input.WorldPosition.xyz, worldNormal.xyz,
 			light.positionWS.xyz, lightColor, light.radius);
+		if (waterData.w > -1.0e20f && input.WorldPosition.z > waterData.w)
+			pixlLocalWaterBounce = max(pixlLocalCausticFactor - 1.0f.xxx, 0.0f.xxx) * lightColor * 0.32f;
+		else
+			lightColor *= pixlLocalCausticFactor;
 #		endif
 		float lightShadow = 1.0;
 
@@ -4846,6 +4872,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #			endif
 
 		lightsDiffuseColor += pointLightOutput.diffuse;
+#		if defined(WATER_OPTICS)
+		lightsDiffuseColor += pixlLocalWaterBounce / Math::PI;
+#		endif
 		lightsSpecularColor += pointLightOutput.specular;
 #			if defined(MATERIAL_FORGE)
 		coatLightsDiffuseColor += pointLightOutput.coatDiffuse;

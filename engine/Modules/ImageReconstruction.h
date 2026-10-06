@@ -281,6 +281,10 @@ public:
 	 */
 	std::atomic<bool> pendingDLSSReset{ false };
 	std::atomic<bool> pendingNeuralRenderingReset{ true };
+	// Output/guide eligibility, not a second temporal history system.
+	bool dlssFrameReady = false;
+	std::uint64_t dlssFrameIndex = 0;
+	[[nodiscard]] bool HasCurrentDLSSFrame() const;
 
 	void CopySharedD3D12Resources(bool a_useNeuralGuides = false);
 	void PostDisplay();

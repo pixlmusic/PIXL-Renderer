@@ -138,6 +138,43 @@ bool ReadWorldVoxelCascade(
 						srcWorldSH1.Load(int3(atlasCoord, 0)),
 						srcWorldSH2.Load(int3(atlasCoord, 0)),
 						-sourceDirection) * leakWeight;
+					// Only smooth the first radiating hit, and only near the closest
+					// shared face of two agreeing surfaces. This costs at most one
+					// neighbour lookup, not eight taps at every trace step.
+					float3 fraction = frac(queryPositionWS / cellSize);
+					float3 edge = min(fraction, 1.0f - fraction);
+					float edgeDistance = min(edge.x, min(edge.y, edge.z));
+					[branch] if (edgeDistance < 0.25f) {
+						int3 side = edge.x <= edge.y && edge.x <= edge.z ?
+							int3(fraction.x < 0.5f ? -1 : 1, 0, 0) :
+							edge.y <= edge.z ? int3(0, fraction.y < 0.5f ? -1 : 1, 0) :
+							int3(0, 0, fraction.z < 0.5f ? -1 : 1);
+						int3 neighborCell = cell + side;
+						if (WorldCacheCellInWindow(neighborCell, cameraWS, cascade)) {
+							uint2 neighborCoord = WorldCacheAtlasCoord(neighborCell, cascade);
+							uint neighborMeta = srcWorldMetadata.Load(int3(neighborCoord, 0));
+							uint neighborAge = ((WorldCacheClock & 255u) - (neighborMeta >> 24)) & 255u;
+							if ((neighborMeta & 0x00ffffffu) == WorldCacheHash(neighborCell, cascade) &&
+								WorldCacheAgeFade(neighborAge, WorldCacheMaxAge) > 0.0f) {
+								uint neighborSurface = srcWorldNormal.Load(int3(neighborCoord, 0));
+								float3 neighborNormal = UnpackWorldNormal(neighborSurface);
+								float neighborOccupancy = UnpackWorldOccupancy(neighborSurface) *
+									UnpackWorldConfidence(neighborSurface) * WorldCacheAgeFade(neighborAge, WorldCacheMaxAge);
+								if (neighborOccupancy > (1.0f / 255.0f) && dot(sourceNormal, neighborNormal) > 0.85f) {
+									float neighborGate = lerp(1.0f, smoothstep(-0.05f, 0.10f, receiverFacingSigned) *
+										smoothstep(-0.05f, 0.15f, dot(neighborNormal, -sourceDirection)), leakReduction);
+									float3 neighborRadiance = WorldCacheEvaluateRadiance(
+										srcWorldSH0.Load(int3(neighborCoord, 0)),
+										srcWorldSH1.Load(int3(neighborCoord, 0)),
+										srcWorldSH2.Load(int3(neighborCoord, 0)),
+										-sourceDirection) * neighborGate;
+									float weight = 0.5f * (1.0f - smoothstep(0.0f, 0.25f, edgeDistance));
+									irradiance = lerp(irradiance, neighborRadiance, weight);
+									occupancy = lerp(occupancy, neighborOccupancy, weight);
+								}
+							}
+						}
+					}
 				}
 			}
 		}
@@ -182,8 +219,10 @@ bool ReadWorldVoxel(
 			valid = occupancy > (1.0 / 255.0);
 		} else if (nearValid) {
 			irradiance = nearIrradiance;
-			occupancy = nearOccupancy;
-			valid = true;
+			// Do not carry a lone near voxel at full weight to the window edge.
+			// The far cascade may still be warming up after camera movement.
+			occupancy = nearOccupancy * (1.0f - smoothstep(0.35f, 0.999f, blend));
+			valid = occupancy > (1.0f / 255.0f);
 		} else if (farValid) {
 			irradiance = farIrradiance;
 			occupancy = farOccupancy;
@@ -209,9 +248,9 @@ void SampleWorldCache(
 		(WorldCacheDirectionalOcclusionStrength > 1e-4f || DebugView == 8u);
 	uint sampleCount = clamp(WorldCacheSampleCount, 1u, 8u);
 	uint traceSteps = clamp(WorldCacheTraceSteps, 2u, 6u);
-	uint receiverCascade = WorldCacheCascadeBlend(receiverPositionWS, cameraWS) >= 0.5 ? 1u : 0u;
-	float rotation = WorldCacheStableRotationForCascade(receiverPositionWS, receiverCascade);
-	float baseStep = WorldCacheCellSize(receiverCascade);
+	// Vary ray orientation smoothly in world space rather than per voxel.
+	float rotation = WorldCacheSmoothRotation(receiverPositionWS);
+	float baseStep = WorldCacheTraceCellSize(receiverPositionWS, cameraWS);
 	float inverseRadius = rcp(max(WorldCacheRadius, 1.0));
 	float3 cacheTangent;
 	float3 cacheBitangent;
@@ -287,8 +326,7 @@ void SampleWorldCacheReflection(
 	if (dot(reflectionDirection, receiverNormalWS) <= 0.01)
 		return;
 
-	uint receiverCascade = WorldCacheCascadeBlend(receiverPositionWS, cameraWS) >= 0.5 ? 1u : 0u;
-	float baseStep = WorldCacheCellSize(receiverCascade);
+	float baseStep = WorldCacheTraceCellSize(receiverPositionWS, cameraWS);
 	uint traceSteps = clamp(WorldCacheTraceSteps, 2u, 6u);
 	float rayTransmittance = 1.0;
 	float inverseRadius = rcp(max(WorldCacheRadius, 1.0));
@@ -813,10 +851,9 @@ void CalculateGI(
 		float3 cameraWS = ViewToWorldPosition(0.0, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
 		float3 receiverPositionWS = ViewToWorldPosition(pixCenterPos, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
 		float3 receiverNormalWS = normalize(ViewToWorldVector(viewspaceNormal, FrameBuffer::CameraViewInverse));
-		// The world cache is a missing-information fallback. If screen-space GI
-		// already covers virtually the whole hemisphere, do not pay up to dozens
-		// of voxel probes only to blend the result back to ~zero afterwards.
-		const bool needCacheDiffuse = WorldCacheStrength > 1e-4f && screenMiss > 0.05f;
+		// Keep a restrained world-space contribution alongside screen-space GI;
+		// screen coverage adjusts its weight rather than switching it off.
+		const bool needCacheDiffuse = WorldCacheStrength > 1e-4f;
 		const bool needCacheDirectional = WorldCacheDirectionalOcclusionEnabled != 0u &&
 			WorldCacheDirectionalOcclusionStrength > 1e-4f;
 		const bool needCacheDebug = DebugView >= 5u && DebugView <= 8u;
@@ -827,12 +864,10 @@ void CalculateGI(
 		}
 
 		if (needCacheDiffuse) {
-			// The cache is learned from the same scene radiance as SSGI. It must fill
-			// missing directions, not add a permanent second copy underneath a valid
-			// screen hit. Require both missing screen coverage and several agreeing
-			// voxel observations before the low-frequency fallback gains authority.
-			float cacheConfidence = smoothstep(0.06f, 0.45f, cacheHitRatio);
-			float cacheBlend = WorldCacheStrength * smoothstep(0.05f, 0.90f, screenMiss) * cacheConfidence;
+			// This cache learns the same scene radiance as SSGI, so its always-on
+			// additive floor is deliberately small to avoid double-counting light.
+			float cacheConfidence = saturate(cacheHitRatio * 2.2f);
+			float cacheBlend = WorldCacheStrength * lerp(0.16f, 0.76f, screenMiss) * cacheConfidence;
 			radianceY += cacheY * cacheBlend;
 			radianceCoCg += cacheCoCg * cacheBlend * GISaturation;
 		}

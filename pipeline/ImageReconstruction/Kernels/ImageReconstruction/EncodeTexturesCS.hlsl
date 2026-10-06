@@ -64,6 +64,11 @@ RWTexture2D<float> DepthOutput : register(u3);
 #if defined(DLSS)
 	float depth = DepthMask[dispatchID.xy];
 	float2 motionVector = MotionVectorMask[dispatchID.xy];
+	bool centerMotionValid = all(isfinite(motionVector));
+	if (!centerMotionValid) {
+		motionVector = 0.0f;
+		reactiveMask = 1.0f; // Reject corrupted history, not ordinary static pixels.
+	}
 	float2 dilatedMotionVector = motionVector;
 
 	// Skyrim's standard depth is 0 at the near plane and 1 at clear/far sky.
@@ -95,9 +100,10 @@ RWTexture2D<float> DepthOutput : register(u3);
 			// Device depth is monotonic, so select the closest candidate first and
 			// linearize only that sample after the loop.  This avoids 25 divisions per
 			// pixel in a full-screen pass while retaining world-space validation.
-			if (neighborDepth < closestDeviceDepth) {
+			float2 neighborMotion = MotionVectorMask[samplePos].xy;
+			if (neighborDepth < closestDeviceDepth && all(isfinite(neighborMotion))) {
 				closestDeviceDepth = neighborDepth;
-				dilatedMotionVector = MotionVectorMask[samplePos].xy;
+				dilatedMotionVector = neighborMotion;
 				foundCandidate = true;
 			}
 		}
@@ -121,7 +127,10 @@ RWTexture2D<float> DepthOutput : register(u3);
 	// The displaced surface already owns a physically matched previous position.
 	// Never replace that vector with a neighbor selected from the steep track wall.
 	dilationWeight *= 1.0f - reconstructionActivity;
-	float2 conditionedMotion = lerp(motionVector, dilatedMotionVector, dilationWeight);
+	// A blended foreground/background velocity corresponds to neither surface
+	// and reprojects history between them. Select a real representative; keep
+	// the soft weight solely for the bounded bias-current-colour hint.
+	float2 conditionedMotion = dilationWeight > 0.5f ? dilatedMotionVector : motionVector;
 	MotionVectorOutput[dispatchID.xy] = conditionedMotion;
 
 	// Bias reconstruction toward the current sample only where the silhouette

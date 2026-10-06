@@ -432,7 +432,15 @@ float2 PixlCameraMotionVector(float2 uv, uint2 dim, out float centerDepth)
 	if (FrameBuffer::IsOutsideFrame(previousUV, false))
 		return 0.0f.xx;
 
-	float2 velocity = uv - previousUV;
+	// Compare unjittered positions in both frames. Subtracting the jittered
+	// reconstruction UV directly falsely blurs a stationary camera.
+	float4 currentUnjitteredCS = mul(FrameBuffer::CameraViewProjUnjittered, currentRelative);
+	if (currentUnjitteredCS.w <= 1.0e-5f)
+		return 0.0f.xx;
+	float2 currentUV = currentUnjitteredCS.xy / currentUnjitteredCS.w * float2(0.5f, -0.5f) + 0.5f;
+	float2 velocity = currentUV - previousUV;
+	if (!all(isfinite(velocity)))
+		return 0.0f.xx;
 	float pixelMotion = length(velocity * float2(dim));
 	// Sub-pixel reprojection jitter must never become visible camera blur.
 	if (pixelMotion < 0.65f)
@@ -904,7 +912,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 		float3 authoredScene = dofScene;
 		cameraScene = lerp(authoredScene, cameraScene, saturate(cameraInfluence));
 	}
-	cameraScene = PixlApplySubmergedGrade(cameraScene);
+	cameraScene = PixlApplySubmergedGrade(cameraScene, stormglass.uv);
 	cameraScene = PixlApplyStormglassResponse(cameraScene, stormglass);
 	cameraScene = PixlApplyElementalGrade(cameraScene, uv, dim);
 	float lookRange = emitHDR ? max(peakNits / max(paperWhite, 1.0f), 1.0f) : 1.0f;

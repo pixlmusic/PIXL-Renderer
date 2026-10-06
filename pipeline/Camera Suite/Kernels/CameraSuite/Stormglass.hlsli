@@ -341,7 +341,7 @@ float3 PixlApplyStormglassResponse(float3 scene, PixlStormglassWarpData lens)
 	return max(result, 0.0f);
 }
 
-float3 PixlApplySubmergedGrade(float3 scene)
+float3 PixlApplySubmergedGrade(float3 scene, float2 uv)
 {
 	float amount = saturate(submergedOpticsEnabled) * saturate(submergedBlend) * saturate(submergedStrength);
 	float3 result = scene;
@@ -350,12 +350,18 @@ float3 PixlApplySubmergedGrade(float3 scene)
 		float3 waterLinear = Color::SrgbToLinear(saturate(submergedWaterTint.rgb));
 		float waterLuminance = max(PixlStormglassLuminance(waterLinear), 0.015f);
 		float3 waterHue = clamp(waterLinear / waterLuminance, 0.68f.xxx, 1.35f.xxx);
-		float sceneLuminance = PixlStormglassLuminance(scene);
-		float fog = amount * saturate(submergedFogAmount);
-
-		result = scene * lerp(1.0f.xxx, waterHue, amount * 0.23f);
-		float3 colourPreservingVeil = lerp(result, sceneLuminance * waterHue, 0.32f);
-		result = lerp(result, colourPreservingVeil, fog * 0.24f);
+		// An underwater colour grade alone cannot hide distant geometry. Use the
+		// existing presentation depth for water-path extinction (Skyrim ~70 units/m).
+		float rawDepth = SharedData::GetDepth(saturate(uv));
+		float pathMetres = rawDepth >= 0.999998f ? 80.0f :
+			max(SharedData::GetScreenDepth(max(rawDepth, 0.0f)), 0.0f) / 70.0f;
+		pathMetres = PixlCameraFinite(pathMetres) ? min(pathMetres, 80.0f) : 0.0f;
+		float density = lerp(0.035f, 0.14f, saturate(submergedFogAmount));
+		float3 transmittance = exp(-pathMetres * density * float3(1.15f, 0.72f, 0.55f));
+		float sceneLuminance = max(PixlStormglassLuminance(scene), 0.0f);
+		float3 scattering = waterHue * min(sceneLuminance * 0.35f + 0.018f, 0.12f);
+		float3 attenuated = scene * transmittance + scattering * (1.0f.xxx - transmittance);
+		result = lerp(scene, attenuated, amount);
 	}
 	return max(result, 0.0f);
 }

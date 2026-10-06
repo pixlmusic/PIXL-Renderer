@@ -6,6 +6,8 @@ Require 'engine\Renderer\ReflectionContext.h' 'radianceConfidence[\s\S]*maxRough
 Require 'engine\Modules\HybridGI.cpp' 'ReflectionContext::Get\(\)\.Publish' 'HybridGI producer'
 Require 'engine\Deferred.cpp' 'ReflectionContext::Get\(\)\.Acquire' 'deferred consumer'
 $shader='pipeline\Hybrid GI\Kernels\HybridGI\hybridReflection.cs.hlsl'
-foreach($rx in @('TraceScreenReflection','binary refinement','hitFacing','TraceWorldFallback','srcHistory','outReflection.*confidence')){Require $shader $rx $rx}
+foreach($rx in @('TraceScreenReflection','srcReflectionHiZ.Load','ReflectionRayDepth','exitS','--mip','facing','TraceWorldFallback','srcHistory','outReflection.*confidence')){Require $shader $rx $rx}
+Require 'engine\Modules\HybridGI.cpp' 'reflectionDepthCompute, "prefilterDepths.cs.hlsl",.*MIN_FILTER' 'conservative depth producer'
+Require 'engine\Modules\HybridGI.cpp' 'srvs.at\(11\) = texReflectionDepth->srv.get\(\)' 'dedicated CS Hi-Z binding'
 Require 'engine\Modules\WaterOptics.cpp' 'EnableEnhancedSSR' 'specialized water path retained'
 Write-Host 'PASS: shared reflection publication wraps the existing Hi-Z hybrid pipeline and retains WaterOptics.'

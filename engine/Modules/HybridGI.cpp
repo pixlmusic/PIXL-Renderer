@@ -1078,6 +1078,7 @@ void HybridGI::WriteDiagnosticManifest(bool complete) const
 		root["buffers"].push_back(std::move(entry));
 	};
 	recordBuffer("workingDepth", texWorkingDepth.get());
+	recordBuffer("reflectionHiZ", texReflectionDepth.get());
 	recordBuffer("previousGeometry", texPrevGeo.get());
 	recordBuffer("radiance", texRadiance.get());
 	recordBuffer("radianceScratch", texRadianceTemp.get());
@@ -1102,6 +1103,7 @@ void HybridGI::WriteDiagnosticManifest(bool complete) const
 	recordBuffer("previousWorldNormal", texWorldCachePreviousNormal.get());
 	root["shaders"] = {
 		{ "prefilterDepths", prefilterDepthsCompute != nullptr },
+		{ "reflectionHiZ", reflectionDepthCompute != nullptr },
 		{ "prefilterRadiance", prefilterRadianceCompute != nullptr },
 		{ "prefilterNormal", prefilterNormalCompute != nullptr },
 		{ "radianceDisocclusion", radianceDisoccCompute != nullptr },
@@ -1287,6 +1289,10 @@ void HybridGI::PostPostLoad()
 
 void HybridGI::SetupResources()
 {
+	texReflectionDepth = nullptr;
+	for (auto& view : uavReflectionDepth)
+		view = nullptr;
+	reflectionDepthCreationAttempted = false;
 	auto renderer = globals::game::renderer;
 	auto device = globals::d3d::device;
 	auto context = globals::d3d::context;
@@ -1636,6 +1642,7 @@ void HybridGI::ClearShaderCache()
 	// Public/framework shader-cache invalidation keeps its original semantics:
 	// source hot-reloads and device rebuilds must never depend on settings deltas.
 	prefilterDepthsCompute = nullptr;
+	reflectionDepthCompute = nullptr;
 	prefilterRadianceCompute = nullptr;
 	prefilterNormalCompute = nullptr;
 	radianceDisoccCompute = nullptr;
@@ -1686,6 +1693,7 @@ void HybridGI::RecompileChangedShaders()
 			shader = nullptr;
 	};
 	clearIf(kShaderPrefilterDepth, prefilterDepthsCompute);
+	clearIf(kShaderPrefilterDepth, reflectionDepthCompute);
 	clearIf(kShaderPrefilterRadiance, prefilterRadianceCompute);
 	clearIf(kShaderPrefilterNormal, prefilterNormalCompute);
 	clearIf(kShaderRadianceDisocc, radianceDisoccCompute);
@@ -1714,6 +1722,7 @@ void HybridGI::CompileComputeShaders(std::uint32_t a_shaderMask)
 
 	std::vector<ShaderCompileInfo> shaderInfos = {
 		{ kShaderPrefilterDepth, &prefilterDepthsCompute, "prefilterDepths.cs.hlsl", { { "LINEAR_FILTER", "" } } },
+		{ kShaderPrefilterDepth, &reflectionDepthCompute, "prefilterDepths.cs.hlsl", { { "MIN_FILTER", "" } } },
 		{ kShaderPrefilterRadiance, &prefilterRadianceCompute, "prefilterRadiance.cs.hlsl", {} },
 		{ kShaderPrefilterNormal, &prefilterNormalCompute, "prefilterNormal.cs.hlsl", {} },
 		{ kShaderRadianceDisocc, &radianceDisoccCompute, "radianceDisocc.cs.hlsl", {} },
@@ -1793,7 +1802,42 @@ bool HybridGI::BlurShadersOK() const
 
 bool HybridGI::ReflectionShadersOK() const
 {
-	return hybridReflectionCompute.get() != nullptr;
+	return hybridReflectionCompute.get() != nullptr && reflectionDepthCompute.get() != nullptr;
+}
+
+bool HybridGI::EnsureReflectionDepth()
+{
+	if (texReflectionDepth)
+		return true;
+	if (reflectionDepthCreationAttempted || !texWorkingDepth)
+		return false;
+	reflectionDepthCreationAttempted = true;
+	try {
+		auto desc = texWorkingDepth->desc;
+		// R16 rounding can raise a minimum and make empty-space skipping unsafe.
+		desc.Format = DXGI_FORMAT_R32_FLOAT;
+		auto texture = eastl::make_unique<Texture2D>(desc, "HybridGI::ReflectionHiZ");
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+		srvDesc.Format = desc.Format;
+		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Texture2D.MipLevels = 5;
+		texture->CreateSRV(srvDesc);
+		winrt::com_ptr<ID3D11UnorderedAccessView> views[5];
+		for (uint i = 0; i < 5; ++i) {
+			D3D11_UNORDERED_ACCESS_VIEW_DESC viewDesc{};
+			viewDesc.Format = desc.Format;
+			viewDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+			viewDesc.Texture2D.MipSlice = i;
+			DX::ThrowIfFailed(globals::d3d::device->CreateUnorderedAccessView(texture->resource.get(), &viewDesc, views[i].put()));
+		}
+		for (uint i = 0; i < 5; ++i)
+			uavReflectionDepth[i] = std::move(views[i]);
+		texReflectionDepth = std::move(texture);
+		return true;
+	} catch (const std::exception& error) {
+		logger::warn("[HybridGI] Reflection Hi-Z unavailable: {}; diffuse GI retained", error.what());
+		return false;
+	}
 }
 
 bool HybridGI::UpsampleShaderOK() const
@@ -2145,7 +2189,7 @@ void HybridGI::DrawHybridGI()
 	const int resolutionMode = std::clamp(settings.ResolutionMode, 0, 2);
 	auto internalRes = resChoices[resolutionMode];
 	const bool worldCacheActive = settings.EnableWorldCache && WorldCacheShadersOK();
-	const bool reflectionActive = settings.EnableExperimentalSpecularGI && ReflectionShadersOK();
+	const bool reflectionActive = settings.EnableExperimentalSpecularGI && ReflectionShadersOK() && EnsureReflectionDepth();
 	const bool diffuseBlurActive = settings.EnableBlur && BlurShadersOK();
 	const bool reflectionSpatialActive = reflectionActive && settings.EnableBlur && hybridReflectionDenoiseCompute.get() != nullptr;
 
@@ -2182,6 +2226,21 @@ void HybridGI::DrawHybridGI()
 		context->CSSetShader(prefilterDepthsCompute.get(), nullptr, 0);
 		globals::profiler->BeginPass("HybridGI::PrefilterDepths");
 		context->Dispatch((resolution[0] + 15) >> 4, (resolution[1] + 15) >> 4, 1);
+		globals::profiler->EndPass();
+	}
+
+	// A true min pyramid is required for conservative hierarchical traversal.
+	// Only build it when reflections run; do not change diffuse GI depth semantics.
+	if (reflectionActive) {
+		resetViews();
+		srvs.at(0) = globals::pipeline::materialLayers.GetEffectsDepth(Util::GetCurrentSceneDepthSRV());
+		for (int i = 0; i < 5; ++i)
+			uavs.at(i) = uavReflectionDepth[i].get();
+		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
+		context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+		context->CSSetShader(reflectionDepthCompute.get(), nullptr, 0);
+		globals::profiler->BeginPass("HybridGI::ReflectionHiZ");
+		context->Dispatch((resolution[0] + 15u) >> 4, (resolution[1] + 15u) >> 4, 1);
 		globals::profiler->EndPass();
 	}
 
@@ -2400,6 +2459,7 @@ void HybridGI::DrawHybridGI()
 		srvs.at(8) = worldCacheActive ? texWorldCacheSH1->srv.get() : nullptr;
 		srvs.at(9) = worldCacheActive ? texWorldCacheSH2->srv.get() : nullptr;
 		srvs.at(10) = worldCacheActive ? texWorldCacheNormal->srv.get() : nullptr;
+		srvs.at(11) = texReflectionDepth->srv.get();
 		uavs.at(0) = texGiSpecular[!inputSpecTexIdx]->uav.get();
 		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 		context->CSSetUnorderedAccessViews(0, 1, uavs.data(), nullptr);

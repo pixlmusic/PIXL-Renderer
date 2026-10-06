@@ -72,6 +72,26 @@ groupshared float g_scratchDepths[8][8];
 	const uint2 pixCoord = baseCoord * 2;
 	const float2 uv = (pixCoord + .5) * RcpFrameDim;
 
+#ifdef MIN_FILTER
+	// Exact pixel ownership for Hi-Z. Padded group lanes must participate in
+	// every barrier, but contribute far depth instead of clamped edge texels.
+	float4 depths4 = 0.0f;
+	float depth0 = 1e20f, depth1 = 1e20f, depth2 = 1e20f, depth3 = 1e20f;
+	[unroll] for (uint lane = 0u; lane < 4u; ++lane) {
+		uint2 coord = pixCoord + uint2(lane & 1u, lane >> 1u);
+		float z = 1e20f;
+		if (all(coord < uint2(FrameDim))) {
+			float converted = ScreenToViewDepth(srcNDCDepth.Load(int3(coord, 0)));
+			if (isfinite(converted) && converted > 0.0f)
+				z = converted;
+		}
+		if (lane == 0u) depth0 = z;
+		if (lane == 1u) depth1 = z;
+		if (lane == 2u) depth2 = z;
+		if (lane == 3u) depth3 = z;
+		if (all(coord < uint2(TexDim))) outDepth0[coord] = z;
+	}
+#else
 	float4 depths4 = srcNDCDepth.GatherRed(samplerPointClamp, FullFrameTextureUV(uv));
 	float depth0 = ClampDepth(depths4.w);
 	float depth1 = ClampDepth(depths4.z);
@@ -81,10 +101,11 @@ groupshared float g_scratchDepths[8][8];
 	outDepth0[pixCoord + uint2(1, 0)] = depth1;
 	outDepth0[pixCoord + uint2(0, 1)] = depth2;
 	outDepth0[pixCoord + uint2(1, 1)] = depth3;
+#endif
 
 	// MIP 1
 	float dm1 = DepthMIPFilter(depth0, depth1, depth2, depth3);
-	outDepth1[baseCoord] = dm1;
+	if (all(baseCoord < (uint2(TexDim) >> 1))) outDepth1[baseCoord] = dm1;
 	g_scratchDepths[groupThreadID.x][groupThreadID.y] = dm1;
 
 	GroupMemoryBarrierWithGroupSync();
@@ -98,7 +119,7 @@ groupshared float g_scratchDepths[8][8];
 		float inBR = g_scratchDepths[groupThreadID.x + 1][groupThreadID.y + 1];
 
 		float dm2 = DepthMIPFilter(inTL, inTR, inBL, inBR);
-		outDepth2[baseCoord / 2] = dm2;
+		if (all(baseCoord / 2 < (uint2(TexDim) >> 2))) outDepth2[baseCoord / 2] = dm2;
 		g_scratchDepths[groupThreadID.x][groupThreadID.y] = dm2;
 	}
 
@@ -113,7 +134,7 @@ groupshared float g_scratchDepths[8][8];
 		float inBR = g_scratchDepths[groupThreadID.x + 2][groupThreadID.y + 2];
 
 		float dm3 = DepthMIPFilter(inTL, inTR, inBL, inBR);
-		outDepth3[baseCoord / 4] = dm3;
+		if (all(baseCoord / 4 < (uint2(TexDim) >> 3))) outDepth3[baseCoord / 4] = dm3;
 		g_scratchDepths[groupThreadID.x][groupThreadID.y] = dm3;
 	}
 
@@ -128,7 +149,7 @@ groupshared float g_scratchDepths[8][8];
 		float inBR = g_scratchDepths[groupThreadID.x + 4][groupThreadID.y + 4];
 
 		float dm4 = DepthMIPFilter(inTL, inTR, inBL, inBR);
-		outDepth4[baseCoord / 8] = dm4;
+		if (all(baseCoord / 8 < (uint2(TexDim) >> 4))) outDepth4[baseCoord / 8] = dm4;
 		//g_scratchDepths[ groupThreadID.x ][ groupThreadID.y ] = dm4;
 	}
 }
