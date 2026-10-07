@@ -14,7 +14,7 @@ New-Item -ItemType Directory -Path $output | Out-Null
 # recurrence, not GPU rendering or Skyrim's upstream image-space adaptation.
 function StepExposure([double]$previousEV, [double]$targetEV, [double]$dt, [double]$tau) {
     $errorEV = $targetEV - $previousEV
-    $errorEV = [Math]::Sign($errorEV) * [Math]::Max([Math]::Abs($errorEV) - 0.02, 0.0)
+    $errorEV = [Math]::Sign($errorEV) * [Math]::Max([Math]::Abs($errorEV) - 0.06, 0.0)
     $step = $errorEV * (1.0 - [Math]::Exp(-$dt / $tau))
     $step = [Math]::Max(-0.85 * $dt, [Math]::Min(3.0 * $dt, $step))
     return $previousEV + $step
@@ -39,13 +39,14 @@ foreach ($target in @(-3.0, 3.0)) {
     $spread = ($finalValues | Measure-Object -Maximum).Maximum - ($finalValues | Measure-Object -Minimum).Minimum
     if ($spread -gt 0.03) { throw "Frame-rate response spread is too high: $spread EV" }
 }
-if ((StepExposure 0 0.015 (1.0 / 60) 0.18) -ne 0) { throw 'Deadband failed.' }
+if ((StepExposure 0 0.055 (1.0 / 60) 0.18) -ne 0) { throw 'Deadband failed.' }
 if ((StepExposure 0 3 0 0.18) -ne 0) { throw 'Zero delta advanced exposure.' }
 if ((StepExposure 1 1 (1.0 / 60) 0.18) -ne 1) { throw 'Stable exposure moved.' }
 
 $jobs = @(
     @{ file='CameraSuite/PhysicalCameraExposureCS.hlsl'; profile='cs_5_0'; defines=@('COMPUTESHADER') },
-    @{ file='CameraSuite/PhysicalCameraHistogramCS.hlsl'; profile='cs_5_0'; defines=@('COMPUTESHADER') }
+    @{ file='CameraSuite/PhysicalCameraHistogramCS.hlsl'; profile='cs_5_0'; defines=@('COMPUTESHADER') },
+    @{ file='CameraSuite/PhysicalCameraLocalExposureCS.hlsl'; profile='cs_5_0'; defines=@('COMPUTESHADER') }
 )
 # Both native light-adaptation permutations, plus their scene presentation
 # consumers. These use the deployed include tree, not a stripped shader stub.

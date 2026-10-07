@@ -45,6 +45,8 @@ namespace PIXLRenderer::QualityProfiles
 			bool secondBounce;
 			std::uint32_t reflectionSteps;
 			std::uint32_t shadowSamples;
+			float shadowFalloffStart;
+			float shadowFalloffEnd;
 			std::uint32_t localShadowLights;
 			std::uint32_t historyFrames;
 			float blurRadius;
@@ -53,15 +55,14 @@ namespace PIXLRenderer::QualityProfiles
 			float cacheResponse;
 		};
 
-		// High is byte-for-value aligned with the former Cinematic contract. The
-		// new Cinematic tier is deliberately expensive and spends roughly three
-		// times the dominant screen-space ray budget where the implementation has
-		// safe headroom. Artistic strength/colour/radius controls remain user-owned.
+		// Keep full-resolution GI in every tier. Scale its dominant per-pixel
+		// horizon work, world-cache injection cadence, reflection steps and SSS
+		// refinement distance instead of changing the look/identity of the effects.
 		constexpr std::array<LightingContract, 4> kLightingContracts{
-			LightingContract{ 0, 2, 4, 2, 2, 8, false, 12, 1, 1, 16, 3.0f, 4.0f, 4.0f, 0.08f },
-			LightingContract{ 0, 4, 8, 4, 3, 4, true, 24, 1, 1, 24, 2.5f, 5.0f, 6.0f, 0.075f },
-			LightingContract{ 0, 6, 12, 8, 4, 2, true, 48, 4, 2, 24, 2.0f, 8.0f, 10.0f, 0.07f },
-			LightingContract{ 0, 10, 20, 8, 6, 1, true, 64, 12, 2, 36, 1.6f, 12.0f, 16.0f, 0.06f }
+			LightingContract{ 0, 2, 4, 2, 2, 8, false, 12, 1, 3072.0f, 6144.0f, 1, 16, 3.0f, 4.0f, 4.0f, 0.08f },
+			LightingContract{ 0, 3, 7, 3, 3, 5, true, 20, 1, 3584.0f, 7168.0f, 1, 24, 2.5f, 5.0f, 6.0f, 0.075f },
+			LightingContract{ 0, 5, 10, 6, 3, 3, true, 36, 3, 4608.0f, 8192.0f, 2, 24, 2.0f, 8.0f, 10.0f, 0.07f },
+			LightingContract{ 0, 8, 16, 8, 5, 1, true, 56, 6, 6144.0f, 10240.0f, 2, 36, 1.6f, 12.0f, 16.0f, 0.06f }
 		};
 
 		struct MaterialsContract
@@ -143,12 +144,17 @@ namespace PIXLRenderer::QualityProfiles
 			return std::abs(left - right) <= 1.0e-4f;
 		}
 
-		bool MatchesLightingContract(const HybridGI::Settings& settings, const LightingContract& contract)
+		bool MatchesLightingContract(const HybridGI::Settings& settings,
+			const ContactShadows::BendSettings& shadowSettings,
+			const LightingContract& contract)
 		{
 			return settings.EnableGI && settings.EnableBlur && settings.EnableTemporalDenoiser &&
 			       settings.EnableWorldCache && settings.EnableDirectionalOcclusion &&
 			       settings.EnableBentNormalLighting && settings.EnableSpecularOcclusion &&
 			       settings.EnableAdaptiveDenoiser &&
+			       shadowSettings.SampleCount == contract.shadowSamples &&
+			       NearlyEqual(shadowSettings.FalloffStart, contract.shadowFalloffStart) &&
+			       NearlyEqual(shadowSettings.FalloffEnd, contract.shadowFalloffEnd) &&
 			       settings.ResolutionMode == contract.resolutionMode &&
 			       settings.NumSlices == contract.slices &&
 			       settings.NumSteps == contract.steps &&
@@ -207,9 +213,11 @@ namespace PIXLRenderer::QualityProfiles
 			gi.settings.ReflectionFireflyClamp = contract.reflectionFireflyLimit;
 			gi.settings.WorldCacheTemporalResponse = contract.cacheResponse;
 
-			// Contact Shadows + local-light contact rays are part of Lighting, not
-			// Materials. High exactly preserves the live-tested sample counts.
+			// Directional SSS ray count and distance fade are part of Lighting, not
+			// Materials. The Skyrim shadow map remains the far-distance fallback.
 			shadows.bendSettings.SampleCount = contract.shadowSamples;
+			shadows.bendSettings.FalloffStart = contract.shadowFalloffStart;
+			shadows.bendSettings.FalloffEnd = contract.shadowFalloffEnd;
 			pbr.settings.LocalContactShadowLightCount = contract.localShadowLights;
 
 			// Skyrim exposes three native volumetric-lighting grids. Both renderer
@@ -530,8 +538,7 @@ namespace PIXLRenderer::QualityProfiles
 		for (int quality = Low; quality <= Ultra; ++quality) {
 			const auto& contract = kLightingContracts[quality];
 			const int nativeVolumeQuality = std::min(quality, High);
-			if (MatchesLightingContract(gi, contract) &&
-			    shadows.SampleCount == contract.shadowSamples &&
+			if (MatchesLightingContract(gi, shadows, contract) &&
 			    pbr.LocalContactShadowLightCount == contract.localShadowLights &&
 			    volumes.ExteriorQuality == nativeVolumeQuality &&
 			    volumes.InteriorQuality == nativeVolumeQuality)

@@ -9,6 +9,7 @@
 #include "RenderModule.h"
 
 #include <array>
+#include <atomic>
 #include <mutex>
 #include <vector>
 
@@ -298,7 +299,7 @@ private:
 		std::uint32_t nextDebrisSlot{};
 	std::uint32_t nextImpulseSlot{};
 	std::uint32_t particleMaskFrame{ ~0u };
-	std::uint32_t droppedEvents{};
+	std::atomic<std::uint32_t> droppedEvents{};
 	std::uint32_t droppedParticles{};
 	std::uint32_t lastEventSeed{ 1u };
 	std::uint32_t activeImpulseCount{};

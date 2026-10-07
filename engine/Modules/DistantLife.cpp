@@ -588,7 +588,7 @@ void DistantLife::DrawSettings()
 	ImGui::SliderFloat("Settlement haze height", &settings.FarFieldSmokeHeight, 64.0f, 640.0f, "%.0f units");
 	ImGui::EndDisabled();
 	if (auto tip = Util::HoverTooltipWrapper())
-		ImGui::TextWrapped("Adds a sparse, world-stable atmospheric suggestion around distant settlement-like terrain cells. It is an optical LOD aid, not a simulated fire or gameplay light.");
+		ImGui::TextWrapped("Adds sparse settlement plumes and low-opacity, slowly drifting haze sheets anchored to world coordinates. This is an optical LOD layer, not a simulated fire or gameplay light.");
 	if (ImGui::TreeNode("Debug / DistantLife")) {
 		int debug = static_cast<int>(settings.DebugMode);
 		if (ImGui::Combo("Visualisation", &debug, "Off\0Source markers\0Optical footprint\0"))

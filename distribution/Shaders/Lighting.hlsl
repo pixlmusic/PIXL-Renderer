@@ -1036,6 +1036,7 @@ float GetSnowParameterY(float texProjTmp, float alpha)
 // compile-time excluded so GroundResponse's b13 ABI remains untouched.
 #	include "DialogueFocus/DialogueFocus.hlsli"
 #	include "ActorSurfaceEffects/ActorSurfaceEffects.hlsli"
+#	include "ClothDynamics/ClothDynamics.hlsli"
 
 #	if defined(WATER_OPTICS)
 #		include "WaterOptics/WaterCaustics.hlsli"
@@ -3354,7 +3355,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #	endif
 
-	worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
+worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 #	if defined(HAIR_RECONSTRUCTION) && defined(HAIR)
 	HairReconstruction::ApplyCardAppearance(baseColor, input.WorldPosition.xyz, worldNormal, uv);
 #	endif
@@ -4028,6 +4029,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		0.0f);
 #	endif
 
+#	if defined(SKINNED)
+	// Health-driven wear overlays albedo/roughness while leaving the authored
+	// normal-map and world-normal paths untouched.
+	ClothingDamage::Apply(material.BaseColor, material.Roughness, material.Metallic, uvOriginal);
+#	endif
+
 	// Geometric specular anti-aliasing: normal-map/parallax detail can remain high
 	// frequency after the color and roughness textures have selected coarser mips.
 	// Filtering alpha-squared by shading-normal variance suppresses distant shimmer
@@ -4108,6 +4115,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #	if defined(RAIN_RESPONSE) || defined(WATER_OPTICS)
 	float4 waterData = SharedData::GetWaterData(input.WorldPosition.xyz);
+#	if defined(WATER_OPTICS)
+	WaterOptics::SetReceiverFootprint(input.WorldPosition.xyz);
+#	endif
 #	endif
 #	if defined(RAIN_RESPONSE)
 	float waterHeight = waterData.w;

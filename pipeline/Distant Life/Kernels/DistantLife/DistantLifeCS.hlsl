@@ -93,6 +93,10 @@ void BuildMaskCS(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
 
 	if (DebugMode == 0u) {
 		float sceneRaw = SceneDepth.Load(int3(pixel, 0));
+		// A clear-depth pixel is sky, not a visible receiver. Without this test,
+		// a projected source near the skyline can appear to float above terrain.
+		if (!isfinite(sceneRaw) || sceneRaw >= 0.999999f)
+			return;
 		float sceneLinear = SharedData::GetScreenDepth(sceneRaw);
 		// Allow only a small fixture-depth allowance. The previous 96-unit
 		// minimum could make distant emitters leak through buildings and terrain.
@@ -230,7 +234,19 @@ float4 EvaluateFarFieldActivity(uint2 pixel, float sceneDepth)
 		? settlement * smokeFootprint * smokeColumn * saturate(smokeHeight) * rolling * FarFieldSmokeDensity * distanceDim
 		  * (1.0f - smoothstep(farStart, MaximumDistance, viewDistance))
 		: 0.0f;
-	return float4(lightActivity, smokeActivity, 0.0f, 0.0f);
+
+	// Soft regional haze sheets are alpha-composited over distant land. Their
+	// pattern uses absolute world coordinates and drifts slowly with time, so
+	// camera rotation cannot drag the layer across the screen.
+	float2 sheetCoord = (centre.xy + FrameBuffer::CameraPosAdjust.xy) / 12000.0f;
+	float sheetA = sin(dot(sheetCoord, float2(0.73f, 0.41f)) + SharedData::Timer * 0.012f);
+	float sheetB = sin(dot(sheetCoord, float2(-0.32f, 0.91f)) - SharedData::Timer * 0.008f + 1.7f);
+	float sheetShape = saturate(0.5f + 0.28f * sheetA + 0.22f * sheetB);
+	float sheetFade = 1.0f - smoothstep(MaximumDistance * 0.88f, MaximumDistance, viewDistance);
+	float hazeSheet = FarFieldSmoke != 0u
+		? smoothstep(0.48f, 0.82f, sheetShape) * FarFieldSmokeDensity * 0.18f * sheetFade
+		: 0.0f;
+	return float4(lightActivity, smokeActivity, hazeSheet, 0.0f);
 }
 
 [numthreads(8, 8, 1)]
@@ -240,7 +256,7 @@ void CompositeCS(uint3 dispatchID : SV_DispatchThreadID)
 		return;
 	uint packed = CompositeMask[dispatchID.xy];
 	float4 syntheticActivity = EvaluateFarFieldActivity(dispatchID.xy, CompositeDepth.Load(int3(dispatchID.xy, 0)));
-	if (packed == 0u && max(syntheticActivity.x, syntheticActivity.y) <= 1.0e-4f)
+	if (packed == 0u && max(syntheticActivity.x, max(syntheticActivity.y, syntheticActivity.z)) <= 1.0e-4f)
 		return;
 	float intensity = float((packed >> 21u) & 2047u) / 2047.0f;
 	float3 color = float3(
@@ -253,5 +269,6 @@ void CompositeCS(uint3 dispatchID : SV_DispatchThreadID)
 	// it is an optical suggestion, never a gameplay light.
 	scene.rgb += float3(1.0f, 0.42f, 0.12f) * syntheticActivity.x * GlobalIntensity * 0.20f;
 	scene.rgb += float3(0.38f, 0.42f, 0.44f) * syntheticActivity.y * GlobalIntensity * 0.045f;
+	scene.rgb = lerp(scene.rgb, float3(0.58f, 0.63f, 0.66f), saturate(syntheticActivity.z * GlobalIntensity));
 	SceneColor[dispatchID.xy] = scene;
 }

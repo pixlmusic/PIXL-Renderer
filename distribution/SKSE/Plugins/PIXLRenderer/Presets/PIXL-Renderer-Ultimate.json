@@ -246,7 +246,9 @@
     "Contact Shadows":  {
                             "BilinearThreshold":  0.019999999552965164,
                             "Enable":  1,
-                            "SampleCount":  12,
+                            "SampleCount":  6,
+                            "FalloffStart":  6144.0,
+                            "FalloffEnd":  10240.0,
                             "ShadowContrast":  1.0,
                             "Strength":  1.0,
                             "SurfaceThickness":  0.004999999888241291
@@ -600,8 +602,8 @@
                       "MaxAccumFrames":  36,
                       "MinScreenRadius":  0.009999999776482582,
                       "NormalDisocclusion":  0.09999998658895493,
-                      "NumSlices":  10,
-                      "NumSteps":  20,
+                      "NumSlices":  8,
+                      "NumSteps":  16,
                       "RadianceFireflyClamp":  12,
                       "ReflectionFireflyClamp":  16,
                       "ReflectionIntensity":  1.0,
@@ -609,7 +611,7 @@
                       "ReflectionMaxRoughness":  0.75,
                       "ReflectionRayBias":  8.0,
                       "ReflectionRoughnessJitter":  1.0,
-                      "ReflectionSteps":  64,
+                      "ReflectionSteps":  56,
                       "ReflectionTemporalResponse":  0.14000000059604645,
                       "ReflectionThickness":  28.0,
                       "ReflectionWorldFallbackStrength":  0.7799999713897705,
@@ -629,7 +631,7 @@
                       "WorldCacheSecondBounceStrength":  0.2,
                       "WorldCacheStrength":  0.6,
                       "WorldCacheTemporalResponse":  0.06,
-                      "WorldCacheTraceSteps":  6
+                      "WorldCacheTraceSteps":  5
                   },
     "Interior Daylight":  {
                               "AutoEnableCompatibleSkyInteriors":  true,

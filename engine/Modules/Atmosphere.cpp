@@ -1,6 +1,7 @@
 #include "Atmosphere.h"
 #include "AtmosphereWeather.h"
 #include "RainResponse.h"
+#include "Microclimates.h"
 
 #include "Deferred.h"
 #include "Modules/SkyVeil.h"
@@ -885,11 +886,13 @@ void Atmosphere::Prepass()
 
 	{
 		ID3D11UnorderedAccessView* uavs[1]{ vBufferA->uav.get() };
+		globals::pipeline::microclimates.BindAtmosphereField();
 		context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
 		context->CSSetShader(materialSetupShader, nullptr, 0);
 		context->Dispatch(groupX, groupY, groupZ);
 		uavs[0] = nullptr;
 		context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
+		globals::pipeline::microclimates.UnbindAtmosphereField();
 	}
 
 	{

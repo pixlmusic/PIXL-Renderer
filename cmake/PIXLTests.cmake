@@ -12,12 +12,16 @@ function(pixl_add_portable_test TARGET SOURCE)
 endfunction()
 
 if(BUILD_TESTING)
+	pixl_add_portable_test(PIXLTestReactiveFXSpawnSafety
+		"${CMAKE_SOURCE_DIR}/tools/TestReactiveFXSpawnSafety.cpp")
     pixl_add_portable_test(PIXLTestRenderOrigin
         "${CMAKE_SOURCE_DIR}/tools/TestRenderOrigin.cpp")
     pixl_add_portable_test(PIXLTestContainedLiquidMath
         "${CMAKE_SOURCE_DIR}/tools/TestContainedLiquidMath.cpp")
     pixl_add_portable_test(PIXLTestHybridGIMath
         "${CMAKE_SOURCE_DIR}/tools/TestHybridGIMath.cpp")
+    pixl_add_portable_test(PIXLTestHybridReflectionHiZ
+        "${CMAKE_SOURCE_DIR}/tools/TestHybridReflectionHiZ.cpp")
     pixl_add_portable_test(PIXLTestAtmosphereWeather
         "${CMAKE_SOURCE_DIR}/tools/TestAtmosphereWeather.cpp")
     pixl_add_portable_test(PIXLTestModulePolicies
@@ -30,7 +34,7 @@ if(BUILD_TESTING)
 
     find_program(PIXL_TEST_POWERSHELL NAMES pwsh powershell)
     if(WIN32 AND PIXL_TEST_POWERSHELL)
-        foreach(_contract IN ITEMS RenderPassScheduler GPUResourceServices HookRegistry RendererMetadata LightTransportWorld ModuleRulesCache TemporalContext PixelAnnotations ReconstructionContext GPUWorkloadBudgeter ReflectionContext VolumetricContext)
+        foreach(_contract IN ITEMS RenderPassScheduler GPUResourceServices HookRegistry RendererMetadata LightTransportWorld ModuleRulesCache TemporalContext PixelAnnotations ReconstructionContext ReconstructionSafety GPUWorkloadBudgeter ReflectionContext VolumetricContext)
             add_test(
                 NAME PIXLContract${_contract}
                 COMMAND ${PIXL_TEST_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
@@ -64,9 +68,11 @@ if(BUILD_TESTING)
         COMMAND ${CMAKE_CTEST_COMMAND} --test-dir "${CMAKE_BINARY_DIR}"
             -C $<CONFIG> --output-on-failure -L portable
         DEPENDS
+            PIXLTestReactiveFXSpawnSafety
             PIXLTestRenderOrigin
             PIXLTestContainedLiquidMath
             PIXLTestHybridGIMath
+            PIXLTestHybridReflectionHiZ
             PIXLTestAtmosphereWeather
             PIXLTestModulePolicies
             PIXLTestRendererMetadata

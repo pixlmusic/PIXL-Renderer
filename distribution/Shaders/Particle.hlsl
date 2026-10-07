@@ -430,6 +430,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float rainVisibility = input.RainResponseData.x * RainResponse::GetRainDistanceVisibility(rainViewDistance);
 	float rainSecondaryWeight = RainResponse::GetRainSecondaryLayerWeight(input.RainResponseData.y, input.RainResponseData.w);
 	float rainImpact = RainResponse::EvaluateRainImpactProximity(rainScreenUV, input.Position.z, input.RainResponseData.w);
+	float baseRain = saturate(SharedData::rainResponseSettings.Raining);
+	float3 absoluteRainPosition = rainPositionWS + SharedData::CameraPosAdjust.xyz;
+	float localRain = Microclimates::BlendRegionalPrecipitation(absoluteRainPosition, baseRain);
+	float regionalRainScale = baseRain > 1e-3f ? saturate(localRain / baseRain) : 0.0f;
+	rainVisibility *= regionalRainScale;
+	rainSecondaryWeight *= regionalRainScale;
+	rainImpact *= regionalRainScale;
 #	endif
 
 	float4 sourceColor = TexSourceTexture.Sample(SampSourceTexture, input.TexCoord0);

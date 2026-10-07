@@ -557,7 +557,7 @@ bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport, bool resetHi
 	slConstants.motionVectors3D = sl::Boolean::eFalse;
 	slConstants.motionVectorsInvalidValue = FLT_MIN;
 	slConstants.orthographicProjection = sl::Boolean::eFalse;
-	// EncodeTexturesCS writes the closest/longest 5x5 motion representative used
+	// EncodeTexturesCS writes a depth-separated closest-surface representative used
 	// by both DLSS and the optional neural post-pass.  Tell Streamline the truth so
 	// DLSS does not apply assumptions intended for an undilated velocity field.
 	slConstants.motionVectorsDilated = sl::Boolean::eTrue;
@@ -714,7 +714,7 @@ void Streamline::SetDLSSOptions(sl::ViewportHandle p_viewport, uint32_t width)
 	}
 }
 
-void Streamline::EvaluateDLSS(sl::ViewportHandle vp,
+bool Streamline::EvaluateDLSS(sl::ViewportHandle vp,
 	ID3D11Resource* colorIn, ID3D11Resource* colorOut, ID3D11Resource* depth,
 	ID3D11Resource* mvec, ID3D11Resource* reactiveMask, ID3D11Resource* transparencyMask,
 	const sl::Extent& extentIn, const sl::Extent& extentOut, uint32_t outputWidth,
@@ -722,7 +722,7 @@ void Streamline::EvaluateDLSS(sl::ViewportHandle vp,
 {
 	if (!initialized || !featureDLSS || !slSetTagForFrame || !slEvaluateFeature || !slDLSSSetOptions) {
 		logger::error("[Streamline] DLSS evaluation skipped because its runtime interface is incomplete");
-		return;
+		return false;
 	}
 
 	auto context = globals::d3d::context;
@@ -735,7 +735,7 @@ void Streamline::EvaluateDLSS(sl::ViewportHandle vp,
 	sl::Resource transparencyMaskRes = { sl::ResourceType::eTex2d, transparencyMask, 0 };
 
 	if (!CheckFrameConstants(vp, resetHistory))
-		return;
+		return false;
 
 	const bool emitPCLMarkers =
 		globals::pipeline::imageReconstruction.settings.reflexUseMarkersToOptimize &&
@@ -776,6 +776,7 @@ void Streamline::EvaluateDLSS(sl::ViewportHandle vp,
 			tagErrorLogged = true;
 			logger::error("[Streamline] slSetTagForFrame failed result={}", magic_enum::enum_name(tagResult));
 		}
+		return false; // Never evaluate against the previous frame's resource tags.
 	}
 
 	sl::ViewportHandle view(vp);
@@ -799,9 +800,10 @@ void Streamline::EvaluateDLSS(sl::ViewportHandle vp,
 			logger::error("[Streamline] slEvaluateFeature failed result={}", (int)evalResult);
 		}
 	}
+	return evalResult == sl::Result::eOk;
 }
 
-void Streamline::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_reactiveMask, ID3D11Resource* a_transparencyCompositionMask, ID3D11Resource* a_motionVectors, bool resetHistory)
+bool Streamline::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_reactiveMask, ID3D11Resource* a_transparencyCompositionMask, ID3D11Resource* a_motionVectors, bool resetHistory)
 {
 	auto renderer = globals::game::renderer;
 	auto& depthTexture = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
@@ -818,7 +820,7 @@ void Streamline::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_r
 	sl::Extent extentIn{ 0, 0, (uint)renderSize.x, (uint)renderSize.y };
 	sl::Extent extentOut{ 0, 0, (uint)screenSize.x, (uint)screenSize.y };
 
-	EvaluateDLSS(viewport,
+	return EvaluateDLSS(viewport,
 		a_upscalingTexture, colorOut,
 		depthTexture.texture, a_motionVectors, a_reactiveMask, a_transparencyCompositionMask,
 		extentIn, extentOut, (uint)screenSize.x, resetHistory);

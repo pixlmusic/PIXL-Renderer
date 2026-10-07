@@ -247,6 +247,8 @@
                             "BilinearThreshold":  0.019999999552965164,
                             "Enable":  1,
                             "SampleCount":  1,
+                            "FalloffStart":  3072.0,
+                            "FalloffEnd":  6144.0,
                             "ShadowContrast":  1.0,
                             "Strength":  1.0,
                             "SurfaceThickness":  0.004999999888241291

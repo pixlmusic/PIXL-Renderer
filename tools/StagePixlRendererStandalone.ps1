@@ -12,6 +12,7 @@ param(
     [string]$Channel = "LIVE-TEST",
     [ValidateSet("", "r2")]
     [string]$PackageRevision = "",
+    [string]$ProductVersion = "",
     [ValidateRange(0, 9)]
     [int]$CompressionLevel = 7,
     [switch]$SkipPipelineLibrary,
@@ -23,6 +24,10 @@ if (-not [string]::IsNullOrWhiteSpace($NeuralRuntimePath)) {
     throw 'NR runtimes are manual-install only and cannot be bundled. Omit -NeuralRuntimePath.'
 }
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$revisionVersion = "1.0.6$PackageRevision"
+if ([string]::IsNullOrWhiteSpace($ProductVersion)) { $ProductVersion = $revisionVersion }
+elseif ($PackageRevision -and $ProductVersion -ne $revisionVersion) { throw 'ProductVersion conflicts with PackageRevision.' }
+if ($ProductVersion -notmatch '^\d+\.\d+\.\d+(?:r\d+)?$') { throw "Invalid package product version: $ProductVersion" }
 $shaderCacheSource = Get-Content -LiteralPath (Join-Path $sourceRoot 'engine\ShaderCache.cpp') -Raw
 function Get-ShaderCacheConstant([string]$name) {
     $match = [regex]::Match($shaderCacheSource, 'static constexpr const char\*\s+' + [regex]::Escape($name) + '\s*=\s*"([^"]+)"')
@@ -52,8 +57,8 @@ $sourceWorkingTreeDirty = [bool]@($sourceChanges | Where-Object {
     -not ($reproducibleDependencyPatch -and $_ -eq ' m extern/FidelityFX-SDK')
 })
 $allowedRoot = [IO.Path]::GetFullPath($(if ($AllowedOutputRoot) { $AllowedOutputRoot } else { Join-Path $sourceRoot "dist" }))
-if (-not $OutputDirectory) { $OutputDirectory = Join-Path $allowedRoot "PIXL-Renderer-1.0.6-Core" }
-if (-not $ArchivePath) { $ArchivePath = Join-Path $allowedRoot "PIXL-Renderer-1.0.6-Core.zip" }
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $allowedRoot "PIXL-Renderer-$ProductVersion-Core" }
+if (-not $ArchivePath) { $ArchivePath = Join-Path $allowedRoot "PIXL-Renderer-$ProductVersion-Core.zip" }
 if (-not $BuildDirectory) { $BuildDirectory = Join-Path $sourceRoot "build\PIXL-12C\Release" }
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 $archive = if ($ArchivePath) { [IO.Path]::GetFullPath($ArchivePath) } else { "" }
@@ -279,10 +284,14 @@ if ($includePipelineLibrary) {
         $id = [regex]::Match($moduleText, '(?m)^\s*Id\s*=\s*([^\r\n]+)').Groups[1].Value.Trim()
         $version = [regex]::Match($moduleText, '(?m)^\s*Version\s*=\s*([^\r\n]+)').Groups[1].Value.Trim()
         if (!$cacheSections.ContainsKey($id)) { throw "Missing module cache identity: $id" }
-        # Runtime ValidateCache ignores the version of an unloaded module; its
-        # cached Enabled=false entry must not block packaging a valid library.
-        if ($cacheSections[$id]['Enabled'] -ieq 'true' -and $cacheSections[$id]['Version'] -ne $version) {
-            throw "Stale module cache identity: $id (expected $version)"
+        $cachedEnabled = $cacheSections[$id]['Enabled'] -match '^(?i:true|1|yes|on)$'
+        # RenderModule::ValidateCache intentionally ignores a module version while
+        # that module is disabled: no permutations containing its define can be
+        # active, and an unloaded module may not have populated its runtime version
+        # string when Library.ini is finalized. Mirror that runtime contract here.
+        # Once enabled, exact version identity remains mandatory.
+        if ($cachedEnabled -and $cacheSections[$id]['Version'] -ne $version) {
+            throw "Stale/missing enabled module cache identity: $id (expected $version)"
         }
     }
     foreach ($stage in Get-ChildItem -LiteralPath $pipelineRoot -File -Recurse -Filter '*.pixlbin') {
@@ -365,8 +374,8 @@ $manifestFiles = Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object
 }
 [ordered]@{
     product = "PIXL Renderer"
-    title = "PIXL Renderer v1.0.6$PackageRevision"
-    version = "1.0.6$PackageRevision"
+    title = "PIXL Renderer v$ProductVersion"
+    version = $ProductVersion
     requirements = @([ordered]@{
         id = "EngineFixes"
         path = "SKSE/Plugins/EngineFixes.dll"

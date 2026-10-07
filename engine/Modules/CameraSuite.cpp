@@ -825,7 +825,7 @@ void CameraSuite::DrawSettings()
 			DrawSettingsTooltip("Enables the experimental body-worn digital-camera profile. This is a stylized preset and is not the recommended neutral rendering mode.");
 
 			changed |= ImGui::Checkbox("Automatic Exposure", &settings.cameraAutoExposure);
-			DrawSettingsTooltip("Meters scene luminance from the camera histogram and adapts exposure over time. Disable for a fixed exposure offset.");
+			DrawSettingsTooltip("Uses broad, equally weighted frame metering with bright/dark outlier rejection, so a small centred candle does not dominate the room. Disable for a fixed exposure offset.");
 			changed |= ImGui::SliderFloat("Exposure Compensation", &settings.cameraExposureCompensationEV, -4.0f, 4.0f, "%+.2f EV", ImGuiSliderFlags_AlwaysClamp);
 			DrawSettingsTooltip("Offsets the physical-camera exposure in stops. Positive values brighten the scene; negative values preserve more highlight headroom.");
 			changed |= ImGui::SliderFloat("Highlight Protection", &settings.cameraHighlightProtection, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -1472,6 +1472,10 @@ void CameraSuite::SetupResources()
 	}
 
 	SetupCameraFinishingResources(hdrTexture->desc);
+	// Avoid synchronous shader creation at the first rain/water surface break.
+	// Resources are persistent; this runs during renderer setup, not each exit.
+	if (settings.enableStormglass)
+		GetStormglassFieldCS();
 	if (dofHistoryId == 0) {
 		dofHistoryId = PIXL::Renderer::TemporalContext::Get().RegisterHistory({
 			.name = "Auto-DOF focus and CoC",
@@ -1521,7 +1525,8 @@ void CameraSuite::SetupCameraFinishingResources(const D3D11_TEXTURE2D_DESC& scen
 		delete texture;
 		texture = nullptr;
 	};
-	for (auto** texture : { &cameraLocalExposureTexture, &stormglassFieldTexture, &bloomHalfTexture, &bloomQuarterTexture,
+	for (auto** texture : { &cameraLocalExposureTexture, &cameraLocalExposureHistoryTexture,
+		     &stormglassFieldTexture, &bloomHalfTexture, &bloomQuarterTexture,
 		     &bloomEighthTexture, &bloomSixteenthTexture, &bloomEighthScratchTexture,
 			     &bloomQuarterScratchTexture, &bloomHalfScratchTexture, &dofCoCTexture, &dofCoCHistoryTexture,
 			     &dofFarTexture, &dofNearTexture, &dofFocusTexture, &dofFocusHistoryTexture,
@@ -1596,6 +1601,16 @@ void CameraSuite::SetupCameraFinishingResources(const D3D11_TEXTURE2D_DESC& scen
 	}
 
 	cameraLocalExposureTexture = createTexture(quarterWidth, quarterHeight, DXGI_FORMAT_R16_FLOAT, "PIXL Camera::LocalExposure");
+	cameraLocalExposureHistoryTexture = createTexture(
+		quarterWidth, quarterHeight, DXGI_FORMAT_R16_FLOAT, "PIXL Camera::LocalExposureHistory");
+	if (cameraLocalExposureTexture && cameraLocalExposureTexture->uav &&
+		cameraLocalExposureHistoryTexture && cameraLocalExposureHistoryTexture->uav) {
+		const FLOAT neutralLocalExposure[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
+		globals::d3d::context->ClearUnorderedAccessViewFloat(
+			cameraLocalExposureTexture->uav.get(), neutralLocalExposure);
+		globals::d3d::context->ClearUnorderedAccessViewFloat(
+			cameraLocalExposureHistoryTexture->uav.get(), neutralLocalExposure);
+	}
 	stormglassFieldTexture = createTexture(quarterWidth, quarterHeight, DXGI_FORMAT_R16G16B16A16_FLOAT, "PIXL Camera::StormglassField");
 	dofCoCTexture = createTexture(sceneDesc.Width, sceneDesc.Height, DXGI_FORMAT_R16_FLOAT, "PIXL Camera::DOF CoC");
 	dofCoCHistoryTexture = createTexture(sceneDesc.Width, sceneDesc.Height, DXGI_FORMAT_R16_FLOAT, "PIXL Camera::DOF CoC History");
@@ -2231,7 +2246,8 @@ void CameraSuite::DispatchHDROutput(ID3D11ShaderResourceView* sceneSRV, ID3D11Sh
 {
 	auto context = globals::d3d::context;
 	auto computeShader = GetHDROutputCS();
-	if (!computeShader || !uav)
+	if (!computeShader || !uav || !context || !globals::state ||
+		!globals::state->sharedDataCB || !*globals::game::perFrame.get())
 		return;
 
 	ID3D11ShaderResourceView* views[12] = {
@@ -2263,6 +2279,16 @@ void CameraSuite::DispatchHDROutput(ID3D11ShaderResourceView* sceneSRV, ID3D11Sh
 
 	ID3D11Buffer* cbs[2] = { hdrDataCB->CB(), dofControlCB ? dofControlCB->CB() : nullptr };
 	context->CSSetConstantBuffers(0, ARRAYSIZE(cbs), cbs);
+	// Present/ImGui/upscalers may have cleared CS state. Depth linearization and
+	// camera motion require these buffers even with DOF disabled. Do not inherit
+	// b5/b12 from an unrelated previous compute pass; restore only these changes.
+	winrt::com_ptr<ID3D11Buffer> previousShared, previousFrame;
+	context->CSGetConstantBuffers(5, 1, previousShared.put());
+	context->CSGetConstantBuffers(12, 1, previousFrame.put());
+	ID3D11Buffer* shared = globals::state->sharedDataCB->CB();
+	ID3D11Buffer* frame = *globals::game::perFrame.get();
+	context->CSSetConstantBuffers(5, 1, &shared);
+	context->CSSetConstantBuffers(12, 1, &frame);
 
 	context->CSSetShader(computeShader, nullptr, 0);
 
@@ -2285,6 +2311,10 @@ void CameraSuite::DispatchHDROutput(ID3D11ShaderResourceView* sceneSRV, ID3D11Sh
 	cbs[0] = nullptr;
 	cbs[1] = nullptr;
 	context->CSSetConstantBuffers(0, ARRAYSIZE(cbs), cbs);
+	shared = previousShared.get();
+	frame = previousFrame.get();
+	context->CSSetConstantBuffers(5, 1, &shared);
+	context->CSSetConstantBuffers(12, 1, &frame);
 
 	context->CSSetShader(nullptr, nullptr, 0);
 }
@@ -2428,6 +2458,7 @@ void CameraSuite::DestroyResources()
 		texture = nullptr;
 	};
 	destroyTexture(cameraLocalExposureTexture);
+	destroyTexture(cameraLocalExposureHistoryTexture);
 	destroyTexture(bloomHalfTexture);
 	destroyTexture(bloomQuarterTexture);
 	destroyTexture(bloomEighthTexture);
@@ -3006,6 +3037,8 @@ void CameraSuite::RunCameraFinishingPasses(ID3D11ShaderResourceView* sceneSRV)
 	localExposurePassReady = false;
 	bloomPassReady = false;
 	stormglassPassReady = false;
+	if (!globals::state || !globals::state->sharedDataCB || !globals::d3d::context || !*globals::game::perFrame.get())
+		return;
 
 	const bool wantsPhysicalCamera = settings.enablePhysicalCamera;
 	const bool wantsDof = settings.enableEnhancedDepthOfField && !UsesCinematicDoF() &&
@@ -3034,6 +3067,13 @@ void CameraSuite::RunCameraFinishingPasses(ID3D11ShaderResourceView* sceneSRV)
 	ID3D11SamplerState* sampler = lookSampler.get();
 
 	RunDepthOfFieldPasses(sceneSRV);
+	winrt::com_ptr<ID3D11Buffer> finishingShared, finishingFrame;
+	context->CSGetConstantBuffers(5, 1, finishingShared.put());
+	context->CSGetConstantBuffers(12, 1, finishingFrame.put());
+	ID3D11Buffer* shared = globals::state->sharedDataCB->CB();
+	ID3D11Buffer* frame = *globals::game::perFrame.get();
+	context->CSSetConstantBuffers(5, 1, &shared);
+	context->CSSetConstantBuffers(12, 1, &frame);
 
 	auto dispatchPass = [&](const char* profilerName,
 		ID3D11ComputeShader* shader,
@@ -3053,7 +3093,7 @@ void CameraSuite::RunCameraFinishingPasses(ID3D11ShaderResourceView* sceneSRV)
 		context->Dispatch((output->desc.Width + 7u) / 8u, (output->desc.Height + 7u) / 8u, 1u);
 		globals::profiler->EndPass();
 
-		ID3D11ShaderResourceView* nullSrvs[2] = { nullptr, nullptr };
+		ID3D11ShaderResourceView* nullSrvs[3] = { nullptr, nullptr, nullptr };
 		context->CSSetShaderResources(0, srvCount, nullSrvs);
 		uav = nullptr;
 		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
@@ -3064,10 +3104,18 @@ void CameraSuite::RunCameraFinishingPasses(ID3D11ShaderResourceView* sceneSRV)
 	// Local exposure responds to each new camera framing. Keep it out of
 	// Photo/Video captures so the held global exposure is actually stable.
 	if (wantsPhysicalCamera && !TuningWorkspaceRenderer::IsDirectorPhotoModeActive() &&
-		settings.cameraLocalExposure > 1e-4f && cameraLocalExposureTexture) {
-		ID3D11ShaderResourceView* localSrvs[2] = { sceneSRV, cameraExposureTexture->srv.get() };
+		settings.cameraLocalExposure > 1e-4f && cameraLocalExposureTexture &&
+		cameraLocalExposureHistoryTexture) {
+		ID3D11ShaderResourceView* localSrvs[3] = {
+			sceneSRV,
+			cameraExposureTexture->srv.get(),
+			cameraLocalExposureTexture->srv.get()
+		};
 		localExposurePassReady = dispatchPass(
-			"CameraSuite::LocalExposure", GetPhysicalCameraLocalExposureCS(), localSrvs, 2u, cameraLocalExposureTexture);
+			"CameraSuite::LocalExposure", GetPhysicalCameraLocalExposureCS(), localSrvs, 3u,
+			cameraLocalExposureHistoryTexture);
+		if (localExposurePassReady)
+			std::swap(cameraLocalExposureTexture, cameraLocalExposureHistoryTexture);
 	}
 
 	if (wantsStormglass) {
@@ -3124,6 +3172,10 @@ void CameraSuite::RunCameraFinishingPasses(ID3D11ShaderResourceView* sceneSRV)
 	ID3D11Buffer* nullCB = nullptr;
 	context->CSSetSamplers(0, 1, &nullSampler);
 	context->CSSetConstantBuffers(0, 1, &nullCB);
+	shared = finishingShared.get();
+	frame = finishingFrame.get();
+	context->CSSetConstantBuffers(5, 1, &shared);
+	context->CSSetConstantBuffers(12, 1, &frame);
 }
 
 ID3D11ComputeShader* CameraSuite::GetUIBrightnessCS()
@@ -3532,7 +3584,11 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 			waterData.deepWaterColor.blue * byteToUnit,
 			1.0f
 		};
-		data.submergedFogAmount = std::clamp(waterData.underwaterFogAmount, 0.0f, 1.0f);
+		// ENB-oriented water records may leave native fog at zero. PIXL's enabled
+		// submerged optics still needs a conservative optical density in that case.
+		const float authoredFog = waterData.underwaterFogAmount;
+		data.submergedFogAmount = std::isfinite(authoredFog) && authoredFog > 1.0e-4f ?
+			std::clamp(authoredFog, 0.0f, 1.0f) : 0.35f;
 	}
 
 	// PIXL/Director presentation owns the optional DOF path only when explicitly enabled and when an
@@ -3633,7 +3689,11 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 		: 0.0f;
 	data.coldLensStrength = std::clamp(settings.coldLensStrength, 0.0f, 1.0f);
 	data.elementalLensStrength = std::clamp(settings.elementalLensStrength, 0.0f, 1.0f);
-	data.motionBlurEnabled = settings.enableModernMotionBlur && dofGameplay && !photoModeDofIsolation &&
+	// Camera motion blur only shares the scene-depth input with DOF; it does not
+	// depend on the DOF feature being enabled. The old dofGameplay gate made the
+	// checkbox appear broken whenever Enhanced Depth of Field was disabled.
+	data.motionBlurEnabled = settings.enableModernMotionBlur && !isMainOrLoadingMenu &&
+		!(ui && ui->GameIsPaused()) && !globals::state->isMapMenuOpen && !photoModeDofIsolation &&
 		GetCinematicDofDepthSRV() ? 1.0f : 0.0f;
 	data.motionBlurStrength = std::clamp(settings.motionBlurStrength, 0.0f, 1.0f);
 	data.motionBlurShutter = std::clamp(settings.motionBlurShutter, 0.10f, 1.0f);

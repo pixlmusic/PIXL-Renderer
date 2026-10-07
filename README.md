@@ -6,9 +6,21 @@ PIXL Renderer modernizes Skyrim's lighting, materials, characters, weather, terr
 
 Install one renderer, complete Quick Setup and play. An optional advanced tuning workspace provides deeper control over the image.
 
-> **Release candidate:** PIXL Renderer 1.0.5. See installation requirements and validation limits below before installing. Optional DLSSG proxy, Neural Rendering and Curved Surface Mapping paths remain experimental.
+> **Release candidate:** PIXL Renderer 1.0.6r4. This package includes the current preloaded shader cache snapshot. Optional DLSSG proxy and Neural Rendering paths remain experimental; experimental renderer modules remain opt-in and may be disabled by default.
 
-> **Release status:** 1.0.5 is a release candidate for advanced Skyrim setups. It has extensive owner testing, but GPU, runtime and mod combinations vary; keep a recoverable mod-manager profile and report reproducible issues with the PIXL log attached.
+> **Release status:** 1.0.6r4 is an owner-tested release candidate for advanced Skyrim setups. GPU, runtime, reconstruction-runtime and mod combinations vary; keep a recoverable mod-manager profile and report reproducible issues with the PIXL log attached.
+
+## 1.0.6r4 renderer update
+
+This revision continues the 1.0.6 line with a full preloaded cache snapshot and focused release-polish changes:
+
+- **Hybrid GI and quality profiles** retain full-resolution GI while balancing ray, cache-injection, reflection and directional-shadow work across Low, Medium, High and Ultra. Directional screen-space shadow distance now follows the selected profile, leaving Skyrim's shadow maps to carry more of the distant range.
+- **Image Reconstruction recovery** restores the previously working DX11/DX12 neural-guide handoff path. Neural Rendering remains optional and experimental; use the manual setup guidance below and validate it with the installed runtime and hardware.
+- **Atmosphere and precipitation refinements** improve spatial fog response and world-stable precipitation integration. Optional microclimate and clothing-wear prototypes are experimental, are not release-ready features, and remain disabled unless explicitly enabled in PIXL.
+- **Distant Life and water** receive restrained world-space haze refinements and continued caustic/receiver tuning; the live-tested water in/out transition behavior is preserved.
+- **Release packaging and interface polish** update the FOMOD revision to 1.0.6r4, include the current full cache snapshot, and slightly reduce the settings workspace scale for improved fit.
+
+The r4 package revision does not change Skyrim plugin compatibility version `1.0.6` or the shader-cache ABI. Existing user settings remain authoritative when updating.
 
 ## 1.0.5 renderer upgrade
 
@@ -43,7 +55,7 @@ The release includes a preloaded pipeline library. Additional or invalidated sha
 
 ## Renderer features
 
-PIXL currently contains **41 integrated rendering modules**, plus renderer-level systems for dialogue focus, Director/Photo/Video workflows, quality orchestration, benchmarking, tuning and capture. Individual experimental modules can remain disabled by default. One retired Hair Reconstruction source record remains solely for shared-shader ABI auditability and is not a runtime module.
+PIXL's release feature set contains **41 established rendering modules**, plus renderer-level systems for dialogue focus, Director/Photo/Video workflows, quality orchestration, benchmarking, tuning and capture. Additional alpha/experimental prototypes may be present in source and are not represented as release-ready features. One retired Hair Reconstruction source record remains solely for shared-shader ABI auditability and is not a runtime module.
 
 ### Lighting and atmosphere
 

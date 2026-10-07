@@ -178,9 +178,80 @@ Texture2D<float> TexDepthSampler : register(t17);
 #	endif
 
 #	if USE_PIXL_LAYERED_VOLUMETRIC_CLOUDS && defined(CLOUDS) && defined(SKY_VEIL)
+#	include "Microclimates/MicroclimateField.hlsli"
+
 float PixlCloudDensity(float2 uv)
 {
 	return saturate(TexBaseSampler.Sample(SampBaseSampler, uv).w);
+}
+
+float PixlMicroCloudHash(float2 p)
+{
+	float3 q = frac(float3(p.x, p.y, p.x) * 0.1031f);
+	q += dot(q, q.yzx + 33.33f);
+	return frac((q.x + q.y) * q.z);
+}
+
+float PixlMicroCloudNoise(float2 worldXY)
+{
+	// Broad world-space structure (several kilometres) keeps distant fronts
+	// coherent with the field rather than glued to sky UVs or the camera.
+	float2 grid = worldXY / 300000.0f;
+	float2 cell = floor(grid);
+	float2 f = frac(grid);
+	f = f * f * (3.0f - 2.0f * f);
+	float a = PixlMicroCloudHash(cell);
+	float b = PixlMicroCloudHash(cell + float2(1.0f, 0.0f));
+	float c = PixlMicroCloudHash(cell + float2(0.0f, 1.0f));
+	float d = PixlMicroCloudHash(cell + 1.0f);
+	return lerp(lerp(a, b, f.x), lerp(c, d, f.x), f.y);
+}
+
+float4 ApplyMicroclimateSkyWeather(float4 cloud, float3 rayFromCamera)
+{
+	float rayLengthSq = dot(rayFromCamera, rayFromCamera);
+	float3 ray = rayLengthSq > 1e-8f ? rayFromCamera * rsqrt(rayLengthSq) : float3(0.0f, 1.0f, 0.0f);
+	float2 horizontalDirection = ray.xy;
+	float horizontalLengthSq = dot(horizontalDirection, horizontalDirection);
+	if (horizontalLengthSq < 1e-6f)
+		horizontalDirection = float2(0.0f, 0.0f);
+	else
+		horizontalDirection *= rsqrt(horizontalLengthSq);
+
+	float3 cameraAbsolute = FrameBuffer::CameraPosAdjust.xyz;
+	// Sample the full regional field from near horizon to distant mountain range.
+	static const float sampleDistances[6] = { 80000.0f, 220000.0f, 480000.0f, 900000.0f, 1500000.0f, 2050000.0f };
+	float cloudPotential = 0.0f;
+	float stormPotential = 0.0f;
+	float2 weatherWorldXY = cameraAbsolute.xy;
+	[unroll] for (uint sampleIndex = 0; sampleIndex < 6; ++sampleIndex) {
+		float2 sampleXY = cameraAbsolute.xy + horizontalDirection * sampleDistances[sampleIndex];
+		float3 samplePosition = float3(sampleXY, cameraAbsolute.z);
+		float4 field = Microclimates::SampleField(samplePosition);
+		float storm = Microclimates::SampleStormPotential(samplePosition);
+		float candidate = max(field.a, field.g * 0.35f);
+		if (candidate > cloudPotential) {
+			cloudPotential = candidate;
+			weatherWorldXY = sampleXY;
+		}
+		stormPotential = max(stormPotential, storm);
+	}
+
+	if (cloudPotential <= 0.015f)
+		return cloud;
+
+	float shapeNoise = PixlMicroCloudNoise(weatherWorldXY);
+	float frontShape = lerp(0.58f, 1.0f, smoothstep(0.18f, 0.82f, shapeNoise));
+	float sourceDetail = lerp(0.82f, 1.0f, saturate(cloud.a));
+	float regionalCover = saturate(pow(cloudPotential, 0.58f) * frontShape * sourceDetail * 1.85f);
+	float regionalAlpha = regionalCover * lerp(0.72f, 0.98f, saturate(stormPotential + cloudPotential * 0.35f));
+	cloud.a = max(cloud.a, regionalAlpha);
+
+	// Preserve Skyrim's cloud texture colour and Sky Veil's scattering response;
+	// only storm-rich parts gain the cooler, denser rain-cloud body.
+	float stormShade = saturate(stormPotential * regionalCover * 0.52f);
+	cloud.rgb *= lerp(1.0f.xxx, float3(0.70f, 0.75f, 0.82f), stormShade);
+	return cloud;
 }
 
 float PixlCloudPhase(float cosTheta, float eccentricity)
@@ -295,7 +366,10 @@ PS_OUTPUT main(PS_INPUT input)
 #		else
 
 #		if USE_PIXL_LAYERED_VOLUMETRIC_CLOUDS && defined(CLOUDS) && defined(SKY_VEIL)
-	baseColor = ApplyPixlLayeredClouds(baseColor, input.TexCoord0.xy, normalize(input.WorldPosition.xyz));
+	baseColor = ApplyMicroclimateSkyWeather(baseColor, input.FogPosition.xyz);
+	float worldLengthSq = dot(input.WorldPosition.xyz, input.WorldPosition.xyz);
+	float3 worldDirection = worldLengthSq > 1e-8f ? input.WorldPosition.xyz * rsqrt(worldLengthSq) : float3(0.0f, 1.0f, 0.0f);
+	baseColor = ApplyPixlLayeredClouds(baseColor, input.TexCoord0.xy, worldDirection);
 #		endif
 
 	psout.Color.w = input.Color.w * baseColor.w;

@@ -10,6 +10,15 @@ Texture2D<float4> WaterCaustics : register(t65);
 
 namespace WaterOptics
 {
+	// Capture derivatives before divergent local-light loops. Implicit texture
+	// gradients inside those loops are undefined and fail strict shader validation.
+	static float2 ReceiverCausticDx = 0.0f.xx;
+	static float2 ReceiverCausticDy = 0.0f.xx;
+	void SetReceiverFootprint(float3 worldPosition)
+	{
+		ReceiverCausticDx = ddx_coarse(worldPosition.xy) * 0.005f;
+		ReceiverCausticDy = ddy_coarse(worldPosition.xy) * 0.005f;
+	}
 	// The authored atlas is an energy mask whose average is below one. Receiver
 	// paths must compare against that normalized energy, not against raw display
 	// values, otherwise the wall/ceiling path is effectively always zero.
@@ -40,7 +49,7 @@ namespace WaterOptics
 
 	float SampleCaustics(float2 uv)
 	{
-		return WaterCaustics.Sample(SampColorSampler, uv).x;
+		return WaterCaustics.SampleGrad(SampColorSampler, uv, ReceiverCausticDx, ReceiverCausticDy).x;
 	}
 
 	// Approximate wavelength-dependent refraction by offsetting red/blue around green.
@@ -102,7 +111,7 @@ namespace WaterOptics
 		float3 result = 1.0.xxx;
 		float causticsDistToWater = waterData.w - worldPosition.z;
 		float shoreFactorCaustics = saturate(causticsDistToWater / 64.0);
-		float waterDataValid = waterData.w > -1.0e20f ? 1.0f : 0.0f;
+		float waterDataValid = waterData.w > -1.0e8f ? 1.0f : 0.0f;
 
 		// WaterData exposes the tile height rather than a per-pixel water footprint.
 		// Keep the useful above-water projection, but limit it to a short receiver
@@ -254,6 +263,11 @@ namespace WaterOptics
 			return 1.0.xxx;
 
 		float3 waterPoint = mirroredLight + receiverRay * planeT;
+		// The reflected footprint must still belong to the same known water plane.
+		// A receiver tile alone can project light across a neighbouring dry cell.
+		float4 footprintWater = SharedData::GetWaterData(waterPoint);
+		if (footprintWater.w < -1.0e8f || abs(footprintWater.w - waterHeight) > 8.0f)
+			return 1.0.xxx;
 		float sourcePath = length(waterPoint - lightPosition);
 		// Skyrim point-light radii describe useful illumination, not the full
 		// projected footprint of a refracted emitter. Expand the caustic footprint

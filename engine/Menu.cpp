@@ -956,7 +956,7 @@ void Menu::DrawSettings()
 		// Keep the authored canvas proportions while leaving a little more of the
 		// game visible. The shared reference scale keeps every panel, font and
 		// hit target aligned instead of introducing a second compact layout.
-		const float referenceScale = 0.84f * std::min(
+		const float referenceScale = 0.80f * std::min(
 			viewportSize.x / PIXLUI::Layout::ReferenceWidth,
 			viewportSize.y / PIXLUI::Layout::ReferenceHeight);
 		const ImVec2 fixedSize(

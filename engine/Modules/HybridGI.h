@@ -297,6 +297,10 @@ public:
 
 	eastl::unique_ptr<Texture2D> texNoise = nullptr;
 	eastl::unique_ptr<Texture2D> texWorkingDepth = nullptr;
+	// Conservative reflection hierarchy; GI's smooth-depth pyramid is not Hi-Z.
+	eastl::unique_ptr<Texture2D> texReflectionDepth = nullptr;
+	winrt::com_ptr<ID3D11UnorderedAccessView> uavReflectionDepth[5];
+	bool reflectionDepthCreationAttempted = false;
 	winrt::com_ptr<ID3D11UnorderedAccessView> uavWorkingDepth[5] = { nullptr };
 	eastl::unique_ptr<Texture2D> texPrevGeo = nullptr;
 	eastl::unique_ptr<Texture2D> texRadiance = nullptr;
@@ -343,6 +347,7 @@ public:
 	winrt::com_ptr<ID3D11SamplerState> pointClampSampler = nullptr;
 
 	winrt::com_ptr<ID3D11ComputeShader> prefilterDepthsCompute = nullptr;
+	winrt::com_ptr<ID3D11ComputeShader> reflectionDepthCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> prefilterRadianceCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> prefilterNormalCompute = nullptr;
 	winrt::com_ptr<ID3D11ComputeShader> radianceDisoccCompute = nullptr;
@@ -357,6 +362,7 @@ public:
 	winrt::com_ptr<ID3D11ComputeShader> hybridReflectionDenoiseCompute = nullptr;
 
 private:
+	bool EnsureReflectionDepth();
 	void RecompileChangedShaders();
 	[[nodiscard]] bool CoreShadersOK() const;
 	[[nodiscard]] bool WorldCacheShadersOK() const;

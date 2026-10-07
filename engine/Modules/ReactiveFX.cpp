@@ -4,6 +4,7 @@
 // Additional permissions are described in the repository EXCEPTIONS.md.
 
 #include "ReactiveFX.h"
+#include "ReactiveFX/SpawnBatch.h"
 
 #include "Deferred.h"
 #include "Globals.h"
@@ -457,13 +458,13 @@ void ReactiveFX::QueueEvent(const Event& event)
 	sanitized.strength = std::clamp(sanitized.strength, 0.02f, 8.0f);
 	sanitized.direction = Normalize(sanitized.direction);
 	std::scoped_lock lock(eventMutex);
-	if (sanitized.seed == 0)
-		sanitized.seed = Hash(++lastEventSeed ^ sanitized.sourceFormID);
 	auto& queue = eventQueues[producerQueue];
 	if (queue.size() >= kMaximumQueuedEvents) {
 		++droppedEvents;
 		return;
 	}
+	if (sanitized.seed == 0)
+		sanitized.seed = Hash(++lastEventSeed ^ sanitized.sourceFormID);
 	queue.push_back(sanitized);
 }
 
@@ -972,8 +973,16 @@ void ReactiveFX::UploadSpawnCommands()
 {
 	if (!spawnBuffer || spawnCommands.empty())
 		return;
+	ReactiveFXSafety::CompactSpawnBatch<kMaximumParticles>(spawnCommands);
 	D3D11_MAPPED_SUBRESOURCE mapped{};
-	DX::ThrowIfFailed(globals::d3d::context->Map(spawnBuffer.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
+	const HRESULT result = globals::d3d::context->Map(spawnBuffer.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+	if (FAILED(result)) {
+		// Never dispatch with the previous upload after a failed WRITE_DISCARD.
+		spawnCommands.clear();
+		static std::once_flag warning;
+		std::call_once(warning, [result]() { logger::warn("[ReactiveFX] Spawn upload failed ({:08X}); burst skipped", static_cast<unsigned>(result)); });
+		return;
+	}
 	std::memcpy(mapped.pData, spawnCommands.data(), spawnCommands.size() * sizeof(SpawnCommand));
 	globals::d3d::context->Unmap(spawnBuffer.get(), 0);
 }
@@ -999,7 +1008,14 @@ void ReactiveFX::UploadImpulses(float deltaTime)
 			upload[activeImpulseCount++] = active.gpu;
 	}
 	D3D11_MAPPED_SUBRESOURCE mapped{};
-	DX::ThrowIfFailed(globals::d3d::context->Map(impulseBuffer.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
+	const HRESULT result = globals::d3d::context->Map(impulseBuffer.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+	if (FAILED(result)) {
+		// Stale impulses must not be consumed after an upload failure.
+		simulationTimeRemaining = 0.0f;
+		static std::once_flag warning;
+		std::call_once(warning, [result]() { logger::warn("[ReactiveFX] Impulse upload failed ({:08X}); simulation skipped", static_cast<unsigned>(result)); });
+		return;
+	}
 	std::memcpy(mapped.pData, upload.data(), sizeof(upload));
 	globals::d3d::context->Unmap(impulseBuffer.get(), 0);
 }
@@ -1168,16 +1184,18 @@ void ReactiveFX::DrawReactiveFX()
 		return;
 	const auto active = Util::ConvertToDynamic(
 		{ static_cast<float>(mainDesc.Width), static_cast<float>(mainDesc.Height) }, true);
+	if (!std::isfinite(active.x) || !std::isfinite(active.y) || active.x <= 0.0f || active.y <= 0.0f)
+		return;
 	const auto width = std::clamp(static_cast<std::uint32_t>(active.x), 1u, mainDesc.Width);
 	const auto height = std::clamp(static_cast<std::uint32_t>(active.y), 1u, mainDesc.Height);
 	try {
 		EnsureMask(width, height);
 		if (opticalTimeRemaining > 0.0f)
 			EnsureSceneColorCopy(mainDesc, width, height);
-	} catch (const std::exception& e) {
+	} catch (const std::exception& error) {
 		particleMaskFrame = ~0u;
 		if (!resourceFailureLogged) {
-			logger::error("[ReactiveFX] Optional frame resource unavailable; continuing without optical effects: {}", e.what());
+			logger::error("[ReactiveFX] Optional frame resource unavailable; continuing without optical effects: {}", error.what());
 			resourceFailureLogged = true;
 		}
 	}
@@ -1208,7 +1226,13 @@ void ReactiveFX::DrawReactiveFX()
 		particleMaskFrame = ~0u;
 		return;
 	}
-	tuningCB->Update(tuning);
+	try {
+		tuningCB->Update(tuning);
+	} catch (const std::exception& error) {
+		static std::once_flag warning;
+		std::call_once(warning, [&error]() { logger::warn("[ReactiveFX] Tuning upload unavailable; frame skipped: {}", error.what()); });
+		return;
+	}
 
 	ID3D11Buffer* constantBuffers[3]{ state->sharedDataCB->CB(), *globals::game::perFrame.get(), tuningCB->CB() };
 	context->CSSetConstantBuffers(5, 1, &constantBuffers[0]);
@@ -1323,7 +1347,7 @@ void ReactiveFX::QueueProjectileImpact(
 	const RE::BGSMaterialType* material,
 	RE::TESObjectREFR* target)
 {
-	if (!projectile)
+	if (!settings.Enabled || !projectile || !Finite(position) || !Finite(velocity))
 		return;
 	const auto& runtime = projectile->GetProjectileRuntimeData();
 	Event event{};
@@ -1525,7 +1549,7 @@ void ReactiveFX::DrawSettings()
 		ImGui::Text("Active impulses: %u | collision phase: %u", activeImpulseCount, collisionPhase);
 		ImGui::Text("Spawn commands: %zu | optical copy: %s", spawnCommands.size(), opticalTimeRemaining > 0.0f ? "active" : "idle");
 		ImGui::Text("Last event: %s -> %s", SourceName(lastSource), SurfaceName(lastSurface));
-		ImGui::Text("Dropped events: %u | dropped particles: %u", droppedEvents, droppedParticles);
+		ImGui::Text("Dropped events: %u | dropped particles: %u", droppedEvents.load(std::memory_order_relaxed), droppedParticles);
 		ImGui::Text("GPU pass: %s", reactivePassReady ? "ready" : "unavailable");
 		ImGui::TreePop();
 	}

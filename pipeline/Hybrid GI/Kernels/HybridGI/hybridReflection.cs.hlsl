@@ -15,6 +15,8 @@ Texture2D<float4> srcWorldSH0 : register(t7);
 Texture2D<float4> srcWorldSH1 : register(t8);
 Texture2D<float4> srcWorldSH2 : register(t9);
 Texture2D<uint> srcWorldNormal : register(t10);
+// CS-only t11; bound/unbound by HybridGI alongside t0..t16. No b1/b5/b6 ABI change.
+Texture2D<float> srcReflectionHiZ : register(t11);
 
 RWTexture2D<float4> outReflection : register(u0);
 
@@ -194,93 +196,124 @@ inline float3 TraceWorldFallback(float3 positionWS, float3 directionWS, float3 c
     return result;
 }
 
+// Perspective-correct depth along a projected line. Screen interpolation is
+// linear, view-space Z is not: interpolate reciprocal depth, not depth.
+float ReflectionRayDepth(float2 inverseDepth, float s)
+{
+    return rcp(max(lerp(inverseDepth.x, inverseDepth.y, s), 1e-8f));
+}
+
 inline bool TraceScreenReflection(float3 originVS, float3 directionVS, float roughness,
     inout float2 hitUV, inout float hitConfidence)
 {
     hitUV = 0.0f;
     hitConfidence = 0.0f;
-    uint steps = clamp(ReflectionSteps, 8u, 64u);
+    if (!all(isfinite(originVS)) || !all(isfinite(directionVS)) || originVS.z <= FP_Z)
+        return false;
+
     float maxDistance = max(ReflectionMaxDistance, 32.0f);
-    float thicknessBase = max(ReflectionThickness, 1.0f);
-    // Establish a real starting depth relation instead of fabricating a
-    // negative previousDelta. The old sentinel let the first positive sample
-    // masquerade as a depth crossing and produced false, low-confidence hits.
-    float previousT = 0.0f;
-    float2 previousUV = ViewToScreenPosition(originVS);
-    bool traceActive = !any(previousUV <= 0.001f) && !any(previousUV >= 0.999f);
-    bool foundHit = false;
-    float previousSceneZ = traceActive ?
-        srcDepth.SampleLevel(samplerPointClamp, FullFrameTextureUV(previousUV), 0.0f) : originVS.z;
-    float previousDelta = originVS.z - previousSceneZ;
+    float endT = maxDistance * lerp(0.85f, 1.15f, roughness);
+    // Clip before projection; rays toward the camera must never cross Z=0.
+    if (directionVS.z < -1e-6f)
+        endT = min(endT, (originVS.z - FP_Z - 0.01f) / -directionVS.z);
+    float startT = max(ReflectionRayBias, 1.0f);
+    if (endT <= startT)
+        return false;
+    float3 startVS = originVS + directionVS * startT;
+    float3 endVS = originVS + directionVS * endT;
+    float2 startUV = ViewToScreenPosition(startVS);
+    float2 endUV = ViewToScreenPosition(endVS);
+    float2 deltaUV = endUV - startUV;
+    if (!all(isfinite(startUV)) || !all(isfinite(endUV)))
+        return false;
 
-    [loop] for (uint i = 0u; i < steps && traceActive && !foundHit; ++i) {
-        float p = ((float)i + 1.0f) / (float)steps;
-        // Quadratic spacing concentrates work around the receiver while still
-        // allowing long rays. Rough rays expand slightly faster.
-        float t = max(ReflectionRayBias, 1.0f) + p * p * maxDistance * lerp(0.85f, 1.15f, roughness);
-        float3 sampleVS = originVS + directionVS * t;
-        if (sampleVS.z <= FP_Z)
-            break;
-        float2 uv = ViewToScreenPosition(sampleVS);
-        if (any(uv <= 0.001f) || any(uv >= 0.999f))
-            break;
+    // Clip the projected segment to the active viewport, NOT backing size.
+    float enter = 0.0f, leave = 1.0f;
+    [unroll] for (uint axis = 0u; axis < 2u; ++axis) {
+        if (abs(deltaUV[axis]) < 1e-8f) {
+            if (startUV[axis] < 0.001f || startUV[axis] > 0.999f)
+                return false;
+        } else {
+            float a = (0.001f - startUV[axis]) / deltaUV[axis];
+            float b = (0.999f - startUV[axis]) / deltaUV[axis];
+            enter = max(enter, min(a, b));
+            leave = min(leave, max(a, b));
+        }
+    }
+    if (enter >= leave)
+        return false;
 
-        float2 px = abs((uv - previousUV) * OUT_FRAME_DIM);
-        float footprint = max(px.x, px.y);
-        float internalMip = clamp(log2(max(footprint, 1.0f)) - 0.5f + roughness * 1.5f, 0.0f, 4.0f);
-        // The reflection ray advances in internal pixels while srcDepth is the
-        // full-resolution physical hierarchy. Apply the resolution offset only
-        // to depth; the compact radiance hierarchy uses internal mip space.
-        float depthMip = min(internalMip + (float)RES_MIP, 4.0f);
-        float sceneZ = srcDepth.SampleLevel(samplerPointClamp, FullFrameTextureUV(uv), depthMip);
-        float delta = sampleVS.z - sceneZ;
-        float thickness = thicknessBase * (1.0f + roughness * 2.0f + t / maxDistance * 0.5f);
+    // Integer mip cells cover 2^mip backing pixels (also at odd dimensions).
+    // There is no HALF/QUARTER_RES mip bias: every hit descends to full depth.
+    float2 pixelStart = startUV * FrameDim;
+    float2 pixelDelta = deltaUV * FrameDim;
+    float2 inverseDepth = rcp(float2(startVS.z, endVS.z));
+    float epsilonS = 1e-4f / max(max(abs(pixelDelta.x), abs(pixelDelta.y)), 1.0f);
+    float s = enter;
+    uint mip = 4u;
+    uint tests = clamp(ReflectionSteps, 8u, 64u);
 
-        bool crossed = (delta >= 0.0f && previousDelta < 0.0f) || abs(delta) <= thickness;
-        if (crossed) {
-            // Four-step binary refinement against mip 0 prevents coarse mip
-            // traversal from producing a detached reflection at depth edges.
-            float lo = previousT;
-            float hi = t;
-            float2 refinedUV = uv;
-            [unroll] for (uint r = 0u; r < 4u; ++r) {
-                float mid = 0.5f * (lo + hi);
-                float3 q = originVS + directionVS * mid;
-                refinedUV = ViewToScreenPosition(q);
-                float z = srcDepth.SampleLevel(samplerPointClamp, FullFrameTextureUV(refinedUV), 0.0f);
-                if (q.z - z >= 0.0f)
-                    hi = mid;
-                else
-                    lo = mid;
-            }
-            float3 q = originVS + directionVS * hi;
-            float z = srcDepth.SampleLevel(samplerPointClamp, FullFrameTextureUV(refinedUV), 0.0f);
-            float finalDelta = abs(q.z - z);
-            if (finalDelta <= thickness * 1.5f) {
-                // A depth crossing alone can intersect the back side of a thin
-                // screen-space silhouette. Reject strongly back-facing hits so
-                // bright radiance behind a wall is not pulled through it as a
-                // reflection. The hit normal is already available in the G-buffer.
-                float2 hitTexCoord = FullFrameTextureUV(refinedUV);
-                float3 hitNormal = GBuffer::DecodeNormal(srcNormalRoughness.SampleLevel(samplerLinearClamp, hitTexCoord, 0.0f).xy);
-                float hitFacing = saturate(dot(hitNormal, -directionVS));
-                if (hitFacing <= 0.025f) {
-                    traceActive = false;
-                } else {
-                    float edge = min(min(refinedUV.x, refinedUV.y), min(1.0f - refinedUV.x, 1.0f - refinedUV.y));
-                    hitUV = refinedUV;
-                    hitConfidence = saturate(edge * 24.0f) *
-                        saturate(1.0f - finalDelta / max(thickness * 1.5f, 1.0f)) *
-                        smoothstep(0.025f, 0.20f, hitFacing);
-                    foundHit = hitConfidence > 1e-4f;
-                }
+    [loop] for (uint i = 0u; i < tests && s < leave; ++i) {
+        uint width, height, levels;
+        srcReflectionHiZ.GetDimensions(mip, width, height, levels);
+        float cellSize = (float)(1u << mip);
+        // Look infinitesimally into the current interval for negative directions.
+        float2 pixel = pixelStart + pixelDelta * min(s + epsilonS, leave);
+        int2 cell = int2(floor(pixel / cellSize));
+        // Floor-sized NPOT mip chains omit trailing pixels. Descend rather
+        // than sampling/clamping a different cell and inventing a depth bound.
+        if (any(cell < 0) || any(cell >= int2(width, height))) {
+            if (mip == 0u)
+                break;
+            --mip;
+            continue;
+        }
+        float2 boundary = (float2(cell) + float2(pixelDelta.x >= 0.0f ? 1.0f : 0.0f,
+            pixelDelta.y >= 0.0f ? 1.0f : 0.0f)) * cellSize;
+        float exitS = leave;
+        [unroll] for (uint axis = 0u; axis < 2u; ++axis)
+            if (abs(pixelDelta[axis]) > 1e-8f)
+                exitS = min(exitS, (boundary[axis] - pixelStart[axis]) / pixelDelta[axis]);
+        exitS = max(exitS, s);
+        float sceneZ = srcReflectionHiZ.Load(int3(cell, mip));
+        float entryZ = ReflectionRayDepth(inverseDepth, s);
+        float exitZ = ReflectionRayDepth(inverseDepth, exitS);
+        float rayT = lerp(startT * inverseDepth.x, endT * inverseDepth.y, exitS) * exitZ;
+        float thickness = max(ReflectionThickness, 1.0f) * (1.0f + roughness * 2.0f +
+            (rayT / maxDistance) * 0.5f);
+
+        // A min hierarchy proves empty space only when the entire segment is
+        // in front of its nearest surface. Otherwise descend without advancing.
+        if (max(entryZ, exitZ) + thickness >= sceneZ && mip > 0u) {
+            --mip;
+            continue;
+        }
+        if (mip == 0u && sceneZ > FP_Z &&
+            min(entryZ, exitZ) <= sceneZ + thickness &&
+            max(entryZ, exitZ) >= sceneZ - thickness) {
+            float depthSlope = inverseDepth.y - inverseDepth.x;
+            float hitS = abs(depthSlope) > 1e-10f ?
+                clamp((rcp(sceneZ) - inverseDepth.x) / depthSlope, s, exitS) : s;
+            float2 uv = startUV + deltaUV * hitS;
+            float finalDelta = abs(ReflectionRayDepth(inverseDepth, hitS) - sceneZ);
+            float3 hitNormal = GBuffer::DecodeNormal(srcNormalRoughness.SampleLevel(
+                samplerLinearClamp, FullFrameTextureUV(uv), 0.0f).xy);
+            float facing = saturate(dot(hitNormal, -directionVS));
+            if (facing > 0.025f && finalDelta <= thickness) {
+                float edge = min(min(uv.x, uv.y), min(1.0f - uv.x, 1.0f - uv.y));
+                hitUV = uv;
+                hitConfidence = saturate(edge * 24.0f) *
+                    saturate(1.0f - finalDelta / max(thickness * 1.5f, 1.0f)) *
+                    smoothstep(0.025f, 0.20f, facing);
+                return hitConfidence > 1e-4f;
             }
         }
-        previousDelta = delta;
-        previousT = t;
-        previousUV = uv;
+        // Skip this cell, then ascend for the next empty-space test. Bias only
+        // by a tiny fraction of a pixel to guarantee progress at shared edges.
+        s = exitS + epsilonS;
+        mip = min(mip + 1u, 4u);
     }
-    return foundHit;
+    return false;
 }
 
 float3 SoftFireflyClamp(float3 value, float threshold)
