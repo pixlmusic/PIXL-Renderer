@@ -1,6 +1,7 @@
 #include "ActorSurfaceEffects.h"
 
 #include "Globals.h"
+#include "Modules/ClothDynamics.h"
 #include "Modules/DialogueFocus.h"
 #include "Modules/RainResponse.h"
 #include "State.h"
@@ -158,9 +159,11 @@ namespace
 		float4 SnowAppearance{};     // linear snow tint rgb, material strength
 
 		std::array<ActorSurfaceGPUEvent, kMaximumGPUEvents> Events{};
+		float4 DamageState{};        // severity, health fraction, reserved, enabled
+		float4 DamageParameters{};   // fabric tears, armor damage, actor seed, debug mode
 	};
 	static_assert(offsetof(CharacterRuntimeGPUData, Magic) == sizeof(DialogueFocus::GPUData));
-	static_assert(sizeof(CharacterRuntimeGPUData) == 1328, "CharacterRuntimeGPUData must match CharacterRuntime.hlsli");
+	static_assert(sizeof(CharacterRuntimeGPUData) == 1360, "CharacterRuntimeGPUData must match CharacterRuntime.hlsli");
 	static_assert(offsetof(CharacterRuntimeGPUData, Events) == 176);
 
 	struct LocalEffectLobe
@@ -197,6 +200,8 @@ namespace
 		float lastInteractionSeconds = 0.0f;
 		float lastVisibleSeconds = 0.0f;
 		bool prepared = false;
+		std::uint32_t damageFrame = 0;
+		CharacterRuntimeGPUData preparedData{};
 	};
 
 	RE::NiAVObject* FindContactBone(RE::Actor* actor, const RE::NiPoint3& position, float reach)
@@ -286,6 +291,9 @@ namespace
 struct ActorSurfaceEffects::Runtime
 {
 	std::unordered_map<std::uint32_t, std::unique_ptr<ActorEffectState>> actors{};
+	std::unordered_map<std::uint32_t, ClothingDamageState> clothingDamage{};
+	std::unordered_map<std::uint32_t, std::unique_ptr<ConstantBuffer>> damageOnlyBuffers{};
+	std::unordered_map<std::uint32_t, std::uint32_t> damageOnlyBufferFrames{};
 	std::unordered_map<const RE::NiAVObject*, std::uint32_t> activeSkeletonOwners{};
 	std::unique_ptr<ConstantBuffer> neutralBuffer{};
 	std::unique_ptr<ConstantBuffer> dialogueOnlyBuffer{};
@@ -349,7 +357,7 @@ void ActorSurfaceEffects::SetupResources()
 		const CharacterRuntimeGPUData neutral{};
 		runtime->neutralBuffer->Update(neutral);
 		runtime->dialogueOnlyBuffer->Update(neutral);
-		logger::info("[ActorSurfaceEffects] Ready (actor-local analytical masks, 752-byte shared character ABI)");
+		logger::info("[ActorSurfaceEffects] Ready (actor-local analytical masks, 1360-byte shared character ABI)");
 	} catch (const std::exception& error) {
 		failedLoadedMessage = std::format("Actor Surface Effects disabled: {}", error.what());
 		loaded = false;
@@ -601,6 +609,9 @@ void ActorSurfaceEffects::Reset()
 	if (!settings.Enable) {
 		std::scoped_lock lock(runtime->mutex);
 		runtime->actors.clear();
+		runtime->clothingDamage.clear();
+		runtime->damageOnlyBuffers.clear();
+		runtime->damageOnlyBufferFrames.clear();
 		return;
 	}
 
@@ -618,6 +629,7 @@ void ActorSurfaceEffects::Reset()
 	const float persistenceScale = std::lerp(2.25f, 0.24f, Saturate(settings.Persistence));
 
 	std::scoped_lock lock(runtime->mutex);
+	runtime->clothingDamage.clear();
 	runtime->elapsedSeconds += dt;
 	for (auto actorIt = runtime->actors.begin(); actorIt != runtime->actors.end();) {
 		ActorEffectState& state = *actorIt->second;
@@ -692,6 +704,7 @@ void ActorSurfaceEffects::Reset()
 				[](const LocalEffectLobe& a_lobe) { return a_lobe.TotalAmount() <= kEventEpsilon; }),
 			state.lobes.end());
 		state.prepared = false;
+		state.damageFrame = 0;
 
 		const float unloadedAge = runtime->elapsedSeconds - state.lastInteractionSeconds;
 		if (state.lobes.empty() || (!actorAvailable && unloadedAge > 15.0f)) {
@@ -710,7 +723,7 @@ void ActorSurfaceEffects::Prepass()
 
 	// Always publish a full-size payload for actor permutations. DialogueFocus's
 	// original 96-byte buffer remains valid for its legacy shaders, but the Actor
-	// Surface Effects permutations declare the extended 752-byte ABI even when no
+	// Surface Effects permutations declare the extended 1360-byte ABI even when no
 	// contamination is present.
 	CharacterRuntimeGPUData neutral{};
 	runtime->neutralBuffer->Update(neutral);
@@ -828,6 +841,7 @@ void ActorSurfaceEffects::Prepass()
 		}
 
 		state.constantBuffer->Update(data);
+		state.preparedData = data;
 		state.prepared = true;
 		state.lastVisibleSeconds = runtime->elapsedSeconds;
 	}
@@ -871,16 +885,78 @@ void ActorSurfaceEffects::BindLightingGeometry(RE::BSRenderPass* a_pass)
 	ID3D11Buffer* buffer = actorFormID == DialogueFocus::GetSingleton().GetFocusedFormID()
 		? runtime->dialogueOnlyBuffer->CB()
 		: runtime->neutralBuffer->CB();
+	const auto found = runtime->actors.find(actorFormID);
 	if (settings.Enable) {
-		const auto found = runtime->actors.find(actorFormID);
 		// A contaminated actor payload already contains the byte-identical
 		// DialogueFocus prefix built during Prepass. It must win even when that actor
 		// is the dialogue subject; selecting dialogueOnly here erased every surface
 		// lobe whenever conversation focus became active.
-		if (found != runtime->actors.end() && found->second->prepared && found->second->constantBuffer)
+		if (found != runtime->actors.end() && found->second->prepared && found->second->constantBuffer) {
 			buffer = found->second->constantBuffer->CB();
+		}
+	}
+	const auto damage = runtime->clothingDamage.find(actorFormID);
+	if (damage != runtime->clothingDamage.end()) {
+		if (found != runtime->actors.end() && found->second->prepared && found->second->constantBuffer) {
+			// A skinned actor can issue many geometry draws. Update its payload once
+			// per published health frame, not once per draw.
+			if (found->second->damageFrame != damage->second.frame) {
+				found->second->preparedData.DamageState = damage->second.Damage;
+				found->second->preparedData.DamageParameters = damage->second.Parameters;
+				found->second->constantBuffer->Update(found->second->preparedData);
+				found->second->damageFrame = damage->second.frame;
+			}
+			buffer = found->second->constantBuffer->CB();
+		} else {
+			// Wear does not need an independent b13 ABI. Build a full neutral
+			// character payload only for actors that have no Actor Surface lobe,
+			// preserving DialogueFocus's prefix and all existing surface defaults.
+			if (!runtime->damageOnlyBuffers.contains(actorFormID) && runtime->damageOnlyBuffers.size() >= 64u) {
+				// Damage-only actors do not own persistent surface state. Keep this
+				// fallback pool bounded across cell/equipment churn.
+				runtime->damageOnlyBufferFrames.erase(runtime->damageOnlyBuffers.begin()->first);
+				runtime->damageOnlyBuffers.erase(runtime->damageOnlyBuffers.begin());
+			}
+			auto& damageBuffer = runtime->damageOnlyBuffers[actorFormID];
+			if (!damageBuffer)
+				damageBuffer = std::make_unique<ConstantBuffer>(
+					ConstantBufferDesc<CharacterRuntimeGPUData>(),
+					"ActorSurfaceEffects::DamageCharacterRuntime");
+			if (runtime->damageOnlyBufferFrames[actorFormID] != damage->second.frame) {
+				CharacterRuntimeGPUData damageData{};
+				if (actor && actorFormID == DialogueFocus::GetSingleton().GetFocusedFormID())
+					DialogueFocus::GetSingleton().BuildGPUDataForActor(actor, damageData.Dialogue);
+				damageData.DamageState = damage->second.Damage;
+				damageData.DamageParameters = damage->second.Parameters;
+				damageBuffer->Update(damageData);
+				runtime->damageOnlyBufferFrames[actorFormID] = damage->second.frame;
+			}
+			buffer = damageBuffer->CB();
+		}
+	} else if (found != runtime->actors.end() && found->second->damageFrame != 0u) {
+			// Clear last frame's damage payload when no current actor state is present.
+			found->second->preparedData.DamageState = {};
+			found->second->preparedData.DamageParameters = {};
+			found->second->constantBuffer->Update(found->second->preparedData);
+		found->second->damageFrame = 0u;
 	}
 	globals::d3d::context->PSSetConstantBuffers(13, 1, &buffer);
+}
+
+void ActorSurfaceEffects::SetClothingDamage(std::uint32_t a_formID, const ClothingDamageState& a_damage)
+{
+	if (!runtime || a_formID == 0u || a_damage.actorFormID != a_formID)
+		return;
+	std::scoped_lock lock(runtime->mutex);
+	runtime->clothingDamage.insert_or_assign(a_formID, a_damage);
+}
+
+void ActorSurfaceEffects::ClearClothingDamage()
+{
+	if (!runtime)
+		return;
+	std::scoped_lock lock(runtime->mutex);
+	runtime->clothingDamage.clear();
 }
 
 void ActorSurfaceEffects::ApplyQualityTier(std::uint32_t a_quality)

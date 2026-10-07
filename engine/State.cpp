@@ -17,6 +17,7 @@
 #include "Modules/InteriorDaylight.h"
 #include "Modules/GroundResponse.h"
 #include "Modules/ActorSurfaceEffects.h"
+#include "Modules/ClothDynamics.h"
 #include "Modules/DialogueFocus.h"
 #include "Modules/PulseProfiler.h"
 #include "Renderer/RenderPassScheduler.h"
@@ -306,6 +307,8 @@ void State::Setup()
 	// after every earlier BSLightingShader setup hook has completed.
 	if (globals::pipeline::actorSurfaceEffects.loaded)
 		globals::pipeline::actorSurfaceEffects.InstallLateHooks();
+	if (globals::pipeline::clothDynamics.loaded)
+		globals::pipeline::clothDynamics.InstallLateHooks();
 	globals::deferred->SetupResources();
 	auto& passScheduler = PIXL::Renderer::RenderPassScheduler::Get();
 	passScheduler.RegisterLegacyModulePasses(RenderModule::GetModuleList());

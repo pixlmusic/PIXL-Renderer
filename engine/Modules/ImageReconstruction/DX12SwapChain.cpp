@@ -354,8 +354,6 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 		const std::uint32_t neuralOutputIndex = static_cast<std::uint32_t>(frameIndex) & 1u;
 		auto& neuralOutput = neuralRenderingOutputWrapped[neuralOutputIndex];
 		if (imageReconstruction.ShouldUseNeuralRenderingThisFrame() &&
-			imageReconstruction.HasCurrentDLSSFrame() && neuralGuidesReady &&
-			globals::state && neuralGuideFrame == globals::state->frameCount &&
 			neuralOutput && neuralOutput->resource &&
 			neuralDepthBufferShared12 && neuralDepthBufferShared12->resource &&
 			neuralMotionVectorBufferShared12 && neuralMotionVectorBufferShared12->resource) {

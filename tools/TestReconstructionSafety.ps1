@@ -18,7 +18,10 @@ Require 'engine/Modules/CameraSuite.cpp' 'previousShared.get\(\)'
 Require 'engine/Modules/CameraSuite.cpp' 'motionBlurEnabled = settings\.enableModernMotionBlur && !isMainOrLoadingMenu'
 Require 'engine/Modules/ImageReconstruction/Streamline.cpp' 'return evalResult == sl::Result::eOk'
 Require 'engine/Modules/ImageReconstruction.cpp' 'SetHistoryValid\(reconstructionHistoryId, historyEvaluated\)'
-Require 'engine/Modules/ImageReconstruction/DX12SwapChain.cpp' 'HasCurrentDLSSFrame\(\) && neuralGuidesReady'
+Require 'engine/Modules/ImageReconstruction/DX12SwapChain.cpp' 'if \(imageReconstruction\.ShouldUseNeuralRenderingThisFrame\(\) &&[\s\S]*neuralDepthBufferShared12 && neuralDepthBufferShared12->resource &&[\s\S]*neuralMotionVectorBufferShared12 && neuralMotionVectorBufferShared12->resource'
+if ((Get-Content -LiteralPath (Join-Path $repo 'engine/Modules/ImageReconstruction/DX12SwapChain.cpp') -Raw) -match 'ShouldUseNeuralRenderingThisFrame\(\) &&\s*imageReconstruction\.HasCurrentDLSSFrame\(\)') {
+    throw 'Neural Rendering must not be gated by a strict DLSS frame-token match; this suppressed the previously working neural handoff.'
+}
 Require 'pipeline/ImageReconstruction/Kernels/ImageReconstruction/EncodeTexturesCS.hlsl' 'dilationWeight > 0.5f \? dilatedMotionVector : motionVector'
 Require 'pipeline/Camera Suite/Kernels/CameraSuite/HDROutputCS.hlsl' 'CameraViewProjUnjittered'
 Require 'pipeline/Camera Suite/Kernels/CameraSuite/PhysicalCameraHistogramCS.hlsl' 'InterlockedAdd\(LocalHistogram\[bin\], 1u\)'

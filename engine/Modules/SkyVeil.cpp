@@ -4,6 +4,7 @@
 #include "Globals.h"
 #include "State.h"
 #include "Utils/D3D.h"
+#include "Modules/Microclimates.h"
 
 #define I18N_KEY_PREFIX "feature.sky_veil."
 
@@ -243,17 +244,23 @@ int SkyVeil::FindCloudLayer(RE::BSRenderPass* Pass)
 
 void SkyVeil::ModifySky(RE::BSRenderPass* Pass)
 {
+	if (!Pass || !Pass->shaderProperty)
+		return;
+	auto skyProperty = static_cast<const RE::BSSkyShaderProperty*>(Pass->shaderProperty);
+	if (skyProperty->uiSkyObjectType != RE::BSSkyShaderProperty::SkyObject::SO_CLOUDS)
+		return;
+
+	// The existing Skyrim cloud layers remain the cloud geometry/material. The
+	// microclimate field only modulates their coverage for matching world-space
+	// regions, so it inherits the game's authored cloud silhouettes and motion.
+	globals::pipeline::microclimates.BindSkyCloudField();
+
 	auto shadowState = globals::game::shadowState;
 	if (!Pass || !shadowState || !globals::d3d::context ||
 		!texCloudShadowLayers[0] || !texCloudShadowLayers[0]->srv)
 		return;
 
 	auto& cubeMapRenderTarget = shadowState->GetRuntimeData().cubeMapRenderTarget;
-
-	auto skyProperty = static_cast<const RE::BSSkyShaderProperty*>(Pass->shaderProperty);
-
-	if (skyProperty->uiSkyObjectType != RE::BSSkyShaderProperty::SkyObject::SO_CLOUDS)
-		return;
 
 	int layer = FindCloudLayer(Pass);
 	if (layer < 0)

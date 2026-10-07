@@ -1036,6 +1036,7 @@ float GetSnowParameterY(float texProjTmp, float alpha)
 // compile-time excluded so GroundResponse's b13 ABI remains untouched.
 #	include "DialogueFocus/DialogueFocus.hlsli"
 #	include "ActorSurfaceEffects/ActorSurfaceEffects.hlsli"
+#	include "ClothDynamics/ClothDynamics.hlsli"
 
 #	if defined(WATER_OPTICS)
 #		include "WaterOptics/WaterCaustics.hlsli"
@@ -3331,7 +3332,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	}
 #	endif
 
-	worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
+worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 #	if defined(HAIR_RECONSTRUCTION) && defined(HAIR)
 	HairReconstruction::ApplyCardAppearance(baseColor, input.WorldPosition.xyz, worldNormal, uv);
 #	endif
@@ -4003,6 +4004,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		1.0f);
 #	else
 		0.0f);
+#	endif
+
+#	if defined(SKINNED)
+	// Health-driven wear overlays albedo/roughness while leaving the authored
+	// normal-map and world-normal paths untouched.
+	ClothingDamage::Apply(material.BaseColor, material.Roughness, material.Metallic, uvOriginal);
 #	endif
 
 	// Geometric specular anti-aliasing: normal-map/parallax detail can remain high

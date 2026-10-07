@@ -39,7 +39,7 @@ void ContactShadows::DrawSettings()
 
 		Util::UIntSlider(T(TKEY("sample_count"), "Directional Ray Quality"), &bendSettings.SampleCount, 1, 12);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text("%s", T(TKEY("sample_count_tooltip"), "Multiplier for directional ray samples. High uses 4; Cinematic uses 12 and is intentionally about three times heavier. Adapts to render resolution and rebuilds the ray-march shader when needed."));
+			ImGui::Text("%s", T(TKEY("sample_count_tooltip"), "Multiplier for directional ray samples. High uses 3; Cinematic uses 6. Adapts to render resolution and rebuilds the ray-march shader when needed."));
 
 		ImGui::SliderFloat(T(TKEY("surface_thickness"), "Surface Thickness"), &bendSettings.SurfaceThickness, 0.005f, 0.05f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
@@ -61,6 +61,7 @@ void ContactShadows::DrawSettings()
 		ImGui::SliderFloat("SSS Falloff End", &bendSettings.FalloffEnd, 512.0f, 24000.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Fades the screen-space directional shadow to neutral over view distance. Lower values reduce raymarch work and avoid unstable far-depth shadows; Skyrim's normal shadow map remains active beyond this range.");
+		ImGui::TextDisabled("Current fade-out: %.0f m (%.0f Skyrim units)", bendSettings.FalloffEnd / 70.0f, bendSettings.FalloffEnd);
 
 		ImGui::Spacing();
 		ImGui::Spacing();

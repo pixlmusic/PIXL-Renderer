@@ -8,6 +8,7 @@ struct VolumeOcclusion;
 struct MaterialLayers;
 struct GroundResponse;
 struct ActorSurfaceEffects;
+struct ClothDynamics;
 struct FoliageDynamics;
 struct FoliageOptimizer;
 struct StrandShading;
@@ -45,6 +46,7 @@ struct ContainedLiquids;
 struct CurvedSurfaceMapping;
 struct DistantLife;
 struct ReactiveFX;
+struct Microclimates;
 
 class State;
 class Deferred;
@@ -101,6 +103,7 @@ namespace globals
 		extern MaterialLayers materialLayers;
 		extern GroundResponse groundResponse;
 		extern ActorSurfaceEffects actorSurfaceEffects;
+		extern ClothDynamics clothDynamics;
 		extern FoliageDynamics foliageDynamics;
 		extern FoliageOptimizer foliageOptimizer;
 		extern StrandShading strandShading;
@@ -138,6 +141,7 @@ namespace globals
 		extern CurvedSurfaceMapping curvedSurfaceMapping;
 		extern DistantLife distantLife;
 		extern ReactiveFX reactiveFX;
+		extern Microclimates microclimates;
 
 	}
 

@@ -64,13 +64,13 @@ function Apply-QualityContract([object]$Config, [int]$Tier) {
     $gi.EnableSpecularOcclusion = $true
     $gi.EnableAdaptiveDenoiser = $true
     $gi.ResolutionMode = 0
-    $gi.NumSlices = @(2, 4, 6, 10)[$Tier]
-    $gi.NumSteps = @(4, 8, 12, 20)[$Tier]
-    $gi.WorldCacheSampleCount = @(2, 4, 8, 8)[$Tier]
-    $gi.WorldCacheTraceSteps = @(2, 3, 4, 6)[$Tier]
-    $gi.WorldCacheInjectionStride = @(8, 4, 2, 1)[$Tier]
+    $gi.NumSlices = @(2, 3, 5, 8)[$Tier]
+    $gi.NumSteps = @(4, 7, 10, 16)[$Tier]
+    $gi.WorldCacheSampleCount = @(2, 3, 6, 8)[$Tier]
+    $gi.WorldCacheTraceSteps = @(2, 3, 3, 5)[$Tier]
+    $gi.WorldCacheInjectionStride = @(8, 5, 3, 1)[$Tier]
     $gi.EnableWorldCacheSecondBounce = $Tier -ge 1
-    $gi.ReflectionSteps = @(12, 24, 48, 64)[$Tier]
+    $gi.ReflectionSteps = @(12, 20, 36, 56)[$Tier]
     $gi.MaxAccumFrames = @(16, 24, 24, 36)[$Tier]
     $gi.BlurRadius = @(3.0, 2.5, 2.0, 1.6)[$Tier]
     $gi.RadianceFireflyClamp = @(4.0, 5.0, 8.0, 12.0)[$Tier]
@@ -78,7 +78,9 @@ function Apply-QualityContract([object]$Config, [int]$Tier) {
     # Higher tiers inject more cache samples, so they can use a slower replacement
     # rate for a steadier world-space anchor without sacrificing convergence.
     $gi.WorldCacheTemporalResponse = @(0.08, 0.075, 0.07, 0.06)[$Tier]
-    $Config.'Contact Shadows'.SampleCount = @(1, 1, 4, 12)[$Tier]
+    $Config.'Contact Shadows'.SampleCount = @(1, 1, 3, 6)[$Tier]
+    $Config.'Contact Shadows'.FalloffStart = @(3072, 3584, 4608, 6144)[$Tier]
+    $Config.'Contact Shadows'.FalloffEnd = @(6144, 7168, 8192, 10240)[$Tier]
     $Config.'Material Forge'.LocalContactShadowLightCount = @(1, 1, 2, 2)[$Tier]
     $Config.'Light Volumes'.ExteriorQuality = [Math]::Min($Tier, 2)
     $Config.'Light Volumes'.InteriorQuality = [Math]::Min($Tier, 2)

@@ -9,6 +9,7 @@
 #include "Modules/ThinSurface.h"
 #include "Modules/GroundResponse.h"
 #include "Modules/ActorSurfaceEffects.h"
+#include "Modules/ClothDynamics.h"
 #include "Modules/FoliageDynamics.h"
 #include "Modules/FoliageOptimizer.h"
 #include "Modules/CameraSuite.h"
@@ -31,6 +32,7 @@
 #include "Modules/CurvedSurfaceMapping.h"
 #include "Modules/DistantLife.h"
 #include "Modules/ReactiveFX.h"
+#include "Modules/Microclimates.h"
 #include "Modules/SkyContinuity.h"
 #include "Modules/SkyBounce.h"
 #include "Modules/TissueDiffusion.h"
@@ -235,6 +237,7 @@ const std::vector<RenderModule*>& RenderModule::GetModuleList()
 		&globals::pipeline::foliageDynamics,
 		&globals::pipeline::foliageOptimizer,
 		&globals::pipeline::groundResponse,
+		&globals::pipeline::clothDynamics,
 		&globals::pipeline::actorSurfaceEffects,
 		&globals::pipeline::contactShadows,
 		&globals::pipeline::materialLayers,
@@ -268,6 +271,7 @@ const std::vector<RenderModule*>& RenderModule::GetModuleList()
 		&globals::pipeline::linearLightCore,
 		&globals::pipeline::waterbody,
 		&globals::pipeline::horizonBlend,
+		&globals::pipeline::microclimates,
 		&globals::pipeline::atmosphere,
 		&globals::pipeline::cameraSuite,
 		&globals::pipeline::skinOptics,

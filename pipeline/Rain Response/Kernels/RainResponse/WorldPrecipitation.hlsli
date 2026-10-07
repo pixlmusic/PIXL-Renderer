@@ -22,7 +22,18 @@ cbuffer PIXLWorldPrecipitationTuning : register(b13)
 	float PIXL_SnowWorldScale;
 	float PIXL_PrecipPad0;
 	float PIXL_PrecipPad1;
+	float4 PIXLMicroFieldOriginExtent;
+	float4 PIXLMicroPreviousOriginWind;
+	float4 PIXLMicroBaseWeather;
+	float4 PIXLMicroEmitterPosition;
+	float4 PIXLMicroEmitterWeather;
+	float4 PIXLMicroControls;
+	float4 PIXLMicroExtendedControls;
 };
+
+#define PIXL_MICROCLIMATE_EXTERNAL_CONSTANTS
+#include "Microclimates/MicroclimateField.hlsli"
+#undef PIXL_MICROCLIMATE_EXTERNAL_CONSTANTS
 
 namespace PIXLPrecipitation
 {

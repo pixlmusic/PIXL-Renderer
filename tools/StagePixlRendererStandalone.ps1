@@ -10,6 +10,7 @@ param(
     [string]$AllowedOutputRoot = "",
     [ValidateSet("LIVE-TEST", "RELEASE-CANDIDATE", "RELEASE")]
     [string]$Channel = "LIVE-TEST",
+    [string]$ProductVersion = "1.0.6",
     [ValidateRange(0, 9)]
     [int]$CompressionLevel = 7,
     [switch]$SkipPipelineLibrary,
@@ -21,6 +22,7 @@ if (-not [string]::IsNullOrWhiteSpace($NeuralRuntimePath)) {
     throw 'NR runtimes are manual-install only and cannot be bundled. Omit -NeuralRuntimePath.'
 }
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+if ($ProductVersion -notmatch '^\d+\.\d+\.\d+(?:r\d+)?$') { throw "Invalid package product version: $ProductVersion" }
 $shaderCacheSource = Get-Content -LiteralPath (Join-Path $sourceRoot 'engine\ShaderCache.cpp') -Raw
 function Get-ShaderCacheConstant([string]$name) {
     $match = [regex]::Match($shaderCacheSource, 'static constexpr const char\*\s+' + [regex]::Escape($name) + '\s*=\s*"([^"]+)"')
@@ -50,8 +52,8 @@ $sourceWorkingTreeDirty = [bool]@($sourceChanges | Where-Object {
     -not ($reproducibleDependencyPatch -and $_ -eq ' m extern/FidelityFX-SDK')
 })
 $allowedRoot = [IO.Path]::GetFullPath($(if ($AllowedOutputRoot) { $AllowedOutputRoot } else { Join-Path $sourceRoot "dist" }))
-if (-not $OutputDirectory) { $OutputDirectory = Join-Path $allowedRoot "PIXL-Renderer-1.0.6-Core" }
-if (-not $ArchivePath) { $ArchivePath = Join-Path $allowedRoot "PIXL-Renderer-1.0.6-Core.zip" }
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $allowedRoot "PIXL-Renderer-$ProductVersion-Core" }
+if (-not $ArchivePath) { $ArchivePath = Join-Path $allowedRoot "PIXL-Renderer-$ProductVersion-Core.zip" }
 if (-not $BuildDirectory) { $BuildDirectory = Join-Path $sourceRoot "build\PIXL-12C\Release" }
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 $archive = if ($ArchivePath) { [IO.Path]::GetFullPath($ArchivePath) } else { "" }
@@ -367,8 +369,8 @@ $manifestFiles = Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object
 }
 [ordered]@{
     product = "PIXL Renderer"
-    title = "PIXL Renderer v1.0.6"
-    version = "1.0.6"
+    title = "PIXL Renderer v$ProductVersion"
+    version = $ProductVersion
     requirements = @([ordered]@{
         id = "EngineFixes"
         path = "SKSE/Plugins/EngineFixes.dll"

@@ -50,6 +50,7 @@ foreach ($mask in 0..7) {
 }
 $jobs.Add([pscustomobject]@{ path = 'Atmosphere/VolumetricFogMaterialCS.hlsl'; defines = @() })
 $jobs.Add([pscustomobject]@{ path = 'Atmosphere/VolumetricFogMaterialCS.hlsl'; defines = @('RAIN_RESPONSE') })
+$jobs.Add([pscustomobject]@{ path = 'Microclimates/MicroclimateFieldCS.hlsl'; defines = @() })
 foreach ($kernel in @('VolumetricFogConservativeDepthCS.hlsl', 'VolumetricFogIntegrationCS.hlsl')) {
     $jobs.Add([pscustomobject]@{ path = 'Atmosphere/' + $kernel; defines = @() })
 }

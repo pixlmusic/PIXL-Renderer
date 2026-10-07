@@ -9,6 +9,8 @@
 #include "State.h"
 #include "Deferred.h"
 #include "Utils/D3D.h"
+#include "Globals.h"
+#include "Modules/Microclimates.h"
 
 #define I18N_KEY_PREFIX "feature.rain_response."
 
@@ -52,9 +54,10 @@ namespace
 		float SnowWorldScale = 1800.0f;
 		float pad0 = 0.0f;
 		float pad1 = 0.0f;
+		Microclimates::FieldConstants microclimate{};
 	};
 	STATIC_ASSERT_ALIGNAS_16(WorldPrecipitationTuning);
-	static_assert(sizeof(WorldPrecipitationTuning) == 64, "WorldPrecipitationTuning ABI mismatch");
+	static_assert(sizeof(WorldPrecipitationTuning) == 176, "WorldPrecipitationTuning ABI mismatch");
 
 	SnowPrecipitationSettings g_snowPrecipitation{};
 	std::unique_ptr<ConstantBuffer> g_worldPrecipitationCB;
@@ -1391,9 +1394,11 @@ void RainResponse::Prepass()
 		std::clamp(g_snowPrecipitation.SnowFlakeScale, 0.65f, 1.50f);
 	tuning.SnowWorldScale =
 		std::max(g_snowPrecipitation.SnowWorldScale, 256.0f);
+	tuning.microclimate = globals::pipeline::microclimates.GetCurrentFieldConstants();
 
 	g_worldPrecipitationCB->Update(tuning);
 	ID3D11Buffer* buffer = g_worldPrecipitationCB->CB();
+	globals::pipeline::microclimates.BindParticleField();
 
 	// Particle precipitation consumes this on VS/PS. GroundResponse's b13 terrain
 	// replay and roof runoff's CS b13 occur on different draw/stage contexts.

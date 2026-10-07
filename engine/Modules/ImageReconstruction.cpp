@@ -1451,7 +1451,6 @@ void ImageReconstruction::ConfigureUpscaling(RE::BSGraphics::State* a_viewport)
 void ImageReconstruction::SetupResources()
 {
 	dlssFrameReady = false;
-	dx12SwapChain.neuralGuidesReady = false;
 	QueryPerformanceFrequency(&qpf);
 
 	auto renderer = globals::game::renderer;
@@ -1561,11 +1560,6 @@ void ImageReconstruction::ClearShaderCache()
 
 void ImageReconstruction::CopySharedD3D12Resources(bool a_useNeuralGuides)
 {
-	if (a_useNeuralGuides) {
-		dx12SwapChain.neuralGuidesReady = false;
-		if (!HasCurrentDLSSFrame() || !copyDepthToSharedBufferPS || !GetUpscaleVS())
-			return;
-	}
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "ImageReconstruction - Copy Shared D3D12 Resources");
 	globals::state->BeginPerfEvent("Copy Shared D3D12 Resources");
@@ -1647,11 +1641,6 @@ void ImageReconstruction::CopySharedD3D12Resources(bool a_useNeuralGuides)
 	context->OMSetRenderTargets(0, nullptr, nullptr);
 	context->PSSetShader(nullptr, nullptr, 0);
 	context->VSSetShader(nullptr, nullptr, 0);
-	if (a_useNeuralGuides) {
-		dx12SwapChain.neuralGuideFrame = globals::state->frameCount;
-		dx12SwapChain.neuralGuidesReady = true;
-	}
-
 	globals::state->EndPerfEvent();
 }
 

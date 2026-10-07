@@ -53,6 +53,8 @@
 #include "Modules/ThinSurface.h"
 #include "Modules/CameraSuite.h"
 #include "Modules/ContainedLiquids.h"
+#include "Modules/ClothDynamics.h"
+#include "Modules/Microclimates.h"
 #include "Modules/CurvedSurfaceMapping.h"
 #include "Modules/DistantLife.h"
 #include "Modules/ReactiveFX.h"
@@ -860,7 +862,8 @@ namespace
 		g_directorVideo.path.points.push_back(point);
 		g_directorVideo.selectedPoint = g_directorVideo.path.points.size() - 1;
 		RebuildDirectorVideoPath();
-		logger::info("[PIXL Director] Captured Video point {}", point.id);
+		if (globals::state && globals::state->IsDeveloperMode())
+			logger::info("[PIXL Director] Captured Video point {}", point.id);
 	}
 
 	void SaveDirectorVideoCameraToSelectedPoint()
@@ -7035,16 +7038,15 @@ void TuningWorkspaceRenderer::RenderLeftColumn(
 				};
 
 				group("ExperimentalWorld", "WORLD", [&] {
-					experimentalItem(kRenderOriginTool.data(), "RENDER ORIGIN  [EXPERIMENTAL]");
-					experimentalItem("DistantLife", "DISTANT LIFE  [EXPERIMENTAL]");
+					experimentalItem(kRenderOriginTool.data(), "RENDER ORIGIN");
+					experimentalItem("DistantLife", "DISTANT LIFE");
 				});
 				group("ExperimentalMaterials", "MATERIALS", [&] {
-					experimentalItem("CurvedSurfaceMapping", "CURVED SURFACE MAPPING  [EXPERIMENTAL]");
-					experimentalItem("ContainedLiquids", "CONTAINED LIQUIDS  [EXPERIMENTAL]");
+					experimentalItem("ContainedLiquids", "CONTAINED LIQUIDS");
 				});
 				group("ExperimentalMisc", "MISC", [&] {
-					experimentalItem(kENBTranslatorTool.data(), "ENB PRESET TRANSLATOR  [EXPERIMENTAL]");
-					experimentalItem("ReactiveFX", "REACTIVE FX  [EXPERIMENTAL]");
+					experimentalItem(kENBTranslatorTool.data(), "ENB PRESET TRANSLATOR");
+					experimentalItem("ReactiveFX", "REACTIVE FX");
 				});
 			} else {
 				for (RenderModule* feature : page.features) {

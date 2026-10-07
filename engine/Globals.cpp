@@ -8,6 +8,7 @@
 #include "Modules/ThinSurface.h"
 #include "Modules/GroundResponse.h"
 #include "Modules/ActorSurfaceEffects.h"
+#include "Modules/ClothDynamics.h"
 #include "Modules/FoliageDynamics.h"
 #include "Modules/FoliageOptimizer.h"
 #include "Modules/CameraSuite.h"
@@ -30,6 +31,7 @@
 #include "Modules/CurvedSurfaceMapping.h"
 #include "Modules/DistantLife.h"
 #include "Modules/ReactiveFX.h"
+#include "Modules/Microclimates.h"
 #include "Modules/SkyContinuity.h"
 #include "Modules/SkyBounce.h"
 #include "Modules/TissueDiffusion.h"
@@ -68,6 +70,7 @@ namespace globals
 		MaterialLayers materialLayers{};
 		GroundResponse groundResponse{};
 		ActorSurfaceEffects actorSurfaceEffects{};
+		ClothDynamics clothDynamics{};
 		FoliageDynamics foliageDynamics{};
 		FoliageOptimizer foliageOptimizer{};
 		AmbientProbe ambientProbe{};
@@ -105,6 +108,7 @@ namespace globals
 		CurvedSurfaceMapping curvedSurfaceMapping{};
 		DistantLife distantLife{};
 		ReactiveFX reactiveFX{};
+		Microclimates microclimates{};
 
 		namespace llf
 		{

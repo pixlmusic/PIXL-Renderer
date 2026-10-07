@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$PackageDirectory,
-    [string]$SchemaPath = ""
+    [string]$SchemaPath = "",
+    [string]$ExpectedVersion = "1.0.6"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,7 +27,7 @@ if ($SchemaPath) {
     try { while ($reader.Read()) {} } finally { $reader.Dispose() }
     if ($schemaErrors.Count) { throw "FOMOD schema validation failed: $($schemaErrors -join '; ')" }
 }
-if ($info.fomod.Version.'#text' -ne '1.0.6') { throw 'Incorrect installer version.' }
+if ($info.fomod.Version.'#text' -ne $ExpectedVersion) { throw "Incorrect installer version; expected $ExpectedVersion." }
 $allText = (Get-Content -LiteralPath $configPath,$infoPath,(Join-Path $root 'PIXL-Core\PIXL-INSTALLER-NOTICE.md') -Raw) -join "`n"
 foreach ($phrase in @('automated coding','PIXL Studio','SurfaceTides 1.0.2 Integration','AllowPIXL=1','replaces SurfaceTides.dll','PAGE DOWN','HOME','HIGHLIGHTS SINCE 1.0.4')) {
     if ($allText -notmatch [regex]::Escape($phrase)) { throw "Missing required disclosure or warning: $phrase" }
@@ -88,4 +89,4 @@ if ($groups.Count -ne 3 -or @($groups | Where-Object { $_.type -ne 'SelectExactl
 if ($config.SelectSingleNode("//plugin[contains(@name,'SurfaceTides 1.0.2 Integration')]/typeDescriptor/dependencyType")) {
     throw 'SurfaceTides integration must remain selectable; Vortex deployment state is not a reliable FOMOD dependency gate.'
 }
-Write-Host "PASS: PIXL 1.0.6 FOMOD XML, branding assets, disclosures, core payload and universal SurfaceTides 1.0.2 bridge validated."
+Write-Host "PASS: PIXL $ExpectedVersion FOMOD XML, branding assets, disclosures, core payload and universal SurfaceTides 1.0.2 bridge validated."
