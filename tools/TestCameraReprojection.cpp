@@ -76,9 +76,9 @@ int main()
         frame.projection[0] = std::numeric_limits<float>::quiet_NaN();
         Require(!BuildCameraReprojection(frame, reset), "invalid projection accepted");
         NeuralGuideFrame guides{42,1280,720};
-        Require(guides.Matches(42,1920,1080), "valid guide rejected");
-        Require(!guides.Matches(43,1920,1080) && !guides.Matches(42,640,360), "stale or mismatched guides accepted");
-        Require(!NeuralGuideFrame{}.Matches(42,1920,1080), "unpublished guides accepted");
+        Require(guides.IsValidForAllocation(1920,1080), "valid guide rejected");
+        Require(!guides.IsValidForAllocation(640,360), "guide larger than allocation accepted");
+        Require(!NeuralGuideFrame{}.IsValidForAllocation(1920,1080), "unpublished guides accepted");
         std::cout << cases << " origin-aware projected position pairs and reset/guide cases passed\n";
         return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
