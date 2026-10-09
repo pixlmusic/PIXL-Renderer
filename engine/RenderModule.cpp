@@ -59,6 +59,12 @@
 void RenderModule::Load(json& o_json)
 {
 	ModuleRules::InvalidateConstraintCache();
+	// Retired experiments remain registered only for cache migration and ABI
+	// compatibility. Old INIs/settings must not reactivate their hooks or UI.
+	if (GetShortName() == "ClothDynamics" || GetShortName() == "Microclimates") {
+		loaded = false;
+		return;
+	}
 	// Convert string to wstring
 	auto ini_filename = std::format("{}.ini", GetShortName());
 	std::wstring ini_filename_w;

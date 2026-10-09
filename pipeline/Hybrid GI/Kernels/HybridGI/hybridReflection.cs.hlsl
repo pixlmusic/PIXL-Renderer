@@ -155,8 +155,8 @@ inline bool ReadReflectionVoxel(float3 queryWS, float3 receiverWS, float3 camera
             valid = occupancy > (1.0f / 255.0f);
         } else if (nearValid) {
             radiance = nearRadiance;
-            occupancy = nearOccupancy * (1.0f - smoothstep(0.35f, 0.999f, blend));
-            valid = occupancy > (1.0f / 255.0f);
+            occupancy = nearOccupancy;
+            valid = true;
         } else if (farValid) {
             radiance = farRadiance;
             occupancy = farOccupancy;
@@ -171,7 +171,8 @@ inline float3 TraceWorldFallback(float3 positionWS, float3 directionWS, float3 c
     confidence = 0.0f;
     float3 result = 0.0f;
     if (WorldCacheEnabled != 0u && WorldCacheReflectionEnabled != 0u) {
-        float baseStep = WorldCacheTraceCellSize(positionWS, cameraWS);
+        uint receiverCascade = WorldCacheCascade(positionWS, cameraWS);
+        float baseStep = WorldCacheCellSize(receiverCascade);
         float weightSum = 0.0f;
         float transmittance = 1.0f;
         uint steps = clamp(WorldCacheTraceSteps, 2u, 6u);

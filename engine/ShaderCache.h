@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "Utils/WinApi.h"
+#include "ShaderCache/CompilationArtifact.h"
 
 using namespace std::chrono;
 
@@ -164,6 +165,8 @@ namespace SIE
 		void SetEnqueuedQpc(int64_t qpc) { enqueuedQpc = qpc; }
 		/** @brief Gets the QPC timestamp when this task was enqueued. */
 		int64_t GetEnqueuedQpc() const { return enqueuedQpc; }
+		void SetGeneration(uint64_t value) { generation = value; }
+		uint64_t GetGeneration() const { return generation; }
 
 		bool operator==(const ShaderCompilationTask& other) const;
 
@@ -176,6 +179,7 @@ namespace SIE
 		static int ComputePriority(ShaderClass shaderClass, const RE::BSShader& shader, uint32_t descriptor);
 		int cachedPriority;
 		int64_t enqueuedQpc = 0;
+		uint64_t generation = 0;
 	};
 }
 
@@ -212,6 +216,7 @@ namespace SIE
 	{
 	public:
 		LARGE_INTEGER lastReset;
+		std::atomic<uint64_t> generation{ 1 };
 		LARGE_INTEGER lastCalculation;
 		std::atomic<int64_t> completionTime;  // When compilation completed (QuadPart equivalent)
 		LARGE_INTEGER frequency;
@@ -307,6 +312,7 @@ namespace SIE
 		ShaderCompilationTask::Status status;
 		system_clock::time_point compileTime = system_clock::now();
 		bool loadedFromDisk = false;  /**< true when the shader blob was read from the disk cache rather than compiled */
+		uint64_t generation = 0;
 	};
 
 	class UpdateListener;
@@ -363,6 +369,8 @@ namespace SIE
 
 		/** Gets whether the persistent disk cache is enabled. */
 		bool IsDiskCache() const;
+
+		CompilationArtifacts& GetCompilationArtifacts() { return compilationArtifacts; }
 		/** Sets whether the persistent disk cache is enabled. */
 		void SetDiskCache(bool value);
 		/** @brief Deletes the entire on-disk shader cache directory. */
@@ -435,15 +443,15 @@ namespace SIE
 		*/
 		bool Clear(const std::string& a_path);
 
-		bool AddCompletedShader(ShaderClass shaderClass, const RE::BSShader& shader, uint32_t descriptor, ID3DBlob* a_blob, bool fromDisk = false);
+		bool AddCompletedShader(ShaderClass shaderClass, const RE::BSShader& shader, uint32_t descriptor, ID3DBlob* a_blob, uint64_t generation, bool fromDisk = false);
 
 		enum class ClaimResult
 		{
 			CacheHit,  // Already compiled; use the returned blob
 			Claimed    // Claimed as Pending; caller must compile and call AddCompletedShader
 		};
-		std::pair<ClaimResult, ID3DBlob*> ClaimCompilation(const std::string& key);
-		void ResolvePendingFailure(const std::string& key);
+		std::pair<ClaimResult, ID3DBlob*> ClaimCompilation(const std::string& key, uint64_t generation);
+		void ResolvePendingFailure(const std::string& key, uint64_t generation);
 
 		ID3DBlob* GetCompletedShader(const std::string& a_key);
 		ID3DBlob* GetCompletedShader(const SIE::ShaderCompilationTask& a_task);
@@ -790,6 +798,7 @@ namespace SIE
 
 		bool isEnabled = true;
 		bool isDiskCache = true;
+		CompilationArtifacts compilationArtifacts;
 		bool isSkipUnchangedShaders = true;  ///< when true, recompile a disk-cached shader only if its source is newer
 		bool isAsync = true;
 		bool isDump = false;

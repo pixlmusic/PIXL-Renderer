@@ -223,11 +223,10 @@ void DX12SwapChain::CreateSwapChain(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC 
 
 void DX12SwapChain::CreateInterop()
 {
-	HANDLE sharedFenceHandle;
+	winrt::handle sharedFenceHandle;
 	DX::ThrowIfFailed(d3d12Device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&d3d12Fence)));
-	DX::ThrowIfFailed(d3d12Device->CreateSharedHandle(d3d12Fence.get(), nullptr, GENERIC_ALL, nullptr, &sharedFenceHandle));
-	DX::ThrowIfFailed(d3d11Device->OpenSharedFence(sharedFenceHandle, IID_PPV_ARGS(&d3d11Fence)));
-	CloseHandle(sharedFenceHandle);
+	DX::ThrowIfFailed(d3d12Device->CreateSharedHandle(d3d12Fence.get(), nullptr, GENERIC_ALL, nullptr, sharedFenceHandle.put()));
+	DX::ThrowIfFailed(d3d11Device->OpenSharedFence(sharedFenceHandle.get(), IID_PPV_ARGS(&d3d11Fence)));
 	allocatorFenceEvent.attach(CreateEventW(nullptr, FALSE, FALSE, nullptr));
 	if (!allocatorFenceEvent)
 		DX::ThrowIfFailed(HRESULT_FROM_WIN32(GetLastError()));
@@ -290,6 +289,7 @@ HRESULT DX12SwapChain::GetBuffer(UINT buffer, REFIID riid, void** ppSurface)
 HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 {
 	auto& imageReconstruction = globals::pipeline::imageReconstruction;
+	neuralOutputCompletedThisPresent.store(false, std::memory_order_release);
 	bool completedNeuralThisFrame = false;
 	std::uint32_t neuralOutputIndexThisFrame = UINT32_MAX;
 	static bool loggedFirstDLSSGPresent = false;
@@ -315,9 +315,11 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	bool isHDR = hdr && hdr->settings.enableHDR;
 
 	// Wait for D3D11 to finish (includes ApplyHDR scene encoding AND UIBrightnessCS)
+	// Fence creation completes value 0; every submission must reserve a new value
+	// before signaling, including the first D3D11-to-D3D12 handoff.
+	++fenceValue;
 	DX::ThrowIfFailed(d3d11Context->Signal(d3d11Fence.get(), fenceValue));
 	DX::ThrowIfFailed(commandQueue->Wait(d3d12Fence.get(), fenceValue));
-	fenceValue++;
 
 	// New frame, reset
 	// A GPU-side queue Wait does not make a CPU allocator Reset safe. Wait
@@ -365,12 +367,15 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 			if (neural.GetStatus() == NeuralRendering::Status::Initialized) {
 				D3D11_TEXTURE2D_DESC guideDesc{};
 				neuralDepthBufferShared12->resource11->GetDesc(&guideDesc);
-				const UINT guideWidth = std::min(neuralGuideWidth, guideDesc.Width);
-				const UINT guideHeight = std::min(neuralGuideHeight, guideDesc.Height);
+				const UINT guideWidth = neuralGuides.width;
+				const UINT guideHeight = neuralGuides.height;
 				// Present can run before the first encoded depth/motion copy. Do not
 				// manufacture a 1x1 guide contract: Feature 18 treats it as a runtime
 				// fault and latches itself off for the session.
-				if (guideWidth > 1 && guideHeight > 1) {
+				// Skyrim's render/update threads may advance their frame snapshots before
+				// this Present consumes the shared guides. Their frame tag is diagnostic;
+				// validity here is determined by publication and allocation bounds.
+				if (neuralGuides.IsValidForAllocation(guideDesc.Width, guideDesc.Height)) {
 
 				ID3D12Resource* neuralInputs[]{
 					fakeSwapChain,
@@ -457,6 +462,19 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 					completedNeuralThisFrame = true;
 					neuralOutputIndexThisFrame = finalNeuralOutputIndex;
 				}
+				} else {
+					static std::atomic_bool guideMismatchLogged{ false };
+					if (!guideMismatchLogged.exchange(true, std::memory_order_acq_rel)) {
+						logger::warn(
+							"[NeuralRendering] Skipping Feature 18: guide contract is unpublished or outside allocation (guideFrame={}, cameraFrame={}, stateFrame={}, guide={}x{}, allocation={}x{})",
+							neuralGuides.frame,
+							imageReconstruction.cameraFrame.frame,
+							globals::state->frameCount,
+							neuralGuides.width,
+							neuralGuides.height,
+							guideDesc.Width,
+							guideDesc.Height);
+					}
 				}
 			}
 		}
@@ -565,14 +583,15 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	}
 
 	// Wait for D3D12 to finish
+	++fenceValue;
 	DX::ThrowIfFailed(commandQueue->Signal(d3d12Fence.get(), fenceValue));
 	allocatorFenceValues[frameIndex] = fenceValue;
 	DX::ThrowIfFailed(d3d11Context->Wait(d3d11Fence.get(), fenceValue));
-	fenceValue++;
 
 	if (completedNeuralThisFrame) {
 		completedNeuralOutputIndex.store(neuralOutputIndexThisFrame, std::memory_order_release);
 		completedNeuralFrameSerial.fetch_add(1, std::memory_order_acq_rel);
+		neuralOutputCompletedThisPresent.store(true, std::memory_order_release);
 	}
 
 	// Update the frame index
@@ -630,19 +649,25 @@ float DX12SwapChain::GetFrameTime() const
 
 WrappedResource::WrappedResource(D3D11_TEXTURE2D_DESC a_texDesc, ID3D11Device5* a_d3d11Device, ID3D12Device* a_d3d12Device)
 {
+	// A failed constructor does not run our destructor. Commit raw members only
+	// after every texture/view/shared-resource operation has succeeded.
+	winrt::com_ptr<ID3D11Texture2D> texture11;
+	winrt::com_ptr<ID3D11ShaderResourceView> viewSrv;
+	winrt::com_ptr<ID3D11UnorderedAccessView> viewUav;
+	winrt::com_ptr<ID3D11RenderTargetView> viewRtv;
+	winrt::com_ptr<ID3D12Resource> sharedResource12;
 	// Create D3D11 shared texture directly instead of wrapping D3D12 resource
 	a_texDesc.MiscFlags |= D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
-	DX::ThrowIfFailed(a_d3d11Device->CreateTexture2D(&a_texDesc, nullptr, &resource11));
+	DX::ThrowIfFailed(a_d3d11Device->CreateTexture2D(&a_texDesc, nullptr, texture11.put()));
 
 	// Get shared handle from D3D11 texture to enable D3D12 access
 	winrt::com_ptr<IDXGIResource1> dxgiResource;
-	DX::ThrowIfFailed(resource11->QueryInterface(IID_PPV_ARGS(dxgiResource.put())));
-	HANDLE sharedHandle = nullptr;
-	DX::ThrowIfFailed(dxgiResource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &sharedHandle));
+	DX::ThrowIfFailed(texture11->QueryInterface(IID_PPV_ARGS(dxgiResource.put())));
+	winrt::handle sharedHandle;
+	DX::ThrowIfFailed(dxgiResource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, sharedHandle.put()));
 
 	// Open the shared D3D11 texture as D3D12 resource
-	DX::ThrowIfFailed(a_d3d12Device->OpenSharedHandle(sharedHandle, IID_PPV_ARGS(resource.put())));
-	CloseHandle(sharedHandle);
+	DX::ThrowIfFailed(a_d3d12Device->OpenSharedHandle(sharedHandle.get(), IID_PPV_ARGS(sharedResource12.put())));
 
 	if (a_texDesc.BindFlags & D3D11_BIND_SHADER_RESOURCE) {
 		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
@@ -651,7 +676,7 @@ WrappedResource::WrappedResource(D3D11_TEXTURE2D_DESC a_texDesc, ID3D11Device5* 
 		srvDesc.Texture2D.MostDetailedMip = 0;
 		srvDesc.Texture2D.MipLevels = 1;
 
-		DX::ThrowIfFailed(a_d3d11Device->CreateShaderResourceView(resource11, &srvDesc, &srv));
+		DX::ThrowIfFailed(a_d3d11Device->CreateShaderResourceView(texture11.get(), &srvDesc, viewSrv.put()));
 	}
 
 	if (a_texDesc.BindFlags & D3D11_BIND_UNORDERED_ACCESS) {
@@ -662,14 +687,14 @@ WrappedResource::WrappedResource(D3D11_TEXTURE2D_DESC a_texDesc, ID3D11Device5* 
 			uavDesc.Texture2DArray.FirstArraySlice = 0;
 			uavDesc.Texture2DArray.ArraySize = a_texDesc.ArraySize;
 
-			DX::ThrowIfFailed(a_d3d11Device->CreateUnorderedAccessView(resource11, &uavDesc, &uav));
+			DX::ThrowIfFailed(a_d3d11Device->CreateUnorderedAccessView(texture11.get(), &uavDesc, viewUav.put()));
 		} else {
 			D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
 			uavDesc.Format = a_texDesc.Format;
 			uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
 			uavDesc.Texture2D.MipSlice = 0;
 
-			DX::ThrowIfFailed(a_d3d11Device->CreateUnorderedAccessView(resource11, &uavDesc, &uav));
+			DX::ThrowIfFailed(a_d3d11Device->CreateUnorderedAccessView(texture11.get(), &uavDesc, viewUav.put()));
 		}
 	}
 
@@ -678,8 +703,13 @@ WrappedResource::WrappedResource(D3D11_TEXTURE2D_DESC a_texDesc, ID3D11Device5* 
 		rtvDesc.Format = a_texDesc.Format;
 		rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
 		rtvDesc.Texture2D.MipSlice = 0;
-		DX::ThrowIfFailed(a_d3d11Device->CreateRenderTargetView(resource11, &rtvDesc, &rtv));
+		DX::ThrowIfFailed(a_d3d11Device->CreateRenderTargetView(texture11.get(), &rtvDesc, viewRtv.put()));
 	}
+	resource11 = texture11.detach();
+	srv = viewSrv.detach();
+	uav = viewUav.detach();
+	rtv = viewRtv.detach();
+	resource = std::move(sharedResource12);
 }
 
 WrappedResource::~WrappedResource()
@@ -852,6 +882,7 @@ void DX12SwapChain::CreateSharedResources()
 	main.texture->GetDesc(&texDesc);
 	texDesc.Format = DXGI_FORMAT_R32_FLOAT;
 	depthBufferShared12 = std::make_unique<WrappedResource>(texDesc, d3d11Device.get(), d3d12Device.get());
+	neuralGuides = {};
 	if (globals::pipeline::imageReconstruction.neuralRenderingProvisionedAtBoot)
 		neuralDepthBufferShared12 = std::make_unique<WrappedResource>(texDesc, d3d11Device.get(), d3d12Device.get());
 	else
@@ -873,6 +904,13 @@ ID3D11Texture2D* DX12SwapChain::GetCompletedNeuralOutput() const
 	if (index >= std::size(neuralRenderingOutputWrapped) || !neuralRenderingOutputWrapped[index])
 		return nullptr;
 	return neuralRenderingOutputWrapped[index]->resource11;
+}
+
+ID3D11Texture2D* DX12SwapChain::GetNeuralOutputForLastPresent() const
+{
+	if (!neuralOutputCompletedThisPresent.load(std::memory_order_acquire))
+		return nullptr;
+	return GetCompletedNeuralOutput();
 }
 
 ID3D11Texture2D* DX12SwapChain::GetProvisionedNeuralOutput() const

@@ -52,14 +52,23 @@ void main(uint2 dtid : SV_DispatchThreadID, uint2 gtid : SV_GroupThreadID)
                         float lum = max(measuredLum, exp2(PIXL_HISTOGRAM_LOG_MIN));
                         float logLum = clamp(log2(lum), PIXL_HISTOGRAM_LOG_MIN, PIXL_HISTOGRAM_LOG_MAX);
                         float histogramRange = max(PIXL_HISTOGRAM_LOG_RANGE, 1e-5f);
-                        uint bin = min(255u, (uint)((logLum - PIXL_HISTOGRAM_LOG_MIN) * (255.0f / histogramRange) + 0.5f));
+                        float binPosition = clamp((logLum - PIXL_HISTOGRAM_LOG_MIN) * (255.0f / histogramRange), 0.0f, 255.0f);
+                        uint bin = (uint)binPosition;
+                        // Split one equal-area vote across adjacent log-luminance
+                        // bins. 5 fractional bits bound the total to 2^31 at the
+                        // DX11 16384^2 texture limit and our minimum stride of 2.
+                        uint upperWeight = (uint)(frac(binPosition) * 32.0f + 0.5f);
+                        uint lowerWeight = 32u - upperWeight;
                         // Broad evaluative metering: every sampled cell has an
                         // equal vote across the frame (and its equal-area zones).
                         // The old 4:1 centre bias let a distant candle count like
                         // a much larger bright region when aimed at directly.
                         // Percentile trimming rejects isolated bright/dark cells;
                         // no additional histogram, attachment or pass is needed.
-                        InterlockedAdd(LocalHistogram[bin], 1u);
+                        if (lowerWeight != 0u)
+                            InterlockedAdd(LocalHistogram[bin], lowerWeight);
+                        if (upperWeight != 0u)
+                            InterlockedAdd(LocalHistogram[min(bin + 1u, 255u)], upperWeight);
                     }
                 }
             }

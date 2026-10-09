@@ -209,12 +209,12 @@ void RadiantGrid::Reset()
 	auto* cell = player ? player->GetParentCell() : nullptr;
 	const auto scene = reinterpret_cast<std::uintptr_t>(cell && cell->IsInteriorCell() ?
 		static_cast<void*>(cell) : static_cast<void*>(player ? player->GetWorldspace() : nullptr));
-	std::unique_lock lock{ particleLightsMutex };
+	std::scoped_lock lock{ particleLightQueueMutex, particleLightStateMutex };
 	if (scene != 0 && scene == particleLightScene)
 		return;
 	particleLightScene = scene;
+	particleLightSceneGeneration.fetch_add(1, std::memory_order_release);
 	queuedParticleLights.clear();
-	currentParticleLights.clear();
 	queuedParticleLightOwners.clear();
 	persistedParticleLights.clear();
 	particleLightTime = 0.0;
@@ -260,7 +260,7 @@ void RadiantGrid::BSLightingShader_SetupGeometry_Before(RE::BSRenderPass* a_pass
 {
 	auto shaderCache = globals::shaderCache;
 
-	if (!shaderCache->IsEnabled())
+	if (!a_pass || !shaderCache || !shaderCache->IsEnabled())
 		return;
 
 	// Skyrim and many mesh replacers author candles, braziers and hearth embers as
@@ -287,12 +287,22 @@ void RadiantGrid::BSLightingShader_SetupGeometry_Before(RE::BSRenderPass* a_pass
 
 void RadiantGrid::BSLightingShader_SetupGeometry_GeometrySetupConstantPointLights(RE::BSRenderPass* a_pass)
 {
+	const auto accumulatorAddress = globals::game::currentAccumulator.get();
+	if (!a_pass || !a_pass->sceneLights || !accumulatorAddress ||
+		!*accumulatorAddress || !globals::game::smState) {
+		strictLightDataTemp.NumStrictLights = 0;
+		strictLightDataTemp.ShadowBitMask = 0;
+		return;
+	}
+
 	auto& isl = globals::pipeline::naturalLighting;
 
-	auto accumulator = *globals::game::currentAccumulator.get();
+	auto accumulator = *accumulatorAddress;
 	bool inWorld = accumulator->GetRuntimeData().activeShadowSceneNode == globals::game::smState->shadowSceneNode[0];
 
-	strictLightDataTemp.NumStrictLights = inWorld ? 0 : (a_pass->numLights - 1);
+	const uint32_t availableLights = a_pass->numLights > 0 ? a_pass->numLights - 1 : 0;
+	const uint32_t strictLightCapacity = static_cast<uint32_t>(std::size(strictLightDataTemp.StrictLights));
+	strictLightDataTemp.NumStrictLights = inWorld ? 0 : std::min(availableLights, strictLightCapacity);
 
 	uint32_t writeIdx = 0;
 	for (uint32_t i = 0; i < strictLightDataTemp.NumStrictLights; i++) {
@@ -332,7 +342,8 @@ void RadiantGrid::BSLightingShader_SetupGeometry_GeometrySetupConstantPointLight
 	}
 	strictLightDataTemp.NumStrictLights = writeIdx;
 
-	for (uint32_t i = 0; i < a_pass->numShadowLights; i++) {
+	const uint32_t shadowLightCount = std::min(static_cast<uint32_t>(a_pass->numShadowLights), availableLights);
+	for (uint32_t i = 0; i < shadowLightCount; i++) {
 		auto bsLight = a_pass->sceneLights[i + 1];
 		if (!bsLight)
 			continue;
@@ -348,10 +359,13 @@ void RadiantGrid::BSLightingShader_SetupGeometry_After(RE::BSRenderPass*)
 	auto context = globals::d3d::context;
 	auto smState = globals::game::smState;
 
-	if (!shaderCache->IsEnabled())
+	const auto accumulatorAddress = globals::game::currentAccumulator.get();
+	if (!shaderCache || !shaderCache->IsEnabled() || !context || !smState ||
+		!strictLightDataCB || !accumulatorAddress || !*accumulatorAddress) {
 		return;
+	}
 
-	auto accumulator = *globals::game::currentAccumulator.get();
+	auto accumulator = *accumulatorAddress;
 
 	auto shadowSceneNode = smState->shadowSceneNode[0];
 
@@ -883,7 +897,12 @@ RadiantGrid::VertexColorCacheEntry RadiantGrid::GetParticleLightConfig(RE::BSRen
 	auto* node = a_pass->geometry;
 
 	{
-		std::shared_lock lock{ particleLightsMutex };
+		// This lookup runs inside Skyrim's immediate render hook. Never stall a
+		// draw waiting for cache maintenance on another render worker; missing the
+		// optional light for one frame is preferable to blocking the renderer.
+	std::shared_lock lock{ particleLightCacheMutex, std::try_to_lock };
+		if (!lock.owns_lock())
+			return {};
 		auto it = vertexColorCache.find(node);
 		if (it != vertexColorCache.end()) {
 			return it->second;
@@ -893,8 +912,9 @@ RadiantGrid::VertexColorCacheEntry RadiantGrid::GetParticleLightConfig(RE::BSRen
 	auto cacheInvalid = [&](RE::BSGeometry* a_node) {
 		VertexColorCacheEntry invalid{};
 		invalid.valid = false;
-		std::unique_lock lock{ particleLightsMutex };
-		vertexColorCache[a_node] = invalid;
+	std::unique_lock lock{ particleLightCacheMutex, std::try_to_lock };
+		if (lock.owns_lock())
+			vertexColorCache[a_node] = invalid;
 		return invalid;
 	};
 
@@ -976,8 +996,9 @@ RadiantGrid::VertexColorCacheEntry RadiantGrid::GetParticleLightConfig(RE::BSRen
 	}
 
 	{
-		std::unique_lock lock{ particleLightsMutex };
-		vertexColorCache[node] = entry;
+	std::unique_lock lock{ particleLightCacheMutex, std::try_to_lock };
+		if (lock.owns_lock())
+			vertexColorCache[node] = entry;
 	}
 	return entry;
 }
@@ -997,7 +1018,11 @@ RadiantGrid::VertexColorCacheEntry RadiantGrid::GetIncandescentGeometryLightConf
 
 	auto* material = static_cast<RE::BSLightingShaderMaterialBase*>(lightingProperty->material);
 	{
-		std::shared_lock lock{ particleLightsMutex };
+		// Geometry setup is also on the render path; do not wait behind particle
+		// queue/cache maintenance merely to classify an optional emissive proxy.
+		std::shared_lock lock{ particleLightCacheMutex, std::try_to_lock };
+		if (!lock.owns_lock())
+			return {};
 		if (auto it = incandescentGeometryCache.find(geometry);
 			it != incandescentGeometryCache.end() && it->second.material == material) {
 			return it->second.light;
@@ -1005,8 +1030,9 @@ RadiantGrid::VertexColorCacheEntry RadiantGrid::GetIncandescentGeometryLightConf
 	}
 
 	auto cacheResult = [&](const VertexColorCacheEntry& a_entry) {
-		std::unique_lock lock{ particleLightsMutex };
-		incandescentGeometryCache[geometry] = { material, a_entry };
+		std::unique_lock lock{ particleLightCacheMutex, std::try_to_lock };
+		if (lock.owns_lock())
+			incandescentGeometryCache[geometry] = { material, a_entry };
 		return a_entry;
 	};
 
@@ -1078,7 +1104,11 @@ bool RadiantGrid::QueueResolvedEmitterLight(RE::NiAVObject* a_owner, const Resol
 	if (!a_owner)
 		return false;
 
-	std::unique_lock lock{ particleLightsMutex };
+	// Particle lights are additive enhancement only. If another render worker is
+	// updating the queue, leave the stock draw untouched instead of blocking it.
+	std::unique_lock lock{ particleLightQueueMutex, std::try_to_lock };
+	if (!lock.owns_lock())
+		return false;
 	if (auto ownerIt = queuedParticleLightOwners.find(a_owner); ownerIt != queuedParticleLightOwners.end()) {
 		auto& aggregate = queuedParticleLights[ownerIt->second];
 
@@ -1238,59 +1268,70 @@ void RadiantGrid::AddParticleLightsToBuffer(eastl::vector<LightData>& a_lightsDa
 	static float& lightFadeStart = *reinterpret_cast<float*>(REL::RelocationID(527668, 414582).address());
 	static float& lightFadeEnd = *reinterpret_cast<float*>(REL::RelocationID(527669, 414583).address());
 
-	std::unique_lock lock{ particleLightsMutex };
+	// Detach producer work under a short lock so immediate render hooks rarely
+	// encounter contention. Persistence and light conversion happen separately.
+	eastl::vector<ResolvedParticleLight> pendingLights;
+	eastl::hash_map<RE::NiAVObject*, std::size_t> pendingOwners;
+	const auto sceneGeneration = particleLightSceneGeneration.load(std::memory_order_acquire);
+	{
+		std::lock_guard lock{ particleLightQueueMutex };
+		pendingLights.swap(queuedParticleLights);
+		pendingOwners.swap(queuedParticleLightOwners);
+	}
 
-	const float frameDelta = static_cast<float>(RE::GetSecondsSinceLastFrame());
-	if (std::isfinite(frameDelta))
-		particleLightTime += std::clamp(frameDelta, 0.0f, 0.25f);
-	for (const auto& [owner, index] : queuedParticleLightOwners) {
-		if (owner && index < queuedParticleLights.size()) {
-			auto& persisted = persistedParticleLights[owner];
-			persisted.light = queuedParticleLights[index];
-			persisted.lastSeenTime = particleLightTime;
+	eastl::vector<ResolvedParticleLight> frameLights;
+	double frameTime = 0.0;
+	{
+		std::lock_guard lock{ particleLightStateMutex };
+		if (sceneGeneration != particleLightSceneGeneration.load(std::memory_order_acquire)) {
+			pendingLights.clear();
+			pendingOwners.clear();
+		}
+
+		const float frameDelta = static_cast<float>(RE::GetSecondsSinceLastFrame());
+		if (std::isfinite(frameDelta))
+			particleLightTime += std::clamp(frameDelta, 0.0f, 0.25f);
+		frameTime = particleLightTime;
+		for (const auto& [owner, index] : pendingOwners) {
+			if (owner && index < pendingLights.size()) {
+				auto& persisted = persistedParticleLights[owner];
+				persisted.light = pendingLights[index];
+				persisted.lastSeenTime = frameTime;
+			}
+		}
+
+		particleEmitterLightCount = 0;
+		glowMappedEmitterLightCount = 0;
+		// Always drain queued work while disabled so re-enabling cannot inject
+		// stale emitters from an earlier frame.
+		if (!settings.EnableParticleLights) {
+			persistedParticleLights.clear();
+			return;
+		}
+
+		// Preserve scalar emitter state briefly while Skyrim omits an occluded
+		// billboard, then fade it smoothly instead of popping on camera turns.
+		constexpr double kFullHoldSeconds = 2.0 / 60.0;
+		constexpr double kLifetimeSeconds = 1.0 / 3.0;
+		for (auto it = persistedParticleLights.begin(); it != persistedParticleLights.end();) {
+			const double age = frameTime - it->second.lastSeenTime;
+			if (age > kLifetimeSeconds) {
+				it = persistedParticleLights.erase(it);
+				continue;
+			}
+
+			ResolvedParticleLight resolved = it->second.light;
+			if (age > kFullHoldSeconds) {
+				const float fade = 1.0f - static_cast<float>((age - kFullHoldSeconds) /
+					(kLifetimeSeconds - kFullHoldSeconds));
+				resolved.color.alpha *= std::clamp(fade, 0.0f, 1.0f);
+			}
+			frameLights.push_back(resolved);
+			++it;
 		}
 	}
 
-	currentParticleLights.clear();
-	queuedParticleLights.clear();
-	queuedParticleLightOwners.clear();
-	particleEmitterLightCount = 0;
-	glowMappedEmitterLightCount = 0;
-
-	// Always drain the producer queue. Otherwise toggling particle lighting off
-	// and back on can inject stale emitters from an earlier frame for one update.
-	if (!settings.EnableParticleLights) {
-		persistedParticleLights.clear();
-		currentParticleLights.clear();
-		return;
-	}
-
-	// Effect geometry is visibility-submitted by Skyrim. Without a short renderer-
-	// side hold, a candle or fire emitter disappears from the clustered-light list
-	// the instant its billboard leaves the frustum, even while the illuminated wall
-	// remains visible. Preserve only the resolved scalar payload (never dereference
-	// the owner pointer), then fade it over a bounded third of a second. This removes
-	// camera-turn lighting pops while still retiring destroyed/hidden emitters.
-	constexpr double kFullHoldSeconds = 2.0 / 60.0;
-	constexpr double kLifetimeSeconds = 1.0 / 3.0;
-	for (auto it = persistedParticleLights.begin(); it != persistedParticleLights.end();) {
-		const double age = particleLightTime - it->second.lastSeenTime;
-		if (age > kLifetimeSeconds) {
-			it = persistedParticleLights.erase(it);
-			continue;
-		}
-
-		ResolvedParticleLight resolved = it->second.light;
-		if (age > kFullHoldSeconds) {
-			const float fade = 1.0f - static_cast<float>((age - kFullHoldSeconds) /
-				(kLifetimeSeconds - kFullHoldSeconds));
-			resolved.color.alpha *= std::clamp(fade, 0.0f, 1.0f);
-		}
-		currentParticleLights.push_back(resolved);
-		++it;
-	}
-
-	for (const auto& pl : currentParticleLights) {
+	for (const auto& pl : frameLights) {
 		if (a_lightsData.size() >= MAX_LIGHTS)
 			break;
 
@@ -1298,7 +1339,7 @@ void RadiantGrid::AddParticleLightsToBuffer(eastl::vector<LightData>& a_lightsDa
 		constexpr float invPI = 1.f / std::numbers::pi_v<float>;
 		// Smooth, band-limited flame movement is evaluated once and shared by all
 		// consumers (direct light, fog and GI), avoiding independent shader noise.
-		const float phase = static_cast<float>(particleLightTime) * 6.1f + pl.flickerPhase;
+		const float phase = static_cast<float>(frameTime) * 6.1f + pl.flickerPhase;
 		const float flameWave =
 			std::sin(phase) * 0.55f +
 			std::sin(phase * 1.73f + 1.91f) * 0.30f +
@@ -1354,7 +1395,7 @@ void RadiantGrid::Hooks::BSBatchRenderer_RenderPassImmediately<N>::thunk(RE::BSR
 void RadiantGrid::Hooks::BSGeometry_Destroy::thunk(RE::BSGeometry* This)
 {
 	{
-		std::unique_lock lock{ globals::pipeline::radiantGrid.particleLightsMutex };
+		std::unique_lock lock{ globals::pipeline::radiantGrid.particleLightCacheMutex };
 		globals::pipeline::radiantGrid.vertexColorCache.erase(This);
 		globals::pipeline::radiantGrid.incandescentGeometryCache.erase(This);
 	}

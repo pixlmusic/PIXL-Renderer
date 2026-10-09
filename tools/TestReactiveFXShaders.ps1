@@ -23,6 +23,7 @@ $computeSource = Join-Path $repo 'pipeline\Reactive FX\Kernels\ReactiveFX\Reacti
 foreach ($entry in @('SpawnCS', 'SimulateCS', 'BuildMaskCS', 'CompositeCS', 'WriteReactiveMaskCS')) {
     $arguments = @(
         '/nologo', '/WX', '/Ges', '/O3', '/T', 'cs_5_0', '/E', $entry,
+        '/D', 'COMPUTESHADER=1', '/D', 'WINPC=1', '/D', 'DX11=1',
         '/I', $distributionShaders,
         '/Fo', (Join-Path $output ($entry + '.cso')),
         $computeSource

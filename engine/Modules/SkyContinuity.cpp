@@ -208,7 +208,7 @@ void SkyContinuity::OnSkyUpdateColors(RE::Sky* sky)
 	if (!settings.Enabled || !sky)
 		return;
 
-	if (settings.DimSunlightUnderHorizon && currentDim > 0.0f && currentDim < 1.0f) {
+	if (settings.DimSunlightUnderHorizon && currentDim < 1.0f) {
 		auto& dirLight = sky->skyColor[static_cast<uint>(RE::TESWeather::ColorTypes::kSunlight)];
 		dirLight.red *= currentDim;
 		dirLight.green *= currentDim;
@@ -231,7 +231,7 @@ void SkyContinuity::Sky_Update::thunk(RE::Sky* sky)
 
 void SkyContinuity::Update(const RE::Sky* sky)
 {
-	if (!settings.Enabled) {
+	if (!settings.Enabled || !sky) {
 		currentDim = 1.0f;
 		return;
 	}
@@ -394,7 +394,7 @@ void SkyContinuity::ProcessMoon(const RE::Sky* sky, const Caster type, RE::NiPoi
 	colors[idx] = {};
 
 	const auto moon = type == Caster::Masser ? sky->masser : sky->secunda;
-	if (!moon || moon->root->GetFlags().any(RE::NiAVObject::Flag::kHidden))
+	if (!moon || !moon->root || moon->root->GetFlags().any(RE::NiAVObject::Flag::kHidden))
 		return;
 
 	auto dir = moon->root->local.rotate.GetVectorY();

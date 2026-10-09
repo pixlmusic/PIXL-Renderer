@@ -21,7 +21,7 @@ $names = @(
     "PIXL-Renderer-v$Version-Core.zip",
     "PIXL-Renderer-v$Version-Source.zip",
     "PIXL-Renderer-v$Version-FOMOD.zip",
-    'SurfaceTides-1.0.2-PIXL-Source.zip'
+    'SurfaceTides-1.1.0-PIXL-Source.zip'
 )
 $artifacts = [ordered]@{}
 $checksums = [Collections.Generic.List[string]]::new()

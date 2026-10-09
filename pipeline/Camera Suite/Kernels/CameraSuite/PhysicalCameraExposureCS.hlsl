@@ -122,7 +122,10 @@ void main(uint3 dtid : SV_DispatchThreadID)
 				float avgLum = exp2(evaluativeLogLum);
                 // 18% scene key. Exposure compensation remains a photographic
                 // stop adjustment layered on top of scene metering.
-				target = (0.18f / max(avgLum, 1e-5f)) * exp2(safeExposureCompensationEV);
+				// Skyrim's authored night interiors sit below a photographic 18% key.
+				// A slightly brighter game key preserves practical lights and readable
+				// bounce without changing the highlight shoulder in the output pass.
+				target = (0.22f / max(avgLum, 1e-5f)) * exp2(safeExposureCompensationEV);
 			}
 
 			// Reserve highlight headroom before tone mapping.  A 1.5-stop bound keeps
@@ -131,7 +134,9 @@ void main(uint3 dtid : SV_DispatchThreadID)
 			if (highlightLum > 0.0f) {
 				float protectedLevel = lerp(5.0f, 1.65f, safeHighlightProtection);
 				float safeExposure = protectedLevel / max(highlightLum, 1e-5f) * exp2(safeExposureCompensationEV);
-				float reductionEV = clamp(log2(max(target, 1e-6f) / max(safeExposure, 1e-6f)), 0.0f, 1.5f);
+				// Highlight roll-off already protects the source in HDROutput. Keep
+				// scene-wide exposure compensation modest so flames cannot blacken rooms.
+				float reductionEV = clamp(log2(max(target, 1e-6f) / max(safeExposure, 1e-6f)), 0.0f, 0.55f);
 				target *= exp2(-reductionEV * safeHighlightProtection);
 			}
 		}
@@ -140,11 +145,11 @@ void main(uint3 dtid : SV_DispatchThreadID)
     target = PixlCameraFinite(target) && target > 0.0f ? target : exp2(clamp(safeExposureCompensationEV, safeMinExposureEV, safeMaxExposureEV));
     float targetEV = clamp(log2(max(target, 1e-6f)), safeMinExposureEV, safeMaxExposureEV);
 
-    // A bright object must not meter the entire playable scene into near-black.
+	// A bright object must not meter the entire playable scene into near-black.
     // Keep the wide manual range, but bound automatic metering relative to the
     // photographer's intentional compensation.
     if (cameraAutoExposure > 0.5f)
-        targetEV = max(targetEV, min(safeMaxExposureEV, max(safeMinExposureEV, safeExposureCompensationEV - 3.5f)));
+		targetEV = max(targetEV, min(safeMaxExposureEV, max(safeMinExposureEV, safeExposureCompensationEV - 2.0f)));
 
     if (bodycamEnabled > 0.5f) {
         float safeBodyStrength = PixlCameraFinite(bodycamStrength) ? saturate(bodycamStrength) : 0.0f;
@@ -164,8 +169,10 @@ void main(uint3 dtid : SV_DispatchThreadID)
         return;
     }
 
-    float adaptBrightToDark = max(PIXLPhysicalCameraFiniteOr(cameraAdaptBrightToDark, 0.01f), 0.01f);
-    float adaptDarkToBright = max(PIXLPhysicalCameraFiniteOr(cameraAdaptDarkToBright, 0.01f), 0.01f);
+    // Treat the camera controls as artistic preferences, but keep a gameplay
+    // stability floor so small metering changes cannot visibly pump exposure.
+    float adaptBrightToDark = max(PIXLPhysicalCameraFiniteOr(cameraAdaptBrightToDark, 0.65f), 0.65f);
+    float adaptDarkToBright = max(PIXLPhysicalCameraFiniteOr(cameraAdaptDarkToBright, 0.65f), 0.65f);
     float tau = target > previous ? adaptBrightToDark : adaptDarkToBright;
     if (bodycamEnabled > 0.5f) {
         float safeBodyStrength = PixlCameraFinite(bodycamStrength) ? saturate(bodycamStrength) : 0.0f;
@@ -185,8 +192,9 @@ void main(uint3 dtid : SV_DispatchThreadID)
     // A soft 0.06-stop deadband rejects slow histogram-bin hunting without a
     // visible snap. Broad scene changes still exceed it and adapt normally.
     errorEV = sign(errorEV) * max(abs(errorEV) - 0.06f, 0.0f);
-    // Stops/sec, not a per-frame multiplier. Brightening responds promptly;
-    // darkening cannot produce the old frame-rate-dependent plunges.
-    float stepEV = clamp(errorEV * blend, -0.85f * dt, 3.0f * dt);
+    // Stops/sec, not a per-frame multiplier. Exposure adapts deliberately
+    // slower than a spot meter in either direction, with modestly quicker
+    // recovery from darkness than highlight-driven darkening.
+    float stepEV = clamp(errorEV * blend, -0.65f * dt, 1.25f * dt);
     Exposure[uint2(0, 0)] = exp2(clamp(previousEV + stepEV, safeMinExposureEV, safeMaxExposureEV));
 }

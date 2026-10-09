@@ -179,8 +179,17 @@ void SkyVeil::SkyShaderHacks()
 				side = i;
 				break;
 			}
-		if (side == -1)
+		if (side == -1) {
+			// OMGetRenderTargets adds references even when this draw cannot be redirected.
+			for (int i = 0; i < 3; ++i) {
+				if (rtvs[i])
+					rtvs[i]->Release();
+			}
+			if (dsv)
+				dsv->Release();
+			overrideSky = false;
 			return;
+		}
 
 		CheckResourcesSide(side);
 

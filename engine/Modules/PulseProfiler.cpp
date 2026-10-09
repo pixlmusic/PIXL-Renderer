@@ -599,7 +599,7 @@ void PulseProfiler::DrawOverlay()
 		}
 
 		if (this->settings.ShowDrawCalls) {
-			PIXLUI::SectionBanner("ENGINE WORKLOADS");
+			PIXLUI::SectionBanner("SHADER SUBMISSION (CPU ESTIMATE)");
 			const float maxFrame = mainRows.empty() ? 1.0f : std::max(mainRows.front().frameTime, 0.001f);
 			const size_t visibleRows = std::min<size_t>(4, mainRows.size());
 			for (size_t i = 0; i < visibleRows; ++i) {
@@ -607,7 +607,7 @@ void PulseProfiler::DrawOverlay()
 				drawSignalRow(row.label.c_str(), row.frameTime, maxFrame, "ms");
 				if (ImGui::IsItemHovered()) {
 					if (auto _tt = Util::HoverTooltipWrapper())
-						ImGui::Text("%d draw calls   %.1f%% of frame", row.drawCalls, row.percent);
+					ImGui::Text("%d state flushes   %.1f%% estimated CPU interval", row.drawCalls, row.percent);
 				}
 			}
 		}

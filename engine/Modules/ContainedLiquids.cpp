@@ -341,7 +341,7 @@ void ContainedLiquids::Reset()
 }
 void ContainedLiquids::DrawSettings()
 {
-    ImGui::TextWrapped("Experimental. Supports live world potions and verified beverage bodies whose mesh can be fitted safely. Separate wicker, labels and stoppers retain their authored appearance; opaque or ambiguous bodies fall back to Skyrim. Alcohol is non-emissive by default.");
+    ImGui::TextWrapped("Experimental. Supports live world potions and verified beverage bodies whose mesh can be fitted safely. Separate wicker, labels and stoppers retain their authored appearance; opaque or ambiguous bodies fall back to Skyrim. Emission for ordinary liquids is controlled separately.");
     if (ImGui::Checkbox("Enable contained liquids", &settings.Enabled)) ClearHistory();
     ImGui::BeginDisabled(!settings.Enabled);
     ImGui::SliderFloat("Fill level", &settings.Fill,0.02f,0.98f,"%.2f");

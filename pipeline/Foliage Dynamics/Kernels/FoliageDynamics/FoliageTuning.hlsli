@@ -38,12 +38,19 @@ cbuffer PIXLFoliageTuningCB : register(b13)
 	uint PIXLFG_GrassTuningPadding0;
 	uint PIXLFG_GrassTuningPadding1;
 	uint PIXLFG_GrassTuningPadding2;
+	uint PIXLFG_EnableGameplayResponse;
+	uint PIXLFG_GameplayImpulseCount;
+	float PIXLFG_GameplayResponseStrength;
+	float PIXLFG_GameplayResponseRadius;
+	float4 PIXLFG_GameplayImpulsePositionRadius[4];
+	float4 PIXLFG_GameplayImpulseDirectionStrength[4];
+	float4 PIXLFG_GameplayImpulseAgeDuration[4];
 };
 
 namespace FoliageTuning
 {
 	static const uint Magic = 0x50464754u;
-	static const uint Version = 4u;
+	static const uint Version = 5u;
 
 	bool IsValid() { return PIXLFG_Magic == Magic && PIXLFG_Version == Version; }
 	bool AlphaControlEnabled() { return IsValid() && PIXLFG_EnableGrassAlphaControl != 0u; }
@@ -65,6 +72,7 @@ namespace FoliageTuning
 	float SpecularNormalization() { return IsValid() ? clamp(PIXLFG_GrassSpecularNormalization, 0.0f, 4.0f) : 1.0f; }
 	float ComplexSpecularMapInfluence() { return IsValid() ? saturate(PIXLFG_GrassComplexSpecularMapInfluence) : 0.15f; }
 	bool MirrorSpecularY() { return IsValid() && PIXLFG_GrassMirrorSpecularY != 0u; }
+	uint GameplayImpulseCount() { return IsValid() && PIXLFG_EnableGameplayResponse != 0u ? min(PIXLFG_GameplayImpulseCount, 4u) : 0u; }
 }
 
 #endif

@@ -44,7 +44,7 @@ void SkyBounce::ResetSkyBounce()
 	if (!context || !texAccumFramesArray || !texShadowBitmask || !texShadowVisibility)
 		return;
 
-	UINT clr[1] = { 0 };
+	UINT clr[4] = { 0 };
 	context->ClearUnorderedAccessViewUint(texAccumFramesArray->uav.get(), clr);
 	context->ClearUnorderedAccessViewUint(texShadowBitmask->uav.get(), clr);
 
@@ -219,7 +219,6 @@ SkyBounce::SkyBounceCB SkyBounce::GetCommonBufferData([[maybe_unused]] bool a_in
 	if (globals::state && globals::state->isMapMenuOpen)
 		return SkyBounce::SkyBounceCB{};
 
-	static float3 prevCellID = { 0, 0, 0 };
 
 	// shadowState::posAdjust can retain the world-camera origin while Skyrim is in
 	// first person. Grass uses this probe field for soft SSS visibility, so that
@@ -254,8 +253,8 @@ SkyBounce::SkyBounceCB SkyBounce::GetCommonBufferData([[maybe_unused]] bool a_in
 			static_cast<float>(engineRelative.value.y),
 			static_cast<float>(engineRelative.value.z) };
 	}
-	float3 cellIDDiff = prevCellID - cellID;
-	prevCellID = cellID;
+	probeCellID = cellID;
+	float3 cellIDDiff = hasProbeUpdateSnapshot ? lastDispatchedCellID - cellID : float3{ 0, 0, 0 };
 
 	return {
 		.OcclusionViewProj = OcclusionTransform,
@@ -292,7 +291,26 @@ void SkyBounce::Prepass()
 		!texOcclusion || !texProbeArray || !texAccumFramesArray || !texShadowBitmask || !texShadowVisibility)
 		return;
 
-	{
+	const auto& camera = globals::game::frameBufferCached.GetCameraPosAdjust();
+	const float3 cameraPosition{ camera.x, camera.y, camera.z };
+	const float3 skyDirection{ OcclusionDir.x, OcclusionDir.y, OcclusionDir.z };
+	const float dx = cameraPosition.x - lastProbeCameraPosition.x;
+	const float dy = cameraPosition.y - lastProbeCameraPosition.y;
+	const float dz = cameraPosition.z - lastProbeCameraPosition.z;
+	const float movedDistanceSq = dx * dx + dy * dy + dz * dz;
+	const float sx = skyDirection.x - lastProbeSkyDirection.x;
+	const float sy = skyDirection.y - lastProbeSkyDirection.y;
+	const float sz = skyDirection.z - lastProbeSkyDirection.z;
+	const float skyDirectionDeltaSq = sx * sx + sy * sy + sz * sz;
+	const bool forceUpdate = queuedResetSkyBounce || !hasProbeUpdateSnapshot ||
+		movedDistanceSq >= 256.0f || skyDirectionDeltaSq >= 1.0e-4f;
+	const bool updateProbeVolume = forceUpdate || ++stationaryProbeFrame >= 4u ||
+		probeCellID.x != lastDispatchedCellID.x || probeCellID.y != lastDispatchedCellID.y ||
+		probeCellID.z != lastDispatchedCellID.z;
+	if (updateProbeVolume)
+		stationaryProbeFrame = 0;
+
+	if (updateProbeVolume) {
 		auto& esramDepthStencil = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kVOLUMETRIC_LIGHTING_SHADOWMAPS_ESRAM];
 		auto* directionalShadowSRV = shadowCascadeSRV && globals::deferred && globals::deferred->directionalShadowLights ?
 			globals::deferred->directionalShadowLights->srv.get() : nullptr;
@@ -335,6 +353,12 @@ void SkyBounce::Prepass()
 			context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
 			context->CSSetShader(nullptr, nullptr, 0);
 		}
+	}
+	if (updateProbeVolume) {
+		lastProbeCameraPosition = cameraPosition;
+		lastProbeSkyDirection = skyDirection;
+		lastDispatchedCellID = probeCellID;
+		hasProbeUpdateSnapshot = true;
 	}
 
 	PIXL::Renderer::LightTransportWorld::Get().PublishProbe(

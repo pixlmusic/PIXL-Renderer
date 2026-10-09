@@ -30,5 +30,9 @@ int main()
 	}
 	assert(ShaderABIHash() != 0u);
 	assert(Settings::CameraDofFStop.defaultValue == 3.4);
+	assert(ABI::WaterOptics.sizeBytes == 80u);
+	assert(ABI::WaterOptics.version == "PIXL.WaterOptics.FeatureData.v2");
+	assert(Settings::WaterProjectedCausticsStrength.defaultValue == 2.0);
+	assert(Settings::WaterProjectedCausticsDistance.defaultValue == 300.0);
 	return 0;
 }

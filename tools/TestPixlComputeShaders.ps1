@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$ShaderRoot,
-    [Parameter(Mandatory = $true)][string]$Fxc
+    [Parameter(Mandatory = $true)][string]$Fxc,
+    [ValidateSet('All', 'Atmosphere')][string]$Scope = 'All'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,6 +56,9 @@ foreach ($kernel in @('VolumetricFogConservativeDepthCS.hlsl', 'VolumetricFogInt
     $jobs.Add([pscustomobject]@{ path = 'Atmosphere/' + $kernel; defines = @() })
 }
 
+if ($Scope -eq 'Atmosphere') {
+    $jobs = @($jobs | Where-Object { $_.path -like 'Atmosphere/*' -or $_.path -like 'Microclimates/*' })
+}
 $results = [Collections.Generic.List[object]]::new()
 for ($index = 0; $index -lt $jobs.Count; ++$index) {
     $job = $jobs[$index]

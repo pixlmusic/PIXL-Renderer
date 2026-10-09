@@ -1,6 +1,8 @@
 // Community Shaders TruePBR-derived file.
 // Modified for PIXL Renderer, 2026: MaterialForge naming, physical-material
 // integration, tuning, compatibility and renderer-module connections.
+// Missing-texture fallback adapted from Open Shaders src/TruePBR.cpp (local
+// 2.17.0 snapshot); retains PIXL material setup, bindings and projected state.
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Additional permissions are described in the repository EXCEPTIONS.md.
 
@@ -152,11 +154,22 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	MetalColorCorrelationLow,
 	MetalColorCorrelationHigh);
 
-#define CHECK_PBR_TEXTURE(textureName)                                                                         \
-	if (!(pbrMaterial->textureName)) {                                                                         \
-		logger::warn("[MaterialForge] {} missing {}; treating as nonPBR", pbrMaterial->inputFilePath, #textureName); \
-		return false;                                                                                          \
+static bool PBRMaterialHasRequiredTextures(RE::BSLightingShaderMaterialBase const* material)
+{
+	auto* pbrMaterial = static_cast<const BSLightingShaderMaterialPBR*>(material);
+	return pbrMaterial->diffuseTexture && pbrMaterial->normalTexture && pbrMaterial->rmaosTexture;
+}
+
+static void WarnMissingPBRTexturesOnce(const std::string& inputFilePath)
+{
+	static std::mutex warningMutex;
+	static std::unordered_set<std::string> warned;
+	std::lock_guard lock(warningMutex);
+	// Invalid assets must not cause per-frame log spam or an unbounded path cache.
+	if (warned.size() < 512 && warned.insert(inputFilePath).second) {
+		logger::warn("[MaterialForge] {} missing required PBR texture(s); binding safe defaults", inputFilePath);
 	}
+}
 
 namespace PNState
 {
@@ -317,11 +330,11 @@ void MaterialForge::DrawSettings()
 
 		ImGui::SeparatorText("Physical Light Quality");
 		DrawUIntCheckbox("Inverse-Square Local Lights", settings.EnablePhysicalLocalLightFalloff);
-		DrawTooltip("Blends local lights toward PIXL's regularized inverse-square attenuation. Disable to retain Skyrim/Natural Lighting falloff exactly.");
+		DrawTooltip("When enabled, blends Skyrim's conventional radius falloff toward PIXL's regularized inverse-square model. At 0 the lights use the vanilla falloff; at 1 they use the full physical model. Disable to restore Natural Lighting's per-light falloff exactly.");
 		if (settings.EnablePhysicalLocalLightFalloff != 0) {
 			ImGui::SliderFloat("Physical Falloff Strength", &settings.PhysicalLocalLightFalloffStrength,
 				0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			DrawTooltip("0.00 matches Skyrim/Natural Lighting, 1.00 is fully inverse-square. The balanced 0.65 default keeps physical depth without making interiors impractically dark.");
+			DrawTooltip("0.00 matches Skyrim's conventional light-radius falloff; 1.00 is fully inverse-square. Lower values preserve more of the vanilla look.");
 			ImGui::SliderFloat("Local Emitter Radius", &settings.LocalLightMinimumDistance,
 				7.0f, 70.0f, "%.0f units", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
 			DrawTooltip("Finite emitter radius used near the light to prevent an inverse-square singularity. Larger values produce broader, softer near-light response.");
@@ -1225,6 +1238,9 @@ struct BSLightingShaderProperty_GetRenderPasses
 
 bool MaterialForge::BSLightingShader_SetupMaterial(RE::BSLightingShader* shader, RE::BSLightingShaderMaterialBase const* material)
 {
+	if (!shader || !material) {
+		return false;
+	}
 	using enum SIE::ShaderCache::LightingShaderTechniques;
 
 	const auto& lightingPSConstants = ShaderConstants::LightingPS::Get();
@@ -1337,11 +1353,29 @@ bool MaterialForge::BSLightingShader_SetupMaterial(RE::BSLightingShader* shader,
 				lodTexParams[3] = pbrMaterial->terrainTexFade;
 				shadowState->SetPSConstant(lodTexParams, RE::BSGraphics::ConstantGroupLevel::PerMaterial, lightingPSConstants.LODTexParams);
 			}
+		} else if ((lightingType == None || lightingType == TreeAnim) && !PBRMaterialHasRequiredTextures(material)) {
+			WarnMissingPBRTexturesOnce(static_cast<const BSLightingShaderMaterialPBR*>(material)->inputFilePath);
+			// The draw still selects a PBR permutation. Vanilla setup cannot supply
+			// its texture/constant contract and may dereference the missing maps.
+			const auto& defaults = graphicsState->GetRuntimeData();
+			shadowState->SetPSTexture(0, defaults.defaultTextureBlack->rendererTexture);
+			shadowState->SetPSTexture(1, defaults.defaultTextureNormalMap->rendererTexture);
+			shadowState->SetPSTexture(5, defaults.defaultTextureBlack->rendererTexture);
+			for (const auto slot : { 0u, 1u, 5u }) {
+				shadowState->SetPSTextureAddressMode(slot, RE::BSGraphics::TextureAddressMode::kWrapSWrapT);
+				shadowState->SetPSTextureFilterMode(slot, RE::BSGraphics::TextureFilterMode::kAnisotropic);
+			}
+			// Clear optional-map flags and both base/projected parameters so the
+			// previous draw cannot leak coat, glints or MATO settings into this one.
+			shadowState->SetPSConstant(stl::enumeration<PBRShaderFlags>{}, RE::BSGraphics::ConstantGroupLevel::PerMaterial, lightingPSConstants.PBRFlags);
+			const std::array<float, 3> neutralPBRParams{ 1.f, 0.f, 0.f };
+			shadowState->SetPSConstant(neutralPBRParams, RE::BSGraphics::ConstantGroupLevel::PerMaterial, lightingPSConstants.PBRParams1);
+			const std::array<float, 4> neutralProjectedColor{};
+			const std::array<float, 4> neutralProjectedParams{ 1.f, 0.f, 0.f, 0.f };
+			shadowState->SetPSConstant(neutralProjectedColor, RE::BSGraphics::ConstantGroupLevel::PerMaterial, lightingPSConstants.MaterialObjectRGBScale);
+			shadowState->SetPSConstant(neutralProjectedParams, RE::BSGraphics::ConstantGroupLevel::PerMaterial, lightingPSConstants.ParallaxOccData);
 		} else if (lightingType == None || lightingType == TreeAnim) {
 			auto* pbrMaterial = static_cast<const BSLightingShaderMaterialPBR*>(material);
-			CHECK_PBR_TEXTURE(diffuseTexture);
-			CHECK_PBR_TEXTURE(normalTexture);
-			CHECK_PBR_TEXTURE(rmaosTexture);
 			const bool projectedUVActive = (lightingFlags & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ProjectedUV)) != 0;
 			const auto physicalMaterial = pbrMaterial->GetPhysicalMaterialDescriptor(
 				graphicsState->GetRuntimeData().defaultTextureBlack.get(),
@@ -2017,6 +2051,9 @@ struct PBR_BSLightingShader_SetupMaterial
 {
 	static void thunk(RE::BSLightingShader* shader, RE::BSLightingShaderMaterialBase const* material)
 	{
+		if (!shader || !material) {
+			return;
+		}
 		if (globals::pipeline::materialForge.BSLightingShader_SetupMaterial(shader, material)) {
 			return;
 		}

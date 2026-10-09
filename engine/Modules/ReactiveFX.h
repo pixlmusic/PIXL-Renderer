@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 struct ReactiveFX : RenderModule
@@ -82,6 +83,7 @@ struct ReactiveFX : RenderModule
 		bool EnableVegetationResponse = true;
 		bool EnableHeroDebris = false;
 		bool EnableSecondaryImpacts = false;
+		bool FrostPressureTest = true;
 		std::uint32_t DebugMode = 0;
 	};
 
@@ -96,6 +98,12 @@ struct ReactiveFX : RenderModule
 		ImpulseType impulse = ImpulseType::Radial;
 		std::uint32_t sourceFormID = 0;
 		std::uint32_t seed = 0;
+		// CPU-only emitter metadata; not part of the GPU particle ABI.
+		bool casterStream = false;
+		std::uint32_t streamCount = 0;
+		std::uint32_t ambientFireKind = 0; // 1 torch, 2 campfire, 3 enclosed hearth, 4 brazier.
+		bool ambientAtEffectAnchor = false;
+		float ambientDensity = 1.0f;
 	};
 
 	std::string GetName() override { return "PIXL Reactive FX"; }
@@ -121,6 +129,12 @@ struct ReactiveFX : RenderModule
 
 	void DrawReactiveFX();
 	void QueueEvent(const Event& event);
+	void CopyVegetationImpulses(
+		float4 (&positionRadius)[4],
+		float4 (&directionStrength)[4],
+		float4 (&ageDuration)[4],
+		std::uint32_t& count,
+		float maxRadius) const;
 	void ApplyImpulse(
 		const RE::NiPoint3& position,
 		const RE::NiPoint3& direction,
@@ -167,11 +181,11 @@ struct ReactiveFX : RenderModule
 	};
 
 private:
-	static constexpr std::uint32_t kMaximumParticles = 16384;
-	static constexpr std::uint32_t kMaximumSpawnCommands = 2048;
+	static constexpr std::uint32_t kMaximumParticles = 524288;
+	static constexpr std::uint32_t kMaximumSpawnCommands = 524288;
 	static constexpr std::uint32_t kMaximumQueuedEvents = 128;
 	static constexpr std::uint32_t kMaximumImpulses = 16;
-	static constexpr std::uint32_t kHeroParticleReserve = 256;
+	static constexpr std::uint32_t kDebrisParticleReserve = 1024;
 
 	struct alignas(16) GPUParticle
 	{
@@ -232,7 +246,7 @@ private:
 		float2 renderSize{};
 		float2 invRenderSize{};
 		float deltaTime{};
-		float gravity{};
+		float displayScale{};
 		float particleIntensity{};
 		float maximumDistance{};
 		std::uint32_t particleCapacity{};
@@ -279,6 +293,7 @@ private:
 
 	void ProcessQueuedEvents();
 	void QueueAmbientEmitters(float deltaTime);
+	void QueueStaffEmitters(float deltaTime);
 	void SpawnEvent(const Event& event, float primaryScale = 1.0f, float secondaryScale = 1.0f);
 	void AddImpulseForEvent(const Event& event);
 	void UploadSpawnCommands();
@@ -302,15 +317,21 @@ private:
 	std::atomic<std::uint32_t> droppedEvents{};
 	std::uint32_t droppedParticles{};
 	std::uint32_t lastEventSeed{ 1u };
+	std::uint32_t lastFrostCommandCount{};
+	std::array<float, 2> staffEmissionRemainder{};
+	std::unordered_map<RE::FormID, float> ambientEmitterCooldowns;
 	std::uint32_t activeImpulseCount{};
 	std::uint32_t collisionPhase{};
 	std::uint32_t activeQuality{ ~0u };
 		float simulationTimeRemaining{};
 		float opticalTimeRemaining{};
+		float frostPressureTimeRemaining{};
+		bool frostPressurePoolActive{};
 		float footstepCooldown{};
 		float ambientScanCountdown{};
 	SurfaceType lastSurface{ SurfaceType::Unknown };
 	SourceType lastSource{ SourceType::Unknown };
+	SourceType lastProjectileSource{ SourceType::Unknown };
 
 	std::unique_ptr<Buffer> particles;
 	winrt::com_ptr<ID3D11Buffer> spawnBuffer;

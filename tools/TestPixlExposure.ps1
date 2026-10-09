@@ -13,10 +13,11 @@ New-Item -ItemType Directory -Path $output | Out-Null
 # CPU reference of the exposure shader's stop-domain response. This checks the
 # recurrence, not GPU rendering or Skyrim's upstream image-space adaptation.
 function StepExposure([double]$previousEV, [double]$targetEV, [double]$dt, [double]$tau) {
+    $tau = [Math]::Max($tau, 0.65)
     $errorEV = $targetEV - $previousEV
     $errorEV = [Math]::Sign($errorEV) * [Math]::Max([Math]::Abs($errorEV) - 0.06, 0.0)
     $step = $errorEV * (1.0 - [Math]::Exp(-$dt / $tau))
-    $step = [Math]::Max(-0.85 * $dt, [Math]::Min(3.0 * $dt, $step))
+    $step = [Math]::Max(-0.65 * $dt, [Math]::Min(1.25 * $dt, $step))
     return $previousEV + $step
 }
 foreach ($target in @(-3.0, 3.0)) {
@@ -30,7 +31,7 @@ foreach ($target in @(-3.0, 3.0)) {
                 ($target -gt 0 -and ($value -lt $previous -or $value -gt $target))) {
                 throw 'Exposure response is not monotonic / overshoots.'
             }
-            $limit = $(if ($target -lt 0) { 0.85 } else { 3.0 }) / $fps
+            $limit = $(if ($target -lt 0) { 0.65 } else { 1.25 }) / $fps
             if ([Math]::Abs($value - $previous) -gt ($limit + 1e-9)) { throw 'Exposure slew limit exceeded.' }
         }
         $finalValues += $value
@@ -42,6 +43,24 @@ foreach ($target in @(-3.0, 3.0)) {
 if ((StepExposure 0 0.055 (1.0 / 60) 0.18) -ne 0) { throw 'Deadband failed.' }
 if ((StepExposure 0 3 0 0.18) -ne 0) { throw 'Zero delta advanced exposure.' }
 if ((StepExposure 1 1 (1.0 / 60) 0.18) -ne 1) { throw 'Stable exposure moved.' }
+
+# Reference checks for the two-bin, 5-bit fixed-point histogram votes. This
+# verifies mass conservation and sweep error, not the cost of the GPU atomics.
+$previousBin = -1.0
+for ($sample = 0; $sample -le 25500; ++$sample) {
+    $position = $sample / 100.0
+    $bin = [Math]::Floor($position)
+    $upper = [Math]::Floor(($position - $bin) * 32.0 + 0.5)
+    $lower = 32 - $upper
+    $reconstructed = ($bin * $lower + [Math]::Min(255, $bin + 1) * $upper) / 32.0
+    if ($lower + $upper -ne 32 -or $reconstructed -lt $previousBin -or [Math]::Abs($reconstructed - $position) -gt (1.0 / 64.0 + 1e-9)) {
+        throw 'Fractional histogram lost mass, reversed, or exceeded rounding error.'
+    }
+    $previousBin = $reconstructed
+}
+$maximumMass = [uint64](16384 / 2) * [uint64](16384 / 2) * [uint64]32
+if ($maximumMass -gt [uint32]::MaxValue) { throw 'Histogram fixed-point mass overflows.' }
+Write-Host "PASS: fractional histogram sweep, conserved mass, DX11 maximum mass $maximumMass."
 
 $jobs = @(
     @{ file='CameraSuite/PhysicalCameraExposureCS.hlsl'; profile='cs_5_0'; defines=@('COMPUTESHADER') },

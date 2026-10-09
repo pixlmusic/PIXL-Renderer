@@ -157,8 +157,7 @@ RE::BSEventNotifyControl MenuOpenCloseEventHandler::ProcessEvent(const RE::MenuO
 	if (a_event->menuName == RE::LoadingMenu::MENU_NAME) {
 		if (!a_event->opening) {
 			auto& worldProbes = globals::pipeline::worldProbes;
-			worldProbes.resetCapture[0] = true;
-			worldProbes.resetCapture[1] = true;
+			worldProbes.cellTransitionCapturePending.store(true, std::memory_order_release);
 		}
 	}
 	return RE::BSEventNotifyControl::kContinue;
@@ -557,6 +556,17 @@ void WorldProbes::UpdateCubemap()
 {
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "Cubemap Update");
+
+	// A cell/worldspace load invalidates the screen-derived capture contents.
+	// Restart the whole multi-frame pipeline here (not in the UI event callback)
+	// so no filtering/compression task can publish data accumulated in the
+	// previous cell after the new scene has loaded.
+	if (cellTransitionCapturePending.exchange(false, std::memory_order_acq_rel)) {
+		resetCapture[0] = true;
+		resetCapture[1] = true;
+		nextTask = NextTask::kCaptureInferAndIrradianceA;
+		logger::debug("[WorldProbes] Cell transition queued fresh environment/reflection captures");
+	}
 
 	// Reset capture when game time jumps (wait menu, timescale changes, console commands)
 	if (auto calendar = globals::game::calendar) {

@@ -179,6 +179,8 @@ namespace Util
 			logger::error("Cannot compile shader: renderer/device/compiler input is unavailable");
 			return nullptr;
 		}
+		winrt::com_ptr<ID3D11Device> deviceOwner;
+		deviceOwner.copy_from(device);
 
 		CustomInclude include;
 
@@ -240,15 +242,19 @@ namespace Util
 		winrt::com_ptr<ID3DBlob> shaderBlob;
 		winrt::com_ptr<ID3DBlob> shaderErrors;
 
-		if (!std::filesystem::exists(FilePath)) {
-			logger::error("Failed to compile shader; {} does not exist", str);
-			return nullptr;
-		}
 		logger::debug("Compiling {} with {}", str, DefinesToString(macros));
-		if (FAILED(D3DCompileFromFile(FilePath, macros.data(), &include, Program, ProgramType, flags, 0, shaderBlob.put(), shaderErrors.put()))) {
-			logger::warn("Shader compilation failed:\n\n{}", shaderErrors ? static_cast<char*>(shaderErrors->GetBufferPointer()) : "Unknown error");
+		auto& artifacts = SIE::ShaderCache::Instance().GetCompilationArtifacts();
+		const auto compileGeneration = artifacts.Generation();
+		const HRESULT compileResult = artifacts.Compile(FilePath, macros.data(), include, Program, ProgramType, flags, {},
+			SIE::ShaderCache::Instance().IsDiskCache(), shaderBlob.put(), shaderErrors.put());
+		if (FAILED(compileResult)) {
+			if (compileResult != E_PENDING && compileResult != E_ABORT)
+				logger::warn("Shader compilation failed for {} (HRESULT {}):\n{}", str, static_cast<unsigned long>(compileResult), shaderErrors ? static_cast<char*>(shaderErrors->GetBufferPointer()) : "Source unavailable or compiler failure");
 			return nullptr;
 		}
+		auto publication = artifacts.LockPublication();
+		if (compileGeneration != artifacts.Generation() || device != globals::d3d::device)
+			return nullptr;
 		if (shaderErrors)
 			logger::debug("Shader logs:\n{}", static_cast<char*>(shaderErrors->GetBufferPointer()));
 		if (!_stricmp(ProgramType, "ps_5_0")) {

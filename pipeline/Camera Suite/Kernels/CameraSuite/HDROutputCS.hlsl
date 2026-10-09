@@ -575,8 +575,6 @@ float3 PixlApplyDepthOfField(float2 uv, uint2 dim, float3 sharpScene)
 	float blurAmount = smoothstep(0.5f, max(2.0f, dofControlMaxCoCPixels * 0.22f), abs(signedCoC));
 	bool centerSky;
 	float centerDepth = PixlDofLinearDepth(uv, centerSky);
-	if (blurAmount <= 0.01f)
-		return sharpScene;
 	float nearWeight = signedCoC < 0.0f ? blurAmount : 0.0f;
 	float farWeight = signedCoC > 0.0f ? blurAmount : 0.0f;
 	nearWeight = saturate(nearWeight * dofControlNearBlurIntensity);
@@ -604,7 +602,10 @@ float3 PixlApplyDepthOfField(float2 uv, uint2 dim, float3 sharpScene)
 	float3 result = lerp(sharpScene, farBlur, farWeight);
 	// Near coverage lets foreground silhouettes expand over the background,
 	// while the bilateral CoC sign prevents the far layer from crossing them.
-	float nearBlend = max(nearWeight, nearCoverage * blurAmount * edgeSafe);
+	// Foreground reach is explicit coverage from the dilated near gather. It must
+	// still composite over an in-focus/background centre where this pixel's own
+	// CoC (and therefore blurAmount) is near zero.
+	float nearBlend = max(nearWeight, nearCoverage * edgeSafe);
 	return lerp(result, nearBlur, nearBlend * 0.98f);
 }
 

@@ -256,11 +256,25 @@ float4 ApplyMicroclimateSkyWeather(float4 cloud, float3 rayFromCamera)
 
 float PixlCloudPhase(float cosTheta, float eccentricity)
 {
-	// Normalized Henyey-Greenstein lobe, bounded for stable HDR highlights.
+	// Draine's modified HG phase adds a restrained backward lobe while retaining
+	// a normalized angular response. This keeps twilight edges visible without
+	// multiplying the authored cloud energy by an unbounded forward spike.
 	float g = clamp(eccentricity, 0.0f, 0.85f);
 	float g2 = g * g;
-	float denominator = max(1.0f + g2 - 2.0f * g * cosTheta, 0.04f);
-	return min((1.0f - g2) / pow(denominator, 1.5f), 8.0f) * 0.125f;
+	float mu = clamp(cosTheta, -1.0f, 1.0f);
+	float denominator = max(1.0f + g2 - 2.0f * g * mu, 0.04f);
+	float hg = (1.0f - g2) / pow(denominator, 1.5f);
+	const float backwardLobe = 0.22f;
+	float angular = (1.0f + backwardLobe * mu * mu) /
+		(1.0f + backwardLobe * (1.0f + 2.0f * g2) / 3.0f);
+	return min(hg * angular, 8.0f) * 0.125f;
+}
+
+float PixlCloudOpticalDepth(float coverage)
+{
+	// Alpha stores coverage, not density. Convert it before combining offset
+	// strata so thin layers accumulate smoothly and opaque texels stay bounded.
+	return -log(max(1.0f - saturate(coverage), 1.0e-3f));
 }
 
 float4 ApplyPixlLayeredClouds(float4 cloud, float2 uv, float3 viewDirection)
@@ -279,27 +293,40 @@ float4 ApplyPixlLayeredClouds(float4 cloud, float2 uv, float3 viewDirection)
 	float density1 = PixlCloudDensity(uv + layerStep);
 	float density2 = PixlCloudDensity(uv - layerStep * 0.7f);
 	float density3 = PixlCloudDensity(uv + float2(-layerStep.y, layerStep.x) * 0.55f);
-	float detailDensity = dot(float4(density0, density1, density2, density3), float4(0.40f, 0.25f, 0.20f, 0.15f));
-	detailDensity = lerp(density0, detailDensity, saturate(SharedData::skyVeilSettings.DetailStrength));
-
-	float opticalDepth = max(detailDensity * SharedData::skyVeilSettings.CloudDensity, 0.0f);
+	float stratumOpticalDepth =
+		PixlCloudOpticalDepth(density0) * 0.40f +
+		PixlCloudOpticalDepth(density1) * 0.25f +
+		PixlCloudOpticalDepth(density2) * 0.20f +
+		PixlCloudOpticalDepth(density3) * 0.15f;
+	float opticalDepth = max(lerp(PixlCloudOpticalDepth(density0), stratumOpticalDepth,
+		saturate(SharedData::skyVeilSettings.DetailStrength)) * SharedData::skyVeilSettings.CloudDensity, 0.0f);
 	float transmittance = exp2(-1.442695f * opticalDepth);
 
-	float2 sunDirection = SharedData::SunDirection.xy;
-	float sunDirectionLength = max(length(sunDirection), 1e-4f);
-	sunDirection /= sunDirectionLength;
-	float2 shadowStep = sunDirection * (0.0015f + 0.0025f * SharedData::skyVeilSettings.CloudDepth);
+	float2 cloudShadowDirection = SharedData::SunDirection.xy;
+	float sunDirectionLength = max(length(cloudShadowDirection), 1e-4f);
+	cloudShadowDirection /= sunDirectionLength;
+	float2 shadowStep = cloudShadowDirection * (0.0015f + 0.0025f * SharedData::skyVeilSettings.CloudDepth);
 	float lightOpticalDepth =
-		PixlCloudDensity(uv + shadowStep) * 0.55f +
-		PixlCloudDensity(uv + shadowStep * 2.35f) * 0.30f +
-		PixlCloudDensity(uv + shadowStep * 4.0f) * 0.15f;
+		PixlCloudOpticalDepth(PixlCloudDensity(uv + shadowStep)) * 0.55f +
+		PixlCloudOpticalDepth(PixlCloudDensity(uv + shadowStep * 2.35f)) * 0.30f +
+		PixlCloudOpticalDepth(PixlCloudDensity(uv + shadowStep * 4.0f)) * 0.15f;
 	float selfShadow = exp2(-1.442695f * lightOpticalDepth * max(SharedData::skyVeilSettings.SelfShadowStrength, 0.0f));
 	float ambientFill = saturate(SharedData::skyVeilSettings.AmbientLighting);
 	cloud.xyz *= lerp(ambientFill, 1.0f, selfShadow);
 
-	float phase = PixlCloudPhase(dot(viewDirection, normalize(SharedData::SunDirection.xyz)), SharedData::skyVeilSettings.PhaseEccentricity);
+	float3 sunDirection = SharedData::SunDirection.xyz;
+	float sunLengthSq = dot(sunDirection, sunDirection);
+	sunDirection = sunLengthSq > 1.0e-6f ? sunDirection * rsqrt(sunLengthSq) : float3(0.0f, 0.0f, 1.0f);
+	float phase = PixlCloudPhase(dot(viewDirection, sunDirection), SharedData::skyVeilSettings.PhaseEccentricity);
 	float edgeDensity = saturate((1.0f - transmittance) * transmittance * 4.0f);
-	float3 silverLining = SharedData::SunColor.xyz * phase * edgeDensity * max(SharedData::skyVeilSettings.SilverLining, 0.0f);
+	float3 moon0 = SharedData::MasserDirection.xyz;
+	float3 moon1 = SharedData::SecundaDirection.xyz;
+	moon0 = dot(moon0, moon0) > 1.0e-6f ? normalize(moon0) : sunDirection;
+	moon1 = dot(moon1, moon1) > 1.0e-6f ? normalize(moon1) : sunDirection;
+	float3 celestialScattering = max(SharedData::SunColor.xyz, 0.0f) * phase +
+		(max(SharedData::MasserColor.xyz, 0.0f) * PixlCloudPhase(dot(viewDirection, moon0), 0.42f) +
+		 max(SharedData::SecundaColor.xyz, 0.0f) * PixlCloudPhase(dot(viewDirection, moon1), 0.42f)) * 0.12f;
+	float3 silverLining = celestialScattering * edgeDensity * max(SharedData::skyVeilSettings.SilverLining, 0.0f);
 	cloud.xyz += silverLining * max(dot(cloud.xyz, 1.0f / 3.0f), 0.05f);
 
 	float volumetricAlpha = 1.0f - transmittance;

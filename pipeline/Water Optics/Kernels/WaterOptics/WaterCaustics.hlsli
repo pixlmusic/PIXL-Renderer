@@ -117,15 +117,17 @@ namespace WaterOptics
 		// Keep the useful above-water projection, but limit it to a short receiver
 		// zone and fade by the projected footprint so it cannot become a world-sized
 		// decal on snow or terrain elsewhere in the tile.
-		const float maxAboveWaterHeight = 300.0f;
+		const float maxAboveWaterHeight = clamp(
+			SharedData::waterOpticsSettings.ProjectedCausticsDistance, 64.0f, 800.0f);
 		if (causticsDistToWater < 0.0f && waterDataValid > 0.0f &&
 			SharedData::waterOpticsSettings.EnableEnhancedCaustics != 0) {
 			float receiverHeight = -causticsDistToWater;
 			float3 sunDirection = normalize(SharedData::DirLightDirection.xyz);
 			float safeSunZ = max(sunDirection.z, 0.38f);
 			float2 projectedOffset = sunDirection.xy * (receiverHeight / safeSunZ);
-			float heightFade = 1.0f - smoothstep(16.0f, maxAboveWaterHeight, receiverHeight);
-			float footprintFade = 1.0f - smoothstep(64.0f, 260.0f, length(projectedOffset));
+			float reachScale = maxAboveWaterHeight / 300.0f;
+			float heightFade = 1.0f - smoothstep(max(16.0f, 16.0f * reachScale), maxAboveWaterHeight, receiverHeight);
+			float footprintFade = 1.0f - smoothstep(64.0f * reachScale, 260.0f * reachScale, length(projectedOffset));
 			float receiverFade = heightFade * footprintFade;
 			float3 reflectedDirection = normalize(float3(-sunDirection.xy, max(sunDirection.z, 0.0f)));
 			float3 normal = normalize(receiverNormal);
@@ -146,10 +148,9 @@ namespace WaterOptics
 				float softness = saturate(receiverHeight / maxAboveWaterHeight) * 0.30f;
 				float broad = SampleCaustics(PanCausticsUV(causticsUV * 0.58f, 0.05f, 1.0f));
 				caustics = lerp(caustics, broad.xxx, softness);
-				float visibility = max(SharedData::waterOpticsSettings.CausticsVisibility, 0.0f);
-				float strength = clamp(SharedData::waterOpticsSettings.CausticsStrength, 0.0f, 2.0f);
+				float strength = clamp(SharedData::waterOpticsSettings.ProjectedCausticsStrength, 0.0f, 3.0f);
 				float3 folds = max(caustics / CausticAtlasMean - 0.72f.xxx, 0.0f.xxx);
-				result = 1.0f.xxx + min(folds * visibility * strength * receiverFade *
+				result = 1.0f.xxx + min(folds * strength * receiverFade *
 					normalResponse * sunVisibility * 0.34f, 1.25f.xxx);
 			}
 		}
@@ -249,7 +250,8 @@ namespace WaterOptics
 		float waterHeight = waterData.w;
 		float receiverHeight = worldPosition.z - waterHeight;
 		float lightHeight = lightPosition.z - waterHeight;
-		if (receiverHeight > 300.0f || receiverHeight < -560.0f || lightHeight <= 0.5f)
+		float projectedReach = clamp(SharedData::waterOpticsSettings.ProjectedCausticsDistance, 64.0f, 800.0f);
+		if (receiverHeight > projectedReach || receiverHeight < -560.0f || lightHeight <= 0.5f)
 			return 1.0.xxx;
 
 		// Mirror the local emitter beneath the water plane. The line from that
@@ -275,7 +277,9 @@ namespace WaterOptics
 		// turning the entire water volume into a light decal.
 		float radius = max(lightRadius * 1.25f, 40.0f);
 		float sourceCoverage = 1.0f - smoothstep(radius * 0.20f, radius * 1.20f, sourcePath);
-		float receiverFade = 1.0f - smoothstep(16.0f, 300.0f, receiverHeight);
+		float receiverFade = receiverHeight >= 0.0f
+			? 1.0f - smoothstep(max(16.0f, 16.0f * projectedReach / 300.0f), projectedReach, receiverHeight)
+			: 1.0f;
 		float3 reflectedDirection = normalize(worldPosition - waterPoint);
 		float3 normal = normalize(receiverNormal);
 		float normalResponse = receiverHeight >= 0.0f
@@ -308,9 +312,10 @@ namespace WaterOptics
 		float3 contrast = max(receiverEnergy - 0.38f.xxx, 0.0f.xxx);
 		float3 broadEnergy = saturate(receiverEnergy * 0.30f);
 		float patternLuminance = dot(contrast + broadEnergy, float3(0.2126f, 0.7152f, 0.0722f));
-		float boost = patternLuminance *
-			SharedData::waterOpticsSettings.CausticsVisibility *
-			SharedData::waterOpticsSettings.CausticsStrength *
+		float receiverStrength = receiverHeight >= 0.0f
+			? clamp(SharedData::waterOpticsSettings.ProjectedCausticsStrength, 0.0f, 3.0f)
+			: SharedData::waterOpticsSettings.CausticsVisibility * SharedData::waterOpticsSettings.CausticsStrength;
+		float boost = patternLuminance * receiverStrength *
 			sourceCoverage * receiverFade * normalResponse * 0.90f;
 		// This is a light multiplier, never an emissive overlay.
 		return 1.0.xxx + min(boost, 1.35f).xxx;

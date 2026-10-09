@@ -24,7 +24,7 @@ if (-not [string]::IsNullOrWhiteSpace($NeuralRuntimePath)) {
     throw 'NR runtimes are manual-install only and cannot be bundled. Omit -NeuralRuntimePath.'
 }
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$revisionVersion = "1.0.6$PackageRevision"
+$revisionVersion = "1.0.7$PackageRevision"
 if ([string]::IsNullOrWhiteSpace($ProductVersion)) { $ProductVersion = $revisionVersion }
 elseif ($PackageRevision -and $ProductVersion -ne $revisionVersion) { throw 'ProductVersion conflicts with PackageRevision.' }
 if ($ProductVersion -notmatch '^\d+\.\d+\.\d+(?:r\d+)?$') { throw "Invalid package product version: $ProductVersion" }
@@ -296,7 +296,9 @@ if ($includePipelineLibrary) {
     }
     foreach ($stage in Get-ChildItem -LiteralPath $pipelineRoot -File -Recurse -Filter '*.pixlbin') {
         $relative = $stage.FullName.Substring($pipelineRoot.TrimEnd('\').Length + 1)
-        if ($relative -notmatch '^(Vertex|Pixel|Compute)[\\/]') { throw "Unrecognized cache stage path: $relative" }
+        $validStageShard = $relative -match '^(Vertex|Pixel|Compute)[\\/]'
+        $validStandalone = $relative -match '^Standalone[\\/]v1[\\/][0-9a-fA-F]{64}\.pixlbin$'
+        if (-not ($validStageShard -or $validStandalone)) { throw "Unrecognized cache stage path: $relative" }
         $cacheDestination = Join-Path $cacheOutput $relative
         New-Item -ItemType Directory -Path (Split-Path -Parent $cacheDestination) -Force | Out-Null
         Copy-Item -LiteralPath $stage.FullName -Destination $cacheDestination

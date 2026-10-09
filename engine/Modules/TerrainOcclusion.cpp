@@ -67,10 +67,7 @@ void TerrainOcclusion::DrawSettings()
 
 void TerrainOcclusion::ClearShaderCache()
 {
-	if (shadowUpdateProgram) {
-		shadowUpdateProgram->Release();
-		shadowUpdateProgram = nullptr;
-	}
+	shadowUpdateProgram = nullptr;
 
 	CompileComputeShaders();
 }
@@ -245,7 +242,6 @@ void TerrainOcclusion::LoadHeightmap()
 			return;
 		}
 
-		texHeightMap.release();
 		texHeightMap = std::make_unique<Texture2D>(reinterpret_cast<ID3D11Texture2D*>(pResource), "TerrainOcclusion::HeightMap");
 
 		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {
@@ -278,8 +274,6 @@ void TerrainOcclusion::Precompute()
 			context->PSSetShaderResources(60, (uint)srvs.size(), srvs.data());
 			context->CSSetShaderResources(60, (uint)srvs.size(), srvs.data());
 		}
-
-		texShadowHeight.release();
 
 		D3D11_TEXTURE2D_DESC texDesc = {
 			.Width = texHeightMap->desc.Width,

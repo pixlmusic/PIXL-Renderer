@@ -16,6 +16,11 @@ namespace DisplayMapping
 
 	float RangeCompress(float val, float threshold)
 	{
+		// This normalized shoulder has no headroom when threshold reaches one.
+		// Preserve the input instead of dividing by zero or flipping the curve.
+		if (threshold >= 1.0f)
+			return val;
+
 		float v1 = val;
 		float v2 = threshold + (1 - threshold) * RangeCompress((val - threshold) / (1 - threshold));
 		return val < threshold ? v1 : v2;
@@ -54,6 +59,8 @@ namespace DisplayMapping
 			return val;
 		if (maxValue <= threshold)
 			return threshold;
+		if (clip <= threshold)
+			return val;
 
 		float range = maxValue - threshold;
 		float clipValue = 1.0 - exp((threshold - clip) / range);

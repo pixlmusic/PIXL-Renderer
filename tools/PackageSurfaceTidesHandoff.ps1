@@ -8,7 +8,7 @@ $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $work = Join-Path $repo "build\release-staging\surfacetides-$stamp"
 $patch = Join-Path $work 'patch'
 $handoff = Join-Path $work 'handoff'
-$sourceStage = Join-Path $work 'SurfaceTides-1.0.2-PIXL-Source'
+$sourceStage = Join-Path $work 'SurfaceTides-1.1.0-PIXL-Source'
 $surfaceDllCandidates = @(
     (Join-Path $source 'build\windows-universal-v8\Release\SurfaceTides.dll'),
     (Join-Path $source 'build\windows-vendored-v8d\Release\SurfaceTides.dll'),
@@ -27,13 +27,13 @@ foreach ($runtime in @('1,5,97,0','1,6,1170,0','1,6,1179,0','1,7,104,0')) {
 }
 New-Item -ItemType Directory -Path "$patch\SKSE\Plugins","$patch\Shaders\SurfaceTides",$handoff,$sourceStage -Force | Out-Null
 Copy-Item -LiteralPath $surfaceDll -Destination "$patch\SKSE\Plugins\SurfaceTides.dll"
-Copy-Item -LiteralPath "$repo\installer\PIXLRenderer\SurfaceTides-PIXL-1.0.2.ini" -Destination "$patch\SKSE\Plugins\SurfaceTides.ini"
+Copy-Item -LiteralPath "$repo\installer\PIXLRenderer\SurfaceTides-PIXL-1.1.0.ini" -Destination "$patch\SKSE\Plugins\SurfaceTides.ini"
 Copy-Item -LiteralPath "$source\Data\Shaders\SurfaceTides\Water.hlsl" -Destination "$patch\Shaders\SurfaceTides\Water.hlsl"
 foreach($notice in @('LICENSE','THIRD_PARTY.md')) { Copy-Item -LiteralPath "$source\$notice" -Destination $patch }
 Copy-Item -LiteralPath "$source\licenses" -Destination $patch -Recurse
 Copy-Item -LiteralPath "$repo\docs\SURFACETIDES-UPSTREAM.md" -Destination "$patch\INSTALL-AND-SOURCE.md"
 Copy-Item -LiteralPath "$repo\docs\SURFACETIDES-UPSTREAM.md" -Destination "$handoff\START-HERE.md"
-Copy-Item -LiteralPath "$repo\installer\PIXLRenderer\SurfaceTides-PIXL-1.0.2.ini" -Destination "$handoff\PIXL-PRESET-SAMPLE.ini"
+Copy-Item -LiteralPath "$repo\installer\PIXLRenderer\SurfaceTides-PIXL-1.1.0.ini" -Destination "$handoff\PIXL-PRESET-SAMPLE.ini"
 
 # Include maintained build/runtime sources and bundled dependency source. Omit
 # local build products and old experiment/recovery packages.
@@ -72,8 +72,8 @@ function Archive([string]$directory,[string]$zip) {
     $hash=(Get-FileHash -LiteralPath $zip).Hash
     "$hash  $([IO.Path]::GetFileName($zip))" | Set-Content -LiteralPath "$zip.sha256" -Encoding ascii
 }
-$sourceZip=Join-Path $output "SurfaceTides-1.0.2-PIXL-Source-$stamp.zip"
-$patchZip=Join-Path $output "SurfaceTides-1.0.2-PIXL-Compatibility-$stamp.zip"
+$sourceZip=Join-Path $output "SurfaceTides-1.1.0-PIXL-Source-$stamp.zip"
+$patchZip=Join-Path $output "SurfaceTides-1.1.0-PIXL-Compatibility-$stamp.zip"
 Archive $sourceStage $sourceZip
 Archive $patch $patchZip
 Copy-Item -LiteralPath $sourceZip,$patchZip,"$sourceZip.sha256","$patchZip.sha256" -Destination $handoff

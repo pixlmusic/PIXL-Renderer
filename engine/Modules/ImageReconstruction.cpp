@@ -19,11 +19,13 @@
 #include "Utils/UI.h"
 #include <Windows.h>
 #include <algorithm>
+#include <atomic>
 #include <cfloat>
 #include <cmath>
 #include <directx/d3dx12.h>
 #include <format>
 #include <filesystem>
+#include <limits>
 
 #define I18N_KEY_PREFIX "feature.image_reconstruction."
 
@@ -63,6 +65,31 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	reflexFPSLimit);
 
 decltype(&D3D11CreateDeviceAndSwapChain) ptrD3D11CreateDeviceAndSwapChainUpscaling;
+
+namespace
+{
+	void LogImageReconstructionSwapChain(IDXGISwapChain* swapChain)
+	{
+		if (!swapChain)
+			return;
+		DXGI_SWAP_CHAIN_DESC desc{};
+		if (FAILED(swapChain->GetDesc(&desc)))
+			return;
+		RECT clientRect{};
+		const BOOL hasClientRect = desc.OutputWindow && GetClientRect(desc.OutputWindow, &clientRect);
+		logger::info(
+			"[PIXL][SwapChain] Image Reconstruction owns {}x{} {} presentation (windowed={}, client={}x{}, format={}, effect={}, buffers={})",
+			desc.BufferDesc.Width,
+			desc.BufferDesc.Height,
+			desc.Windowed ? "windowed/borderless" : "exclusive-fullscreen",
+			desc.Windowed != FALSE,
+			hasClientRect ? clientRect.right - clientRect.left : 0,
+			hasClientRect ? clientRect.bottom - clientRect.top : 0,
+			static_cast<unsigned>(desc.BufferDesc.Format),
+			static_cast<unsigned>(desc.SwapEffect),
+			desc.BufferCount);
+	}
+}
 
 /**
  * @brief Creates a Direct3D 11 device and swap chain, with support for advanced imageReconstruction and frame generation features.
@@ -220,6 +247,7 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 
 		*ppSwapChain = imageReconstruction.GetProxySwapChain();
 		imageReconstruction.d3d12SwapChainActive = true;
+		LogImageReconstructionSwapChain(*ppSwapChain);
 
 		if (imageReconstruction.IsBackendInitialized()) {
 			imageReconstruction.UpgradeBackendInterface(reinterpret_cast<void**>(ppDevice));
@@ -243,6 +271,8 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 		ppDevice,
 		pFeatureLevel,
 		ppImmediateContext);
+	if (SUCCEEDED(ret))
+		LogImageReconstructionSwapChain(ppSwapChain ? *ppSwapChain : nullptr);
 
 	if (imageReconstruction.IsBackendInitialized()) {
 		imageReconstruction.UpgradeBackendInterface((void**)&(*ppDevice));
@@ -810,6 +840,16 @@ void ImageReconstruction::LoadSettings(json& o_json)
 	if (settings.upscaleMethodNoDLSS >= static_cast<uint>(enumCount)) {
 		logger::warn("[ImageReconstruction] Loaded upscaleMethodNoDLSS {} out of range, clamping to {}", settings.upscaleMethodNoDLSS, enumCount ? enumCount - 1 : 0);
 		settings.upscaleMethodNoDLSS = enumCount ? enumCount - 1 : 0;
+	}
+	// Invalid quality modes make the SDK return a zero ratio before projection
+	// jitter is calculated. Preserve Native AA (0), which is a valid SDK mode.
+	if (settings.qualityMode > 4u) {
+		logger::warn("[ImageReconstruction] Loaded qualityMode {} out of range, clamping to 4", settings.qualityMode);
+		settings.qualityMode = 4u;
+	}
+	if (settings.streamlineLogLevel > 2u) {
+		logger::warn("[ImageReconstruction] Loaded streamlineLogLevel {} out of range, clamping to 2", settings.streamlineLogLevel);
+		settings.streamlineLogLevel = 2u;
 	}
 	if (settings.presetDLSS > 5 || settings.presetDLSS == 3 || settings.presetDLSS == 4) {
 		logger::warn("[ImageReconstruction] Loaded unsupported presetDLSS {}, resetting to 0 (Default)", settings.presetDLSS);
@@ -1553,11 +1593,58 @@ void ImageReconstruction::ClearShaderCache()
 		encodeTexturesCS[i] = nullptr;  // com_ptr automatically releases
 	}
 
+	copyDepthToSharedBufferPS = nullptr;
+	dx12SwapChain.neuralGuides = {};
 	depthRefractionUpscalePS = nullptr;  // com_ptr automatically releases
 	underwaterMaskUpscalePS = nullptr;   // com_ptr automatically releases
 	upscaleVS = nullptr;                 // com_ptr automatically releases
 }
 
+void ImageReconstruction::CaptureCameraFrame()
+{
+    if (cameraFrame.frame == globals::state->frameCount)
+        return;
+    // Freeze the gameplay camera before reconstruction/depth expansion and the
+    // post-display projection rewrite. DX11 and DX12 submit this same snapshot.
+    const auto& source = globals::game::frameBufferCached;
+    auto transpose = [](const Matrix& input) {
+        const auto matrix = input.Transpose();
+        PIXL::Reconstruction::CameraMatrix output{};
+        static_assert(sizeof(matrix) == sizeof(output));
+        std::memcpy(output.data(), &matrix, sizeof(output));
+        return output;
+    };
+    PIXL::Reconstruction::CameraFrame captured{};
+    captured.viewInverse = transpose(source.GetCameraViewInverse());
+    captured.projection = transpose(source.GetCameraProjUnjittered());
+    captured.currentVP = transpose(source.GetCameraViewProjUnjittered());
+    const auto& origin = source.GetCameraPosAdjust();
+    captured.origin = { origin.x, origin.y, origin.z };
+    captured.frame = globals::state->frameCount;
+    captured.jitter = { jitter.x, jitter.y };
+    const auto* graphics = globals::game::graphicsState;
+    captured.aspect = static_cast<float>(graphics->screenWidth) / std::max(1u, graphics->screenHeight);
+    captured.fov = Util::GetVerticalFOVRad();
+    captured.nearPlane = *globals::game::cameraNear;
+    captured.farPlane = *globals::game::cameraFar;
+    const auto temporal = PIXL::Renderer::TemporalContext::Get().GetFrameSnapshot();
+    const bool consecutiveRenderedCamera = cameraFrame.frame != UINT64_MAX &&
+        cameraFrame.frame + 1 == captured.frame && temporal.previousFrameValid &&
+        temporal.current.frameIndex == captured.frame && temporal.previous.frameIndex + 1 == captured.frame;
+    if (consecutiveRenderedCamera) {
+        // Skyrim's previous-view buffer can stop advancing with the frozen world
+        // in TFC/Photo Mode. Keep camera history on PIXL's render-frame cadence so
+        // camera motion remains valid while timescale is zero.
+        captured.previousVP = cameraFrame.currentVP;
+        captured.previousOrigin = cameraFrame.origin;
+    } else {
+        captured.previousVP = transpose(source.GetCameraPreviousViewProjUnjittered());
+        const auto& previousOrigin = source.GetCameraPreviousPosAdjust();
+        captured.previousOrigin = { previousOrigin.x, previousOrigin.y, previousOrigin.z };
+    }
+    captured.reset = !consecutiveRenderedCamera;
+    cameraFrame = captured;
+}
 void ImageReconstruction::CopySharedD3D12Resources(bool a_useNeuralGuides)
 {
 	ZoneScoped;
@@ -1566,6 +1653,11 @@ void ImageReconstruction::CopySharedD3D12Resources(bool a_useNeuralGuides)
 
 	auto renderer = globals::game::renderer;
 	auto context = globals::d3d::context;
+	if (a_useNeuralGuides) dx12SwapChain.neuralGuides = {};
+	if (!renderer || !context || !GetUpscaleVS()) { globals::state->EndPerfEvent(); return; }
+	if (!copyDepthToSharedBufferPS)
+		copyDepthToSharedBufferPS.attach(static_cast<ID3D11PixelShader*>(Util::CompileShader(L"Data\\Shaders\\ImageReconstruction\\CopyDepthToSharedBufferPS.hlsl", {{"PSHADER", ""}}, "ps_5_0")));
+	if (!copyDepthToSharedBufferPS) { globals::state->EndPerfEvent(); return; }
 
 	auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 	ID3D11Texture2D* motionSource = motionVector.texture;
@@ -1577,21 +1669,32 @@ void ImageReconstruction::CopySharedD3D12Resources(bool a_useNeuralGuides)
 	auto* depthTarget = a_useNeuralGuides
 		? dx12SwapChain.neuralDepthBufferShared12.get()
 		: dx12SwapChain.depthBufferShared12.get();
-	if (!motionTarget || !depthTarget) {
+	if (!motionTarget || !depthTarget || !motionSource || !motionTarget->resource11 || !depthTarget->resource11 || !depthTarget->rtv ||
+		(a_useNeuralGuides && (!motionVectorCopyTexture || !motionVectorCopyTexture->resource))) {
+		globals::state->EndPerfEvent();
+		return;
+	}
+	D3D11_TEXTURE2D_DESC sourceDesc{}, targetDesc{}, depthDesc{};
+	motionSource->GetDesc(&sourceDesc);
+	motionTarget->resource11->GetDesc(&targetDesc);
+	depthTarget->resource11->GetDesc(&depthDesc);
+	if (sourceDesc.Width != targetDesc.Width || sourceDesc.Height != targetDesc.Height ||
+		sourceDesc.Format != targetDesc.Format || sourceDesc.MipLevels != targetDesc.MipLevels ||
+		sourceDesc.ArraySize != targetDesc.ArraySize || sourceDesc.SampleDesc.Count != targetDesc.SampleDesc.Count ||
+		sourceDesc.SampleDesc.Quality != targetDesc.SampleDesc.Quality) {
+		globals::state->EndPerfEvent();
+		return;
+	}
+
+	auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+	if (!depth.depthSRV) { globals::state->EndPerfEvent(); return; }
+	const auto guideSize = Util::ConvertToDynamic(float2{ static_cast<float>(globals::game::graphicsState->screenWidth), static_cast<float>(globals::game::graphicsState->screenHeight) });
+	if (a_useNeuralGuides && (guideSize.x < 2 || guideSize.y < 2 || guideSize.x > depthDesc.Width || guideSize.y > depthDesc.Height ||
+		guideSize.x > targetDesc.Width || guideSize.y > targetDesc.Height)) {
 		globals::state->EndPerfEvent();
 		return;
 	}
 	context->CopyResource(motionTarget->resource11, motionSource);
-
-	if (a_useNeuralGuides) {
-		const auto guideSize = Util::ConvertToDynamic(float2{
-			static_cast<float>(globals::game::graphicsState->screenWidth),
-			static_cast<float>(globals::game::graphicsState->screenHeight) });
-		dx12SwapChain.neuralGuideWidth = std::max(1u, static_cast<UINT>(guideSize.x));
-		dx12SwapChain.neuralGuideHeight = std::max(1u, static_cast<UINT>(guideSize.y));
-	}
-
-	auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 
 	{
 		// Set up viewport for fullscreen rendering
@@ -1600,8 +1703,8 @@ void ImageReconstruction::CopySharedD3D12Resources(bool a_useNeuralGuides)
 		D3D11_VIEWPORT viewport = {};
 		viewport.TopLeftX = 0.0f;
 		viewport.TopLeftY = 0.0f;
-		viewport.Width = screenSize.x;
-		viewport.Height = screenSize.y;
+		viewport.Width = a_useNeuralGuides ? guideSize.x : screenSize.x;
+		viewport.Height = a_useNeuralGuides ? guideSize.y : screenSize.y;
 		viewport.MinDepth = 0.0f;
 		viewport.MaxDepth = 1.0f;
 		context->RSSetViewports(1, &viewport);
@@ -1641,6 +1744,8 @@ void ImageReconstruction::CopySharedD3D12Resources(bool a_useNeuralGuides)
 	context->OMSetRenderTargets(0, nullptr, nullptr);
 	context->PSSetShader(nullptr, nullptr, 0);
 	context->VSSetShader(nullptr, nullptr, 0);
+	if (a_useNeuralGuides)
+		dx12SwapChain.neuralGuides = { cameraFrame.frame, static_cast<uint32_t>(guideSize.x), static_cast<uint32_t>(guideSize.y) };
 	globals::state->EndPerfEvent();
 }
 
@@ -1859,9 +1964,15 @@ bool ImageReconstruction::CanUsePhotoNeuralRendering()
 
 bool ImageReconstruction::ShouldUseNeuralRenderingThisFrame()
 {
-	// Live neural processing must not filter the late-drawn settings UI.
-	// Explicit photo processing retains its separate capture workflow.
-	if (globals::menu && globals::menu->IsEnabled && !IsPhotoNeuralRenderingActive())
+	// Photo/Director pauses generated frames by default while the PIXL menu is
+	// open. CameraSuite can still route that menu through its separate SDR/HDR UI
+	// surface, so test the actual composition path instead of frame-generation
+	// activity. Otherwise retain the safeguard against processing UI baked into
+	// scene color.
+	const bool uiCompositedSeparately = globals::pipeline::cameraSuite.loaded &&
+		globals::pipeline::cameraSuite.ShouldUseD3D12UIBuffer();
+	if (globals::menu && globals::menu->IsEnabled &&
+		!IsPhotoNeuralRenderingActive() && !uiCompositedSeparately)
 		return false;
 	if (!settings.neuralRenderingEnabled && !IsPhotoNeuralRenderingActive())
 		return false;
@@ -2347,6 +2458,9 @@ void ImageReconstruction::Upscale()
 		reconstructionFrame.frame = globals::state->frameCount;
 		reconstructionFrame.temporalValid = temporalFrame.previousFrameValid;
 		PIXL::Renderer::ReconstructionContext::Get().Publish(std::move(reconstructionFrame));
+		// Capture both guides on the encoded input grid before Upscale expands depth.
+		if (ShouldUseNeuralRenderingThisFrame())
+			CopySharedD3D12Resources(true);
 
 		state->EndPerfEvent();
 		globals::profiler->EndPass();
@@ -2370,8 +2484,11 @@ void ImageReconstruction::Upscale()
 			}
 		} else if (upscaleMethod == UpscaleMethod::kFSR) {
 			const bool resetReconstructionHistory = pendingDLSSReset.exchange(false, std::memory_order_acq_rel);
-			fidelityFX.Upscale(main.texture, fsrDepthTexture->resource.get(), reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVector.texture, settings.sharpnessFSR, resetReconstructionHistory);
-			historyEvaluated = true; // Existing FSR failure/fallback contract retained.
+			historyEvaluated = fidelityFX.Upscale(main.texture, fsrDepthTexture->resource.get(), reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVector.texture, settings.sharpnessFSR, resetReconstructionHistory);
+			if (!historyEvaluated) {
+				pendingDLSSReset.store(true, std::memory_order_release);
+				pendingNeuralRenderingReset.store(true, std::memory_order_release);
+			}
 		}
 		if (reconstructionHistoryId != 0) {
 			PIXL::Renderer::TemporalContext::Get().SetHistoryValid(reconstructionHistoryId, historyEvaluated);
@@ -2638,23 +2755,31 @@ void ImageReconstruction::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_th
 {
 	auto& imageReconstruction = globals::pipeline::imageReconstruction;
 	auto upscaleMethod = imageReconstruction.GetUpscaleMethod();
+	const auto state = globals::state;
+	const std::uint64_t frame = state ? state->frameCount : std::numeric_limits<std::uint64_t>::max();
+	static std::atomic<std::uint64_t> lastReconstructionFrame{ std::numeric_limits<std::uint64_t>::max() - 1u };
+	static std::atomic_bool duplicatePostProcessLogged{ false };
+	const bool firstPostProcessForFrame = !state ||
+		lastReconstructionFrame.exchange(frame, std::memory_order_acq_rel) != frame;
+	if (firstPostProcessForFrame) {
+		imageReconstruction.CaptureCameraFrame();
+		imageReconstruction.dx12SwapChain.neuralGuides = {};
 
-	const bool useFrameGeneration = imageReconstruction.ShouldUseFrameGenerationThisFrame();
-	const bool useNeuralRendering = imageReconstruction.ShouldUseNeuralRenderingThisFrame();
-	if (useFrameGeneration)
-		imageReconstruction.CopySharedD3D12Resources(false);
+		const bool useFrameGeneration = imageReconstruction.ShouldUseFrameGenerationThisFrame();
+		if (useFrameGeneration)
+			imageReconstruction.CopySharedD3D12Resources(false);
 
-	if (upscaleMethod != UpscaleMethod::kNONE && upscaleMethod != UpscaleMethod::kTAA)
-		imageReconstruction.PerformUpscaling();
+		if (upscaleMethod != UpscaleMethod::kNONE && upscaleMethod != UpscaleMethod::kTAA)
+			imageReconstruction.PerformUpscaling();
 
-	// NR consumes PIXL's encoded/dilated DLSS motion guide. Copy it only after
-	// EncodeTexturesCS has produced the current frame, while preserving the raw
-	// pre-upscale guide path required by frame generation.
-	if (useNeuralRendering)
-		imageReconstruction.CopySharedD3D12Resources(true);
-
-	if (upscaleMethod == UpscaleMethod::kDLSS)
-		imageReconstruction.ApplySharpening();
+		if (upscaleMethod == UpscaleMethod::kDLSS)
+			imageReconstruction.ApplySharpening();
+	} else if (!duplicatePostProcessLogged.exchange(true, std::memory_order_acq_rel)) {
+		logger::warn(
+			"[ImageReconstruction] Skipped duplicate reconstruction in engine frame {} (target={}); this frame was already upscaled.",
+			frame,
+			static_cast<unsigned>(a_target));
+	}
 
 	Util::SetTemporal(upscaleMethod == UpscaleMethod::kTAA);
 

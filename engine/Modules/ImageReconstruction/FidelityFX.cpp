@@ -286,7 +286,7 @@ void FidelityFX::CreateFSRResources()
 	}
 	memset(fsrScratchBuffer, 0, scratchBufferSize);
 
-	FfxInterface fsrInterface;
+	FfxInterface fsrInterface{};
 	if (ffxGetInterfaceDX11(&fsrInterface, fsrDevice, fsrScratchBuffer, scratchBufferSize, numContexts) != FFX_OK) {
 		logger::critical("[FidelityFX] Failed to initialize FSR3 backend interface!");
 		free(fsrScratchBuffer);
@@ -302,7 +302,7 @@ void FidelityFX::CreateFSRResources()
 	uint32_t renderWidth = (uint32_t)renderSize.x;
 	uint32_t renderHeight = (uint32_t)renderSize.y;
 
-	FfxFsr3ContextDescription contextDescription;
+	FfxFsr3ContextDescription contextDescription{};
 	contextDescription.maxRenderSize.width = renderWidth;
 	contextDescription.maxRenderSize.height = renderHeight;
 	contextDescription.maxUpscaleSize.width = displayWidth;
@@ -361,7 +361,7 @@ FfxResource ffxGetResource(ID3D11Resource* dx11Resource,
 	return resource;
 }
 
-void FidelityFX::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_depth, ID3D11Resource* a_reactiveMask, ID3D11Resource* a_transparencyCompositionMask, ID3D11Resource* a_motionVectors, float a_sharpness, bool a_resetHistory)
+bool FidelityFX::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_depth, ID3D11Resource* a_reactiveMask, ID3D11Resource* a_transparencyCompositionMask, ID3D11Resource* a_motionVectors, float a_sharpness, bool a_resetHistory)
 {
 	auto context = globals::d3d::context;
 	auto state = globals::state;
@@ -404,8 +404,10 @@ void FidelityFX::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_d
 	dispatchParameters.preExposure = 1.0f;
 	dispatchParameters.flags = 0;
 
+	bool evaluated = false;
 	__try {
-		if (ffxFsr3ContextDispatchUpscale(&fsrContext[0], &dispatchParameters) != FFX_OK)
+		evaluated = ffxFsr3ContextDispatchUpscale(&fsrContext[0], &dispatchParameters) == FFX_OK;
+		if (!evaluated)
 			logger::critical("[FidelityFX] Failed to dispatch imageReconstruction!");
 	} __except (EXCEPTION_EXECUTE_HANDLER) {
 		if (!fsrDispatchCrashLogged) {
@@ -416,4 +418,5 @@ void FidelityFX::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_d
 
 	if (state->frameAnnotations)
 		state->EndPerfEvent();
+	return evaluated;
 }

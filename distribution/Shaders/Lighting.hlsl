@@ -277,7 +277,7 @@ VS_OUTPUT main(VS_INPUT input)
 	float3x4 previousWorldMatrix =
 		Skinned::GetBoneTransformMatrix(PreviousBones, actualIndices, PreviousBonesPivot, input.BoneWeights);
 	precise float4 previousWorldPosition =
-		float4(mul(inputPosition, transpose(previousWorldMatrix)), 1);
+		float4(mul(previousInputPosition, transpose(previousWorldMatrix)), 1);
 
 	float3x4 worldMatrix = Skinned::GetBoneTransformMatrix(Bones, actualIndices, BonesPivot, input.BoneWeights);
 	precise float4 worldPosition = float4(mul(inputPosition, transpose(worldMatrix)), 1);
@@ -289,7 +289,7 @@ VS_OUTPUT main(VS_INPUT input)
 
 	float4 viewPos = mul(ViewProj, worldPosition);
 #	else   // !SKINNED
-	precise float4 previousWorldPosition = float4(mul(PreviousWorld, inputPosition), 1);
+	precise float4 previousWorldPosition = float4(mul(PreviousWorld, previousInputPosition), 1);
 	precise float4 worldPosition = float4(mul(World, inputPosition), 1);
 	precise float4x4 world4x4 = float4x4(World[0], World[1], World[2], float4(0, 0, 0, 1));
 	precise float4x4 modelView = mul(ViewProj, world4x4);
@@ -4143,12 +4143,17 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 	float flatnessAmount = smoothstep(SharedData::rainResponseSettings.PuddleMaxAngle, 1.0, minWetnessAngle);
 	// Calculate raindrop effects
 	float4 raindropInfo = float4(0, 0, 1, 0);
+	float4 actorRainInfo = 0.0f.xxxx;
 	bool shouldCalculateRaindrops = (worldNormal.z > 0.0) &&
 	                                (SharedData::rainResponseSettings.Raining > 0.0) &&
 	                                (SharedData::rainResponseSettings.EnableRaindropFx) &&
 	                                (wetnessOcclusion > 0.05);
 
 	if (shouldCalculateRaindrops) {
+	#if defined(SKINNED) && !defined(HAIR)
+		actorRainInfo = RainResponse::GetActorSurfaceRain(
+			input.ModelPosition.xyz, worldNormal.xyz, SharedData::rainResponseSettings.Time);
+	#endif
 #		if defined(SKINNED)
 		float3 ripplePosition = input.ModelPosition.xyz;
 #		elif defined(DEFERRED)
@@ -4163,6 +4168,10 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 	// Calculate different wetness types
 	float rainWetness = SharedData::rainResponseSettings.Wetness * minWetnessAngle * SharedData::rainResponseSettings.MaxRainWetness;
 	rainWetness = max(rainWetness, raindropInfo.w);
+	#if defined(SKINNED) && !defined(HAIR)
+	rainWetness = max(rainWetness, actorRainInfo.w * SharedData::rainResponseSettings.Wetness *
+		SharedData::rainResponseSettings.MaxRainWetness);
+	#endif
 
 #		if defined(SKIN) || defined(HAIR)
 	rainWetness = SharedData::rainResponseSettings.SkinWetness * SharedData::rainResponseSettings.Wetness;
@@ -4221,6 +4230,10 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 	// Apply ripple normal effects
 	float3 rippleNormal = normalize(lerp(float3(0, 0, 1), raindropInfo.xyz, lerp(flatnessAmount, 1.0, 0.5)));
 	wetnessNormal = ReorientNormal(rippleNormal, wetnessNormal);
+	#if defined(SKINNED) && !defined(HAIR)
+	float3 actorCoatNormal = normalize(float3(actorRainInfo.xy, max(0.35f, 1.0f - length(actorRainInfo.xy))));
+	wetnessNormal = ReorientNormal(actorCoatNormal, wetnessNormal);
+	#endif
 
 #		if defined(SKIN) && defined(PIXL_SKIN)
 	if (skinEnabled && (skinWetness > 0.0f)) {

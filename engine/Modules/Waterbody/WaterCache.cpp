@@ -2,6 +2,8 @@
 
 #include <BS_thread_pool.hpp>
 #include <cmath>
+#include <limits>
+#include <type_traits>
 
 #include "Utils/WinApi.h"
 
@@ -916,6 +918,43 @@ bool WaterCache::TryReadCacheFromFile(const std::string& name, WorldSpaceHeader&
 		logger::error("[Waterbody] [Cache] Invalid or corrupt header for '{}'", path.string());
 		return false;
 	}
+	// Match the dimensions accepted by generation, and guard the signed LOD
+	// coordinate arithmetic (up to level 32) before trusting cached bounds.
+	const auto& bounds = header.bounds;
+	const std::int64_t spanX = static_cast<std::int64_t>(bounds.maxX) - bounds.minX + 1;
+	const std::int64_t spanY = static_cast<std::int64_t>(bounds.maxY) - bounds.minY + 1;
+	if (header.width <= 0 || header.height <= 0 || header.width > 512 || header.height > 512 ||
+		spanX != header.width || spanY != header.height ||
+		bounds.minX < std::numeric_limits<std::int32_t>::min() + 31 ||
+		bounds.minY < std::numeric_limits<std::int32_t>::min() + 31 ||
+		bounds.maxX > std::numeric_limits<std::int32_t>::max() - 31 ||
+		bounds.maxY > std::numeric_limits<std::int32_t>::max() - 31 ||
+		header.dataCount < 0 || header.dataCount > 4 * header.width * header.height) {
+		logger::error("[Waterbody] [Cache] Invalid dimensions/count for '{}'", path.string());
+		return false;
+	}
+	if constexpr (std::is_same_v<T, Heights>) {
+		if (header.dataCount != header.width * header.height) {
+			logger::error("[Waterbody] [Cache] Incomplete height grid for '{}'", path.string());
+			return false;
+		}
+	}
+
+	// Validate the declared allocation against this open file before resizing.
+	// A truncated cache or negative signed count must fail into regeneration.
+	const auto payloadStart = ifs.tellg();
+	ifs.seekg(0, std::ios::end);
+	const auto payloadEnd = ifs.tellg();
+	if (!ifs || payloadStart < std::streampos(0) || payloadEnd < payloadStart ||
+		header.dataCount < 0 ||
+		static_cast<std::uint64_t>(header.dataCount) > static_cast<std::uint64_t>(payloadEnd - payloadStart) / sizeof(T) ||
+		static_cast<std::uint64_t>(header.dataCount) > vec.max_size()) {
+		logger::error("[Waterbody] [Cache] Invalid or truncated payload for '{}'", path.string());
+		return false;
+	}
+	ifs.seekg(payloadStart);
+	if (!ifs)
+		return false;
 
 	vec.resize(header.dataCount);
 	if (!vec.empty()) {

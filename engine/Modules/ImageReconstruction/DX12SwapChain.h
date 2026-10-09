@@ -1,4 +1,5 @@
 #pragma once
+#include "GuideFrame.h"
 
 #include <Windows.Foundation.h>
 #include <atomic>
@@ -104,14 +105,14 @@ public:
 	// Active render subrect written into the full-size shared guide textures.
 	// Neural Rendering consumes only this region; frame generation continues to
 	// use the existing full-resource contract.
-	UINT neuralGuideWidth = 0;
-	UINT neuralGuideHeight = 0;
+	PIXL::Reconstruction::NeuralGuideFrame neuralGuides;
 
 	// Published only after the D3D12 queue has completed a successful neural
 	// frame and the D3D11 fence wait has been queued. Consumers use the serial to
 	// reject stale frames during deterministic Photo Finish accumulation.
 	std::atomic_uint64_t completedNeuralFrameSerial{ 0 };
 	std::atomic_uint32_t completedNeuralOutputIndex{ UINT32_MAX };
+	std::atomic_bool neuralOutputCompletedThisPresent{ false };
 
 	winrt::com_ptr<ID3D11Device5> d3d11Device;
 	winrt::com_ptr<ID3D11DeviceContext4> d3d11Context;
@@ -170,6 +171,7 @@ public:
 	void CreateSharedResources();
 
 	[[nodiscard]] ID3D11Texture2D* GetCompletedNeuralOutput() const;
+	[[nodiscard]] ID3D11Texture2D* GetNeuralOutputForLastPresent() const;
 	[[nodiscard]] ID3D11Texture2D* GetProvisionedNeuralOutput() const;
 	[[nodiscard]] std::uint64_t GetCompletedNeuralFrameSerial() const;
 

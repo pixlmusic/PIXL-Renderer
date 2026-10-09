@@ -6,6 +6,7 @@
 #include "ImageReconstruction/NeuralRendering.h"
 #include "ImageReconstruction/RCAS/RCAS.h"
 #include "ImageReconstruction/Streamline.h"
+#include "ImageReconstruction/CameraReprojection.h"
 #include <d3d11_4.h>
 #include <d3d12.h>
 #include <winrt/base.h>
@@ -22,6 +23,8 @@ private:
 	static constexpr std::string_view MOD_ID = "156952";
 
 public:
+	PIXL::Reconstruction::CameraFrame cameraFrame;
+	void CaptureCameraFrame();
 	enum class FrameGenerationState : std::uint8_t
 	{
 		Off,

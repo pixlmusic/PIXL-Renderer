@@ -96,15 +96,26 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 	float centerDepth = ReadGatherDepth(uv);
 	uint tileWidth, tileHeight;
 	TileTex.GetDimensions(tileWidth, tileHeight);
-	float4 tile = TileTex.Load(int3(min(uint2(uv * float2(tileWidth, tileHeight)), uint2(tileWidth, tileHeight) - 1u), 0));
+	uint2 tileCoord = min(uint2(uv * float2(tileWidth, tileHeight)), uint2(tileWidth, tileHeight) - 1u);
+	float4 tile = TileTex.Load(int3(tileCoord, 0));
 	uint tileFlags = (uint)tile.z;
-	float requested = saturate(abs(center) / max(dofControlMaxCoCPixels, 1.0f));
+	float nearReach = min(tile.x, 0.0f);
+#if DOF_NEAR
+	// Conservative 3x3 tile reach dilation: a foreground CoC can contribute to
+	// neighbouring background pixels even when their own tile has no near CoC.
+	[unroll] for (int y = -1; y <= 1; ++y) {
+		[unroll] for (int x = -1; x <= 1; ++x) {
+			int2 q = clamp(int2(tileCoord) + int2(x, y), int2(0, 0), int2(tileWidth, tileHeight) - 1);
+			float4 adjacent = TileTex.Load(int3(q, 0));
+			if (((uint)adjacent.z & 1u) != 0u) {
+				tileFlags |= 1u;
+				nearReach = min(nearReach, adjacent.x);
+			}
+		}
+	}
+#endif
 #if DOF_NEAR
 	if ((tileFlags & 1u) == 0u) {
-		BlurOut[dispatchID.xy] = float4(LoadLinear(uv), DOF_EMPTY_COVERAGE);
-		return;
-	}
-	if (center >= 0.0f) {
 		BlurOut[dispatchID.xy] = float4(LoadLinear(uv), DOF_EMPTY_COVERAGE);
 		return;
 	}
@@ -123,7 +134,14 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 	// converts it to this half-resolution target; only the artistic gameplay
 	// path uses the legacy bokeh-radius multiplier.
 	float artisticRadius = DofPhysicalLensEnabled() ? 1.0f : max(dofControlBokehRadius, 0.5f);
-	float radius = max(1.0f, abs(center) * 0.50f) * artisticRadius;
+	float radiusPixels = abs(center);
+#if DOF_NEAR
+	// A background centre uses the strongest near CoC in the dilated tile
+	// neighbourhood to discover foreground coverage reaching across the edge.
+	radiusPixels = max(radiusPixels, -nearReach);
+#endif
+	float requested = saturate(radiusPixels / max(dofControlMaxCoCPixels, 1.0f));
+	float radius = max(1.0f, radiusPixels * 0.50f) * artisticRadius;
 	const float2 taps[16] = {
 		float2(1, 0), float2(0.7071f, 0.7071f), float2(0, 1), float2(-0.7071f, 0.7071f),
 		float2(-1, 0), float2(-0.7071f, -0.7071f), float2(0, -1), float2(0.7071f, -0.7071f),
@@ -132,10 +150,12 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 	};
 	uint qualityTier = min((uint)(clamp(dofControlQuality, 0.0f, 3.0f) + 0.5f), 3u);
 	uint sampleCount = qualityTier == 3u ? 48u : (qualityTier == 2u ? 16u : (qualityTier == 1u ? 10u : 6u));
+	if (requested < 0.25f)
+		sampleCount = max(4u, sampleCount / 2u);
 	// Keep a centre contribution for stability without allowing the original
 	// reconstructed pixel to dominate the far bokeh and retain card silhouettes.
 #if DOF_NEAR
-	const float centerWeight = 1.25f;
+	const float centerWeight = center < 0.0f ? 1.25f : 0.0f;
 #else
 	const float centerWeight = 0.65f;
 #endif
@@ -175,7 +195,9 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 #endif
 		float tapWeight = smoothstep(0.02f, 0.35f, support) * apertureWeight * (tapIndex < 8u ? 0.82f : 0.68f);
 #if DOF_NEAR
-		float depthWeight = DepthEdgeWeight(centerDepth, sampleDepth);
+		float depthWeight = center < 0.0f
+			? DepthEdgeWeight(centerDepth, sampleDepth)
+			: (sampleDepth < centerDepth ? 1.0f : 0.0f);
 		// A near layer must not import distant sky/mountains into a foreground
 		// silhouette.
 		if (sampleDepth > centerDepth * 1.12f && centerDepth < 199999.0f)

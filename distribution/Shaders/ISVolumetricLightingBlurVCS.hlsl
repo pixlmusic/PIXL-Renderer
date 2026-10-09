@@ -33,7 +33,8 @@ groupshared float depth[TG_DIM];
 	int x = groupId.x;
 	int y = groupId.y * (TG_DIM - WINDOW * 2) + base;
 
-	int2 pix = min(int2(x, y), screenSizeMin1.xy);
+	// Replicate border texels for halo lanes before the group-wide barrier.
+	int2 pix = clamp(int2(x, y), 0, screenSizeMin1.xy);
 	float vlValue = InVLTexture[pix];
 	vl[idx] = vlValue;
 	float depthValue = DepthTexture[pix];
@@ -41,7 +42,7 @@ groupshared float depth[TG_DIM];
 
 	GroupMemoryBarrierWithGroupSync();
 
-	if (base >= 0 && base < TG_DIM - WINDOW * 2) {
+	if (base >= 0 && base < TG_DIM - WINDOW * 2 && all(int2(x, y) <= screenSizeMin1.xy)) {
 		int min12 = idx - 12;
 		int min6 = idx - 6;
 		int plus6 = idx + 6;

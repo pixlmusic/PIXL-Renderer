@@ -70,7 +70,7 @@ public:
 	// renderer-wide FeatureData so FoliageDynamics::Settings remains the stable
 	// 80-byte ABI block.
 	static constexpr uint TuningMagic = 0x50464754u;  // "PFGT"
-	static constexpr uint TuningVersion = 4u;
+	static constexpr uint TuningVersion = 5u;
 
 	struct alignas(16) TuningSettings
 	{
@@ -109,9 +109,16 @@ public:
 		uint GrassTuningPadding0 = 0;
 		uint GrassTuningPadding1 = 0;
 		uint GrassTuningPadding2 = 0;
+		uint EnableGameplayResponse = 1;
+		uint GameplayImpulseCount = 0;
+		float GameplayResponseStrength = 0.55f;
+		float GameplayResponseRadius = 1800.0f;
+		float4 GameplayImpulsePositionRadius[4]{};
+		float4 GameplayImpulseDirectionStrength[4]{};
+		float4 GameplayImpulseAgeDuration[4]{};
 	};
 	STATIC_ASSERT_ALIGNAS_16(TuningSettings);
-	static_assert(sizeof(TuningSettings) == 96, "FoliageDynamics::TuningSettings must match PS b13.");
+	static_assert(sizeof(TuningSettings) == 304, "FoliageDynamics::TuningSettings must match PS b13.");
 
 	TuningSettings tuningSettings;
 	ConstantBuffer* tuningCB = nullptr;

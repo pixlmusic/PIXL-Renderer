@@ -1,101 +1,60 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>PIXL Renderer 1.0.6</moduleName>
+  <moduleName>PIXL Renderer 1.0.7</moduleName>
   <moduleImage path="fomod\images\pixl-hero.jpg" showImage="true" showFade="true" height="240" />
   <requiredInstallFiles>
     <folder source="PIXL-Core" destination="" priority="0" />
   </requiredInstallFiles>
   <installSteps order="Explicit">
-    <installStep name="Welcome to PIXL Renderer">
+    <installStep name="Hi">
       <optionalFileGroups order="Explicit">
-        <group name="PIXL Renderer setup" type="SelectExactlyOne">
+        <group name="Welcome" type="SelectExactlyOne">
           <plugins order="Explicit">
-            <plugin name="Install PIXL Renderer">
-              <description>Welcome to PIXL Renderer 1.0.6.
+            <plugin name="Hi, welcome to PIXL Renderer">
+              <description>Skyrim, with more of what makes Skyrim feel like Skyrim.
 
-FIRST LAUNCH
-1. Start Skyrim through SKSE and let shader compilation finish.
-2. Complete Quick Setup and choose your reconstruction mode and quality profile.
-3. Press PAGE DOWN to open PIXL Renderer. Press HOME for Photo Mode.
-4. Use SAVE LOOK after tuning anything you want to keep.
+PIXL brings lighting, materials, water, weather, world detail, camera tools and image reconstruction together in one DirectX 11 renderer.
 
-PIXL brings physically responsive lighting and materials, authored PBR/POM support, Hybrid GI and SkyBounce, atmospheric weather, WindowLife interiors, terrain and actor surface response, vegetation motion, water optics, camera tools and reconstruction into one DX11 renderer.
-
-Install as a normal Data mod with Vortex, MO2, or real manual extraction. NMM legacy .symlink deployment is not supported for PIXL shader files; do not enable a blanket Data\\Shaders override.
-
-PIXL Studio directs, visually evaluates and releases the renderer, with documented testing and compatibility limits.</description>
+Install with Vortex, MO2, or by extracting into the game Data folder. Launch through SKSE. On first launch, complete Quick Setup and allow shader compilation to finish.</description>
               <image path="fomod\images\pixl-materials.jpg" />
-              <conditionFlags>
-                <flag name="PIXLCore">On</flag>
-              </conditionFlags>
-              <typeDescriptor>
-                <type name="Required" />
-              </typeDescriptor>
+              <conditionFlags><flag name="PIXLCore">On</flag></conditionFlags>
+              <typeDescriptor><type name="Required" /></typeDescriptor>
             </plugin>
           </plugins>
         </group>
       </optionalFileGroups>
     </installStep>
-    <installStep name="Water Compatibility">
+    <installStep name="New updates">
       <optionalFileGroups order="Explicit">
-        <group name="Water Compatibility" type="SelectExactlyOne">
+        <group name="New in 1.0.7" type="SelectExactlyOne">
           <plugins order="Explicit">
-            <plugin name="Default (PIXL Water)">
-              <description>Choose this for the complete native PIXL water experience. PIXL owns the water surface, optics, reflections, refraction, shoreline response, rain interaction and dynamic foam. This is the safest option for first-time users and anyone who does not have the exact SurfaceTides 1.0.2 release installed.</description>
-              <image path="fomod\images\pixl-water-default.jpg" />
-              <conditionFlags>
-                <flag name="PIXLSurfaceTides">Off</flag>
-              </conditionFlags>
-              <typeDescriptor>
-                <type name="Recommended" />
-              </typeDescriptor>
-            </plugin>
-            <plugin name="SurfaceTides 1.0.2 Integration">
-              <description>Choose this only when the original SurfaceTides 1.0.2 mod is already installed. SurfaceTides supplies its animated tessellated geometry while PIXL keeps its water shading and optics. A dedicated PIXL preset makes waves stronger and longer-lived in wilderness water, while keeping cities and interiors calmer.
+            <plugin name="See what's new">
+              <description>PIXL Renderer 1.0.7 highlights
 
-EXACT SURFACETIDES VERSION ONLY: this replaces SurfaceTides.dll, Shaders/SurfaceTides/Water.hlsl and SurfaceTides.ini. The one replacement DLL supports Skyrim 1.5.97, Steam 1.6.1170, GOG 1.6.1179 and 1.7.104 when matching SKSE and Address Library versions are installed. Install SurfaceTides first; make PIXL win all three conflicts (Vortex: PIXL after SurfaceTides; MO2: PIXL lower in the left pane). Do not install another runtime-specific SurfaceTides DLL afterward. Reinstall this PIXL option after any SurfaceTides reinstall. The supplied INI enables AllowPIXL=1 and contains the tested PIXL water preset, so back up custom tuning first. Do not use it with a later SurfaceTides version unless its author confirms compatibility.</description>
-              <image path="fomod\images\pixl-water-surfacetides.jpg" />
-              <files>
-                <folder source="PIXL-Optional\SurfaceTides-1.0.2" destination="" priority="100" />
-              </files>
-              <conditionFlags>
-                <flag name="PIXLSurfaceTides">On</flag>
-              </conditionFlags>
-              <typeDescriptor>
-                <type name="Optional" />
-              </typeDescriptor>
-            </plugin>
-          </plugins>
-        </group>
-      </optionalFileGroups>
-    </installStep>
-    <installStep name="What's new in 1.0.6">
-      <optionalFileGroups order="Explicit">
-        <group name="Release notes" type="SelectExactlyOne">
-          <plugins order="Explicit">
-            <plugin name="Review 1.0.6 changes">
-              <description>HIGHLIGHTS SINCE 1.0.4
+- Improved camera reconstruction and temporal stability, including Photo Mode and Director Mode.
+- More consistent Hybrid GI, world-cache updates, emissive lighting and fire response.
+- Refined water, projected caustic lighting, terrain response, vegetation and atmospheric effects.
+- Updated materials, camera effects, quality settings and user-facing setup.
 
-- Auto-DOF gains physical close-focus recovery, stable autofocus, improved foreground coverage and reconstruction-aware edges.
-- Ground Response uses the proven direct terrain reconstruction path and ships the new live-tested snow/deformation defaults.
-- Contained Liquids gains profile-aware fill, effect-first classification, steadier slosh, bubbles and improved glass/liquid optics.
-- Foliage receives PIXL-native optimization infrastructure, improved quality scaling and corrected ordinary-grass SSGI normals.
-- Quality tiers now scale real GI, atmosphere, POM, water, camera, vegetation and character workloads.
-- Image Reconstruction improves DOF, vegetation, ground-response and reactive/disocclusion hand-off.
-- Hybrid GI gains deterministic world-cache updates, stable cache aging and transparent fire/emissive injection.
-- Particle-derived torches, candles and fires gain source-aware colour, flame variation and bounded contact shadows.
-- Director, Photo Mode and Video Mode gain tighter camera, focus, vegetation and capture integration.
-- Fresh installations reliably open Quick Setup when no user configuration exists.
-- Source provenance, licensing, packaging and rollback-safe deployment tooling received a complete release pass.
-
-Allow shader compilation to finish before judging visuals or performance. Existing user configuration remains in place.</description>
+Shader compilation happens on first launch. Allow it to finish before evaluating visuals or performance. Existing user settings are preserved.</description>
               <image path="fomod\images\pixl-hero.jpg" />
-              <conditionFlags>
-                <flag name="PIXLReleaseNotes">Seen</flag>
-              </conditionFlags>
-              <typeDescriptor>
-                <type name="Required" />
-              </typeDescriptor>
+              <conditionFlags><flag name="PIXLReleaseNotes">Seen</flag></conditionFlags>
+              <typeDescriptor><type name="Required" /></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+    <installStep name="Install">
+      <optionalFileGroups order="Explicit">
+        <group name="Ready to install" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="Install PIXL Renderer 1.0.7">
+              <description>PIXL Renderer will install with the regular default look and a validated prebuilt shader cache.
+
+After installation, start Skyrim through SKSE. Complete Quick Setup if prompted and let any missing or changed shader permutations compile.</description>
+              <image path="fomod\images\pixl-hero.jpg" />
+              <typeDescriptor><type name="Required" /></typeDescriptor>
             </plugin>
           </plugins>
         </group>

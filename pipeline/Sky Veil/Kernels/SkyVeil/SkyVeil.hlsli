@@ -17,8 +17,7 @@ namespace SkyVeil
 		float r = PlanetRadius;
 		float3 p = (rel_pos + float3(0, 0, r)) * RcpHPlusR;
 		float dotprod = dot(p, eye_to_sun);
-		float lengthsqr = dot(p, p);
-		float t = -dotprod + sqrt(dotprod * dotprod - dot(p, p) + 1);
+		float t = -dotprod + sqrt(max(dotprod * dotprod - dot(p, p) + 1, 0.0f));
 		float3 v = (p + eye_to_sun * t) * (r + CloudHeight) - float3(0, 0, r);
 		return v;
 	}
@@ -26,6 +25,10 @@ namespace SkyVeil
 	float GetCloudShadowMult(float3 worldPosition, SamplerState textureSampler)
 	{
 		float3 cloudSampleDir = GetCloudShadowSampleDir(worldPosition, SharedData::DirLightDirection.xyz).xyz;
+		// Cubemap filtering offsets are angular: normalize before constructing
+		// the tangent frame, independent of cloud height and world position.
+		float sampleLengthSq = dot(cloudSampleDir, cloudSampleDir);
+		cloudSampleDir = sampleLengthSq > 1e-12f ? cloudSampleDir * rsqrt(sampleLengthSq) : float3(0, 0, 1);
 	#if USE_PIXL_SKY_VEIL
 		// Treat the cubemap as cloud optical depth instead of linearly subtracting
 		// opacity. A small cross filter widens naturally as the sun approaches the

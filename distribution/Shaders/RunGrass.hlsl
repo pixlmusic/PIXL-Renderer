@@ -7,6 +7,7 @@
 #include "Common/Random.hlsli"
 #include "Common/SharedData.hlsli"
 #include "FoliageDynamics/FoliageWind.hlsli"
+#include "FoliageDynamics/FoliageTuning.hlsli"
 #define DEFERRED
 
 #ifdef FOLIAGE_DYNAMICS
@@ -128,6 +129,7 @@ struct GrassWindContext
 	float2 WindDirection;
 	float2 CrossWind;
 	float2 AbsoluteAnchor;
+	float AbsoluteAnchorZ;
 	float InstanceSeed;
 };
 
@@ -145,6 +147,7 @@ GrassWindContext BuildGrassWindContext(VS_INPUT input)
 		mul(World, float4(input.InstanceData1.xyz, 1.0f)).xyz +
 		FrameBuffer::CameraPosAdjust.xyz;
 	context.AbsoluteAnchor = absoluteAnchorWS.xy;
+	context.AbsoluteAnchorZ = absoluteAnchorWS.z;
 	context.InstanceSeed = FoliageWind::Hash12(floor(context.AbsoluteAnchor * 0.015625f));
 	return context;
 }
@@ -156,7 +159,8 @@ float3 CalculateWindDisplacement(
 	VS_INPUT input,
 	float windTimer,
 	GrassWindContext enhancedContext,
-	bool enhancedWind)
+	bool enhancedWind,
+	bool previousFrame)
 {
 	float windAngle =
 		0.4f * ((input.InstanceData1.x + input.InstanceData1.y) * -0.0078125f + windTimer);
@@ -215,6 +219,33 @@ float3 CalculateWindDisplacement(
 		if (deltaLengthSq > maxDelta * maxDelta && maxDelta > 1e-5f)
 			enhancedDelta *= maxDelta * rsqrt(deltaLengthSq);
 		result += enhancedDelta * enhancement;
+
+	}
+
+	// ReactiveFX publishes real, bounded gameplay events through the existing
+	// grass tuning buffer. This remains independent from the ambient-wind toggle.
+	uint impulseCount = FoliageTuning::GameplayImpulseCount();
+	[loop] for (uint i = 0u; i < 4u; ++i) {
+		if (i >= impulseCount) break;
+		float4 positionRadius = PIXLFG_GameplayImpulsePositionRadius[i];
+		float4 directionStrength = PIXLFG_GameplayImpulseDirectionStrength[i];
+		float4 ageDuration = PIXLFG_GameplayImpulseAgeDuration[i];
+		float age = previousFrame ? ageDuration.y : ageDuration.x;
+		if (age >= ageDuration.z || ageDuration.w < 0.5f) continue;
+		float2 delta = enhancedContext.AbsoluteAnchor - positionRadius.xy;
+		float verticalDelta = enhancedContext.AbsoluteAnchorZ - positionRadius.z;
+		float distanceToEvent = length(float3(delta, verticalDelta));
+		float radius = max(positionRadius.w, 1.0f);
+		float spatial = 1.0f - smoothstep(radius * 0.45f, radius, distanceToEvent);
+		float2 radial = length(delta) > 1.0e-3f ? normalize(delta) : enhancedContext.WindDirection;
+		float2 eventDirection = FoliageWind::SafeDirection(directionStrength.xy, radial);
+		float2 pushDirection = FoliageWind::SafeDirection(lerp(radial, eventDirection, 0.32f), radial);
+		float dampedSpring = sin(age * 11.0f) * exp(-age * 2.8f);
+		float rootLockedTip = smoothstep(0.04f, 0.32f, saturate(input.Color.w)) *
+			saturate(input.Color.w) * saturate(input.Color.w);
+		float amplitude = spatial * dampedSpring * directionStrength.w *
+			PIXLFG_GameplayResponseStrength * 0.18f * rootLockedTip;
+		result.xy += pushDirection * amplitude;
 	}
 
 	return result;
@@ -227,14 +258,15 @@ void CalculateWindDisplacementPair(
 {
 	const bool enhancedWind =
 		SharedData::foliageDynamicsSettings.EnableEnhancedWind != 0;
+	const bool hasGameplayImpulses = FoliageTuning::GameplayImpulseCount() != 0u;
 	GrassWindContext context = (GrassWindContext)0;
-	if (enhancedWind)
+	if (enhancedWind || hasGameplayImpulses)
 		context = BuildGrassWindContext(input);
 
 	currentDisplacement = CalculateWindDisplacement(
-		input, WindTimer, context, enhancedWind);
+		input, WindTimer, context, enhancedWind, false);
 	previousDisplacement = CalculateWindDisplacement(
-		input, PreviousWindTimer, context, enhancedWind);
+		input, PreviousWindTimer, context, enhancedWind, true);
 }
 
 #	if defined(FOLIAGE_OPTIMIZER)
@@ -943,7 +975,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	[branch] if (enhancedVegetation)
 		baseColor.xyz = PixlTuneGrassColor(baseColor.xyz);
 
-#		if defined(RENDER_DEPTH)
+#		if defined(RENDER_DEPTH) || defined(DO_ALPHA_TEST)
 	float diffuseAlpha = input.Color.w * baseColor.w;
 	if (!grassAlphaControl && (diffuseAlpha - AlphaTestRefRS) < 0) {
 		discard;
@@ -1616,7 +1648,7 @@ PS_OUTPUT main(PS_INPUT input)
 	float4 baseColor = TexBaseSampler.SampleBias(SampBaseSampler, input.TexCoord.xy, SharedData::MipBias);
 	PixlApplyGrassDistanceDither(input.Color.w, input.HPosition.xy);
 
-#		if defined(RENDER_DEPTH)
+#		if defined(RENDER_DEPTH) || defined(DO_ALPHA_TEST)
 	float diffuseAlpha = input.Color.w * baseColor.w;
 	if ((diffuseAlpha - AlphaTestRefRS) < 0) {
 		discard;

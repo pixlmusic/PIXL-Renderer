@@ -1,73 +1,10 @@
-# Generated build, staging, and local runtime mirrors
-# Local experiments, agent instructions, work logs and internal review reports.
-# Keep these on the development machine, not in the public source tree.
-/PIXL_Preset_Experiments/
-/tools/GeneratePixlPresetExperiments.ps1
-/AGENTS.md
-/AI-INSTRUCTIONS.md
-/PIXL_ACTIVE_STATE.md
-/PIXL_DEVELOPMENT_WORKFLOW.md
-/PIXL_ENGINEERING_CONTEXT.md
-/PIXL_RELEASE_PREP_REPORT.md
-/PIXL_RELEASE_STATE.md
-/START_CODEX_ACTIVE_DEVELOPMENT.md
-/PRIVATE_COMPONENTS.md
-/docs/release_polish/
-/docs/reports/
-/docs/PIXL_GUI_Audit/
-/docs/architecture/
-/docs/upstream_review/
-/docs/lighting/
-/docs/assets/
-/docs/Crysis3Pipeline/
-/docs/DynamicFire/
-/docs/ActorSurfaceEffects_Implementation_Report.md
-/docs/ActorSurfaceEffects_LIVE_TEST_QUEUE.md
-/docs/CAMERA_ATMOSPHERE_REFERENCE_REVIEW_*.md
-/docs/COMPATIBILITY_CHECK_20*.md
-/docs/COMPATIBILITY_UPDATE_20*.md
-/docs/CONTAINED_LIQUIDS_PHASE*.md
-/docs/CSPOM_EXPERIMENTAL.md
-/docs/DISTANT_LIFE_IMPLEMENTATION_NOTES.md
-/docs/FILE_REVIEW_STATUS_*.md
-/docs/FoliageOptimizer_VegetationStudioPro_Comparison.md
-/docs/GLINTS2023_ARTIFACT_REPORT.md
-/docs/GROUND_RESPONSE_*_FOLLOWUP_*.md
-/docs/GUI_EXTENSION_PANELS.md
-/docs/GUI_FRAMEWORK_*.md
-/docs/LEGAL_LICENSE_AUDIT_*.md
-/docs/PIXL_DIRECTOR_*_CAPTURE_FINISH.md
-/docs/PIXL_DIRECTOR_VIDEO_INTEGRATION_MAP.md
-/docs/PIXL_DIRECTOR_VIDEO_PHASE*_REPORT.md
-/docs/PIXL_GUI_*_IMPLEMENTATION.md
-/docs/PIXL_GUI_POLISH_PERFORMANCE.md
-/docs/PIXL_PHOTOMODE_*_REVIEW.md
-/docs/RELEASE_*_AUDIT.md
-/docs/RELEASE_CHECKLIST_*.md
-/docs/SHADER_CPU_PARITY_*.md
-/docs/SURFACETIDES-FOAM-PIXL-DESIGN.md
-/docs/VIDEO_WINDOWLIFE_FOLLOWUP_*.md
-/docs/WINDOWLIFE_STABILITY_*.md
-/docs/WindowLife_20Item_Implementation_Report.md
-/docs/HairReconstruction/
-/docs/ImageReconstruction/FINAL_INPUT_AUDIT.md
-/docs/ImageReconstruction/NEURAL_PIPELINE_AUDIT_2026-09-01.md
-/docs/PIXL-ULTIMATE-PRESET.md
-/docs/PIXL-GOLDEN-BASELINE-CALIBRATION.md
-
+# Generated build, package, and test output.
 /build/
 /bin/
 /dist/
-/Data/
-/PIXL_AUTONOMOUS/
-/checkpoints/
 /out/
-
-# Local release packaging and deployment records
-/build/deployment-backups/
-/build/release-staging/
-
-# Accidental in-source CMake / Visual Studio output
+/obj/
+**/obj/
 /CMakeFiles/
 /CMakeCache.txt
 /cmake_install.cmake
@@ -97,57 +34,65 @@
 *.vspx
 *.diagsession
 
-# Local reference projects used for reverse engineering are not renderer source
-# and may retain their own licences/assets.
+# Local game data, checkpoints, experiments, and read-only references.
+/Data/
+/PIXL_AUTONOMOUS/
+/PIXL_Preset_Experiments/
+/checkpoints/
+/backups/
 /_REFERENCE/
+/Screenshots/
+/tools/GeneratePixlPresetExperiments.ps1
+/tools/PixDiTEnhance/
+/tools/Discord/
 
-# Loose runtime/debug copies occasionally placed at the repository root.
-# Canonical equivalents live under engine/, pipeline/, or distribution/.
+# Machine-specific instructions and configuration.
+/AGENTS.md
+/AI-INSTRUCTIONS.md
+/PIXL_ACTIVE_STATE.md
+/PIXL_DEVELOPMENT_WORKFLOW.md
+/PIXL_ENGINEERING_CONTEXT.md
+/PIXL_RELEASE_PREP_REPORT.md
+/PIXL_RELEASE_STATE.md
+/START_CODEX_ACTIVE_DEVELOPMENT.md
+/PRIVATE_COMPONENTS.md
+CMakeUserPresets.json
+shadertoolsconfig.json
+compile_commands.json
+
+# Editor state and operating-system metadata.
+.idea/
+.vscode/
+.vs*/
+.playwright-cli/
+.claude/settings.local.json
+**/.DS_Store
+**/Thumbs.db
+**/Desktop.ini
+
+# Local deployment backups and accidental root-level runtime mirrors.
 /PIXLRenderer.dll
 /Lighting.hlsl
 /WindowLife.hlsli
 /GlassGrime_1k.png
 /CommitPushPIXL.bat
 /DeployPIXL.bat
+/build/deployment-backups/
+/build/release-staging/
 
-# Private neural-enhancement research is developed and licensed separately.
-# It is not compiled, linked, loaded, or packaged by PIXL Renderer.
-/tools/PixDiTEnhance/
-
-# Local service administration and automation/browser state
-/tools/Discord/
-/.playwright-cli/
-.idea/
-.vs*/
-CMakeUserPresets.json
-shadertoolsconfig.json
-.vscode/
-compile_commands.json
-
-# Folder view configuration files
-**/.DS_Store
-**/Thumbs.db
-**/Desktop.ini
-*.vortex_backup
+# Temporary files, local archives, and Vortex metadata.
 *.tmp
 *.temp
 *.bak
 *.old
+*.vortex_backup
 __folder_managed_by_vortex
-/dist-*.sha256
-.claude/settings.local.json
-
-# Generated compiler directories outside the canonical build tree.
-/obj/
-**/obj/
-
-# Local captures and transient package archives
-/Screenshots/
 *.zip
 *.rar
 *.7z
+/dist-*.sha256
 
-# Python environments, caches, datasets, and trained model artifacts
+# Python environments and locally downloaded model/compiler artifacts.
 **/__pycache__/
 *.py[cod]
 /.venv/
@@ -158,11 +103,9 @@ __folder_managed_by_vortex
 *.pth
 *.ckpt
 *.safetensors
-
-# Downloaded local compiler bundle; the renderer build does not consume it.
 /extern/DirectXShaderCompiler/
 
-# Optional Neural Rendering binaries are local-only, never public release payloads.
+# Optional neural-rendering runtime files are installed separately.
 nvngx_dlssnr.dll
 dlssnr.dll
 nr.dll

@@ -2,8 +2,8 @@ param(
     [switch]$Global
 )
 
-$repoRoot = ([string](git rev-parse --show-toplevel 2>$null)).Trim()
-if (-not $repoRoot) {
+$repoRoot = ([string](& git rev-parse --show-toplevel 2>$null)).Trim()
+if ($LASTEXITCODE -ne 0 -or -not $repoRoot) {
     Write-Error "Run this script from within a git checkout or worktree for this repository."
     exit 1
 }
@@ -16,9 +16,10 @@ if (-not (Test-Path $scriptPath)) {
 
 $configScope = if ($Global) { "--global" } else { "--local" }
 $scriptPathForAlias = $scriptPath -replace '\\', '/'
-$aliasValue = "!powershell.exe -NoProfile -ExecutionPolicy Bypass -File '$scriptPathForAlias' -Name"
+$shellQuotedScriptPath = "'" + $scriptPathForAlias.Replace("'", "'\''") + "'"
+$aliasValue = "!powershell.exe -NoProfile -ExecutionPolicy Bypass -File $shellQuotedScriptPath -Name"
 
-git config $configScope alias.new-worktree $aliasValue
+& git config $configScope alias.new-worktree $aliasValue
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Failed to install git new-worktree alias."
     exit $LASTEXITCODE

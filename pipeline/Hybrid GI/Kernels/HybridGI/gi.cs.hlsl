@@ -138,9 +138,9 @@ bool ReadWorldVoxelCascade(
 						srcWorldSH1.Load(int3(atlasCoord, 0)),
 						srcWorldSH2.Load(int3(atlasCoord, 0)),
 						-sourceDirection) * leakWeight;
-					// Only smooth the first radiating hit, and only near the closest
-					// shared face of two agreeing surfaces. This costs at most one
-					// neighbour lookup, not eight taps at every trace step.
+					// Smooth only across a nearby shared face when both cells describe
+					// the same surface. This removes visible voxel steps without blurring
+					// corners or mixing unrelated walls and floors.
 					float3 fraction = frac(queryPositionWS / cellSize);
 					float3 edge = min(fraction, 1.0f - fraction);
 					float edgeDistance = min(edge.x, min(edge.y, edge.z));
@@ -219,8 +219,8 @@ bool ReadWorldVoxel(
 			valid = occupancy > (1.0 / 255.0);
 		} else if (nearValid) {
 			irradiance = nearIrradiance;
-			// Do not carry a lone near voxel at full weight to the window edge.
-			// The far cascade may still be warming up after camera movement.
+			// Do not carry a lone near voxel at full weight to the window edge;
+			// the far cascade may still be warming up after camera movement.
 			occupancy = nearOccupancy * (1.0f - smoothstep(0.35f, 0.999f, blend));
 			valid = occupancy > (1.0f / 255.0f);
 		} else if (farValid) {
@@ -248,7 +248,9 @@ void SampleWorldCache(
 		(WorldCacheDirectionalOcclusionStrength > 1e-4f || DebugView == 8u);
 	uint sampleCount = clamp(WorldCacheSampleCount, 1u, 8u);
 	uint traceSteps = clamp(WorldCacheTraceSteps, 2u, 6u);
-	// Vary ray orientation smoothly in world space rather than per voxel.
+	// Smooth world-locked variation avoids changing every ray direction at a
+	// voxel/cascade boundary, while continuous step spacing follows the same
+	// near-to-far transition as cache lookup.
 	float rotation = WorldCacheSmoothRotation(receiverPositionWS);
 	float baseStep = WorldCacheTraceCellSize(receiverPositionWS, cameraWS);
 	float inverseRadius = rcp(max(WorldCacheRadius, 1.0));
@@ -851,8 +853,8 @@ void CalculateGI(
 		float3 cameraWS = ViewToWorldPosition(0.0, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
 		float3 receiverPositionWS = ViewToWorldPosition(pixCenterPos, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
 		float3 receiverNormalWS = normalize(ViewToWorldVector(viewspaceNormal, FrameBuffer::CameraViewInverse));
-		// Keep a restrained world-space contribution alongside screen-space GI;
-		// screen coverage adjusts its weight rather than switching it off.
+		// Keep a restrained cache contribution beside screen-space GI; screen
+		// coverage scales its influence but must not abruptly switch it off.
 		const bool needCacheDiffuse = WorldCacheStrength > 1e-4f;
 		const bool needCacheDirectional = WorldCacheDirectionalOcclusionEnabled != 0u &&
 			WorldCacheDirectionalOcclusionStrength > 1e-4f;
@@ -864,8 +866,8 @@ void CalculateGI(
 		}
 
 		if (needCacheDiffuse) {
-			// This cache learns the same scene radiance as SSGI, so its always-on
-			// additive floor is deliberately small to avoid double-counting light.
+			// The cache is intentionally low-weight to avoid double-counting, but
+			// retains a nonzero floor so stable off-screen/world lighting assists GI.
 			float cacheConfidence = saturate(cacheHitRatio * 2.2f);
 			float cacheBlend = WorldCacheStrength * lerp(0.16f, 0.76f, screenMiss) * cacheConfidence;
 			radianceY += cacheY * cacheBlend;

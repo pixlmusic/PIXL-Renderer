@@ -73,7 +73,10 @@ float3 CalculateNormalFromHeight(float height, float heightScale, float2 uv)
 	float2 dUVdy = ddy(uv);
 
 	float det = dUVdx.x * dUVdy.y - dUVdx.y * dUVdy.x;
-	if (det < EPSILON_DIVISION) {
+	// Mirrored UV islands have a negative determinant but are still valid.
+	// Only a near-zero area is degenerate; rejecting every negative determinant
+	// silently flattened wetness normals on mirrored skin texture regions.
+	if (abs(det) < EPSILON_DIVISION) {
 		return float3(0, 0, 1);  // Avoid division by zero
 	}
 

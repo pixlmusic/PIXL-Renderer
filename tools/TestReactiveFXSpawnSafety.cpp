@@ -5,6 +5,23 @@
 struct Command { std::uint32_t slot; std::uint32_t value; };
 int main()
 {
+	using ReactiveFXSafety::AllocateQuota;
+	if (AllocateQuota(160000u, 160000u, 160000u) != 160000u) return 10;
+	if (AllocateQuota(320u, 960u, 960u) != 320u) return 11;
+	if (AllocateQuota(160000u, 262144u, 320000u) != 131072u) return 12;
+	if (AllocateQuota(160000u, 0u, 160000u) != 0u) return 13;
+	if (AllocateQuota(0u, 100u, 0u) != 0u) return 14;
+	for (std::uint32_t budget : {1u, 17u, 1024u, 524288u}) {
+		std::uint32_t remaining = budget;
+		std::uint32_t total = 64u * 160000u;
+		for (unsigned i = 0; i < 64; ++i) {
+			const auto quota = AllocateQuota(160000u, remaining, total);
+			if (quota > remaining || quota > 160000u) return 15;
+			remaining -= quota;
+			total -= 160000u;
+		}
+		if (remaining != 0u) return 16;
+	}
 	std::vector<Command> commands;
 	ReactiveFXSafety::CompactSpawnBatch<4>(commands);
 	if (!commands.empty()) return 1;

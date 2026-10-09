@@ -35,7 +35,7 @@ RE::NiPointLight* NaturalLighting::CreatePointLight::thunk(RE::TESObjectLIGH* li
 		SetExtLightData(niLight, ligh);
 	// Renderer-only DistantLife observes this genuine instantiated reference.
 	// It never retains the engine pointer or changes the light/gameplay state.
-	if (refr)
+	if (refr && niLight)
 		globals::pipeline::distantLife.ObserveStaticLight(
 			ligh,
 			refr,
@@ -113,7 +113,8 @@ float NaturalLighting::CalculateRadius(const float intensity, const bool shadowC
 	const float safeCutoff = std::max(cutoff, 0.001f);
 	const float radicand = ScaledUnitsSq * std::max(
 		(2.0f * std::max(intensity, 0.0f) - safeCutoff * size * size) / (2.0f * safeCutoff), 0.0f);
-	return std::max(std::sqrt(radicand) * InverseSquareRangeScale, 1.0f);
+	const float radius = std::sqrt(radicand) * InverseSquareRangeScale;
+	return std::isfinite(radius) ? std::max(radius, 1.0f) : 1.0f;
 }
 
 inline float NaturalLighting::SmoothStep(const float edge0, const float edge1, const float x)

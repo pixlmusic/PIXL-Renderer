@@ -100,14 +100,21 @@ groupshared float2 g_shadowHeight[NTHREADS];
 	// simple parallel scan
 	[unroll] for (uint offset = 1; offset < NTHREADS; offset <<= 1)
 	{
+		bool combineHeights = false;
+		float2 currentHeights = 0.0;
+		float2 sampleHeights = 0.0;
 		if (isValid && gtid >= offset) {
 			if (all(floor(rawThreadUV - lightUVDir * offset) == floor(rawThreadUV)))  // no wraparound happened
 			{
-				float2 currentHeights = g_shadowHeight[gtid];
-				float2 sampleHeights = g_shadowHeight[gtid - offset] + LightDeltaZ * offset;
-				g_shadowHeight[gtid] = currentHeights.x > sampleHeights.x ? currentHeights : sampleHeights;
+				combineHeights = true;
+				currentHeights = g_shadowHeight[gtid];
+				sampleHeights = g_shadowHeight[gtid - offset] + LightDeltaZ * offset;
 			}
 		}
+		// Every lane must finish reading the preceding scan step before any lane writes.
+		GroupMemoryBarrierWithGroupSync();
+		if (combineHeights)
+			g_shadowHeight[gtid] = currentHeights.x > sampleHeights.x ? currentHeights : sampleHeights;
 		GroupMemoryBarrierWithGroupSync();
 	}
 

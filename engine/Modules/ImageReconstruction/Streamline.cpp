@@ -528,32 +528,33 @@ bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport, bool resetHi
 
 	sl::Constants slConstants = {};
 
-	slConstants.cameraAspectRatio = (float)globals::game::graphicsState->screenWidth / (float)globals::game::graphicsState->screenHeight;
+	auto camera = globals::pipeline::imageReconstruction.cameraFrame;
+    if (camera.frame != globals::state->frameCount)
+        return false;
+    camera.reset = camera.reset || resetHistory;
+    PIXL::Reconstruction::CameraReprojection reprojection;
+    if (!PIXL::Reconstruction::BuildCameraReprojection(camera, reprojection))
+        return false;
+    slConstants.cameraAspectRatio = camera.aspect;
+    slConstants.cameraFOV = camera.fov;
+    slConstants.cameraNear = camera.nearPlane;
+    slConstants.cameraFar = camera.farPlane;
+    slConstants.cameraMotionIncluded = sl::Boolean::eTrue;
+    slConstants.cameraPinholeOffset = { 0.f, 0.f };
+    slConstants.cameraRight = { camera.viewInverse[0], camera.viewInverse[1], camera.viewInverse[2] };
+    slConstants.cameraUp = { camera.viewInverse[4], camera.viewInverse[5], camera.viewInverse[6] };
+    slConstants.cameraFwd = { camera.viewInverse[8], camera.viewInverse[9], camera.viewInverse[10] };
+    slConstants.cameraPos = { camera.origin[0], camera.origin[1], camera.origin[2] };
+    static_assert(sizeof(sl::float4x4) == sizeof(PIXL::Reconstruction::CameraMatrix));
+    std::memcpy(&slConstants.cameraViewToClip, camera.projection.data(), sizeof(sl::float4x4));
+    std::memcpy(&slConstants.clipToCameraView, reprojection.clipToView.data(), sizeof(sl::float4x4));
+    std::memcpy(&slConstants.clipToPrevClip, reprojection.clipToPrevious.data(), sizeof(sl::float4x4));
+    std::memcpy(&slConstants.prevClipToClip, reprojection.previousToClip.data(), sizeof(sl::float4x4));
+    slConstants.depthInverted = sl::Boolean::eFalse;
+    slConstants.jitterOffset = { -camera.jitter[0], -camera.jitter[1] };
+    slConstants.reset = camera.reset ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 
-	slConstants.cameraFOV = Util::GetVerticalFOVRad();
-	slConstants.cameraNear = *globals::game::cameraNear;
-	slConstants.cameraFar = *globals::game::cameraFar;
-
-	auto viewMatrix = globals::game::frameBufferCached.GetCameraViewInverse().Transpose();
-	auto cameraViewToClip = globals::game::frameBufferCached.GetCameraProjUnjittered().Transpose();
-
-	slConstants.cameraMotionIncluded = sl::Boolean::eTrue;
-	slConstants.cameraPinholeOffset = { 0.f, 0.f };
-	slConstants.cameraRight = { viewMatrix._11, viewMatrix._12, viewMatrix._13 };
-	slConstants.cameraUp = { viewMatrix._21, viewMatrix._22, viewMatrix._23 };
-	slConstants.cameraFwd = { viewMatrix._31, viewMatrix._32, viewMatrix._33 };
-	slConstants.cameraPos = *(sl::float3*)&globals::game::frameBufferCached.GetCameraPosAdjust();
-	slConstants.cameraViewToClip = *(sl::float4x4*)&cameraViewToClip;
-	slConstants.depthInverted = sl::Boolean::eFalse;
-
-	recalculateCameraMatrices(slConstants);
-
-	auto& imageReconstruction = globals::pipeline::imageReconstruction;
-	auto jitter = imageReconstruction.jitter;
-	slConstants.jitterOffset = { -jitter.x, -jitter.y };
-	slConstants.reset = resetHistory ? sl::Boolean::eTrue : sl::Boolean::eFalse;
-
-	slConstants.mvecScale = { 1.0f, 1.0f };
+    slConstants.mvecScale = { 1.0f, 1.0f };
 	slConstants.motionVectors3D = sl::Boolean::eFalse;
 	slConstants.motionVectorsInvalidValue = FLT_MIN;
 	slConstants.orthographicProjection = sl::Boolean::eFalse;

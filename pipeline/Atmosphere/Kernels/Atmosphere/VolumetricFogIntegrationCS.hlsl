@@ -3,6 +3,19 @@ RWTexture3D<float4> IntegratedLightScattering : register(u0);
 
 #include "Atmosphere/VolumetricFogCSCommon.hlsli"
 
+// Integral of exp(-extinction*x) over one homogeneous segment. Express the
+// small-optical-depth limit as a series so neither a broad extinction floor
+// nor subtraction of nearly equal floats suppresses thin fog scattering.
+float HomogeneousScatteringWeight(float extinction, float distance)
+{
+	extinction = max(extinction, 0.0f);
+	distance = max(distance, 0.0f);
+	float opticalDepth = extinction * distance;
+	if (opticalDepth < 0.01f)
+		return distance * (1.0f - opticalDepth * (0.5f - opticalDepth * (1.0f / 6.0f - opticalDepth / 24.0f)));
+	return (1.0f - exp(-min(opticalDepth, 80.0f))) / max(extinction, 1.0e-30f);
+}
+
 [numthreads(8, 8, 1)] void main(uint3 dispatchID : SV_DispatchThreadID) {
 	if (any(dispatchID.xy >= VolumetricFogGridSize.xy))
 		return;
@@ -31,7 +44,7 @@ RWTexture3D<float4> IntegratedLightScattering : register(u0);
 		float fadeIn = saturate(accumulatedDepth * VolumetricFogNearFadeInDistanceInv);
 
 		float3 scatteringIntegratedOverSlice =
-			fadeIn * (scatteringAndExtinction.rgb - scatteringAndExtinction.rgb * transmittance) / max(extinction, 1e-5f);
+			fadeIn * scatteringAndExtinction.rgb * HomogeneousScatteringWeight(extinction, stepLength);
 		accumulatedLighting += scatteringIntegratedOverSlice * accumulatedTransmittance;
 		accumulatedTransmittance *= lerp(1.0f, transmittance, fadeIn);
 

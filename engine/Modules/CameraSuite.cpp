@@ -14,6 +14,7 @@
 #include "I18n/I18n.h"
 #include "LinearLightCore.h"
 #include "Menu.h"
+#include "Menu/PIXLStyle.h"
 #include "Menu/TuningWorkspaceRenderer.h"
 #include "RainResponse.h"
 #include "ShaderCache.h"
@@ -464,6 +465,39 @@ void from_json(const nlohmann::json& json, CameraSuite::Settings& settings)
 
 #undef PIXL_CAMERA_SETTINGS_JSON_FIELDS
 
+void CameraSuite::ApplyDepthOfFieldPreset(std::uint32_t preset)
+{
+	auto& s = settings;
+	s.enableEnhancedDepthOfField = true;
+	s.preferCinematicDoF = false;
+	s.enableSkyrimDepthOfField = false;
+	s.dofPhysicalLens = true;
+	s.dofAutoFocus = true;
+	s.dofActorTracking = true;
+	switch (std::min(preset, 3u)) {
+	case 0:
+		s.dofStrength = 0.72f; s.dofFocalLengthMm = 28.0f; s.dofFStop = 4.0f;
+		s.dofMaxBokehPixels = 5.0f; s.dofNearBlurIntensity = 0.0f; s.dofFarBlurIntensity = 0.72f;
+		s.dofFarBlurDistance = 30000.0f; s.dofFocusRange = 15000.0f;
+		break;
+	case 1:
+		s.dofStrength = 1.0f; s.dofFocalLengthMm = 30.0f; s.dofFStop = 3.4f;
+		s.dofMaxBokehPixels = 6.0f; s.dofNearBlurIntensity = 0.12f; s.dofFarBlurIntensity = 0.90f;
+		s.dofFarBlurDistance = 26000.0f; s.dofFocusRange = 12000.0f;
+		break;
+	case 2:
+		s.dofStrength = 1.0f; s.dofFocalLengthMm = 50.0f; s.dofFStop = 2.2f;
+		s.dofMaxBokehPixels = 12.0f; s.dofNearBlurIntensity = 0.55f; s.dofFarBlurIntensity = 1.05f;
+		s.dofFarBlurDistance = 18000.0f; s.dofFocusRange = 7000.0f;
+		break;
+	default:
+		s.dofStrength = 1.0f; s.dofFocalLengthMm = 40.0f; s.dofFStop = 1.8f;
+		s.dofMaxBokehPixels = 18.0f; s.dofNearBlurIntensity = 0.75f; s.dofFarBlurIntensity = 1.20f;
+		s.dofFarBlurDistance = 22000.0f; s.dofFocusRange = 9000.0f;
+		break;
+	}
+}
+
 void CameraSuite::DrawSettings()
 {
 	ExternalPostProcessing::DrawSettings();
@@ -807,7 +841,7 @@ void CameraSuite::DrawSettings()
 			if (ImGui::Button("Bodycam Preset")) {
 				settings.cameraAutoExposure = true;
 				settings.cameraExposureCompensationEV = 0.0f;
-				settings.cameraAdaptBrightToDark = 0.55f;
+				settings.cameraAdaptBrightToDark = 0.65f;
 				settings.cameraAdaptDarkToBright = 0.65f;
 				settings.experimentalBodycam = true;
 				settings.enableLensEffects = true;
@@ -837,17 +871,17 @@ void CameraSuite::DrawSettings()
 
 			if (ImGui::CollapsingHeader("Camera Advanced")) {
 				changed |= ImGui::SliderFloat("Minimum Exposure", &settings.cameraMinExposureEV, -10.0f, 0.0f, "%+.1f EV", ImGuiSliderFlags_AlwaysClamp);
-				DrawSettingsTooltip("Lower exposure limit. Automatic metering also stops 3.5 EV below your compensation to prevent bright objects blacking out the scene.");
+				DrawSettingsTooltip("Lower exposure limit. Automatic metering stops 2 EV below your compensation so bright effects cannot black out the scene.");
 				changed |= ImGui::SliderFloat("Maximum Exposure", &settings.cameraMaxExposureEV, 0.0f, 10.0f, "%+.1f EV", ImGuiSliderFlags_AlwaysClamp);
 				DrawSettingsTooltip("Brightest exposure the automatic meter may select. This prevents extreme amplification in very dark scenes.");
 				changed |= ImGui::SliderFloat("Metering Low Percentile", &settings.cameraLowPercentile, 0.0f, 0.20f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 				DrawSettingsTooltip("Fraction of the darkest histogram samples ignored by exposure metering. Raise it to prevent tiny black regions from biasing exposure.");
 				changed |= ImGui::SliderFloat("Metering High Percentile", &settings.cameraHighPercentile, 0.80f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 				DrawSettingsTooltip("Upper histogram percentile used by exposure metering. Lower it to reject small, extremely bright outliers.");
-				changed |= ImGui::SliderFloat("Bright to Dark Adaptation", &settings.cameraAdaptBrightToDark, 0.05f, 4.0f, "%.2f s", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
-				DrawSettingsTooltip("Approximate adaptation time when entering a darker environment. Higher values make the camera brighten more slowly.");
-				changed |= ImGui::SliderFloat("Dark to Bright Adaptation", &settings.cameraAdaptDarkToBright, 0.03f, 2.0f, "%.2f s", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
-				DrawSettingsTooltip("Approximate adaptation time when entering a brighter environment. Higher values make the camera darken more slowly.");
+				changed |= ImGui::SliderFloat("Bright to Dark Adaptation", &settings.cameraAdaptBrightToDark, 0.65f, 4.0f, "%.2f s", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+				DrawSettingsTooltip("Approximate adaptation time when entering a darker environment. A 0.65 s minimum prevents noticeable exposure pumping during camera turns.");
+				changed |= ImGui::SliderFloat("Dark to Bright Adaptation", &settings.cameraAdaptDarkToBright, 0.65f, 2.0f, "%.2f s", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+				DrawSettingsTooltip("Approximate adaptation time when entering a brighter environment. A 0.65 s minimum prevents rapid gameplay exposure flashes.");
 				changed |= ImGui::SliderFloat("Contrast", &settings.cameraContrast, 0.75f, 1.30f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 				DrawSettingsTooltip("Mid-tone contrast applied by the display response. 1.0 is neutral.");
 				changed |= ImGui::SliderFloat("Saturation", &settings.cameraSaturation, 0.70f, 1.25f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -953,6 +987,33 @@ void CameraSuite::DrawSettings()
 			changed |= ImGui::Checkbox("Enable PIXL Auto-DOF", &settings.enableEnhancedDepthOfField);
 			DrawSettingsTooltip("Uses PIXL's native scene color and depth buffers with a restrained bokeh response. It avoids the heavy constant blur of the legacy path and remains disabled while Cinematic DoF owns the effect.");
 			if (settings.enableEnhancedDepthOfField) {
+				ImGui::TextDisabled("QUICK LENS PRESETS");
+				static constexpr const char* dofPresetNames[] = { "GAMEPLAY", "BALANCED", "PORTRAIT", "CINEMA" };
+				static constexpr const char* dofPresetTips[] = {
+					"Restrained separation for normal movement.",
+					"A versatile exploration and dialogue baseline.",
+					"Stronger subject separation for portraits.",
+					"A more expressive Director-style lens."
+				};
+				const float presetGap = PIXLUI::Ref(5.0f);
+				const float availablePresetWidth = ImGui::GetContentRegionAvail().x;
+				const std::uint32_t presetColumns = availablePresetWidth < PIXLUI::Ref(360.0f) ? 2u : 4u;
+				const float presetWidth = std::max(1.0f,
+					(availablePresetWidth - presetGap * static_cast<float>(presetColumns - 1u)) /
+					static_cast<float>(presetColumns));
+				for (std::uint32_t preset = 0; preset < std::size(dofPresetNames); ++preset) {
+					if (preset % presetColumns != 0)
+						ImGui::SameLine(0.0f, presetGap);
+					ImGui::PushID(static_cast<int>(preset));
+					if (ImGui::Button(dofPresetNames[preset], ImVec2(presetWidth, PIXLUI::Ref(30.0f)))) {
+						ApplyDepthOfFieldPreset(preset);
+						changed = true;
+					}
+					if (ImGui::IsItemHovered())
+						ImGui::SetTooltip("%s", dofPresetTips[preset]);
+					ImGui::PopID();
+				}
+				ImGui::Dummy(ImVec2(0.0f, PIXLUI::Ref(3.0f)));
 				changed |= ImGui::Checkbox("Track Dialogue Actors", &settings.dofActorTracking);
 				DrawSettingsTooltip("During dialogue, smoothly follows the visible speaker's head instead of jumping between screen-depth samples. Outside dialogue, PIXL uses stable screen autofocus.");
 				changed |= ImGui::Checkbox("Autofocus from Scene Depth", &settings.dofAutoFocus);
@@ -1033,7 +1094,7 @@ void CameraSuite::ApplyExternalLook(float exposureEV, float contrast, float satu
 	settings.cameraExposureCompensationEV = std::clamp(finiteOr(exposureEV, 0.0f), -4.0f, 4.0f);
 	settings.cameraContrast = std::clamp(contrast, 0.75f, 1.30f);
 	settings.cameraSaturation = std::clamp(saturation, 0.70f, 1.25f);
-	settings.cameraAdaptBrightToDark = std::clamp(finiteOr(adaptationSeconds, 1.20f), 0.05f, 4.0f);
+	settings.cameraAdaptBrightToDark = std::clamp(finiteOr(adaptationSeconds, 1.20f), 0.65f, 4.0f);
 	settings.cameraHighlightProtection = std::clamp(finiteOr(highlightProtection, 0.65f), 0.0f, 1.0f);
 	settings.cameraShadowDetail = std::clamp(shadowDetail, 0.0f, 0.5f);
 	settings.cameraToe = std::clamp(toe, 0.0f, 0.5f);
@@ -1113,8 +1174,8 @@ void CameraSuite::LoadSettings(json& o_json)
 	settings.cameraShadowDetail = std::clamp(settings.cameraShadowDetail, 0.0f, 0.5f);
 	settings.cameraContrast = std::clamp(settings.cameraContrast, 0.75f, 1.30f);
 	settings.cameraLocalExposure = clampFinite(settings.cameraLocalExposure, 0.12f, 0.0f, 0.5f);
-	settings.cameraAdaptBrightToDark = clampFinite(settings.cameraAdaptBrightToDark, 1.20f, 0.05f, 4.0f);
-	settings.cameraAdaptDarkToBright = clampFinite(settings.cameraAdaptDarkToBright, 0.25f, 0.03f, 2.0f);
+	settings.cameraAdaptBrightToDark = clampFinite(settings.cameraAdaptBrightToDark, 1.20f, 0.65f, 4.0f);
+	settings.cameraAdaptDarkToBright = clampFinite(settings.cameraAdaptDarkToBright, 0.65f, 0.65f, 2.0f);
 	settings.cameraSaturation = std::clamp(settings.cameraSaturation, 0.70f, 1.25f);
 	settings.cameraToe = std::clamp(settings.cameraToe, 0.0f, 0.5f);
 	settings.cameraShoulder = std::clamp(settings.cameraShoulder, 0.2f, 1.5f);
@@ -1214,7 +1275,7 @@ void CameraSuite::RestoreDefaultSettings()
 	settings.cameraContrast = 1.0f;
 	settings.cameraLocalExposure = 0.12f;
 	settings.cameraAdaptBrightToDark = 1.20f;
-	settings.cameraAdaptDarkToBright = 0.25f;
+	settings.cameraAdaptDarkToBright = 0.65f;
 	settings.cameraSaturation = 1.0f;
 	settings.cameraToe = 0.12f;
 	settings.cameraShoulder = 0.72f;
@@ -1371,16 +1432,19 @@ void CameraSuite::SetupResources()
 	main.UAV->GetDesc(&uavDesc);
 
 	// Get the actual swap chain format for output texture
-	DXGI_FORMAT swapChainFormat = DXGI_FORMAT_R10G10B10A2_UNORM;  // HDR format
+	DXGI_FORMAT swapChainFormat = DXGI_FORMAT_R10G10B10A2_UNORM;  // 10-bit UNORM presentation format; color space selects SDR or HDR.
 	DXGI_SWAP_CHAIN_DESC scDesc;
 	if (SUCCEEDED(globals::d3d::swapChain->GetDesc(&scDesc))) {
 		swapChainFormat = scDesc.BufferDesc.Format;
 		logger::info("[HDR] Swap chain format: {} ({})", (int)swapChainFormat,
-			swapChainFormat == DXGI_FORMAT_R10G10B10A2_UNORM  ? "R10G10B10A2_UNORM (HDR10)" :
+			swapChainFormat == DXGI_FORMAT_R10G10B10A2_UNORM  ? "R10G10B10A2_UNORM (10-bit UNORM; output color space is selected separately)" :
 			swapChainFormat == DXGI_FORMAT_R16G16B16A16_FLOAT ? "R16G16B16A16_FLOAT (scRGB)" :
 			swapChainFormat == DXGI_FORMAT_R8G8B8A8_UNORM     ? "R8G8B8A8_UNORM (SDR 8-bit)" :
 			swapChainFormat == DXGI_FORMAT_B8G8R8A8_UNORM     ? "B8G8R8A8_UNORM (SDR 8-bit)" :
 																"other");
+	}
+	if (!settings.enableHDR) {
+		logger::info("[CameraSuite] SDR presentation active (G22/P709); auto exposure meters the pre-output scene, AutoHDR reconstruction is disabled.");
 	}
 
 	texDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -1947,14 +2011,25 @@ HRESULT CameraSuite::PresentToSwapChain(IDXGISwapChain* swapChain, UINT syncInte
 	return SwapChainPresentBottom::func(swapChain, syncInterval, flags);
 }
 
-void CameraSuite::DrawImGuiForPresent(bool frameGenActive, bool hdrReady)
+void CameraSuite::DrawImGuiForPresent(bool hdrReady)
 {
-	if (frameGenActive) {
-		// The sidecar invokes this after ApplyHDR has copied the finished scene.
-		// kFRAMEBUFFER is no longer the presented target at this stage.
+	auto& reconstruction = globals::pipeline::imageReconstruction;
+	if (reconstruction.d3d12SwapChainActive) {
+		// Keep renderer UI out of the scene image sent through DLSS-NR and frame
+		// generation. The separate UI surface is also the one tagged for DLSS-G
+		// and registered with FidelityFX for late UI composition.
 		auto& sidecar = globals::pipeline::imageReconstruction.dx12SwapChain;
-		if (sidecar.swapChainBufferWrapped && sidecar.swapChainBufferWrapped->rtv) {
-			auto* target = sidecar.swapChainBufferWrapped->rtv;
+		const auto uiMode = GetD3D12UIBufferMode();
+		ID3D11RenderTargetView* target = nullptr;
+		if (uiMode.useUIBuffer && sidecar.uiBufferWrapped && sidecar.uiBufferWrapped->rtv) {
+			target = sidecar.uiBufferWrapped->rtv;
+		} else if (uiMode.useFallbackCopy) {
+			auto& framebuffer = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGET::kFRAMEBUFFER];
+			target = framebuffer.RTV;
+		} else if (sidecar.swapChainBufferWrapped && sidecar.swapChainBufferWrapped->rtv) {
+			target = sidecar.swapChainBufferWrapped->rtv;
+		}
+		if (target) {
 			globals::d3d::context->OMSetRenderTargets(1, &target, nullptr);
 			D3D11_VIEWPORT viewport{};
 			viewport.Width = static_cast<float>(sidecar.swapChainDesc.Width);
@@ -2054,7 +2129,7 @@ void CameraSuite::DrawRendererUIForPresent()
 	UINT viewportCount = 1;
 	globals::d3d::context->RSGetViewports(&viewportCount, &savedViewport);
 
-	DrawImGuiForPresent(frameGenActive, hdrReady);
+	DrawImGuiForPresent(hdrReady);
 	globals::menu->DrawOverlay();
 	if (viewportCount > 0)
 		globals::d3d::context->RSSetViewports(1, &savedViewport);
@@ -2974,7 +3049,7 @@ void CameraSuite::RunDepthOfFieldPasses(ID3D11ShaderResourceView* sceneSRV)
 	ID3D11SamplerState* sampler = lookSampler.get();
 
 	const auto dispatch = [&](const char* name, ID3D11ComputeShader* shader,
-		ID3D11ShaderResourceView* const* srvs, UINT count, Texture2D* output) {
+		ID3D11ShaderResourceView* const* srvs, UINT count, Texture2D* output, UINT pixelsPerGroup = 8u) {
 		if (!shader || !output || !output->uav)
 			return false;
 		context->CSSetShaderResources(0, count, srvs);
@@ -2986,7 +3061,7 @@ void CameraSuite::RunDepthOfFieldPasses(ID3D11ShaderResourceView* sceneSRV)
 		context->CSSetSamplers(0, 1, &sampler);
 		context->CSSetShader(shader, nullptr, 0);
 		globals::profiler->BeginPass(name);
-		context->Dispatch((output->desc.Width + 7u) / 8u, (output->desc.Height + 7u) / 8u, 1u);
+		context->Dispatch((output->desc.Width + pixelsPerGroup - 1u) / pixelsPerGroup, (output->desc.Height + pixelsPerGroup - 1u) / pixelsPerGroup, 1u);
 		globals::profiler->EndPass();
 		ID3D11ShaderResourceView* nulls[4] = { nullptr, nullptr, nullptr, nullptr };
 		context->CSSetShaderResources(0, count, nulls);
@@ -3021,7 +3096,7 @@ void CameraSuite::RunDepthOfFieldPasses(ID3D11ShaderResourceView* sceneSRV)
 	if (!dispatch("CameraSuite::DOF::HalfDownsample", GetDofHalfDownsampleCS(), halfInputs, 1u, dofHalfSceneTexture))
 		return;
 	ID3D11ShaderResourceView* tileInputs[1] = { dofCoCTexture->srv.get() };
-	if (!dispatch("CameraSuite::DOF::TileClassify", GetDofTileClassifyCS(), tileInputs, 1u, dofTileTexture))
+	if (!dispatch("CameraSuite::DOF::TileClassify", GetDofTileClassifyCS(), tileInputs, 1u, dofTileTexture, 1u))
 		return;
 
 	ID3D11ShaderResourceView* blurInputs[4] = { sceneSRV, dofCoCTexture->srv.get(), dofHalfSceneTexture->srv.get(), dofTileTexture->srv.get() };
@@ -3515,8 +3590,8 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 	data.cameraContrast = std::clamp(settings.cameraContrast, 0.75f, 1.30f);
 	data.cameraLocalExposure = TuningWorkspaceRenderer::IsDirectorPhotoModeActive() ? 0.0f :
 		std::clamp(settings.cameraLocalExposure, 0.0f, 0.5f);
-	data.cameraAdaptBrightToDark = std::clamp(settings.cameraAdaptBrightToDark, 0.05f, 4.0f);
-	data.cameraAdaptDarkToBright = std::clamp(settings.cameraAdaptDarkToBright, 0.03f, 2.0f);
+	data.cameraAdaptBrightToDark = std::clamp(settings.cameraAdaptBrightToDark, 0.65f, 4.0f);
+	data.cameraAdaptDarkToBright = std::clamp(settings.cameraAdaptDarkToBright, 0.65f, 2.0f);
 	data.bodycamEnabled = settings.enablePhysicalCamera && settings.experimentalBodycam ? 1.f : 0.f;
 	data.bodycamStrength = std::clamp(settings.bodycamStrength, 0.0f, 1.0f);
 	data.bodycamDistortion = std::clamp(settings.bodycamDistortion, 0.0f, 0.30f);

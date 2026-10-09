@@ -14,12 +14,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $base = (Resolve-Path -LiteralPath $BasePackageDirectory).Path
-$revisionVersion = "1.0.6$ReleaseRevision"
+$revisionVersion = "1.0.7$ReleaseRevision"
 if ([string]::IsNullOrWhiteSpace($ProductVersion)) { $ProductVersion = $revisionVersion }
 elseif ($ReleaseRevision -and $ProductVersion -ne $revisionVersion) { throw 'ProductVersion conflicts with ReleaseRevision.' }
-if ([string]::IsNullOrWhiteSpace($SurfaceTidesSource) -eq [string]::IsNullOrWhiteSpace($PrebuiltSurfaceTidesDirectory)) {
-    throw 'Provide exactly one of SurfaceTidesSource or PrebuiltSurfaceTidesDirectory.'
-}
+if ($SurfaceTidesSource -and $PrebuiltSurfaceTidesDirectory) { throw 'Provide at most one SurfaceTides source.' }
 $surface = if ($SurfaceTidesSource) { (Resolve-Path -LiteralPath $SurfaceTidesSource).Path } else { '' }
 $prebuiltSurface = if ($PrebuiltSurfaceTidesDirectory) { (Resolve-Path -LiteralPath $PrebuiltSurfaceTidesDirectory).Path } else { '' }
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -42,6 +40,26 @@ function Copy-Tree([string]$source,[string]$destination) {
     if (!(Test-Path -LiteralPath $source)) { throw "Missing source: $source" }
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
     Copy-Item -Path (Join-Path $source '*') -Destination $destination -Recurse -Force
+}
+function Repair-SurfaceTidesPixlFogContract([string]$shaderPath) {
+    if (!(Test-Path -LiteralPath $shaderPath -PathType Leaf)) { throw "Missing SurfaceTides water shader: $shaderPath" }
+    $source = [IO.File]::ReadAllText($shaderPath)
+    $structOld = '(?m)^#if !defined\(ST_PIXL_WATERBODY\)$'
+    $structNew = '#if !defined(ST_PIXL_WATERBODY) || defined(ST_PIXL_GEOMETRY)'
+    $assignOld = '(?m)^#if !defined\(ST_PIXL_WATERBODY\) \|\| defined\(SIMPLE\) \|\| defined\(LOD\)$'
+    $assignNew = '#if !defined(ST_PIXL_WATERBODY) || defined(ST_PIXL_GEOMETRY) || defined(SIMPLE) || defined(LOD)'
+    if ([regex]::IsMatch($source, $structOld)) {
+        $source = ([regex]::new($structOld)).Replace($source, $structNew, 1)
+    } elseif (!$source.Contains($structNew)) {
+        throw 'SurfaceTides water shader does not match the expected PIXL FogParam output contract.'
+    }
+    if ([regex]::IsMatch($source, $assignOld)) {
+        $source = ([regex]::new($assignOld)).Replace($source, $assignNew, 1)
+    } elseif (!$source.Contains($assignNew)) {
+        throw 'SurfaceTides water shader does not match the expected PIXL FogParam initialization contract.'
+    }
+    if (!$source.Contains('float4 FogParam : COLOR0;')) { throw 'SurfaceTides water shader lost its FogParam output.' }
+    [IO.File]::WriteAllText($shaderPath, $source, [Text.UTF8Encoding]::new($false))
 }
 function Assert-SurfaceTidesUniversalDll([string]$dll,[string]$sourceRoot) {
     $binaryText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($dll))
@@ -82,6 +100,12 @@ foreach ($required in @(
     if (!(Test-Path -LiteralPath (Join-Path $base $required))) { throw "Incomplete PIXL package: $required" }
 }
 if ($surface) {
+    $surfaceCMakePath = Join-Path $surface 'CMakeLists.txt'
+    if (!(Test-Path -LiteralPath $surfaceCMakePath)) { throw 'SurfaceTides source version cannot be verified; use a verified 1.0.2 prebuilt bridge.' }
+    $surfaceCMake = Get-Content -LiteralPath $surfaceCMakePath -Raw
+    if ($surfaceCMake -notmatch '(?m)^project\(SurfaceTides\s+VERSION\s+1\.0\.2(?:\s|\))') {
+        throw 'This installer supports only SurfaceTides 1.0.2. The supplied source is not explicitly versioned 1.0.2; use a verified 1.0.2 prebuilt bridge.'
+    }
     $surfaceDllCandidates = @(
         (Join-Path $surface 'build\windows-universal-v8\Release\SurfaceTides.dll'),
         (Join-Path $surface 'build\windows-vendored-v8d\Release\SurfaceTides.dll'),
@@ -118,7 +142,7 @@ Copy-Item -LiteralPath (Join-Path $repo 'installer\PIXLRenderer\PIXL-INSTALLER-N
 
 $configPath = Join-Path $output 'fomod\ModuleConfig.xml'
 $configText = Get-Content -LiteralPath $configPath -Raw
-$configText = $configText.Replace('1.0.6', $ProductVersion)
+$configText = $configText.Replace('1.0.7', $ProductVersion)
 [IO.File]::WriteAllText($configPath, $configText, [Text.UTF8Encoding]::new($false))
 $infoPath = Join-Path $output 'fomod\info.xml'
 [xml]$info = Get-Content -LiteralPath $infoPath -Raw
@@ -134,6 +158,7 @@ if ($surface) {
     New-Item -ItemType Directory -Path (Join-Path $bridge 'SKSE\Plugins'),(Join-Path $bridge 'Shaders\SurfaceTides'),$bridgeDocs -Force | Out-Null
     Copy-Item -LiteralPath $surfaceDll -Destination (Join-Path $bridge 'SKSE\Plugins\SurfaceTides.dll')
     Copy-Item -LiteralPath $surfaceShader -Destination (Join-Path $bridge 'Shaders\SurfaceTides\Water.hlsl')
+    Repair-SurfaceTidesPixlFogContract (Join-Path $bridge 'Shaders\SurfaceTides\Water.hlsl')
     Copy-Item -LiteralPath $surfacePixlIni -Destination (Join-Path $bridge 'SKSE\Plugins\SurfaceTides.ini')
     Copy-Item -LiteralPath (Join-Path $repo 'docs\SURFACETIDES-UPSTREAM.md') -Destination (Join-Path $bridgeDocs 'INSTALL-AND-SOURCE.md')
     foreach ($notice in @('LICENSE','THIRD_PARTY.md')) {
@@ -143,8 +168,9 @@ if ($surface) {
     if (Test-Path -LiteralPath (Join-Path $surface 'licenses')) {
         Copy-Item -LiteralPath (Join-Path $surface 'licenses') -Destination $bridgeDocs -Recurse
     }
-} else {
+} elseif ($prebuiltSurface) {
     Copy-Tree $prebuiltSurface $bridge
+    Repair-SurfaceTidesPixlFogContract (Join-Path $bridge 'Shaders\SurfaceTides\Water.hlsl')
     foreach ($requiredBridgeFile in @(
         'SKSE\Plugins\SurfaceTides.dll',
         'SKSE\Plugins\SurfaceTides.ini',

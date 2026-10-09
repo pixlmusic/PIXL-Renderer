@@ -10,12 +10,16 @@
 #include "Globals.h"
 #include "State.h"
 #include "Util.h"
+#include <RE/B/bhkPickData.h>
+#include <RE/B/bhkWorld.h>
+#include "RE/B/BSVisit.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cctype>
 #include <limits>
+#include <optional>
 #include <string>
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
@@ -29,13 +33,18 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	EnableVegetationResponse,
 	EnableHeroDebris,
 	EnableSecondaryImpacts,
+	FrostPressureTest,
 	DebugMode)
 
 namespace
 {
 	constexpr std::array<std::uint32_t, 4> kParticleCaps{ 2048u, 4096u, 8192u, 16384u };
 	constexpr std::array<std::uint32_t, 4> kCollisionCaps{ 256u, 768u, 2048u, 4096u };
-	constexpr std::array<float, 4> kSpawnScales{ 0.40f, 0.65f, 1.0f, 1.45f };
+	// Larger tiers make the GPU pool visible in normal play; event and slot
+	// budgets keep bursts bounded even at Ultra.
+	constexpr std::array<float, 4> kSpawnScales{ 0.65f, 1.10f, 2.20f, 3.20f };
+	constexpr std::uint32_t kFrostBaseShardCount = 320u;
+	constexpr std::uint32_t kFrostPressureMultiplier = 1u;
 	constexpr float kMinimumLifetime = 0.04f;
 
 	bool Finite(const RE::NiPoint3& value)
@@ -468,6 +477,30 @@ void ReactiveFX::QueueEvent(const Event& event)
 	queue.push_back(sanitized);
 }
 
+void ReactiveFX::CopyVegetationImpulses(
+	float4 (&positionRadius)[4],
+	float4 (&directionStrength)[4],
+	float4 (&ageDuration)[4],
+	std::uint32_t& count,
+	float maxRadius) const
+{
+	count = 0u;
+	if (!settings.Enabled || !settings.EnableVegetationResponse)
+		return;
+	for (const auto& active : impulses) {
+		const auto& impulse = active.gpu;
+		if (impulse.active == 0u || count >= 4u ||
+			!std::isfinite(impulse.age) || !std::isfinite(impulse.duration) || impulse.duration <= impulse.age)
+			continue;
+		const auto index = count++;
+		positionRadius[index] = { impulse.position.x, impulse.position.y, impulse.position.z,
+			std::clamp(impulse.radius, 1.0f, maxRadius) };
+		directionStrength[index] = { impulse.direction.x, impulse.direction.y, impulse.direction.z,
+			std::clamp(impulse.strength, 0.0f, 4.0f) };
+		ageDuration[index] = { impulse.age, impulse.previousAge, impulse.duration, 1.0f };
+	}
+}
+
 void ReactiveFX::ApplyImpulse(
 	const RE::NiPoint3& position,
 	const RE::NiPoint3& direction,
@@ -517,15 +550,18 @@ ReactiveFX::Recipe ReactiveFX::ResolveRecipe(SourceType source, SurfaceType surf
 			{ 1.0f, 0.22f, 0.025f }, { 0.22f, 0.16f, 0.12f }, -0.08f, 0.72f,
 			0.28f, 0.25f, 6, 3, true, false, true, false };
 	} else if (source == SourceType::AmbientFire) {
-		recipe = { 3, 2, 70.0f, 200.0f, 0.45f, 1.45f, 0.45f, 1.3f,
-			{ 1.0f, 0.30f, 0.055f }, { 0.19f, 0.17f, 0.15f }, 0.28f, 0.42f,
+		// Ambient fixtures emit only a few embers per scheduled pulse. Combat
+		// impacts and active spell streams retain their separate high-density recipes.
+		recipe = { 2, 1, 55.0f, 145.0f, 0.8f, 1.8f, 0.65f, 1.8f,
+			{ 1.0f, 0.30f, 0.055f }, { 0.19f, 0.17f, 0.15f }, 0.34f, 0.42f,
 			0.31f, 0.38f, 6, 3, true, false, true, false };
 	} else if (source == SourceType::AmbientCandle) {
 		recipe = { 1, 1, 12.0f, 46.0f, 0.24f, 0.72f, 0.30f, 0.75f,
 			{ 1.0f, 0.68f, 0.24f }, { 0.54f, 0.53f, 0.51f }, -0.07f, 1.7f,
 			0.08f, 0.62f, 0, 3, true, false, false, false };
 	} else if (source == SourceType::Frost) {
-		recipe = { 38, 14, 90.0f, 480.0f, 0.55f, 1.9f, 1.0f, 5.2f,
+		// Baseline frost population; the optional pressure mode overrides it below.
+		recipe = { kFrostBaseShardCount, 24, 120.0f, 560.0f, 10.0f, 20.0f, 2.24f, 3.68f,
 			{ 0.40f, 0.78f, 1.0f }, { 0.72f, 0.90f, 1.0f }, 0.72f, 0.55f,
 			0.52f, 0.18f, 1, 4, true, false, true, true };
 	} else if (source == SourceType::Shock) {
@@ -661,6 +697,18 @@ ReactiveFX::Recipe ReactiveFX::ResolveRecipe(SourceType source, SurfaceType surf
 			recipe.secondaryColor = { 0.40f, 0.56f, 0.68f };
 			recipe.primaryType = static_cast<std::uint32_t>(ParticleType::SoftPuff);
 			recipe.secondaryType = static_cast<std::uint32_t>(ParticleType::SmokeDust);
+			// A waterfall/river impact gets a fuller, longer-lived spray crown;
+			// bounded to the existing GPU pool and only emitted for actual impacts.
+			if (physicalSource) {
+				recipe.primaryCount = std::max(recipe.primaryCount, 24u);
+				recipe.secondaryCount = std::max(recipe.secondaryCount, 18u);
+				recipe.lifetimeMin = std::max(recipe.lifetimeMin, 0.55f);
+				recipe.lifetimeMax = std::max(recipe.lifetimeMax, 1.65f);
+				recipe.speedMin = 90.0f;
+				recipe.speedMax = 390.0f;
+				recipe.sizeMin = 1.2f;
+				recipe.sizeMax = 4.0f;
+			}
 			recipe.collisionPrimary = false;
 		}
 	}
@@ -751,7 +799,32 @@ ReactiveFX::Recipe ReactiveFX::ResolveRecipe(SourceType source, SurfaceType surf
 	recipe.additiveSecondary = false;
 	recipe.collisionPrimary = true;
 	recipe.collisionSecondary = true;
-	recipe.pooledDebris = true;
+		recipe.pooledDebris = true;
+	}
+
+	// Preserve the saved FrostPressureTest key for configuration compatibility.
+	// It now selects a bounded dense stream of crystals across receiving materials.
+	if (settings.FrostPressureTest && source == SourceType::Frost) {
+		recipe.primaryCount = kFrostBaseShardCount * kFrostPressureMultiplier;
+		recipe.secondaryCount = 24u;
+		recipe.primaryType = static_cast<std::uint32_t>(ParticleType::FrostCrystal);
+		recipe.secondaryType = static_cast<std::uint32_t>(ParticleType::SoftPuff);
+		recipe.primaryColor = { 0.48f, 0.76f, 1.0f };
+		recipe.secondaryColor = { 0.36f, 0.66f, 0.96f };
+		recipe.speedMin = 400.0f;
+		recipe.speedMax = 850.0f;
+		recipe.lifetimeMin = 10.0f;
+		recipe.lifetimeMax = 20.0f;
+		recipe.sizeMin = 1.28f;
+		recipe.sizeMax = 3.68f;
+		recipe.gravityScale = 0.72f;
+		recipe.drag = 0.55f;
+		recipe.restitution = 0.72f;
+		recipe.friction = 0.55f;
+		recipe.collisionPrimary = true;
+		recipe.collisionSecondary = false;
+		recipe.pooledDebris = true;
+		recipe.additivePrimary = false;
 	}
 
 	return recipe;
@@ -759,15 +832,61 @@ ReactiveFX::Recipe ReactiveFX::ResolveRecipe(SourceType source, SurfaceType surf
 
 void ReactiveFX::SpawnEvent(const Event& event, float primaryScale, float secondaryScale)
 {
-	const Recipe recipe = ResolveRecipe(event.source, event.surface);
+	Recipe recipe = ResolveRecipe(event.source, event.surface);
+	if (event.source == SourceType::AmbientFire) {
+		switch (event.ambientFireKind) {
+		case 1u: // Torch: very sparse, tight and short embers.
+			recipe.primaryCount = 1u; recipe.secondaryCount = 0u;
+			recipe.speedMin = 45.0f; recipe.speedMax = 105.0f;
+			recipe.lifetimeMin = 0.45f; recipe.lifetimeMax = 0.95f;
+			recipe.sizeMin = 0.36f; recipe.sizeMax = 0.72f;
+			break;
+		case 2u: // Open fire: a few buoyant embers.
+			recipe.primaryCount = 3u; recipe.secondaryCount = 1u;
+			recipe.speedMin = 55.0f; recipe.speedMax = 145.0f;
+			recipe.gravityScale = 0.34f;
+			recipe.lifetimeMin = 0.8f; recipe.lifetimeMax = 1.8f;
+			break;
+		case 3u: // Hearth: low, sparse, short soot/embers.
+			recipe.primaryCount = 2u; recipe.secondaryCount = 1u;
+			recipe.speedMin = 38.0f; recipe.speedMax = 88.0f;
+			recipe.lifetimeMin = 0.45f; recipe.lifetimeMax = 1.1f;
+			recipe.sizeMin = 0.45f; recipe.sizeMax = 1.3f;
+			recipe.drag = 0.8f;
+			break;
+		default: break; // Open fires keep the longer buoyant ember recipe.
+		}
+	}
+	if (event.casterStream) {
+		recipe.primaryCount = event.streamCount;
+		recipe.secondaryCount = 0u;
+		const bool softMagic = event.source == SourceType::Restoration || event.source == SourceType::Conjuration || event.source == SourceType::Illusion;
+		recipe.speedMin = softMagic ? 80.0f : (event.source == SourceType::Fire ? 650.0f : 1300.0f);
+		recipe.speedMax = softMagic ? 240.0f : (event.source == SourceType::Fire ? 1200.0f : 1900.0f);
+	}
 	const auto quality = std::min(settings.Quality, 3u);
-	const float qualityScale = kSpawnScales[quality];
-	const std::uint32_t capacity = kParticleCaps[quality];
-	const std::uint32_t debrisCapacity = std::min(kHeroParticleReserve, capacity / 4u);
+	const bool frostPressureBurst = settings.FrostPressureTest &&
+		event.source == SourceType::Frost &&
+		recipe.primaryType == static_cast<std::uint32_t>(ParticleType::FrostCrystal);
+	// Dense frost uses a fixed authored count and a separate slot range, so
+	// increasing normal FX quality cannot turn a stream into a solid particle cloud.
+	const float qualityScale = frostPressureBurst || event.casterStream ? 1.0f : kSpawnScales[quality];
+	const std::uint32_t capacity = frostPressureBurst ? kMaximumParticles : kParticleCaps[quality];
+	const std::uint32_t debrisCapacity = frostPressureBurst
+		? kMaximumParticles / 2u
+		: std::min(kDebrisParticleReserve, capacity / 4u);
+	const std::uint32_t debrisSlotBase = frostPressureBurst
+		? kMaximumParticles - debrisCapacity
+		: 0u;
 	const std::uint32_t particleCapacity = capacity - debrisCapacity;
-	const std::uint32_t primaryCount = static_cast<std::uint32_t>(std::round(recipe.primaryCount * qualityScale * std::clamp(primaryScale, 0.0f, 1.0f)));
+	const std::uint32_t basePrimaryCount = static_cast<std::uint32_t>(std::round(recipe.primaryCount * qualityScale * std::clamp(primaryScale, 0.0f, 1.0f)));
 	const std::uint32_t secondaryCount = static_cast<std::uint32_t>(std::round(recipe.secondaryCount * qualityScale * std::clamp(secondaryScale, 0.0f, 1.0f)));
-	const RE::NiPoint3 direction = Normalize(event.direction);
+	const bool ambientFire = event.source == SourceType::AmbientFire;
+	const std::uint32_t primaryCount = basePrimaryCount;
+	// Impact velocity preserves the staff's world-space aim. Shards begin
+	// upstream and travel into the receiver before the collision pass rebounds them.
+	const bool frostImpact = event.source == SourceType::Frost && !event.casterStream;
+	const RE::NiPoint3 direction = Normalize(frostImpact ? event.direction * -1.0f : event.direction);
 	const RE::NiPoint3 tangent = Normalize(
 		std::abs(direction.z) < 0.88f ? RE::NiPoint3{ -direction.y, direction.x, 0.0f } : RE::NiPoint3{ 1.0f, 0.0f, 0.0f });
 	const RE::NiPoint3 bitangent{
@@ -793,7 +912,8 @@ void ReactiveFX::SpawnEvent(const Event& event, float primaryScale, float second
 			std::uint32_t random = Hash(event.seed + i * 747796405u + (secondary ? 0xA511E9B3u : 0u));
 			const float angle = Random01(random) * 6.283185307f;
 			const float radial = std::sqrt(Random01(random));
-			const float spread = fireSmokeTrail ? 0.34f : (secondary ? 0.88f : 0.62f);
+			const bool iceShardBurst = recipe.primaryType == static_cast<std::uint32_t>(ParticleType::FrostCrystal);
+			const float spread = fireSmokeTrail ? 0.34f : (iceShardBurst ? (event.casterStream ? 0.08f : 0.75f) : (ambientFire ? 0.92f : (secondary ? 0.88f : 0.62f)));
 			const float lateralX = std::cos(angle) * radial * spread;
 			const float lateralY = std::sin(angle) * radial * spread;
 			RE::NiPoint3 launch{
@@ -802,29 +922,43 @@ void ReactiveFX::SpawnEvent(const Event& event, float primaryScale, float second
 				direction.z + tangent.z * lateralX + bitangent.z * lateralY
 			};
 			launch = Normalize(launch);
-			if (recipe.pooledDebris) {
+			if (ambientFire) {
+				// Ambient embers fan outward while retaining an upward component; gravity
+				// then bends their paths into short, readable arcs instead of straight drops.
+				launch.z = std::max(launch.z, 0.48f + Random01(random) * 0.16f);
+				launch = Normalize(launch);
+			}
+			if (recipe.pooledDebris && !iceShardBurst) {
 				// A shout/impact launches loose material upward before gravity takes
 				// over. Without this lift, the depth-aware mask can hide the entire
 				// short-lived population inside the receiving surface.
-				launch.z = std::max(launch.z, 0.34f + Random01(random) * 0.42f);
+				const float lift = iceShardBurst ? 0.22f + Random01(random) * 0.28f
+					: 0.34f + Random01(random) * 0.42f;
+				launch.z = std::max(launch.z, lift);
 				launch = Normalize(launch);
 			}
-			const float speed = RandomRange(random, recipe.speedMin, recipe.speedMax) * event.strength *
+			const float baseSpeed = RandomRange(random, recipe.speedMin, recipe.speedMax);
+			const float speed = baseSpeed * (iceShardBurst ? std::clamp(event.strength, 0.8f, 1.4f) : event.strength) *
 				(fireSmokeTrail ? 0.13f : (secondary ? (recipe.pooledDebris ? 0.68f : 0.42f) : 1.0f));
-			const float spawnRadius = std::min(event.radius * 0.10f, 18.0f) * radial;
+			const float spawnRadius = (iceShardBurst
+				? std::min(event.radius * 0.06f, 10.0f)
+				: std::min(event.radius * 0.10f, 18.0f)) * radial;
 
 			SpawnCommand command{};
 			// Keep impact debris in a separate fixed ring so a large burst cannot
 			// evict active sparks, fire cores or smoke trails.
 			if (recipe.pooledDebris && debrisCapacity > 0u)
-				command.slot = nextDebrisSlot++ % debrisCapacity;
+				command.slot = debrisSlotBase + (nextDebrisSlot++ % debrisCapacity);
 			else
 				command.slot = debrisCapacity + (nextParticleSlot++ % std::max(particleCapacity, 1u));
 			auto& particle = command.particle;
+			// Seed a narrow stream upstream of the impact, travelling with the
+			// projectile. Axial variation avoids a simultaneous disc of crystals.
+		const float surfaceClearance = iceShardBurst ? (event.casterStream ? RandomRange(random, 0.0f, speed / 60.0f) : 12.0f) : 0.0f;
 			particle.position = {
-				event.position.x + tangent.x * std::cos(angle) * spawnRadius + bitangent.x * std::sin(angle) * spawnRadius,
-				event.position.y + tangent.y * std::cos(angle) * spawnRadius + bitangent.y * std::sin(angle) * spawnRadius,
-				event.position.z + tangent.z * std::cos(angle) * spawnRadius + bitangent.z * std::sin(angle) * spawnRadius
+				event.position.x + direction.x * surfaceClearance + tangent.x * std::cos(angle) * spawnRadius + bitangent.x * std::sin(angle) * spawnRadius,
+				event.position.y + direction.y * surfaceClearance + tangent.y * std::cos(angle) * spawnRadius + bitangent.y * std::sin(angle) * spawnRadius,
+				event.position.z + direction.z * surfaceClearance + tangent.z * std::cos(angle) * spawnRadius + bitangent.z * std::sin(angle) * spawnRadius
 			};
 			particle.velocity = { launch.x * speed, launch.y * speed, launch.z * speed };
 			particle.acceleration = { 0.0f, 0.0f, -980.0f * recipe.gravityScale };
@@ -834,8 +968,11 @@ void ReactiveFX::SpawnEvent(const Event& event, float primaryScale, float second
 			const float3 color = secondary ? recipe.secondaryColor : recipe.primaryColor;
 			particle.colorEmission = { color.x, color.y, color.z,
 				secondary ? (fireSmokeTrail ? 0.24f : 0.65f) : 1.0f };
+			const float secondarySizeScale = recipe.pooledDebris ? 1.65f : (iceShardBurst ? 0.72f : 1.35f);
 			particle.size = RandomRange(random, recipe.sizeMin, recipe.sizeMax) *
-				(fireSmokeTrail ? 0.42f : (secondary ? (recipe.pooledDebris ? 1.65f : 1.35f) : 1.0f));
+				(fireSmokeTrail ? 0.42f : (secondary ? secondarySizeScale : 1.0f));
+			if (!iceShardBurst)
+				particle.size *= 0.8f;
 			particle.rotation = Random01(random) * 6.283185307f;
 			particle.angularVelocity = RandomRange(random, -8.0f, 8.0f);
 			particle.restitution = recipe.restitution;
@@ -845,11 +982,18 @@ void ReactiveFX::SpawnEvent(const Event& event, float primaryScale, float second
 			const bool additive = secondary ? recipe.additiveSecondary : recipe.additivePrimary;
 			const bool collision = secondary ? recipe.collisionSecondary : recipe.collisionPrimary;
 			particle.flags = (additive ? 1u : 0u) | (collision ? 2u : 0u);
+			if (event.casterStream)
+				particle.flags |= 256u; // GPU flag: initial staff jet, before its first collision.
 			// GPU debris is a reusable fixed-slot pool. Short-lived impact pieces get
 			// a small bounce budget and are retired by SimulateCS when their lifetime
 			// or camera-distance bound is reached; no CPU object is created per hit.
-			particle.maxBounces = collision ? (secondary ? 2u : 4u) : 0u;
-			particle.fadeIn = std::min(0.08f, particle.lifetime * 0.2f);
+			const bool frostShard = particle.type == static_cast<std::uint32_t>(ParticleType::FrostCrystal);
+			// Frost keeps colliding until the shader observes several quiet floor
+			// contacts; its lifetime and camera bound remain the hard safety limits.
+			particle.maxBounces = collision ? (frostShard ? 255u : (secondary ? 2u : 4u)) : 0u;
+			particle.fadeIn = frostShard ? 0.012f : (ambientFire
+				? std::clamp(0.34f - event.ambientDensity * 0.22f, 0.10f, 0.34f)
+				: std::min(0.08f, particle.lifetime * 0.2f));
 			particle.fadeOut = std::max(0.12f, particle.lifetime * 0.35f);
 			spawnCommands.push_back(command);
 		}
@@ -857,15 +1001,25 @@ void ReactiveFX::SpawnEvent(const Event& event, float primaryScale, float second
 
 	spawnPopulation(primaryCount, false);
 	spawnPopulation(secondaryCount, true);
-	simulationTimeRemaining = std::max(simulationTimeRemaining, recipe.lifetimeMax + 0.25f);
+	// Frost shards may collide, bounce, settle, then melt. Simulate long enough for
+	// the shader's bounded 24-second settled-shard lifetime; otherwise the particle
+	// buffer would simply freeze with visible shards when the FX pass goes idle.
+	const float settledFrostTail = event.source == SourceType::Frost ? 24.25f : 0.0f;
+	simulationTimeRemaining = std::max(simulationTimeRemaining,
+		std::max(recipe.lifetimeMax + 0.25f, settledFrostTail));
+	if (frostPressureBurst)
+		frostPressureTimeRemaining = std::max(frostPressureTimeRemaining, settledFrostTail);
 	if (event.source == SourceType::Fire || event.source == SourceType::Frost)
-		opticalTimeRemaining = std::max(opticalTimeRemaining, recipe.lifetimeMax + 0.1f);
+		opticalTimeRemaining = std::max(opticalTimeRemaining,
+			std::max(recipe.lifetimeMax + 0.1f, settledFrostTail));
 	lastSurface = event.surface;
 	lastSource = event.source;
 }
 
 void ReactiveFX::AddImpulseForEvent(const Event& event)
 {
+	if (event.casterStream)
+		return;
 	if (event.source != SourceType::Shout && event.source != SourceType::HeavyImpact &&
 		event.source != SourceType::Fire && event.source != SourceType::Frost && event.source != SourceType::Shock) {
 		return;
@@ -896,7 +1050,7 @@ void ReactiveFX::AddImpulseForEvent(const Event& event)
 	impulse.direction = { direction.x, direction.y, direction.z };
 	impulse.strength = std::clamp(event.strength, 0.05f, 4.0f);
 	const bool shoutBurst = event.source == SourceType::Shout && event.impulse != ImpulseType::TravellingWave;
-	impulse.duration = shoutBurst ? 0.55f : (event.impulse == ImpulseType::TravellingWave ? 2.8f : 1.6f);
+	impulse.duration = event.source == SourceType::Frost ? 0.18f : (shoutBurst ? 0.55f : (event.impulse == ImpulseType::TravellingWave ? 2.8f : 1.6f));
 	impulse.waveSpeed = shoutBurst ? 0.0f : (event.impulse == ImpulseType::TravellingWave
 		? std::clamp(event.radius / 1.15f, 220.0f, 1800.0f)
 		: 0.0f);
@@ -931,21 +1085,32 @@ void ReactiveFX::ProcessQueuedEvents()
 	std::stable_sort(events->begin(), events->end(), [&](const Event& left, const Event& right) {
 		return importance(left) > importance(right);
 	});
-	const std::size_t eventBudget = std::array<std::size_t, 4>{ 8, 16, 32, 48 }[std::min(settings.Quality, 3u)];
+	const std::size_t eventBudget = std::array<std::size_t, 4>{ 12, 24, 48, 64 }[std::min(settings.Quality, 3u)];
 	if (events->size() > eventBudget) {
 		droppedEvents += static_cast<std::uint32_t>(events->size() - eventBudget);
 		events->resize(eventBudget);
 	}
 
 	const float qualityScale = kSpawnScales[std::min(settings.Quality, 3u)];
-	std::array<std::uint32_t, 48> primary{};
-	std::array<std::uint32_t, 48> secondary{};
+	std::array<std::uint32_t, 64> primary{};
+	std::array<std::uint32_t, 64> secondary{};
 	std::uint32_t totalPrimary = 0;
 	std::uint32_t totalSecondary = 0;
 	for (std::size_t i = 0; i < events->size(); ++i) {
-		const auto recipe = ResolveRecipe((*events)[i].source, (*events)[i].surface);
-		primary[i] = static_cast<std::uint32_t>(std::round(recipe.primaryCount * qualityScale));
-		secondary[i] = static_cast<std::uint32_t>(std::round(recipe.secondaryCount * qualityScale));
+		const auto& event = (*events)[i];
+		auto recipe = ResolveRecipe(event.source, event.surface);
+		if (event.casterStream) {
+			recipe.primaryCount = event.streamCount;
+			recipe.secondaryCount = 0u;
+		}
+		const bool frostPressureBurst = settings.FrostPressureTest &&
+			event.source == SourceType::Frost &&
+			recipe.primaryType == static_cast<std::uint32_t>(ParticleType::FrostCrystal);
+		const bool ambientEvent = event.source == SourceType::AmbientFire || event.source == SourceType::AmbientCandle;
+		const float eventQualityScale = frostPressureBurst || event.casterStream ? 1.0f :
+			qualityScale * (ambientEvent ? std::clamp(event.ambientDensity, 0.0f, 1.0f) : 1.0f);
+		primary[i] = static_cast<std::uint32_t>(std::round(recipe.primaryCount * eventQualityScale));
+		secondary[i] = static_cast<std::uint32_t>(std::round(recipe.secondaryCount * eventQualityScale));
 		totalPrimary += primary[i];
 		totalSecondary += secondary[i];
 	}
@@ -956,14 +1121,17 @@ void ReactiveFX::ProcessQueuedEvents()
 	std::uint32_t totalPrimaryRemaining = totalPrimary;
 	std::uint32_t totalSecondaryRemaining = totalSecondary;
 	for (std::size_t i = 0; i < events->size(); ++i) {
-		const std::uint32_t primaryQuota = totalPrimaryRemaining ? std::min(primary[i], (primaryRemaining + totalPrimaryRemaining - 1u) / totalPrimaryRemaining) : 0u;
-		const std::uint32_t secondaryQuota = totalSecondaryRemaining ? std::min(secondary[i], (secondaryRemaining + totalSecondaryRemaining - 1u) / totalSecondaryRemaining) : 0u;
+		const std::uint32_t primaryQuota = ReactiveFXSafety::AllocateQuota(primary[i], primaryRemaining, totalPrimaryRemaining);
+		const std::uint32_t secondaryQuota = ReactiveFXSafety::AllocateQuota(secondary[i], secondaryRemaining, totalSecondaryRemaining);
 		primaryRemaining -= std::min(primaryRemaining, primaryQuota);
 		secondaryRemaining -= std::min(secondaryRemaining, secondaryQuota);
 		totalPrimaryRemaining -= primary[i];
 		totalSecondaryRemaining -= secondary[i];
-		SpawnEvent((*events)[i], primary[i] ? static_cast<float>(primaryQuota) / primary[i] : 0.0f,
-			secondary[i] ? static_cast<float>(secondaryQuota) / secondary[i] : 0.0f);
+		const auto& event = (*events)[i];
+		const float ambientScale = event.source == SourceType::AmbientFire || event.source == SourceType::AmbientCandle
+			? std::clamp(event.ambientDensity, 0.0f, 1.0f) : 1.0f;
+		SpawnEvent(event, (primary[i] ? static_cast<float>(primaryQuota) / primary[i] : 0.0f) * ambientScale,
+			(secondary[i] ? static_cast<float>(secondaryQuota) / secondary[i] : 0.0f) * ambientScale);
 		AddImpulseForEvent((*events)[i]);
 	}
 	events->clear();
@@ -985,6 +1153,10 @@ void ReactiveFX::UploadSpawnCommands()
 	}
 	std::memcpy(mapped.pData, spawnCommands.data(), spawnCommands.size() * sizeof(SpawnCommand));
 	globals::d3d::context->Unmap(spawnBuffer.get(), 0);
+	const auto frostCount = static_cast<std::uint32_t>(std::count_if(spawnCommands.begin(), spawnCommands.end(),
+		[](const SpawnCommand& command) { return command.particle.type == static_cast<std::uint32_t>(ParticleType::FrostCrystal); }));
+	if (frostCount > 0u)
+		lastFrostCommandCount = frostCount;
 }
 
 void ReactiveFX::UploadImpulses(float deltaTime)
@@ -1027,7 +1199,7 @@ void ReactiveFX::QueueAmbientEmitters(float deltaTime)
 	ambientScanCountdown -= deltaTime;
 	if (ambientScanCountdown > 0.0f)
 		return;
-	ambientScanCountdown = 0.85f;
+	ambientScanCountdown = 1.0f;
 	auto* player = RE::PlayerCharacter::GetSingleton();
 	auto* tes = RE::TES::GetSingleton();
 	if (!tes || !player || !player->GetParentCell() || !player->Get3D(false))
@@ -1039,49 +1211,196 @@ void ReactiveFX::QueueAmbientEmitters(float deltaTime)
 		std::uint32_t formID{};
 		SourceType source{ SourceType::Unknown };
 		float distance{ std::numeric_limits<float>::max() };
+		std::uint32_t fireKind{};
+		float pulseInterval{};
+		bool ambientAtEffectAnchor{};
+		float ambientDensity{ 1.0f };
 	};
-	std::array<Candidate, 6> nearest{};
+	std::array<Candidate, 3> nearest{};
 	const auto camera = globals::game::frameBufferCached.GetCameraPosAdjust();
 	const RE::NiPoint3 eye = Finite({ camera.x, camera.y, camera.z })
 		? RE::NiPoint3{ camera.x, camera.y, camera.z } : player->GetPosition();
-	tes->ForEachReferenceInRange(player, 1100.0f, [&](RE::TESObjectREFR* reference) {
+	auto traceBrazierSurface = [tes](const RE::NiPoint3& base) -> std::optional<RE::NiPoint3> {
+		if (!Finite(base))
+			return std::nullopt;
+		const float scale = RE::bhkWorld::GetWorldScale();
+		if (!std::isfinite(scale) || scale <= 0.0f)
+			return std::nullopt;
+		// The named flame node can be buried in a brazier's pedestal. Cast through
+		// a short vertical window around the fixture and accept only its elevated
+		// collision surface; this rejects the floor, nearby walls and overheads.
+		const RE::NiPoint3 start = base + RE::NiPoint3{ 0.0f, 0.0f, 240.0f };
+		const RE::NiPoint3 end = base + RE::NiPoint3{ 0.0f, 0.0f, -64.0f };
+		const RE::NiPoint3 delta = end - start;
+		RE::bhkPickData pick{};
+		pick.rayInput.from = RE::hkVector4{ start.x * scale, start.y * scale, start.z * scale, 0.0f };
+		pick.rayInput.to = RE::hkVector4{ end.x * scale, end.y * scale, end.z * scale, 0.0f };
+		pick.rayInput.enableShapeCollectionFilter = false;
+		pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kLOS);
+		pick.ray = RE::hkVector4{ delta.x * scale, delta.y * scale, delta.z * scale, 0.0f };
+		pick.rayOutput.Reset();
+		tes->Pick(pick);
+		const float fraction = pick.rayOutput.hitFraction;
+		if (!pick.rayOutput.HasHit() || !std::isfinite(fraction) || fraction < 0.0f || fraction > 1.0f)
+			return std::nullopt;
+		const RE::NiPoint3 hit = start + delta * fraction;
+		const float rise = hit.z - base.z;
+		if (!Finite(hit) || rise < 24.0f || rise > 220.0f)
+			return std::nullopt;
+		return hit;
+	};
+	tes->ForEachReferenceInRange(player, 1400.0f, [&](RE::TESObjectREFR* reference) {
 		if (!reference || reference->IsDisabled() || !reference->Get3D(false))
 			return RE::BSContainer::ForEachResult::kContinue;
 		auto* base = reference->GetBaseObject();
 		auto* light = base ? base->As<RE::TESObjectLIGH>() : nullptr;
-		if (!light || light->data.flags.any(RE::TES_LIGHT_FLAGS::kNegative, RE::TES_LIGHT_FLAGS::kOffByDefault))
+		if (!base || (light && light->data.flags.any(RE::TES_LIGHT_FLAGS::kNegative, RE::TES_LIGHT_FLAGS::kOffByDefault)))
 			return RE::BSContainer::ForEachResult::kContinue;
-		const std::string_view model = light->GetModel() ? light->GetModel() : "";
-		const std::string_view name = light->GetFullName() ? light->GetFullName() : "";
+		const char* modelPath = light ? light->GetModel() : nullptr;
+		if (auto* activator = base->As<RE::TESObjectACTI>()) modelPath = activator->GetModel();
+		if (auto* object = base->As<RE::TESObjectSTAT>()) modelPath = object->GetModel();
+		if (!modelPath) return RE::BSContainer::ForEachResult::kContinue;
+		const std::string_view model = modelPath;
+		const std::string_view name = base->GetName() ? base->GetName() : "";
+		const auto has = [&](std::string_view token) { return ContainsNoCase(model, token) || ContainsNoCase(name, token); };
 		const bool candle = ContainsNoCase(model, "candle") || ContainsNoCase(name, "candle");
-		const bool fire = ContainsNoCase(model, "torch") || ContainsNoCase(model, "brazier") ||
-			ContainsNoCase(model, "campfire") || ContainsNoCase(name, "torch") ||
-			ContainsNoCase(name, "brazier") || ContainsNoCase(name, "campfire");
+		const bool brazier = has("brazier");
+		const std::uint32_t fireKind = has("torch") ? 1u :
+			(has("fireplace") || has("hearth")) ? 3u :
+			brazier ? 4u :
+			(has("campfire") || has("firepit") || has("fire pit")) ? 2u : 0u;
+		const bool fire = fireKind != 0u && !has("unlit") && !has("extinguished") && !has("burntout");
 		if (!candle && !fire)
 			return RE::BSContainer::ForEachResult::kContinue;
-		const auto position = reference->GetPosition();
+		const auto rootPosition = reference->GetPosition();
+		auto position = rootPosition;
+		bool ambientAtEffectAnchor = false;
+		auto* root = reference->Get3D(false);
+		float bestAnchorScore = 0.0f;
+		RE::BSVisit::TraverseScenegraphObjects(root, [&](RE::NiAVObject* object) {
+			if (!object || !Finite(object->world.translate))
+				return RE::BSVisit::BSVisitControl::kContinue;
+			const char* rawNodeName = object->name.c_str();
+			const std::string_view nodeName = rawNodeName ? rawNodeName : "";
+			float score = ContainsNoCase(nodeName, "flame") ? 5.0f :
+				ContainsNoCase(nodeName, "fire") ? 4.0f :
+				ContainsNoCase(nodeName, "ember") ? 3.0f :
+				ContainsNoCase(nodeName, "smoke") ? 2.0f : 0.0f;
+			if (score > bestAnchorScore && Length(object->world.translate - rootPosition) < 300.0f) {
+				bestAnchorScore = score;
+				position = object->world.translate;
+				ambientAtEffectAnchor = true;
+			}
+			return RE::BSVisit::BSVisitControl::kContinue;
+		});
+		if (bestAnchorScore == 0.0f) {
+			RE::NiPointLight* bestLight = nullptr;
+			float nearestLight = 300.0f;
+			RE::BSVisit::TraverseScenegraphLights(root, [&](RE::NiPointLight* node) {
+				if (!node || !Finite(node->world.translate)) return RE::BSVisit::BSVisitControl::kContinue;
+				const float d = Length(node->world.translate - rootPosition);
+				if (d < nearestLight) { nearestLight = d; bestLight = node; }
+				return RE::BSVisit::BSVisitControl::kContinue;
+			});
+			if (bestLight) { position = bestLight->world.translate; ambientAtEffectAnchor = true; }
+		}
 		const float distance = Length(position - eye);
-		if (!Finite(position) || !std::isfinite(distance) || distance > 950.0f)
+		if (!Finite(position) || !std::isfinite(distance) || distance > 1200.0f)
 			return RE::BSContainer::ForEachResult::kContinue;
+		// Bring fixtures in over a broad distance band. Distant emitters use fewer,
+		// slower pulses; their embers also fade in more gently to avoid a hard pop.
+		const float proximity = std::clamp((1200.0f - distance) / 900.0f, 0.0f, 1.0f);
+		const float ambientDensity = 0.18f + 0.82f * proximity * proximity * (3.0f - 2.0f * proximity);
+		const RE::FormID formID = reference->GetFormID();
+		auto cooldownEntry = ambientEmitterCooldowns.find(formID);
+		if (cooldownEntry != ambientEmitterCooldowns.end() && cooldownEntry->second > 0.0f) {
+			cooldownEntry->second = std::max(cooldownEntry->second - 1.5f, 0.0f);
+			return RE::BSContainer::ForEachResult::kContinue;
+		}
+		const float basePulseInterval = candle ? 12.0f : fireKind == 1u ? 10.0f :
+			(fireKind == 2u || fireKind == 4u) ? 4.0f : 7.0f;
+		const float pulseInterval = basePulseInterval * (1.0f + (1.0f - ambientDensity) * 2.0f);
+		for (const auto& candidate : nearest)
+			if (candidate.source != SourceType::Unknown && Length(candidate.position - position) < 48.0f)
+				return RE::BSContainer::ForEachResult::kContinue;
 		auto farthest = std::max_element(nearest.begin(), nearest.end(), [](const Candidate& a, const Candidate& b) {
 			return a.distance < b.distance;
 		});
 		if (distance < farthest->distance)
-			*farthest = { position, reference->GetFormID(), candle ? SourceType::AmbientCandle : SourceType::AmbientFire, distance };
+			*farthest = { position, formID, candle ? SourceType::AmbientCandle : SourceType::AmbientFire, distance, fireKind, pulseInterval, ambientAtEffectAnchor, ambientDensity };
 		return RE::BSContainer::ForEachResult::kContinue;
 	});
 	for (const auto& candidate : nearest) {
 		if (candidate.source == SourceType::Unknown)
 			continue;
 		Event event{};
-		event.position = candidate.position + RE::NiPoint3{ 0.0f, 0.0f,
-			candidate.source == SourceType::AmbientCandle ? 9.0f : 24.0f };
+		float sourceLift = candidate.source == SourceType::AmbientCandle ? 9.0f :
+			(candidate.fireKind == 1u ? 18.0f : (candidate.fireKind == 3u ? 28.0f : 38.0f));
+		RE::NiPoint3 emitterOrigin = candidate.position;
+		if (candidate.fireKind == 4u) {
+			if (const auto hit = traceBrazierSurface(candidate.position)) {
+				emitterOrigin = *hit;
+				sourceLift = 4.0f; // Clear the collision face without visibly floating above the bowl.
+			}
+		}
+		event.position = emitterOrigin + RE::NiPoint3{ 0.0f, 0.0f, sourceLift };
 		event.direction = { 0.0f, 0.0f, 1.0f };
-		event.radius = 16.0f;
-		event.strength = 0.55f;
+		event.radius = candidate.fireKind == 1u ? 8.0f :
+			(candidate.fireKind == 2u ? 90.0f : (candidate.fireKind == 4u ? 48.0f : 24.0f));
+		event.strength = candidate.source == SourceType::AmbientFire ? 0.9f : 0.55f;
 		event.source = candidate.source;
 		event.sourceFormID = candidate.formID;
+		event.ambientFireKind = candidate.fireKind;
+		event.ambientDensity = candidate.ambientDensity;
+		ambientEmitterCooldowns[candidate.formID] = candidate.pulseInterval;
+		event.ambientAtEffectAnchor = candidate.ambientAtEffectAnchor;
 		QueueEvent(event);
+	}
+}
+
+void ReactiveFX::QueueStaffEmitters(float deltaTime)
+{
+	auto* player = RE::PlayerCharacter::GetSingleton();
+	if (!player || (RE::UI::GetSingleton() && RE::UI::GetSingleton()->GameIsPaused())) {
+		staffEmissionRemainder = {};
+		return;
+	}
+	const std::array hands{ RE::MagicSystem::CastingSource::kLeftHand, RE::MagicSystem::CastingSource::kRightHand };
+	for (std::size_t i = 0; i < hands.size(); ++i) {
+		auto* equipped = player->GetEquippedObject(i == 0u);
+		auto* staff = equipped ? equipped->As<RE::TESObjectWEAP>() : nullptr;
+		auto* caster = player->GetMagicCaster(hands[i]);
+		const bool active = caster && caster->currentSpell &&
+			(caster->state.get() == RE::MagicCaster::State::kCasting ||
+			 caster->state.get() == RE::MagicCaster::State::kUnk07);
+		SourceType source = active ? ClassifyMagic(caster->currentSpell) : SourceType::Unknown;
+		if (active && source == SourceType::Unknown && staff && staff->GetWeaponType() == RE::WEAPON_TYPE::kStaff)
+			source = ClassifyMagic(staff->formEnchanting);
+		if (!active || (source != SourceType::Frost && source != SourceType::Fire && source != SourceType::Shock &&
+			source != SourceType::Restoration && source != SourceType::Conjuration && source != SourceType::Illusion)) {
+			staffEmissionRemainder[i] = 0.0f;
+			continue;
+		}
+		auto* node = caster->GetMagicNode();
+		if (!node || !Finite(node->world.translate))
+			continue;
+		const float pitch = player->GetAngleX();
+		const float yaw = player->GetAngleZ();
+		Event event{};
+		event.direction = Normalize({ std::sin(yaw) * std::cos(pitch), std::cos(yaw) * std::cos(pitch), -std::sin(pitch) });
+		event.position = node->world.translate + event.direction * 6.0f;
+		event.radius = 8.0f;
+		event.source = source;
+		event.impulse = ImpulseType::Directional;
+		event.sourceFormID = caster->currentSpell->GetFormID();
+		event.casterStream = true;
+		const float rate = source == SourceType::Frost ? (settings.FrostPressureTest ? 2400.0f : 900.0f)
+			: (source == SourceType::Fire ? 900.0f : (source == SourceType::Shock ? 650.0f : 360.0f));
+		staffEmissionRemainder[i] += deltaTime * rate;
+		event.streamCount = static_cast<std::uint32_t>(staffEmissionRemainder[i]);
+		staffEmissionRemainder[i] -= static_cast<float>(event.streamCount);
+		if (event.streamCount > 0u)
+			QueueEvent(event);
 	}
 }
 
@@ -1092,6 +1411,8 @@ void ReactiveFX::Prepass()
 		: 1.0f / 60.0f;
 	resourceRetryDelay = std::max(resourceRetryDelay - deltaTime, 0.0f);
 	opticalTimeRemaining = std::max(opticalTimeRemaining - deltaTime, 0.0f);
+	frostPressureTimeRemaining = settings.FrostPressureTest
+		? std::max(frostPressureTimeRemaining - deltaTime, 0.0f) : 0.0f;
 	if (!settings.Enabled) {
 		if (wasEnabled) {
 			if (particles && particles->uav && globals::d3d::context) {
@@ -1110,6 +1431,8 @@ void ReactiveFX::Prepass()
 			}
 			simulationTimeRemaining = 0.0f;
 			opticalTimeRemaining = 0.0f;
+			frostPressureTimeRemaining = 0.0f;
+			frostPressurePoolActive = false;
 			activeImpulseCount = 0;
 			particleMaskFrame = ~0u;
 			activeQuality = ~0u;
@@ -1143,7 +1466,17 @@ void ReactiveFX::Prepass()
 
 	spawnCommands.clear();
 	QueueAmbientEmitters(deltaTime);
+	QueueStaffEmitters(deltaTime);
 	ProcessQueuedEvents();
+	if (frostPressureTimeRemaining > 0.0f && !frostPressurePoolActive) {
+		if (particles && particles->uav && globals::d3d::context) {
+			const UINT clear[4]{};
+			globals::d3d::context->ClearUnorderedAccessViewUint(particles->uav.get(), clear);
+		}
+		frostPressurePoolActive = true;
+	} else if (frostPressureTimeRemaining <= 0.0f) {
+		frostPressurePoolActive = false;
+	}
 	footstepCooldown = std::max(footstepCooldown - deltaTime, 0.0f);
 	simulationTimeRemaining = std::max(simulationTimeRemaining - deltaTime, 0.0f);
 	try {
@@ -1203,7 +1536,8 @@ void ReactiveFX::DrawReactiveFX()
 		return;
 
 	const auto quality = std::min(settings.Quality, 3u);
-	const std::uint32_t particleCapacity = kParticleCaps[quality];
+	const bool frostPressureActive = settings.FrostPressureTest && frostPressureTimeRemaining > 0.0f;
+	const std::uint32_t particleCapacity = frostPressureActive ? kMaximumParticles : kParticleCaps[quality];
 	const float deltaTime = globals::game::deltaTime && std::isfinite(*globals::game::deltaTime)
 		? std::clamp(*globals::game::deltaTime, 0.0f, 1.0f / 15.0f)
 		: 1.0f / 60.0f;
@@ -1211,14 +1545,19 @@ void ReactiveFX::DrawReactiveFX()
 	tuning.renderSize = { static_cast<float>(width), static_cast<float>(height) };
 	tuning.invRenderSize = { 1.0f / width, 1.0f / height };
 	tuning.deltaTime = deltaTime;
-	tuning.gravity = 980.0f;
+	const float displayHeight = globals::game::graphicsState && globals::game::graphicsState->screenHeight > 0
+		? static_cast<float>(globals::game::graphicsState->screenHeight)
+		: static_cast<float>(height);
+	tuning.displayScale = std::clamp(displayHeight / static_cast<float>(height), 0.5f, 4.0f);
 	tuning.particleIntensity = std::clamp(settings.ParticleIntensity, 0.0f, 3.0f);
 	tuning.maximumDistance = std::clamp(settings.MaximumDistance, 512.0f, 50000.0f);
 	tuning.particleCapacity = particleCapacity;
 	tuning.spawnCount = std::min<std::uint32_t>(static_cast<std::uint32_t>(spawnCommands.size()), kMaximumSpawnCommands);
 	tuning.activeImpulseCount = activeImpulseCount;
 	tuning.collisionPhase = collisionPhase++;
-	tuning.collisionBudget = collisionEnabled ? kCollisionCaps[quality] : 0u;
+	tuning.collisionBudget = collisionEnabled
+		? (frostPressureActive ? std::min(particleCapacity, kCollisionCaps[quality] * 16u) : kCollisionCaps[quality])
+		: 0u;
 	tuning.debugMode = std::min(settings.DebugMode, 4u);
 	tuning.collisionEnabled = collisionEnabled ? 1.0f : 0.0f;
 	tuning.opticalActive = opticalTimeRemaining > 0.0f && sceneColorCopy && sceneColorCopy->srv ? 1.0f : 0.0f;
@@ -1357,12 +1696,87 @@ void ReactiveFX::QueueProjectileImpact(
 	event.radius = 36.0f + event.strength * 24.0f;
 	event.surface = material ? ClassifyMaterial(material) : (target && target->As<RE::Actor>() ? SurfaceType::Flesh : SurfaceType::Unknown);
 	event.source = ClassifyMagic(runtime.spell);
+	// Staff-launched projectiles can carry their effect on the projectile
+	// enchantment or avEffect instead of runtime.spell. Recover the elemental
+	// identity from those engine-owned fields before falling back to generic debris.
+	if (event.source == SourceType::Unknown && runtime.weaponSource && runtime.weaponSource->formEnchanting)
+		event.source = ClassifyMagic(runtime.weaponSource->formEnchanting);
+	if (event.source == SourceType::Unknown && runtime.avEffect) {
+		const auto* effect = runtime.avEffect;
+		if (effect->HasKeywordString("MagicDamageFire") || effect->HasKeywordString("MagicFire"))
+			event.source = SourceType::Fire;
+		else if (effect->HasKeywordString("MagicDamageFrost") || effect->HasKeywordString("MagicFrost") || effect->HasKeywordString("MagicIce"))
+			event.source = SourceType::Frost;
+		else if (effect->HasKeywordString("MagicDamageShock") || effect->HasKeywordString("MagicShock"))
+			event.source = SourceType::Shock;
+		else {
+			const std::string_view effectID = effect->GetFormEditorID() ? effect->GetFormEditorID() : "";
+			if (ContainsNoCase(effectID, "frost") || ContainsNoCase(effectID, "ice") || ContainsNoCase(effectID, "freeze"))
+				event.source = SourceType::Frost;
+		}
+	}
+	if (event.source == SourceType::Unknown && runtime.weaponSource &&
+		runtime.weaponSource->GetWeaponType() == RE::WEAPON_TYPE::kStaff) {
+		const std::string_view staffName = runtime.weaponSource->GetFullName() ? runtime.weaponSource->GetFullName() : "";
+		const std::string_view staffID = runtime.weaponSource->GetFormEditorID() ? runtime.weaponSource->GetFormEditorID() : "";
+		if (ContainsNoCase(staffName, "frost") || ContainsNoCase(staffName, "ice") ||
+			ContainsNoCase(staffID, "frost") || ContainsNoCase(staffID, "ice"))
+			event.source = SourceType::Frost;
+	}
+	if (event.source == SourceType::Unknown) {
+		const auto* projectileBase = projectile->GetProjectileBase();
+		const std::string_view projectileID = projectileBase && projectileBase->GetFormEditorID()
+			? projectileBase->GetFormEditorID() : "";
+		if (ContainsNoCase(projectileID, "frost") || ContainsNoCase(projectileID, "ice") ||
+			ContainsNoCase(projectileID, "freeze"))
+			event.source = SourceType::Frost;
+	}
 	if (event.source == SourceType::Unknown)
 		event.source = projectile->formType == RE::FormType::ProjectileArrow ? SourceType::Arrow : SourceType::Unknown;
-	event.sourceFormID = runtime.spell ? runtime.spell->GetFormID() : projectile->GetFormID();
+	const auto effectIsFrost = [](const RE::EffectSetting* effect) {
+		if (!effect)
+			return false;
+		const std::string_view effectID = effect->GetFormEditorID() ? effect->GetFormEditorID() : "";
+		return effect->HasKeywordString("MagicDamageFrost") || effect->HasKeywordString("MagicFrost") ||
+			effect->HasKeywordString("MagicIce") || ContainsNoCase(effectID, "frost") ||
+			ContainsNoCase(effectID, "ice") || ContainsNoCase(effectID, "freeze");
+	};
+	const auto magicHasFrost = [&](const RE::MagicItem* magic) {
+		if (!magic)
+			return false;
+		const std::string_view magicID = magic->GetFormEditorID() ? magic->GetFormEditorID() : "";
+		if (ContainsNoCase(magicID, "frost") || ContainsNoCase(magicID, "ice") || ContainsNoCase(magicID, "freeze"))
+			return true;
+		for (const auto* effect : magic->effects)
+			if (effect && effectIsFrost(effect->baseEffect))
+				return true;
+		return false;
+	};
+	const auto* projectileBase = projectile->GetProjectileBase();
+	const std::string_view projectileID = projectileBase && projectileBase->GetFormEditorID()
+		? projectileBase->GetFormEditorID() : "";
+	bool frostPayload = effectIsFrost(runtime.avEffect) ||
+		ContainsNoCase(projectileID, "frost") || ContainsNoCase(projectileID, "ice") ||
+		ContainsNoCase(projectileID, "freeze");
+	if (runtime.weaponSource && runtime.weaponSource->GetWeaponType() == RE::WEAPON_TYPE::kStaff) {
+		const auto* staff = runtime.weaponSource;
+		const std::string_view staffName = staff->GetFullName() ? staff->GetFullName() : "";
+		const std::string_view staffID = staff->GetFormEditorID() ? staff->GetFormEditorID() : "";
+		frostPayload = frostPayload || ContainsNoCase(staffName, "frost") || ContainsNoCase(staffName, "ice") ||
+			ContainsNoCase(staffID, "frost") || ContainsNoCase(staffID, "ice") ||
+			magicHasFrost(runtime.spell) || magicHasFrost(staff->formEnchanting);
+	}
+	// Explicit frost evidence outranks a generic or mixed spell classification.
+	if (frostPayload)
+		event.source = SourceType::Frost;
+	lastProjectileSource = event.source;
+	event.sourceFormID = runtime.spell ? runtime.spell->GetFormID() :
+		(runtime.weaponSource && runtime.weaponSource->formEnchanting
+			? runtime.weaponSource->formEnchanting->GetFormID()
+			: projectile->GetFormID());
 	if (event.source == SourceType::Fire || event.source == SourceType::Frost || event.source == SourceType::Shock) {
 		event.radius *= 1.8f;
-		event.impulse = ImpulseType::Radial;
+		event.impulse = event.source == SourceType::Frost ? ImpulseType::Directional : ImpulseType::Radial;
 	}
 	QueueEvent(event);
 }
@@ -1514,6 +1928,12 @@ void ReactiveFX::DrawSettings()
 	int quality = static_cast<int>(std::min(settings.Quality, 3u));
 	if (ImGui::Combo("Quality", &quality, "Low\0Medium\0High\0Ultra\0"))
 		settings.Quality = static_cast<std::uint32_t>(std::clamp(quality, 0, 3));
+	if (auto tip = Util::HoverTooltipWrapper())
+		ImGui::TextWrapped("Higher quality increases particle density and the GPU spawn budget. High and Ultra can produce several times more particles than before.");
+	ImGui::Checkbox("Dense frost stream", &settings.FrostPressureTest);
+	if (auto tip = Util::HoverTooltipWrapper())
+		ImGui::TextWrapped("Adds a dense forward stream of ice shards. Existing ice survives new bursts; a full pool skips new shards until space is available. Higher density increases GPU cost.");
+	ImGui::Text("Last projectile: %s | Last uploaded frost shards: %u", SourceName(lastProjectileSource), lastFrostCommandCount);
 	ImGui::SliderFloat("Maximum reaction distance", &settings.MaximumDistance, 1000.0f, 30000.0f, "%.0f units");
 	ImGui::SliderFloat("Particle response", &settings.ParticleIntensity, 0.0f, 3.0f, "%.2fx");
 	ImGui::Checkbox("Scene collision", &settings.EnableParticleCollision);
@@ -1606,6 +2026,8 @@ void ReactiveFX::ClearShaderCache()
 
 void ReactiveFX::Reset()
 {
+	ambientEmitterCooldowns.clear();
+	staffEmissionRemainder = {};
 	// State::Reset is a normal per-frame boundary in PIXL. Particle and impulse
 	// histories intentionally survive it; explicit resource/shader invalidation is
 	// handled by setup and ClearShaderCache instead.

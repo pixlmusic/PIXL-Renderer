@@ -40,9 +40,17 @@ public:
 		// Reuses the retired player-wake lane. 0 Low, 1 Medium, 2 High, 3 Cinematic.
 		// This is a workload control; it does not alter the authored water balance.
 		float SSRTraceQuality = 2.0f;
+
+		// Independent controls for above-water light projected onto nearby receivers.
+		// They occupy a new register at the end of FeatureData, leaving existing
+		// water/underwater settings and their saved values intact.
+		float ProjectedCausticsStrength = static_cast<float>(PIXL::Metadata::Settings::WaterProjectedCausticsStrength.defaultValue);
+		float ProjectedCausticsDistance = static_cast<float>(PIXL::Metadata::Settings::WaterProjectedCausticsDistance.defaultValue);
+		float ProjectedCausticsPadding0 = 0.0f;
+		float ProjectedCausticsPadding1 = 0.0f;
 	};
 	STATIC_ASSERT_ALIGNAS_16(Settings);
-	static_assert(sizeof(Settings) == PIXL::Metadata::ABI::WaterOptics.sizeBytes, "WaterOptics settings must match the four-register FeatureData block.");
+	static_assert(sizeof(Settings) == PIXL::Metadata::ABI::WaterOptics.sizeBytes, "WaterOptics settings must match its FeatureData block.");
 
 	Settings settings;
 	winrt::com_ptr<ID3D11ShaderResourceView> causticsView;

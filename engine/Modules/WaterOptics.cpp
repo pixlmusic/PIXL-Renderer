@@ -32,7 +32,9 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	EnableDynamicFoam,
 	FoamStrength,
 	FoamScale,
-	SSRTraceQuality)
+	SSRTraceQuality,
+	ProjectedCausticsStrength,
+	ProjectedCausticsDistance)
 
 void WaterOptics::DrawSettings()
 {
@@ -42,22 +44,32 @@ void WaterOptics::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("enhanced_caustics_tooltip"), "Adds sun-projected multi-scale focusing, chromatic dispersion and depth-dependent absorption. Changes are real-time."));
 		ImGui::BeginDisabled(settings.EnableEnhancedCaustics == 0);
-		changed |= ImGui::SliderFloat(T(TKEY("caustics_strength"), "Intensity"), &settings.CausticsStrength,
+		changed |= ImGui::SliderFloat(T(TKEY("caustics_strength"), "Underwater Intensity"), &settings.CausticsStrength,
 			static_cast<float>(PIXL::Metadata::Settings::WaterCausticsStrength.minimum),
 			static_cast<float>(PIXL::Metadata::Settings::WaterCausticsStrength.maximum), "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("%s", T(TKEY("caustics_strength_tooltip"), "Brightness contrast of focused underwater sunlight. The shader remains energy bounded."));
+			ImGui::TextWrapped("%s", T(TKEY("caustics_strength_tooltip"), "Controls sunlight caustics on submerged surfaces. It does not change the light patterns bounced onto walls above the water."));
+		changed |= ImGui::SliderFloat("Projected Light Bounce", &settings.ProjectedCausticsStrength,
+			static_cast<float>(PIXL::Metadata::Settings::WaterProjectedCausticsStrength.minimum),
+			static_cast<float>(PIXL::Metadata::Settings::WaterProjectedCausticsStrength.maximum), "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Controls the moving water-light patterns received by nearby walls, bridge undersides and other surfaces above the water. Higher values brighten that bounce only." );
+		changed |= ImGui::SliderFloat("Projected Bounce Reach", &settings.ProjectedCausticsDistance,
+			static_cast<float>(PIXL::Metadata::Settings::WaterProjectedCausticsDistance.minimum),
+			static_cast<float>(PIXL::Metadata::Settings::WaterProjectedCausticsDistance.maximum), "%.0f units", ImGuiSliderFlags_AlwaysClamp);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Controls how far above and outward from the water the projected bounce can reach. Longer reach covers higher nearby surfaces but can spread the pattern too broadly.");
 		changed |= ImGui::SliderFloat(T(TKEY("caustics_dispersion"), "Color Dispersion"), &settings.CausticsDispersion, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("caustics_dispersion_tooltip"), "Separates red and blue caustic wavelengths at depth."));
 		changed |= ImGui::SliderFloat(T(TKEY("caustics_focus"), "Focus Sharpness"), &settings.CausticsFocus, 0.25f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("caustics_focus_tooltip"), "Controls the bright refractive folds reconstructed from the caustic texture curvature."));
-		changed |= ImGui::SliderFloat(T(TKEY("caustics_visibility"), "Visibility"), &settings.CausticsVisibility, 0.0f, 2.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		changed |= ImGui::SliderFloat(T(TKEY("caustics_visibility"), "Underwater Pattern Visibility"), &settings.CausticsVisibility, 0.0f, 2.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("%s", T(TKEY("caustics_visibility_tooltip"), "Controls pattern contrast after depth and sunlight attenuation. Raise this if weather lighting or dark water makes caustics difficult to see."));
+			ImGui::TextWrapped("%s", T(TKEY("caustics_visibility_tooltip"), "Controls contrast for submerged caustics. The separate projected-bounce control affects walls and bridge undersides above the water."));
 		ImGui::EndDisabled();
-		ImGui::TextDisabled("Visible on submerged receivers under directional sunlight; not drawn on the water surface itself.");
+		ImGui::TextDisabled("Underwater controls affect submerged caustics; the two projected-bounce controls affect sunlight and point-light bounce onto nearby above-water surfaces.");
 		ImGui::TreePop();
 	}
 
@@ -136,6 +148,12 @@ void WaterOptics::LoadSettings(json& o_json)
 	settings.SSREdgeFade = std::clamp(settings.SSREdgeFade, 0.25f, 2.0f);
 	settings.SurfaceSSRStrength = std::clamp(settings.SurfaceSSRStrength, 0.0f, 1.5f);
 	settings.CausticsVisibility = std::clamp(settings.CausticsVisibility, 0.0f, 2.5f);
+	settings.ProjectedCausticsStrength = std::clamp(settings.ProjectedCausticsStrength,
+		static_cast<float>(PIXL::Metadata::Settings::WaterProjectedCausticsStrength.minimum),
+		static_cast<float>(PIXL::Metadata::Settings::WaterProjectedCausticsStrength.maximum));
+	settings.ProjectedCausticsDistance = std::clamp(settings.ProjectedCausticsDistance,
+		static_cast<float>(PIXL::Metadata::Settings::WaterProjectedCausticsDistance.minimum),
+		static_cast<float>(PIXL::Metadata::Settings::WaterProjectedCausticsDistance.maximum));
 	settings.WaterTintStrength = std::clamp(settings.WaterTintStrength, 0.0f, 1.0f);
 	settings.ReflectionBrightness = std::clamp(settings.ReflectionBrightness, 0.5f, 1.15f);
 	settings.EnableDynamicFoam = settings.EnableDynamicFoam ? 1u : 0u;
@@ -228,7 +246,7 @@ void WaterOptics::Prepass()
 
 bool WaterOptics::HasShaderDefine(RE::BSShader::Type shaderType)
 {
-	// Lighting consumes WATER_OPTICS for submerged-receiver caustics; Water
+	// Lighting consumes WATER_OPTICS for above- and below-water receiver caustics; Water
 	// consumes it for the surface parallax include. ImageSpace retains module
 	// ownership of the enhanced SSR source and its targeted cache invalidation,
 	// even though that shader selects the enhanced trace from FeatureData at

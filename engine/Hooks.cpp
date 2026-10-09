@@ -230,6 +230,16 @@ namespace SkyExtensions
 
 namespace GrassExtensions
 {
+	// Scope marker lets the shared state hook apply grass-only sampler policy
+	// without changing sampler state for unrelated pixel-shader draws.
+	thread_local bool inGrassGeometrySetup = false;
+	struct GrassGeometrySetupScope
+	{
+		GrassGeometrySetupScope() : previous(inGrassGeometrySetup) { inGrassGeometrySetup = true; }
+		~GrassGeometrySetupScope() { inGrassGeometrySetup = previous; }
+		bool previous;
+	};
+
 	struct BSGrassShaderProperty_ctor
 	{
 		static RE::BSLightingShaderProperty* thunk(RE::BSLightingShaderProperty* property)
@@ -253,7 +263,10 @@ namespace GrassExtensions
 	{
 		static void thunk(RE::BSShader* shader, RE::BSRenderPass* pass, uint32_t renderFlags)
 		{
-			func(shader, pass, renderFlags);
+			{
+				GrassGeometrySetupScope grassSetupScope;
+				func(shader, pass, renderFlags);
+			}
 
 			auto state = globals::state;
 
@@ -426,11 +439,37 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 		pFeatureLevel,
 		ppImmediateContext);
 
+	if (SUCCEEDED(ret)) {
+		DXGI_SWAP_CHAIN_DESC actualDesc{};
+		if (ppSwapChain && *ppSwapChain)
+			(*ppSwapChain)->GetDesc(&actualDesc);
+		RECT clientRect{};
+		const BOOL hasClientRect = actualDesc.OutputWindow &&
+			GetClientRect(actualDesc.OutputWindow, &clientRect);
+		logger::info(
+			"[PIXL][SwapChain] Created {}x{} {} swap chain (windowed={}, client={}x{}, format={}, effect={}, buffers={})",
+			actualDesc.BufferDesc.Width,
+			actualDesc.BufferDesc.Height,
+			actualDesc.Windowed ? "windowed/borderless" : "exclusive-fullscreen",
+			actualDesc.Windowed != FALSE,
+			hasClientRect ? clientRect.right - clientRect.left : 0,
+			hasClientRect ? clientRect.bottom - clientRect.top : 0,
+			static_cast<unsigned>(actualDesc.BufferDesc.Format),
+			static_cast<unsigned>(actualDesc.SwapEffect),
+			actualDesc.BufferCount);
+	}
 	return ret;
 }
 
 void Hooks::BSGraphics_SetDirtyStates::thunk(bool isCompute)
 {
+	// Vanilla grass samples distant, oblique terrain cards through s0. Request
+	// anisotropic filtering through the renderer shadow state before it flushes
+	// dirty sampler bindings, so PIXL and D3D11 state stay synchronized.
+	if (!isCompute && GrassExtensions::inGrassGeometrySetup) {
+		if (auto* shadowState = globals::game::shadowState)
+			shadowState->SetPSTextureFilterMode(0, RE::BSGraphics::TextureFilterMode::kAnisotropic);
+	}
 	func(isCompute);
 	globals::state->Draw();
 }

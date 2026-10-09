@@ -161,6 +161,19 @@ void LightVolumes::LoadSettings(json& o_json)
 	settings = o_json;
 	settings.ExteriorQuality = std::clamp(settings.ExteriorQuality, 0, static_cast<int32_t>(Quality::Count) - 1);
 	settings.InteriorQuality = std::clamp(settings.InteriorQuality, 0, static_cast<int32_t>(Quality::Count) - 1);
+	// JSON/scene overrides bypass the UI's limits. Bound the dimensions before
+	// publishing a Custom grid into Skyrim's native texture allocation path.
+	const auto validateSize = [](TextureSize& size) {
+		size.Width = std::clamp(size.Width, 32, 640);
+		size.Height = std::clamp(size.Height, 32, 640);
+		size.Depth = std::clamp(size.Depth, 10, 640);
+	};
+	validateSize(settings.ExteriorCustomSize);
+	validateSize(settings.InteriorCustomSize);
+	// EarlyPrepass refreshes on scene transitions; a live settings reload must
+	// also apply immediately, after the active scene and engine pointers exist.
+	if (loaded && initialised && gVolumetricLightingSizeHigh)
+		SetupVL();
 }
 
 void LightVolumes::SaveSettings(json& o_json)
@@ -171,6 +184,8 @@ void LightVolumes::SaveSettings(json& o_json)
 void LightVolumes::RestoreDefaultSettings()
 {
 	settings = {};
+	if (loaded && initialised && gVolumetricLightingSizeHigh)
+		SetupVL();
 }
 
 void LightVolumes::DataLoaded()

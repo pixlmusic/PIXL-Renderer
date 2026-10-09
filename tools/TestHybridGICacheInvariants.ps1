@@ -61,4 +61,19 @@ foreach ($stamp in @(0, 127, 255)) {
         if ($tick -gt 72) { Require (-not $valid) 'Expired cache resurrected' }
     }
 }
+
+# Cache ageing remains fixed-rate, while radiance publication is scheduled at
+# a bounded cadence with elapsed render time passed to the temporal filter.
+$hybridCpp = Get-Content (Join-Path $PSScriptRoot '..\engine\Modules\HybridGI.cpp') -Raw
+$hybridHeader = Get-Content (Join-Path $PSScriptRoot '..\engine\Modules\HybridGI.h') -Raw
+$injectionBlock = [regex]::Match($hybridCpp,
+    'if\s*\(worldCacheInjectionDue\)\s*\{(?<body>[\s\S]*?)lastWorldCacheInjectionClock\s*=\s*worldCacheClock;')
+Require $injectionBlock.Success 'World-cache injection is not guarded by its scheduled cadence'
+Require ($injectionBlock.Groups['body'].Value.Contains('CopyResource(')) 'Cache snapshots escaped the scheduled injection block'
+Require ($injectionBlock.Groups['body'].Value.Contains('WorldCacheSelect')) 'Scheduled cache selection dispatch missing'
+Require ($injectionBlock.Groups['body'].Value.Contains('WorldCacheInject')) 'Scheduled cache publication dispatch missing'
+Require ($hybridHeader.Contains('lastWorldCacheInjectionClock = 0xffffffffu')) 'World-cache injection clock lacks a first-update/reset sentinel'
+Require ($hybridCpp.Contains('worldCacheInjectionAccumulator >= (1.0f / 30.0f)')) 'Radiance cache cadence is not bounded to 30 Hz'
+Require ($hybridCpp.Contains('data.WorldCacheDeltaTime = worldCacheInjectionAccumulator')) 'Injection filter does not receive elapsed update time'
+Require ($hybridCpp.Contains('worldCacheClockAccumulator, data.WorldCacheDeltaTime, 8.0f')) 'World-cache age clock is no longer fixed at 8 Hz'
 Write-Output 'PASS: election order/uniqueness, signed toroidal windows, 30-240 Hz response, timestamp expiry.'

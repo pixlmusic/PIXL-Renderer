@@ -62,6 +62,9 @@ struct Microclimates : RenderModule
 	std::string GetModuleSupportLink() override { return {}; }
 	std::pair<std::string, std::vector<std::string>> GetModuleSummary() override;
 	bool IsDisabledByDefault() const override { return true; }
+	// Field resources are runtime-bound; Sky/Particle consumers do not use a
+	// module permutation define. Standalone compute shaders compile separately.
+	bool HasNoPipelinePermutationDependencies() const override { return true; }
 
 	void SetupResources() override;
 	void Reset() override;

@@ -131,10 +131,10 @@ public:
 		uint WorldCacheSampleCount = 8;
 		float WorldCacheStrength = static_cast<float>(PIXL::Metadata::Settings::HybridWorldCacheStrength.defaultValue);
 		float WorldCacheCellSizeNear = 96.f;
-		float WorldCacheCellSizeFar = 384.f;
+		float WorldCacheCellSizeFar = 512.f;
 		float WorldCacheRadius = 1536.f;
 		float WorldCacheLeakReduction = 0.82f;
-		float WorldCacheTemporalResponse = 0.10f;
+		float WorldCacheTemporalResponse = 0.07f;
 		bool EnableEmitterInjection = true;
 		float EmitterInjectionStrength = 0.65f;
 		bool EnableWorldCacheSecondBounce = true;
@@ -374,10 +374,15 @@ private:
 	std::uint64_t worldHistoryId = 0;
 	float worldCacheClockAccumulator = 0.0f;
 	uint worldCacheClock = 0u;
+	float worldCacheInjectionAccumulator = 0.0f;
+	bool worldCacheInjectionDue = true;
 	// Decay is defined in fixed-rate world-cache ticks, not render frames. Keep
 	// the last swept tick so high-FPS sessions do not repeatedly dispatch the
 	// same 65,536-entry atlas sweep between clock advances.
 	uint lastWorldCacheDecayClock = 0xffffffffu;
+	// The age clock stays at 8 Hz, while the visible radiance cache is refreshed
+	// at a bounded 30 Hz so its temporal filter does not jump between coarse ticks.
+	uint lastWorldCacheInjectionClock = 0xffffffffu;
 	// Runtime semantic/permutation snapshot. These settings change the meaning
 	// of temporal/cache history and therefore require deterministic invalidation.
 	bool runtimeConfigInitialized = false;

@@ -232,6 +232,19 @@ void TissueDiffusion::DrawSSS()
 	if (!validMaterials)
 		return;
 
+	// Leave the original scene untouched if any required stage failed to compile.
+	if (!GetComputeShaderPrepass())
+		return;
+	if (settings.SSMode == 0) {
+		if (!GetComputeShaderHorizontalBlur() || !GetComputeShaderVerticalBlur())
+			return;
+	} else if (settings.SSMode == 1) {
+		if (!GetComputeShaderBurley())
+			return;
+	} else {
+		return;
+	}
+
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "Tissue Diffusion");
 
@@ -533,7 +546,10 @@ ID3D11ComputeShader* TissueDiffusion::GetComputeShaderBurley()
 
 void TissueDiffusion::DataLoaded()
 {
-	isBeastRaceKeyword = RE::TESForm::LookupByEditorID("IsBeastRace")->As<RE::BGSKeyword>();
+	auto* form = RE::TESForm::LookupByEditorID("IsBeastRace");
+	isBeastRaceKeyword = form ? form->As<RE::BGSKeyword>() : nullptr;
+	if (!isBeastRaceKeyword)
+		logger::warn("[TissueDiffusion] IsBeastRace keyword unavailable; using the base diffusion profile.");
 }
 
 void TissueDiffusion::PostPostLoad()
@@ -551,10 +567,11 @@ void TissueDiffusion::BSLightingShader_SetupSkin(RE::BSRenderPass* a_pass)
 			bool isBeastRace = true;
 
 			auto geometry = a_pass->geometry;
-			if (auto userData = geometry->GetUserData())
-				if (auto actor = userData->As<RE::Actor>())
-					if (auto race = actor->GetRace())
-						isBeastRace = race->HasKeyword(isBeastRaceKeyword);
+			if (isBeastRaceKeyword)
+				if (auto userData = geometry->GetUserData())
+					if (auto actor = userData->As<RE::Actor>())
+						if (auto race = actor->GetRace())
+							isBeastRace = race->HasKeyword(isBeastRaceKeyword);
 
 			validMaterials = true;
 

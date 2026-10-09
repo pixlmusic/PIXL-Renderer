@@ -81,6 +81,7 @@
 #include "Renderer/ExternalPostProcessing.h"
 #include "Renderer/QualityProfiles.h"
 #include "Renderer/RenderOrigin.h"
+#include "Renderer/TemporalContext.h"
 #include "Util.h"
 #include "Utils/UI.h"
 #include "Utils/FileSystem.h"
@@ -275,6 +276,8 @@ namespace
 	bool g_tunerInspectionMoving = false;
 	bool g_tunerShiftHeld = false;
 	std::string g_tunerSelectedFeature;
+	char g_tunerContextTitle[72] = "TUNER";
+	char g_tunerContextHint[112] = "Changes preview live; save a look to keep them.";
 	bool g_tunerOwnsInspection = false;
 		bool g_characterOrbitEnabled = false;
 		bool g_characterOrbitOwnsInspection = false;
@@ -561,6 +564,13 @@ namespace
 	bool g_smoothCamCrosshairLease = false;  // Separate SmoothCam-owned resource.
 	std::atomic_bool g_directorEntryPending{ false };
 	std::atomic_int g_directorEntryResult{ 0 };
+	void InvalidateDirectorCameraHistory(const char* detail)
+	{
+		logger::info("[PIXL Director] Invalidating temporal camera histories: {}", detail);
+		PIXL::Renderer::TemporalContext::Get().Invalidate(
+			PIXL::Renderer::TemporalInvalidationReason::CameraCut,
+			detail);
+	}
 	bool EnterDirectorPhotoMode();
 	void ExitDirectorPhotoMode();
 	float GetDirectorWorldFov();
@@ -1112,7 +1122,9 @@ namespace
 			slider("Metalness Inference", &s.LegacyMetalInferenceStrength, 0.0f, 1.5f);
 			toggle("Inverse-Square Local Lights", &s.EnablePhysicalLocalLightFalloff);
 			ImGui::BeginDisabled(s.EnablePhysicalLocalLightFalloff == 0);
-			slider("Inverse-Square Blend", &s.PhysicalLocalLightFalloffStrength, 0.0f, 1.0f);
+			slider("Vanilla-to-Physical Blend", &s.PhysicalLocalLightFalloffStrength, 0.0f, 1.0f);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("0 keeps Skyrim's conventional light-radius falloff; 1 uses PIXL's regularized inverse-square model. Disable Inverse-Square Local Lights to restore Natural Lighting's per-light behavior.");
 			ImGui::EndDisabled();
 		} else if (name == "MaterialLayers") {
 			auto& s = globals::pipeline::materialLayers.settings;
@@ -1152,7 +1164,9 @@ namespace
 		} else if (name == "WaterOptics") {
 			auto& s = globals::pipeline::waterOptics.settings;
 			slider("Water Reflections", &s.SurfaceSSRStrength, 0.0f, 2.0f);
-			slider("Caustics", &s.CausticsStrength, 0.0f, 2.0f);
+			slider("Underwater Caustics", &s.CausticsStrength, 0.0f, 2.0f);
+			slider("Light Bounced onto Walls", &s.ProjectedCausticsStrength, 0.0f, 3.0f);
+			slider("Caustic Bounce Reach", &s.ProjectedCausticsDistance, 64.0f, 800.0f);
 			slider("Water Tint", &s.WaterTintStrength, 0.0f, 1.0f);
 			slider("Foam", &s.FoamStrength, 0.0f, 2.0f);
 		} else if (name == "RainResponse") {
@@ -1898,6 +1912,8 @@ namespace
 			const bool entered = nativeCamera->IsInFreeCameraMode();
 			if (entered)
 				SetDirectorGameTimePaused(true);
+			if (entered)
+				InvalidateDirectorCameraHistory("Director camera ownership acquired");
 			if (!entered && g_smoothCamLease) {
 				if (g_smoothCamCrosshairLease) {
 					g_smoothCam->ReleaseCrosshairControl(SKSE::GetPluginHandle());
@@ -1961,6 +1977,7 @@ namespace
 				globals::state->Save();
 
 			g_directorPhotoMode.active = false;
+			InvalidateDirectorCameraHistory("Director camera ownership released");
 			g_directorMode = DirectorMode::Photo;
 			g_directorVideo.editorVisible = true;
 			g_directorVideo.playback = DirectorVideoPlaybackState::Stopped;
@@ -4248,15 +4265,18 @@ namespace
 					closeKey.empty() ? "PAGE DOWN" : closeKey));
 		const float titleX = min.x + 14.0f * scale;
 		const float commandX = titleX + 148.0f * scale;
+		char tunerTitle[96]{};
+		std::snprintf(tunerTitle, sizeof(tunerTitle), "PIXL / %s",
+			tunerMode && g_tunerContextTitle[0] ? g_tunerContextTitle : "PHOTO");
 		PIXLUI::DrawClippedOverlayText(draw, ImVec2(titleX, min.y + 8.0f * scale),
-			PIXLUI::Colors::CyanBright, tunerMode ? "PIXL / TUNER" : "PIXL / PHOTO", 136.0f * scale);
+			PIXLUI::Colors::CyanBright, tunerTitle, 136.0f * scale);
 		PIXLUI::DrawClippedOverlayText(draw, ImVec2(commandX, min.y + 8.0f * scale),
 			PIXLUI::Colors::TextMuted, commands.c_str(), max.x - commandX - 14.0f * scale);
 
 		char lensText[96]{};
 		if (tunerMode)
 			std::snprintf(lensText, sizeof(lensText), "%s",
-				g_directorPhotoMode.active ? "CAMERA INSPECTION" : "LIVE SCENE");
+				g_directorPhotoMode.active ? "CAMERA INSPECTION" : g_tunerContextHint);
 		else
 			std::snprintf(lensText, sizeof(lensText), "FOV %.0f  |  SPEED %.0f%%",
 				GetDirectorWorldFov(), GetDirectorCameraMoveSpeed() * 100.0f);
@@ -5581,6 +5601,7 @@ bool TuningWorkspaceRenderer::OpenDirectorPhotoMode()
 			g_directorVideo.playback = DirectorVideoPlaybackState::Stopped;
 			g_directorMode = DirectorMode::Photo;
 			SetDirectorGameTimePaused(true);
+			InvalidateDirectorCameraHistory("Director switched from Video to Photo mode");
 			g_directorPhotoMode.hudVisible = true;
 			logger::info("[PIXL Director] Switched active session from Video to Photo Mode");
 		}
@@ -5649,6 +5670,7 @@ bool TuningWorkspaceRenderer::OpenDirectorVideoMode()
 		}
 		if (g_directorMode != DirectorMode::Video) {
 			g_directorMode = DirectorMode::Video;
+			InvalidateDirectorCameraHistory("Director switched from Photo to Video mode");
 			g_directorPhotoMode.hudVisible = true;
 			RefreshDirectorVideoPathList();
 			logger::info("[PIXL Director] Switched active session from Photo to Video Mode");
@@ -6661,11 +6683,41 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 		ImGui::PopID();
 		}
 		}
-	}
+		}
 		ImGui::PopStyleVar();
 
+		const char* contextTitle = "TUNER";
+		const char* contextHint = "Changes preview live; save a look to keep them.";
+		if (selectedMenu < menuList.size()) {
+			if (const auto* categoryPage = std::get_if<CategoryPage>(&menuList[selectedMenu])) {
+				contextTitle = categoryPage->name.c_str();
+				for (auto* feature : categoryPage->features) {
+					if (feature && feature->GetShortName() == g_tunerSelectedFeature) {
+						contextTitle = PIXLRendererPage::GetPublicName(
+							feature->GetShortName(), feature->GetDisplayName()).data();
+						break;
+					}
+				}
+				if (g_tunerSelectedFeature == "HybridGI")
+					contextHint = "Indirect lighting · changes preview live";
+				else if (g_tunerSelectedFeature == "CameraSuite")
+					contextHint = "Camera and lens · changes preview live";
+				else if (g_tunerSelectedFeature == "ImageReconstruction")
+					contextHint = "Upscaling · some display changes need restart";
+				else if (g_tunerSelectedFeature == "WaterOptics")
+					contextHint = "Water response · changes preview live";
+			} else if (const auto* builtInPage = std::get_if<BuiltInMenu>(&menuList[selectedMenu])) {
+				contextTitle = builtInPage->name.c_str();
+				if (builtInPage->name == "Hotkeys")
+					contextHint = "Shortcuts apply as soon as they are assigned";
+				else if (builtInPage->name == "Profiling")
+					contextHint = "Measurements are diagnostic, not full-frame GPU cost";
+			}
+		}
+		std::snprintf(g_tunerContextTitle, sizeof(g_tunerContextTitle), "%s", contextTitle);
+		std::snprintf(g_tunerContextHint, sizeof(g_tunerContextHint), "%s", contextHint);
 		DrawTunerControlReminder();
-	UpdateCharacterOrbitPointerInteraction(orbitViewportMinX);
+		UpdateCharacterOrbitPointerInteraction(orbitViewportMinX);
 
 }
 

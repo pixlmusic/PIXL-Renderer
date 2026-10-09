@@ -174,6 +174,44 @@ namespace RainResponse
 	#endif
 	}
 
+	// Deterministic model-space rain detail for skinned actor/equipment surfaces.
+	// The mesh position anchors droplets to the animated surface instead of using
+	// screen-space noise; derivative filtering suppresses subpixel sparkle.
+	float4 GetActorSurfaceRain(float3 modelPosition, float3 modelNormal, float time)
+	{
+		float3 n = SafeNormalizeRain(modelNormal, float3(0.0f, 0.0f, 1.0f));
+		float2 p = modelPosition.xy * 0.075f + n.xy * 0.31f;
+		float2 cell = floor(p);
+		float2 f = frac(p);
+		float2 microNormal = 0.0f.xx;
+		float wet = 0.0f;
+		float derivative = max(fwidth(p.x) + fwidth(p.y), 1.0e-4f);
+		[unroll] for (int y = -1; y <= 1; ++y) {
+			[unroll] for (int x = -1; x <= 1; ++x) {
+				float2 c = cell + float2(x, y);
+				uint2 cellSeed = asuint(int2(c));
+				float2 seed = float2(
+					Random::iqint3(cellSeed ^ uint2(17u, 0u)),
+					Random::iqint3(cellSeed ^ uint2(0u, 31u))) / 4294967295.0f;
+				float radius = lerp(0.09f, 0.24f, seed.x);
+				float2 centre = float2(x, y) + seed - f;
+				float d = length(centre);
+				float edge = max(derivative * (0.65f + radius), 0.012f);
+				float drop = 1.0f - smoothstep(radius - edge, radius + edge, d);
+				float phase = frac(time * lerp(0.055f, 0.13f, seed.y) + seed.x);
+				float lifetime = 1.0f - smoothstep(0.68f, 1.0f, phase);
+				float gravityFlow = saturate(-dot(n, float3(0.0f, 0.0f, -1.0f)) * 0.65f + 0.25f);
+				float streak = exp2(-abs(centre.x) * (18.0f + seed.y * 28.0f)) *
+					smoothstep(0.0f, 0.22f, centre.y) * (1.0f - smoothstep(0.22f, 1.2f, centre.y));
+				float strength = max(drop * lifetime, streak * gravityFlow * lifetime * 0.36f);
+				wet = max(wet, strength);
+				if (d > 1.0e-4f)
+					microNormal += -centre / d * strength * (drop > 0.0f ? 0.20f : 0.07f);
+			}
+		}
+		return float4(microNormal, wet, saturate(wet * 0.78f));
+	}
+
 // Debug visualization functions for DEBUG_RAIN_RESPONSE
 #ifdef DEBUG_RAIN_RESPONSE
 	/**

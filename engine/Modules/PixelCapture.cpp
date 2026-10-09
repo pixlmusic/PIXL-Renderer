@@ -53,10 +53,12 @@ namespace
 	struct D3D11MultithreadGuard
 	{
 		winrt::com_ptr<REX::W32::ID3D11Multithread> multithread;
+		BOOL previousProtection = FALSE;
 
 		explicit D3D11MultithreadGuard(ID3D11DeviceContext* context)
 		{
 			if (context && SUCCEEDED(context->QueryInterface(multithread.put()))) {
+				previousProtection = multithread->GetMultithreadProtected();
 				multithread->SetMultithreadProtected(TRUE);
 				multithread->Enter();
 			}
@@ -66,7 +68,7 @@ namespace
 		{
 			if (multithread) {
 				multithread->Leave();
-				multithread->SetMultithreadProtected(FALSE);
+				multithread->SetMultithreadProtected(previousProtection);
 			}
 		}
 	};
@@ -465,6 +467,23 @@ namespace
 			return src;
 		}
 
+		// The normal SDR capture path below reads Skyrim's kFRAMEBUFFER, which is
+		// upstream of PIXL's D3D12 Neural Rendering presentation pass. Screenshot
+		// requests are processed immediately after Present, so use only the neural
+		// output successfully completed by that same presentation; never reuse a
+		// stale frame when NR was skipped or failed.
+		auto& reconstruction = globals::pipeline::imageReconstruction;
+		if (forCapture && !IsFlatHdrScreenshotCapture() &&
+			reconstruction.d3d12SwapChainActive &&
+			reconstruction.ShouldUseNeuralRenderingThisFrame()) {
+			if (auto* neuralOutput = reconstruction.dx12SwapChain.GetNeuralOutputForLastPresent()) {
+				src.texture = neuralOutput;
+				src.needsPreviewCache = false;
+				src.description = "completed PIXL Neural Rendering output from the last present";
+				return src;
+			}
+		}
+
 		if (IsFlatHdrScreenshotCapture()) {
 			// Recompose from the clean scene with no UI buffer.
 			auto& hdr = globals::pipeline::cameraSuite;
@@ -680,9 +699,12 @@ namespace
 		const GUID& codec = saveAsPng ?
 		                        DirectX::GetWICCodec(DirectX::WIC_CODEC_PNG) :
 		                        DirectX::GetWICCodec(DirectX::WIC_CODEC_BMP);
+		// Open Shaders' SDR capture path explicitly tags display-encoded PNGs.
+		// Preserve the same pixel payload and BMP behavior in PIXL.
+		const auto wicFlags = saveAsPng ? DirectX::WIC_FLAGS_FORCE_SRGB : DirectX::WIC_FLAGS_NONE;
 		return SUCCEEDED(DirectX::SaveToWICFile(
 			*saveImage,
-			DirectX::WIC_FLAGS_NONE,
+			wicFlags,
 			codec,
 			outputPath.c_str()));
 	}
@@ -1515,8 +1537,11 @@ namespace
 			return r * 0.2126f + g * 0.7152f + b * 0.0722f;
 		};
 
-		const float gain = 0.55f + strength * 1.65f;
-		const float midGain = 0.18f + strength * 0.42f;
+		// Jitter-aware 2x/4x reconstruction already restores subpixel detail.
+		// Keep this final pass restrained so it does not turn fine skin/stone
+		// texture or residual neural variation into visible grain.
+		const float gain = 0.18f + strength * 0.62f;
+		const float midGain = 0.08f + strength * 0.25f;
 
 		for (size_t y = 0; y < src->height; ++y) {
 			const auto* centerRow = reinterpret_cast<const float*>(

@@ -228,11 +228,14 @@ namespace SphericalHarmonics
 	// http://torust.me/ZH3.pdf
 	float SHHallucinateZH3Irradiance(sh2 inSH, float3 direction)
 	{
-		float3 zonalAxis = normalize(float3(inSH.w, inSH.y, inSH.z));
+		float3 zonalMoment = float3(inSH.w, inSH.y, inSH.z);
+		// Black and isotropic probes have no directional axis. Retain their
+		// ordinary SH irradiance instead of normalizing zero or dividing by zero.
+		float3 zonalAxis = zonalMoment * rsqrt(max(dot(zonalMoment, zonalMoment), 1e-12f));
 		float ratio = 0.0;
 		ratio = abs(dot(float3(-inSH.w, -inSH.y, inSH.z), zonalAxis));
-		ratio /= inSH.x;
-		float zonalL2Coeff = inSH.x * (0.08f * ratio + 0.6f * ratio * ratio);  // Curve-fit; Section 3.4.3
+		ratio /= max(inSH.x, 1e-8f);
+		float zonalL2Coeff = max(inSH.x, 0.0f) * (0.08f * ratio + 0.6f * ratio * ratio);  // Curve-fit; Section 3.4.3
 		float fZ = dot(zonalAxis, direction);
 		float zhDir = sqrt(5.0f / (16.0f * Math::PI)) * (3.0f * fZ * fZ - 1.0f);
 		// Convolve inSH with the normalized cosine kernel (multiply the L1 band by the zonal scale 2/3), then dot with

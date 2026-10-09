@@ -107,6 +107,14 @@ public:
 	REX::W32::XMFLOAT4X4 OcclusionTransform;
 	float4 OcclusionDir;
 	uint frameCount = 0;
+	// Full-volume updates are expensive (8.4M probes). Keep them frequent while
+	// the camera moves, but amortize unchanged exterior scenes over four frames.
+	float3 lastProbeCameraPosition{};
+	float3 lastProbeSkyDirection{};
+	float3 probeCellID{};
+	float3 lastDispatchedCellID{};
+	bool hasProbeUpdateSnapshot = false;
+	uint stationaryProbeFrame = 0;
 
 	/** @brief Clears the accumulation frames array to force a full rebuild of skyBounce probes. */
 	void ResetSkyBounce();

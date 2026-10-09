@@ -1,6 +1,7 @@
 #include "FoliageDynamics.h"
 
 #include "I18n/I18n.h"
+#include "ReactiveFX.h"
 
 #define I18N_KEY_PREFIX "feature.foliage_dynamics."
 
@@ -47,7 +48,10 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GrassDetailTransitionSoftness,
 	GrassSpecularNormalization,
 	GrassComplexSpecularMapInfluence,
-	GrassMirrorSpecularY)
+	GrassMirrorSpecularY,
+	EnableGameplayResponse,
+	GameplayResponseStrength,
+	GameplayResponseRadius)
 
 void FoliageDynamics::SetupResources()
 {
@@ -77,6 +81,17 @@ void FoliageDynamics::Prepass()
 	try {
 		tuningSettings.Magic = TuningMagic;
 		tuningSettings.Version = TuningVersion;
+		tuningSettings.GameplayImpulseCount = 0u;
+		for (auto& value : tuningSettings.GameplayImpulsePositionRadius) value = {};
+		for (auto& value : tuningSettings.GameplayImpulseDirectionStrength) value = {};
+		for (auto& value : tuningSettings.GameplayImpulseAgeDuration) value = {};
+		if (tuningSettings.EnableGameplayResponse != 0u)
+			globals::pipeline::reactiveFX.CopyVegetationImpulses(
+				tuningSettings.GameplayImpulsePositionRadius,
+				tuningSettings.GameplayImpulseDirectionStrength,
+				tuningSettings.GameplayImpulseAgeDuration,
+				tuningSettings.GameplayImpulseCount,
+				tuningSettings.GameplayResponseRadius);
 		tuningCB->Update(tuningSettings);
 		BindGrassTuning();
 	} catch (const std::exception& e) {
@@ -97,7 +112,10 @@ void FoliageDynamics::BindGrassTuning() const
 
 	auto* buffer = tuningCB->CB();
 	if (auto* context = globals::d3d::context; context && buffer)
+	{
 		context->PSSetConstantBuffers(13, 1, &buffer);
+		context->VSSetConstantBuffers(13, 1, &buffer);
+	}
 }
 
 void FoliageDynamics::DrawSettings()
@@ -150,6 +168,14 @@ void FoliageDynamics::DrawSettings()
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("flutter_speed_tooltip"), "Frequency multiplier for fine leaf and grass-tip motion."));
 		ImGui::EndDisabled();
+		ImGui::SeparatorText("Combat Response");
+		Util::UIntCheckbox("React to Shouts and Impacts", &tuningSettings.EnableGameplayResponse);
+		ImGui::BeginDisabled(tuningSettings.EnableGameplayResponse == 0u);
+		ImGui::SliderFloat("Impulse Strength", &tuningSettings.GameplayResponseStrength, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat("Impulse Radius", &tuningSettings.GameplayResponseRadius, 256.0f, 4096.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::EndDisabled();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Applies short, damped grass movement around real shout, impact, fire, frost and shock events recorded by ReactiveFX. Ambient wind remains independent; event impulses are capped to four per frame.");
 		ImGui::TreePop();
 	}
 
@@ -193,7 +219,7 @@ void FoliageDynamics::DrawSettings()
 			ImGui::TextWrapped("Scales PIXL's energy-normalized GGX foliage response after Skyrim/PBR light calibration. 1.0 is calibrated; 2-4x is an intentional artistic backlit-blade boost and remains separate from Specular Strength.");
 		ImGui::SliderFloat("Complex Specular Map Influence", &tuningSettings.GrassComplexSpecularMapInfluence, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Controls how strongly the packed complex-grass alpha channel modulates reflection. PIXL defaults to 0.15 so an author mask can add variation but cannot restrict the whole GGX response to blade tips. 0 gives uniform material response; 1 uses the authored channel exactly.");
+			ImGui::TextWrapped("Controls how strongly the packed complex-grass alpha channel modulates reflection. 0 gives uniform material response; 1 uses the authored channel exactly. Lower values reduce the influence of masks that concentrate reflections at blade tips.");
 		ImGui::SliderFloat("Transmission Boost", &tuningSettings.GrassTransmissionBoost, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat("Local Light Boost", &tuningSettings.GrassLocalLightBoost, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 
@@ -326,6 +352,9 @@ void FoliageDynamics::LoadSettings(json& o_json)
 	tuningSettings.GrassSpecularNormalization = std::clamp(tuningSettings.GrassSpecularNormalization, 0.0f, 4.0f);
 	tuningSettings.GrassComplexSpecularMapInfluence = std::clamp(tuningSettings.GrassComplexSpecularMapInfluence, 0.0f, 1.0f);
 	tuningSettings.GrassMirrorSpecularY = tuningSettings.GrassMirrorSpecularY ? 1u : 0u;
+	tuningSettings.EnableGameplayResponse = tuningSettings.EnableGameplayResponse ? 1u : 0u;
+	tuningSettings.GameplayResponseStrength = std::clamp(tuningSettings.GameplayResponseStrength, 0.0f, 2.0f);
+	tuningSettings.GameplayResponseRadius = std::clamp(tuningSettings.GameplayResponseRadius, 256.0f, 4096.0f);
 }
 
 void FoliageDynamics::SaveSettings(json& o_json)

@@ -186,22 +186,21 @@ float WorldCacheCascadeBlend(float3 positionWS, float3 cameraWS)
     return smoothstep(0.62f, 1.08f, maxDiff / max(nearExtent, 1.0f));
 }
 
-float WorldCacheTraceCellSize(float3 positionWS, float3 cameraWS)
-{
-    // Trace spacing must follow the same continuous cascade transition as the
-    // radiance lookup; a discrete switch moves every ray sample at once.
-    return lerp(WorldCacheCellSizeNear, WorldCacheCellSizeFar,
-        WorldCacheCascadeBlend(positionWS, cameraWS));
-}
-
 uint WorldCacheCascade(float3 positionWS, float3 cameraWS)
 {
     return WorldCacheCascadeBlend(positionWS, cameraWS) >= 0.5f ? 1u : 0u;
 }
 
+float WorldCacheTraceCellSize(float3 positionWS, float3 cameraWS)
+{
+    // Match ray spacing continuously to the near/far lookup transition.
+    return lerp(WorldCacheCellSizeNear, WorldCacheCellSizeFar,
+        WorldCacheCascadeBlend(positionWS, cameraWS));
+}
+
 float WorldCacheSmoothRotation(float3 positionWS)
 {
-    // World-locked smooth noise avoids rotating all rays at a voxel boundary.
+    // World-locked smooth noise avoids rotating all rays abruptly at voxel edges.
     float3 p = positionWS / max(WorldCacheCellSizeNear * 2.0f, 128.0f);
     int3 cell = int3(floor(p));
     float3 f = frac(p);
@@ -217,6 +216,18 @@ float WorldCacheSmoothRotation(float3 positionWS)
     float lo = lerp(lerp(h000, h100, f.x), lerp(h010, h110, f.x), f.y);
     float hi = lerp(lerp(h001, h101, f.x), lerp(h011, h111, f.x), f.y);
     return lerp(lo, hi, f.z);
+}
+
+float WorldCacheStableRotationForCascade(float3 positionWS, uint cascade)
+{
+    float cellSize = WorldCacheCellSize(cascade);
+    int3 cell = (int3)floor(positionWS / cellSize);
+    return (float)(WorldCacheHash(cell, cascade) & 0x0000ffffu) * 1.5258789e-5f;
+}
+
+float WorldCacheStableRotation(float3 positionWS, float3 cameraWS)
+{
+    return WorldCacheStableRotationForCascade(positionWS, WorldCacheCascade(positionWS, cameraWS));
 }
 
 float WorldCacheAgeFade(uint age, uint maxAge)

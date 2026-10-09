@@ -6684,21 +6684,23 @@ void GroundResponse::SetupResources()
 	// same dirty/active tiles as the persistent surface fields, then consumed by
 	// the Domain Shader at t105-t107. Keep them separate from the base history so
 	// disabling the derived path can immediately use the legacy reconstruction.
-	surfaceDerivedResponseTexture =
-		createRWTexture(
-			SURFACE_TEXTURE_SIZE,
-			SURFACE_TEXTURE_SIZE,
-			"surface derived response");
-	surfaceDerivedSlumpTexture =
-		createRWTexture(
-			SURFACE_TEXTURE_SIZE,
-			SURFACE_TEXTURE_SIZE,
-			"surface derived slump");
-	surfaceDerivedGradientTexture =
-		createRWTexture(
-			SURFACE_TEXTURE_SIZE,
-			SURFACE_TEXTURE_SIZE,
-			"surface derived gradient");
+	if constexpr (ENABLE_EXPERIMENTAL_DERIVED_TERRAIN_SURFACE) {
+		surfaceDerivedResponseTexture =
+			createRWTexture(
+				SURFACE_TEXTURE_SIZE,
+				SURFACE_TEXTURE_SIZE,
+				"surface derived response");
+		surfaceDerivedSlumpTexture =
+			createRWTexture(
+				SURFACE_TEXTURE_SIZE,
+				SURFACE_TEXTURE_SIZE,
+				"surface derived slump");
+		surfaceDerivedGradientTexture =
+			createRWTexture(
+				SURFACE_TEXTURE_SIZE,
+				SURFACE_TEXTURE_SIZE,
+				"surface derived gradient");
+	}
 	groundMarkTexture =
 		createRWTexture(
 			SURFACE_TEXTURE_SIZE,
@@ -8615,9 +8617,10 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 	if (!context || !globals::profiler || !surfaceDeformationTexture ||
 		!surfaceDisplacementTexture ||
 		!surfaceElementalTexture ||
-		!surfaceDerivedResponseTexture ||
-		!surfaceDerivedSlumpTexture ||
-		!surfaceDerivedGradientTexture ||
+		(ENABLE_EXPERIMENTAL_DERIVED_TERRAIN_SURFACE &&
+			(!surfaceDerivedResponseTexture ||
+			 !surfaceDerivedSlumpTexture ||
+			 !surfaceDerivedGradientTexture)) ||
 		!groundMarkTexture ||
 		!surfacePerFrame) {
 		return;
@@ -8654,9 +8657,11 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 		context->ClearUnorderedAccessViewFloat(
 			surfaceElementalTexture->uav.get(),
 			clearSeasonHistory);
-		context->ClearUnorderedAccessViewFloat(surfaceDerivedResponseTexture->uav.get(), clearSeasonHistory);
-		context->ClearUnorderedAccessViewFloat(surfaceDerivedSlumpTexture->uav.get(), clearSeasonHistory);
-		context->ClearUnorderedAccessViewFloat(surfaceDerivedGradientTexture->uav.get(), clearSeasonHistory);
+		if constexpr (ENABLE_EXPERIMENTAL_DERIVED_TERRAIN_SURFACE) {
+			context->ClearUnorderedAccessViewFloat(surfaceDerivedResponseTexture->uav.get(), clearSeasonHistory);
+			context->ClearUnorderedAccessViewFloat(surfaceDerivedSlumpTexture->uav.get(), clearSeasonHistory);
+			context->ClearUnorderedAccessViewFloat(surfaceDerivedGradientTexture->uav.get(), clearSeasonHistory);
+		}
 		context->ClearUnorderedAccessViewFloat(groundMarkTexture->uav.get(), clearSeasonHistory);
 		surfaceDerivedDataValid = false;
 		if (seasonReset)
@@ -8678,9 +8683,11 @@ void GroundResponse::UpdateSurfaceDeformationTexture()
 		context->ClearUnorderedAccessViewFloat(
 			surfaceElementalTexture->uav.get(),
 			clearColor);
-		context->ClearUnorderedAccessViewFloat(surfaceDerivedResponseTexture->uav.get(), clearColor);
-		context->ClearUnorderedAccessViewFloat(surfaceDerivedSlumpTexture->uav.get(), clearColor);
-		context->ClearUnorderedAccessViewFloat(surfaceDerivedGradientTexture->uav.get(), clearColor);
+		if constexpr (ENABLE_EXPERIMENTAL_DERIVED_TERRAIN_SURFACE) {
+			context->ClearUnorderedAccessViewFloat(surfaceDerivedResponseTexture->uav.get(), clearColor);
+			context->ClearUnorderedAccessViewFloat(surfaceDerivedSlumpTexture->uav.get(), clearColor);
+			context->ClearUnorderedAccessViewFloat(surfaceDerivedGradientTexture->uav.get(), clearColor);
+		}
 		context->ClearUnorderedAccessViewFloat(groundMarkTexture->uav.get(), clearColor);
 		surfaceDerivedDataValid = false;
 		surfaceElementalClearedWhileDisabled = true;

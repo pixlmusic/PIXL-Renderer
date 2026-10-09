@@ -2,6 +2,8 @@
 
 #include "Buffer.h"
 
+#include <atomic>
+
 /**
  * Handles menu open and close events.
  */
@@ -88,6 +90,9 @@ public:
 	bool fakeReflections = false;
 
 	bool resetCapture[2] = { true, true };
+	// Menu events can be delivered outside the render callback. Defer all probe
+	// pipeline state changes to UpdateCubemap, where D3D resources are owned.
+	std::atomic_bool cellTransitionCapturePending{ false };
 	bool recompileFlag = false;
 	float previousHoursPassed = 0.0f;
 

@@ -1907,10 +1907,23 @@ void HybridGI::UpdateSB()
 		// into the reported 10-15 second fade/pop cycle. Clamp exceptional stalls so
 		// one compilation hitch cannot expire the complete cache in a single frame.
 		const float rawDelta = globals::game::deltaTime ? *globals::game::deltaTime : static_cast<float>(RE::GetSecondsSinceLastFrame());
-		data.WorldCacheDeltaTime = PIXL::HybridGIInternal::SanitizeDeltaTime(rawDelta);
-		if (!diagnosticCaptureActive && globals::pipeline::materialForge.settings.LegacyPhysicalDebugMode == 0u) {
+		const float sanitizedDelta = PIXL::HybridGIInternal::SanitizeDeltaTime(rawDelta);
+		data.WorldCacheDeltaTime = sanitizedDelta;
+		const bool cacheUpdatesAllowed = settings.EnableGI && settings.EnableWorldCache &&
+			!diagnosticCaptureActive && globals::pipeline::materialForge.settings.LegacyPhysicalDebugMode == 0u;
+		if (cacheUpdatesAllowed) {
 			worldCacheClock = PIXL::HybridGIInternal::AdvanceFixedRateClock(
 				worldCacheClock, worldCacheClockAccumulator, data.WorldCacheDeltaTime, 8.0f);
+			// Keep cache ageing coarse and deterministic, but publish lighting at a
+			// finer cadence. The accumulated interval is consumed only after the GPU
+			// election and injection dispatches actually run.
+			worldCacheInjectionAccumulator = std::min(worldCacheInjectionAccumulator + sanitizedDelta, 0.25f);
+			worldCacheInjectionDue = lastWorldCacheInjectionClock == 0xffffffffu || worldCacheInjectionAccumulator >= (1.0f / 30.0f);
+			if (worldCacheInjectionDue)
+				data.WorldCacheDeltaTime = worldCacheInjectionAccumulator;
+		} else {
+			worldCacheInjectionAccumulator = 0.0f;
+			worldCacheInjectionDue = false;
 		}
 		data.WorldCacheClock = worldCacheClock;
 
@@ -2155,6 +2168,9 @@ void HybridGI::DrawHybridGI()
 		if (texWorldCachePreviousSH2 && texWorldCachePreviousSH2->uav)
 			context->ClearUnorderedAccessViewFloat(texWorldCachePreviousSH2->uav.get(), clearFloat);
 		lastWorldCacheDecayClock = 0xffffffffu;
+		lastWorldCacheInjectionClock = 0xffffffffu;
+		worldCacheInjectionAccumulator = 0.0f;
+		worldCacheInjectionDue = true;
 	};
 
 	if (queuedResetHistory.exchange(false)) {
@@ -2188,7 +2204,10 @@ void HybridGI::DrawHybridGI()
 	};
 	const int resolutionMode = std::clamp(settings.ResolutionMode, 0, 2);
 	auto internalRes = resChoices[resolutionMode];
-	const bool worldCacheActive = settings.EnableWorldCache && WorldCacheShadersOK();
+	// The world-space cache consumes the same irradiance field as diffuse GI;
+	// when the user selects AO-only, keep the cache resident but stop its update
+	// and decay workloads until GI is enabled again.
+	const bool worldCacheActive = settings.EnableGI && settings.EnableWorldCache && WorldCacheShadersOK();
 	const bool reflectionActive = settings.EnableExperimentalSpecularGI && ReflectionShadersOK() && EnsureReflectionDepth();
 	const bool diffuseBlurActive = settings.EnableBlur && BlurShadersOK();
 	const bool reflectionSpatialActive = reflectionActive && settings.EnableBlur && hybridReflectionDenoiseCompute.get() != nullptr;
@@ -2279,7 +2298,9 @@ void HybridGI::DrawHybridGI()
 		// Prefilter radiance texture instead of using GenerateMips for proper dynamic resolution handling.
 		// radianceDisocc wrote mip 0 directly to texRadianceTemp above, so we can bind it
 		// as SRV input here without an intermediate CopySubresourceRegion.
-		{
+		const bool radiancePyramidNeeded = settings.EnableGI || worldCacheActive ||
+			reflectionActive || settings.EnableAdaptiveRayAllocation;
+		if (radiancePyramidNeeded) {
 			TracyD3D11Zone(globals::state->tracyCtx, "HybridGI - Prefilter Radiance");
 
 			resetViews();
@@ -2329,60 +2350,64 @@ void HybridGI::DrawHybridGI()
 	{
 		const bool cacheInjectionIsolated = diagnosticCaptureActive || materialDebugMode != 0u;
 		if (worldCacheActive && !cacheInjectionIsolated) {
-			TracyD3D11Zone(globals::state->tracyCtx, "HybridGI - PIXL World Cache Inject");
-			resetViews();
-			// Snapshot the complete cache before sparse injection. The shader reads
-			// this immutable copy while updating the live UAVs, eliminating
-			// same-dispatch second-bounce races and their one-frame brightness pops.
-			context->CopyResource(texWorldCachePreviousMetadata->resource.get(), texWorldCacheMetadata->resource.get());
-			context->CopyResource(texWorldCachePreviousSH0->resource.get(), texWorldCacheSH0->resource.get());
-			context->CopyResource(texWorldCachePreviousSH1->resource.get(), texWorldCacheSH1->resource.get());
-			context->CopyResource(texWorldCachePreviousSH2->resource.get(), texWorldCacheSH2->resource.get());
-			context->CopyResource(texWorldCachePreviousNormal->resource.get(), texWorldCacheNormal->resource.get());
-			srvs.at(0) = texWorkingDepth->srv.get();
-			srvs.at(1) = texNormal->srv.get();
-			srvs.at(2) = texRadiance->srv.get();
-			srvs.at(3) = rts[ALBEDO].SRV;
-			srvs.at(4) = texWorldCachePreviousMetadata->srv.get();
-			srvs.at(5) = texWorldCachePreviousSH0->srv.get();
-			srvs.at(6) = texWorldCachePreviousSH1->srv.get();
-			srvs.at(7) = texWorldCachePreviousSH2->srv.get();
-			srvs.at(8) = texWorldCachePreviousNormal->srv.get();
-			auto& radiantGrid = globals::pipeline::radiantGrid;
-			const auto sharedLights = PIXL::Renderer::LightTransportWorld::Get().AcquireLocalLights();
-			const bool sharedLightsReady = globals::state && sharedLights.ValidFor(globals::state->frameCount);
-			srvs.at(9) = !settings.EnableEmitterInjection ? nullptr : sharedLightsReady ?
-				sharedLights.lights.get() : radiantGrid.loaded && radiantGrid.lights ? radiantGrid.lights->srv.get() : nullptr;
-			srvs.at(10) = !settings.EnableEmitterInjection ? nullptr : sharedLightsReady ?
-				sharedLights.lightIndices.get() : radiantGrid.loaded && radiantGrid.lightIndexList ? radiantGrid.lightIndexList->srv.get() : nullptr;
-			srvs.at(11) = !settings.EnableEmitterInjection ? nullptr : sharedLightsReady ?
-				sharedLights.lightGrid.get() : radiantGrid.loaded && radiantGrid.lightGrid ? radiantGrid.lightGrid->srv.get() : nullptr;
-			uavs.at(0) = texWorldCacheMetadata->uav.get();
-			uavs.at(1) = texWorldCacheSH0->uav.get();
-			uavs.at(2) = texWorldCacheSH1->uav.get();
-			uavs.at(3) = texWorldCacheSH2->uav.get();
-			uavs.at(4) = texWorldCacheNormal->uav.get();
-			uavs.at(5) = texWorldCacheWinners->uav.get();
-			const uint emptyWinners[4] = { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX };
-			context->ClearUnorderedAccessViewUint(texWorldCacheWinners->uav.get(), emptyWinners);
-			context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
-			context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
-			const uint stride = std::clamp(settings.WorldCacheInjectionStride, 1u, 8u);
-			const uint injectWidth = (internalRes[0] + stride - 1u) / stride;
-			const uint injectHeight = (internalRes[1] + stride - 1u) / stride;
-			context->CSSetShader(worldCacheSelectCompute.get(), nullptr, 0);
-			globals::profiler->BeginPass("HybridGI::WorldCacheSelect");
-			context->Dispatch((injectWidth + 7u) >> 3, (injectHeight + 7u) >> 3, 1);
-			globals::profiler->EndPass();
-			// Separate dispatches establish visibility of the completed election.
-			// Exactly one representative may publish each multi-texture SH record.
-			ID3D11UnorderedAccessView* nullWinner = nullptr;
-			context->CSSetUnorderedAccessViews(5, 1, &nullWinner, nullptr);
-			context->CSSetUnorderedAccessViews(5, 1, &uavs.at(5), nullptr);
-			context->CSSetShader(worldCacheInjectCompute.get(), nullptr, 0);
-			globals::profiler->BeginPass("HybridGI::WorldCacheInject");
-			context->Dispatch((injectWidth + 7u) >> 3, (injectHeight + 7u) >> 3, 1);
-			globals::profiler->EndPass();
+			if (worldCacheInjectionDue) {
+				TracyD3D11Zone(globals::state->tracyCtx, "HybridGI - PIXL World Cache Inject");
+				resetViews();
+				// Snapshot at the bounded radiance-update cadence. The shader reads this
+				// immutable copy while updating live UAVs, preserving race-free second bounce.
+				context->CopyResource(texWorldCachePreviousMetadata->resource.get(), texWorldCacheMetadata->resource.get());
+				context->CopyResource(texWorldCachePreviousSH0->resource.get(), texWorldCacheSH0->resource.get());
+				context->CopyResource(texWorldCachePreviousSH1->resource.get(), texWorldCacheSH1->resource.get());
+				context->CopyResource(texWorldCachePreviousSH2->resource.get(), texWorldCacheSH2->resource.get());
+				context->CopyResource(texWorldCachePreviousNormal->resource.get(), texWorldCacheNormal->resource.get());
+				srvs.at(0) = texWorkingDepth->srv.get();
+				srvs.at(1) = texNormal->srv.get();
+				srvs.at(2) = texRadiance->srv.get();
+				srvs.at(3) = rts[ALBEDO].SRV;
+				srvs.at(4) = texWorldCachePreviousMetadata->srv.get();
+				srvs.at(5) = texWorldCachePreviousSH0->srv.get();
+				srvs.at(6) = texWorldCachePreviousSH1->srv.get();
+				srvs.at(7) = texWorldCachePreviousSH2->srv.get();
+				srvs.at(8) = texWorldCachePreviousNormal->srv.get();
+				auto& radiantGrid = globals::pipeline::radiantGrid;
+				const auto sharedLights = PIXL::Renderer::LightTransportWorld::Get().AcquireLocalLights();
+				const bool sharedLightsReady = globals::state && sharedLights.ValidFor(globals::state->frameCount);
+				srvs.at(9) = !settings.EnableEmitterInjection ? nullptr : sharedLightsReady ?
+					sharedLights.lights.get() : radiantGrid.loaded && radiantGrid.lights ? radiantGrid.lights->srv.get() : nullptr;
+				srvs.at(10) = !settings.EnableEmitterInjection ? nullptr : sharedLightsReady ?
+					sharedLights.lightIndices.get() : radiantGrid.loaded && radiantGrid.lightIndexList ? radiantGrid.lightIndexList->srv.get() : nullptr;
+				srvs.at(11) = !settings.EnableEmitterInjection ? nullptr : sharedLightsReady ?
+					sharedLights.lightGrid.get() : radiantGrid.loaded && radiantGrid.lightGrid ? radiantGrid.lightGrid->srv.get() : nullptr;
+				uavs.at(0) = texWorldCacheMetadata->uav.get();
+				uavs.at(1) = texWorldCacheSH0->uav.get();
+				uavs.at(2) = texWorldCacheSH1->uav.get();
+				uavs.at(3) = texWorldCacheSH2->uav.get();
+				uavs.at(4) = texWorldCacheNormal->uav.get();
+				uavs.at(5) = texWorldCacheWinners->uav.get();
+				const uint emptyWinners[4] = { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX };
+				context->ClearUnorderedAccessViewUint(texWorldCacheWinners->uav.get(), emptyWinners);
+				context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
+				context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+				const uint stride = std::clamp(settings.WorldCacheInjectionStride, 1u, 8u);
+				const uint injectWidth = (internalRes[0] + stride - 1u) / stride;
+				const uint injectHeight = (internalRes[1] + stride - 1u) / stride;
+				context->CSSetShader(worldCacheSelectCompute.get(), nullptr, 0);
+				globals::profiler->BeginPass("HybridGI::WorldCacheSelect");
+				context->Dispatch((injectWidth + 7u) >> 3, (injectHeight + 7u) >> 3, 1);
+				globals::profiler->EndPass();
+				// Separate dispatches establish visibility of the completed election.
+				// Exactly one representative may publish each multi-texture SH record.
+				ID3D11UnorderedAccessView* nullWinner = nullptr;
+				context->CSSetUnorderedAccessViews(5, 1, &nullWinner, nullptr);
+				context->CSSetUnorderedAccessViews(5, 1, &uavs.at(5), nullptr);
+				context->CSSetShader(worldCacheInjectCompute.get(), nullptr, 0);
+				globals::profiler->BeginPass("HybridGI::WorldCacheInject");
+				context->Dispatch((injectWidth + 7u) >> 3, (injectHeight + 7u) >> 3, 1);
+				globals::profiler->EndPass();
+				lastWorldCacheInjectionClock = worldCacheClock;
+				worldCacheInjectionAccumulator = 0.0f;
+				worldCacheInjectionDue = false;
+			}
 
 			// Invalidate entries after their fixed-time lifetime before the GI and
 			// reflection readers run. The cache clock advances at a fixed rate, so

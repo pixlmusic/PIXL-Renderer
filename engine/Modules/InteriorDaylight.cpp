@@ -186,6 +186,10 @@ void InteriorDaylight::PopulateReplacementJobArrays(RE::TESObjectCELL* cell, con
 		jobArray.clear();
 
 	addedSet.clear();
+	if (jobArraySize == 0) {
+		arraysCleared = true;
+		return;
+	}
 
 	// Copy the original job arrays contents into the replacement job arrays
 	uint32_t count = 0;
@@ -203,7 +207,7 @@ void InteriorDaylight::PopulateReplacementJobArrays(RE::TESObjectCELL* cell, con
 
 	// Add extra rooms and portals that are in the direction of the sun
 	for (const auto& object : currentCellRoomsAndPortals) {
-		if (addedSet.find(object.get()) != addedSet.end() || !IsInSunDirectionAndWithinShadowDistance(object, lightDir, playerPos))
+		if (!object || addedSet.find(object.get()) != addedSet.end() || !IsInSunDirectionAndWithinShadowDistance(object, lightDir, playerPos))
 			continue;
 
 		addedSet.insert(object.get());

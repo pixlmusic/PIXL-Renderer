@@ -2,19 +2,19 @@
 param(
     [Parameter(Mandatory=$true)][string]$PackageDirectory,
     [string]$SchemaPath = "",
-    [string]$ExpectedVersion = "1.0.6"
+    [string]$ExpectedVersion = "1.0.7"
 )
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path -LiteralPath $PackageDirectory).Path
-if (Get-ChildItem -LiteralPath $root -Recurse -File | Where-Object { $_.Name -iin @('nvngx_dlssnr.dll', 'dlssnr.dll', 'nr.dll') }) {
-    throw 'FOMOD must not bundle manual-install NR runtimes.'
-}
+$core = Join-Path $root 'PIXL-Core'
 $configPath = Join-Path $root 'fomod\ModuleConfig.xml'
 $infoPath = Join-Path $root 'fomod\info.xml'
 if (!(Test-Path -LiteralPath $configPath) -or !(Test-Path -LiteralPath $infoPath)) { throw 'Missing FOMOD XML.' }
 [xml]$config = Get-Content -LiteralPath $configPath -Raw
 [xml]$info = Get-Content -LiteralPath $infoPath -Raw
+if ($info.fomod.Version.'#text' -ne $ExpectedVersion) { throw "Incorrect installer version; expected $ExpectedVersion." }
+
 if ($SchemaPath) {
     $schema = (Resolve-Path -LiteralPath $SchemaPath).Path
     $settings = [System.Xml.XmlReaderSettings]::new()
@@ -27,11 +27,22 @@ if ($SchemaPath) {
     try { while ($reader.Read()) {} } finally { $reader.Dispose() }
     if ($schemaErrors.Count) { throw "FOMOD schema validation failed: $($schemaErrors -join '; ')" }
 }
-if ($info.fomod.Version.'#text' -ne $ExpectedVersion) { throw "Incorrect installer version; expected $ExpectedVersion." }
-$allText = (Get-Content -LiteralPath $configPath,$infoPath,(Join-Path $root 'PIXL-Core\PIXL-INSTALLER-NOTICE.md') -Raw) -join "`n"
-foreach ($phrase in @('automated coding','PIXL Studio','SurfaceTides 1.0.2 Integration','AllowPIXL=1','replaces SurfaceTides.dll','PAGE DOWN','HOME','HIGHLIGHTS SINCE 1.0.4')) {
-    if ($allText -notmatch [regex]::Escape($phrase)) { throw "Missing required disclosure or warning: $phrase" }
+
+$steps = @($config.SelectNodes('/config/installSteps/installStep'))
+$expectedSteps = @('Hi','New updates','Install')
+if ($steps.Count -ne $expectedSteps.Count) { throw 'FOMOD should contain exactly the Hi, New updates, and Install pages.' }
+for ($index = 0; $index -lt $expectedSteps.Count; ++$index) {
+    if ($steps[$index].name -ne $expectedSteps[$index]) { throw "Unexpected FOMOD page order at $index." }
 }
+$allInstallerText = (Get-Content -LiteralPath $configPath,$infoPath -Raw) -join "`n"
+if ($allInstallerText -match '(?i)SurfaceTides') { throw 'SurfaceTides must not be referenced in the 1.0.7 FOMOD.' }
+if (Get-ChildItem -LiteralPath $root -Recurse -File | Where-Object { $_.Name -in @('SurfaceTides.dll','SurfaceTides.ini') -or $_.FullName -match '[\\/]SurfaceTides[\\/]' }) {
+    throw 'SurfaceTides payload is present in this FOMOD.'
+}
+if ($allInstallerText -notmatch 'regular default look' -or $allInstallerText -match '(?i)bleak') {
+    throw 'FOMOD must describe the regular default look and must not select a bleak default.'
+}
+
 $sources = @($config.SelectNodes('//@source') | ForEach-Object { $_.Value })
 foreach ($source in $sources) {
     if (!(Test-Path -LiteralPath (Join-Path $root $source))) { throw "FOMOD source does not exist: $source" }
@@ -40,29 +51,44 @@ $images = @($config.SelectNodes('//@path') | ForEach-Object { $_.Value } | Where
 foreach ($image in $images) {
     if (!(Test-Path -LiteralPath (Join-Path $root $image))) { throw "FOMOD image does not exist: $image" }
 }
+
 foreach ($required in @(
-    'PIXL-Core\SKSE\Plugins\PIXLRenderer.dll',
-    'PIXL-Core\Shaders\Water.hlsl',
-    'PIXL-Optional\SurfaceTides-1.0.2\SKSE\Plugins\SurfaceTides.dll',
-    'PIXL-Optional\SurfaceTides-1.0.2\SKSE\Plugins\SurfaceTides.ini',
-    'PIXL-Optional\SurfaceTides-1.0.2\Shaders\SurfaceTides\Water.hlsl'
+    'SKSE\Plugins\PIXLRenderer.dll',
+    'SKSE\Plugins\PIXL\Config\RendererDefaults.json',
+    'PIXL\PipelineLibrary\Library.ini',
+    'Shaders\Water.hlsl',
+    'SKSE\Plugins\PIXL\Documentation\COPYING',
+    'SKSE\Plugins\PIXL\Documentation\EXCEPTIONS.md',
+    'SKSE\Plugins\PIXL\Documentation\NOTICE.md',
+    'SKSE\Plugins\PIXL\Documentation\ATTRIBUTION.md',
+    'SKSE\Plugins\PIXL\Documentation\THIRD_PARTY_NOTICES.md',
+    'SKSE\Plugins\PIXL\Documentation\TRADEMARKS.md',
+    'SKSE\Plugins\PIXL\Documentation\SOURCE-AND-CREDITS.md'
 )) {
-    if (!(Test-Path -LiteralPath (Join-Path $root $required))) { throw "Missing installer payload: $required" }
+    if (!(Test-Path -LiteralPath (Join-Path $core $required))) { throw "Missing FOMOD core payload: $required" }
 }
-$surfaceDll = Join-Path $root 'PIXL-Optional\SurfaceTides-1.0.2\SKSE\Plugins\SurfaceTides.dll'
-$surfaceBinaryText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($surfaceDll))
-foreach ($export in @('SKSEPlugin_Load','SKSEPlugin_Query','SKSEPlugin_Version')) {
-    if ($surfaceBinaryText.IndexOf($export,[StringComparison]::Ordinal) -lt 0) {
-        throw "SurfaceTides universal DLL is missing required SKSE export: $export"
-    }
+$pipelineRoot = Join-Path $core 'PIXL\PipelineLibrary'
+$pipelineCount = (Get-ChildItem -LiteralPath $pipelineRoot -File -Recurse -Filter '*.pixlbin').Count
+if ($pipelineCount -lt 3000) { throw "Bundled shader cache is incomplete ($pipelineCount stages)." }
+& (Join-Path $PSScriptRoot 'VerifyPixlPackageManifest.ps1') -PackageDirectory $core
+$manifest = Get-Content (Join-Path $core 'PIXL-RENDERER.manifest.json') -Raw | ConvertFrom-Json
+if ($manifest.cacheMode -ne 'preloaded' -or $manifest.preloadedPipelineStages -lt 3000) { throw 'FOMOD core does not declare the validated preloaded shader cache.' }
+
+$defaultsPath = Join-Path $core 'SKSE\Plugins\PIXL\Config\RendererDefaults.json'
+$defaults = Get-Content -LiteralPath $defaultsPath -Raw | ConvertFrom-Json
+$water = $defaults.'Water Optics'
+if ([Math]::Abs([double]$water.ProjectedCausticsStrength - 2.29) -gt 0.001 -or
+    [Math]::Abs([double]$water.ProjectedCausticsDistance - 598.0) -gt 0.01) {
+    throw 'Default projected caustic strength/distance do not match the owner-approved live settings.'
 }
-$nestedArchives = @(Get-ChildItem -LiteralPath $root -File -Recurse | Where-Object {
-    $_.Extension -match '^\.(zip|7z|rar|tar|gz|bz2|xz)$'
-})
-if ($nestedArchives.Count) {
-    throw "Nexus upload must not contain nested archive(s): $($nestedArchives.FullName -join ', ')"
+if ([Math]::Abs([double]$water.CausticsStrength - 1.2) -gt 0.001 -or
+    [Math]::Abs([double]$water.CausticsVisibility - 1.8) -gt 0.001) {
+    throw 'Regular underwater caustic defaults changed unexpectedly.'
 }
-$vendorRuntimeRoot = Join-Path $root 'PIXL-Core\Shaders\ImageReconstruction'
+
+$nestedArchives = @(Get-ChildItem -LiteralPath $root -File -Recurse | Where-Object { $_.Extension -match '^\.(zip|7z|rar|tar|gz|bz2|xz)$' })
+if ($nestedArchives.Count) { throw "FOMOD contains nested archive(s): $($nestedArchives.FullName -join ', ')" }
+$vendorRuntimeRoot = Join-Path $core 'Shaders\ImageReconstruction'
 if (Test-Path -LiteralPath $vendorRuntimeRoot) {
     foreach ($vendorDll in Get-ChildItem -LiteralPath $vendorRuntimeRoot -File -Recurse -Filter '*.dll') {
         $signature = Get-AuthenticodeSignature -LiteralPath $vendorDll.FullName
@@ -71,22 +97,4 @@ if (Test-Path -LiteralPath $vendorRuntimeRoot) {
         }
     }
 }
-$presetPath = Join-Path $root 'PIXL-Optional\SurfaceTides-1.0.2\SKSE\Plugins\SurfaceTides.ini'
-$preset = Get-Content -LiteralPath $presetPath -Raw
-foreach ($setting in @('AllowPIXL=1','Damping=0.24','Wind=7','GustStrength=1.3','NormalStrength=2.35','DisplacementStrength=2','PIXLCityDisplacementScale=0.55','PIXLInteriorDisplacementScale=0.25')) {
-    # Get-Content -Raw preserves CRLF. Permit the carriage return before the
-    # multiline end anchor so normal Windows INI files validate correctly.
-    if ($preset -notmatch "(?m)^$([regex]::Escape($setting))\r?$") { throw "PIXL SurfaceTides preset is missing: $setting" }
-}
-$halfLife = [Math]::Log(2.0) / 0.24
-$continuousForcingRatio = 7.0 / 5.0
-$gustExcitationRatio = (7.0 * 1.3) / (5.0 * 1.0)
-if ($halfLife -lt 2.85 -or $halfLife -gt 2.95 -or $continuousForcingRatio -lt 1.39 -or $gustExcitationRatio -lt 1.81) {
-    throw 'PIXL SurfaceTides preset no longer meets its documented retention/excitation targets.'
-}
-$groups = @($config.SelectNodes('//group'))
-if ($groups.Count -ne 3 -or @($groups | Where-Object { $_.type -ne 'SelectExactlyOne' }).Count) { throw 'Unexpected installer selection structure.' }
-if ($config.SelectSingleNode("//plugin[contains(@name,'SurfaceTides 1.0.2 Integration')]/typeDescriptor/dependencyType")) {
-    throw 'SurfaceTides integration must remain selectable; Vortex deployment state is not a reliable FOMOD dependency gate.'
-}
-Write-Host "PASS: PIXL $ExpectedVersion FOMOD XML, branding assets, disclosures, core payload and universal SurfaceTides 1.0.2 bridge validated."
+Write-Host "PASS: PIXL $ExpectedVersion three-page FOMOD, regular defaults, preloaded shader cache and no SurfaceTides payload validated ($pipelineCount stages)."

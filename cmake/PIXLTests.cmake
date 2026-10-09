@@ -12,6 +12,22 @@ function(pixl_add_portable_test TARGET SOURCE)
 endfunction()
 
 if(BUILD_TESTING)
+    pixl_add_portable_test(PIXLTestCameraReprojection
+        "${CMAKE_SOURCE_DIR}/tools/TestCameraReprojection.cpp")
+    if(WIN32)
+        pixl_add_portable_test(PIXLTestDofTiles "${CMAKE_SOURCE_DIR}/tools/TestDofTiles.cpp")
+        target_link_libraries(PIXLTestDofTiles PRIVATE d3d11 d3dcompiler)
+        set_tests_properties(PIXLTestDofTiles PROPERTIES LABELS "shader;warp" WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        pixl_add_portable_test(PIXLTestModernShaderMath
+            "${CMAKE_SOURCE_DIR}/tools/TestModernShaderMath.cpp")
+        target_link_libraries(PIXLTestModernShaderMath PRIVATE d3d11 d3dcompiler)
+        set_tests_properties(PIXLTestModernShaderMath PROPERTIES LABELS "shader;warp")
+        set_property(TEST PIXLTestModernShaderMath PROPERTY WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        pixl_add_portable_test(PIXLTestCompilationArtifacts
+            "${CMAKE_SOURCE_DIR}/tools/TestCompilationArtifacts.cpp")
+        target_link_libraries(PIXLTestCompilationArtifacts PRIVATE d3dcompiler bcrypt)
+        set(PIXL_WINDOWS_MODERNISATION_TESTS PIXLTestCompilationArtifacts PIXLTestModernShaderMath PIXLTestDofTiles)
+    endif()
 	pixl_add_portable_test(PIXLTestReactiveFXSpawnSafety
 		"${CMAKE_SOURCE_DIR}/tools/TestReactiveFXSpawnSafety.cpp")
     pixl_add_portable_test(PIXLTestRenderOrigin
@@ -68,6 +84,8 @@ if(BUILD_TESTING)
         COMMAND ${CMAKE_CTEST_COMMAND} --test-dir "${CMAKE_BINARY_DIR}"
             -C $<CONFIG> --output-on-failure -L portable
         DEPENDS
+            ${PIXL_WINDOWS_MODERNISATION_TESTS}
+            PIXLTestCameraReprojection
             PIXLTestReactiveFXSpawnSafety
             PIXLTestRenderOrigin
             PIXLTestContainedLiquidMath

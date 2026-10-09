@@ -824,8 +824,8 @@ void Atmosphere::Prepass()
 		};
 	}
 	cb.historyParameters = {
-		temporalHistoryValid ? std::clamp(settings.volumetricHistoryWeight, 0.0f, 0.99f) : 0.0f,
-		static_cast<float>(std::clamp(settings.volumetricHistoryMissSampleCount, 1u, 16u)),
+		temporalHistoryValid ? std::clamp(runtimeSettings.volumetricHistoryWeight, 0.0f, 0.99f) : 0.0f,
+		static_cast<float>(std::clamp(runtimeSettings.volumetricHistoryMissSampleCount, 1u, 16u)),
 		0.0f,
 		0.0f
 	};

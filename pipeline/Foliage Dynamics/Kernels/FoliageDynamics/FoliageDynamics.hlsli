@@ -86,6 +86,7 @@ namespace FoliageDynamics
 		return max(lightColor, 0.0f.xxx) * D * Vis * F * NdotL *
 			Color::PBRLightingCompensation * Color::PBRLightingScale;
 #else
+		float HdotN = saturate(dot(H, N));
 		float lightColorMultiplier = exp2(max(shininess, 1.0f) * log2(max(HdotN, 1e-4f)));
 		return lightColor * lightColorMultiplier.xxx;
 #endif

@@ -3,6 +3,10 @@
 #include "Buffer.h"
 #include "OverlayFeature.h"
 
+#include <atomic>
+#include <mutex>
+#include <shared_mutex>
+
 struct RadiantGrid : OverlayFeature
 {
 	static constexpr uint MAX_LIGHTS = 1024;
@@ -68,12 +72,14 @@ struct RadiantGrid : OverlayFeature
 	eastl::hash_map<RE::BSGeometry*, VertexColorCacheEntry> vertexColorCache;
 	eastl::hash_map<RE::BSGeometry*, IncandescentGeometryCacheEntry> incandescentGeometryCache;
 	eastl::vector<ResolvedParticleLight> queuedParticleLights;
-	eastl::vector<ResolvedParticleLight> currentParticleLights;
 	eastl::hash_map<RE::NiAVObject*, std::size_t> queuedParticleLightOwners;
 	eastl::hash_map<RE::NiAVObject*, PersistedParticleLight> persistedParticleLights;
 	double particleLightTime = 0.0;
 	std::uintptr_t particleLightScene = 0;
-	std::shared_mutex particleLightsMutex;
+	std::shared_mutex particleLightCacheMutex;
+	std::mutex particleLightQueueMutex;
+	std::mutex particleLightStateMutex;
+	std::atomic<std::uint64_t> particleLightSceneGeneration{ 0 };
 	std::uint32_t particleEmitterLightCount = 0;
 	std::uint32_t glowMappedEmitterLightCount = 0;
 	// Contiguous range occupied by particle/glow emitters in the uploaded light

@@ -231,7 +231,7 @@ namespace Atmosphere
 			volumetricFog.a * analyticalTransmittance,
 			GetMinimumTransmittance());
 		float combinedOpacity = saturate(1.0f - combinedTransmittance);
-		float3 analyticalPremultiplied = analyticalFog.rgb * analyticalFog.w;
+		float3 analyticalPremultiplied = analyticalFog.rgb;
 		float3 combinedPremultiplied = volumetricFog.rgb + volumetricFog.a * analyticalPremultiplied;
 		return float4(combinedOpacity > 1e-4f ? combinedPremultiplied / combinedOpacity : float3(0.0f, 0.0f, 0.0f), combinedOpacity);
 	}
@@ -244,7 +244,7 @@ namespace Atmosphere
 			volumetricFog.a * analyticalTransmittance,
 			GetMinimumTransmittance());
 		float combinedOpacity = saturate(1.0f - combinedTransmittance);
-		float3 analyticalPremultiplied = analyticalFog.rgb * analyticalFog.w;
+		float3 analyticalPremultiplied = analyticalFog.rgb;
 		float3 combinedPremultiplied = volumetricFog.rgb + volumetricFog.a * analyticalPremultiplied;
 		return float4(combinedOpacity > 1e-4f ? combinedPremultiplied / combinedOpacity : float3(0.0f, 0.0f, 0.0f), combinedOpacity);
 	}
@@ -353,7 +353,8 @@ namespace Atmosphere
 		fogColor += directionalInscattering;
 		float4 analyticalFog = float4(fogColor, 1.0f - expFogFactor);
 		if (!applyVolumetricFog) {
-			return analyticalFog;
+			// Public callers lerp by alpha: return straight colour at this boundary.
+			return float4(analyticalFog.a > 0.0f ? analyticalFog.rgb / max(analyticalFog.a, 1.0e-30f) : 0.0f.xxx, analyticalFog.a);
 		}
 		return useScreenPosition ? CombineVolumetricFog(analyticalFog, screenPosition) : CombineVolumetricFog(analyticalFog, positionWS);
 	}

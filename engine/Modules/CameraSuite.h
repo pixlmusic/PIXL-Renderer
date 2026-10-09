@@ -207,6 +207,8 @@ public:
 	void EndTransientSettings();
 	/** @brief Draws the HDR output and PIXL Physical Camera settings UI. */
 	virtual void DrawSettings() override;
+	/** Applies the shared gameplay/balanced/portrait/cinema depth-of-field profile. */
+	void ApplyDepthOfFieldPreset(std::uint32_t preset);
 
 	/** @brief Enables the bUse64bitsHDRRenderTarget INI setting for float16 render targets. */
 	virtual void DataLoaded() override;
@@ -681,7 +683,7 @@ private:
 	std::unordered_map<ID3D11BlendState*, winrt::com_ptr<ID3D11BlendState>> patchedBlendStateCache;
 
 	HRESULT PresentToSwapChain(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags);
-	void DrawImGuiForPresent(bool frameGenActive, bool hdrReady);
+	void DrawImGuiForPresent(bool hdrReady);
 	void RunHDRBeforePresentChain(bool hdrReady);
 	HRESULT RunPresentChainWithHDR(
 		IDXGISwapChain* swapChain,

@@ -61,9 +61,15 @@ namespace BRDF
 		float A = 1.0 - 0.5 * (a / (a + 0.33));
 		float B = 0.45 * (a / (a + 0.09));
 
-		float gamma = dot(V - N * NdotV, L - N * NdotL) / (sqrt(saturate(1.0 - NdotV * NdotV)) * sqrt(saturate(1.0 - NdotL * NdotL)));
+		float safeNdotV = saturate(NdotV);
+		float safeNdotL = saturate(NdotL);
+		float3 tangentView = V - N * safeNdotV;
+		float3 tangentLight = L - N * safeNdotL;
+		float tangentLengthProduct = sqrt(saturate(1.0 - safeNdotV * safeNdotV)) *
+			sqrt(saturate(1.0 - safeNdotL * safeNdotL));
+		float gamma = dot(tangentView, tangentLight) / max(tangentLengthProduct, EPSILON_DIVISION);
 
-		float2 cos_alpha_beta = NdotV < NdotL ? float2(NdotV, NdotL) : float2(NdotL, NdotV);
+		float2 cos_alpha_beta = safeNdotV < safeNdotL ? float2(safeNdotV, safeNdotL) : float2(safeNdotL, safeNdotV);
 		float2 sin_alpha_beta = sqrt(saturate(1.0 - cos_alpha_beta * cos_alpha_beta));
 		float C = sin_alpha_beta.x * sin_alpha_beta.y / (EPSILON_DIVISION + cos_alpha_beta.y);
 
@@ -138,15 +144,19 @@ namespace BRDF
 	// [Walter et al. 2007, "Microfacet models for refraction through rough surfaces"]
 	float D_GGX(float roughness, float NdotH)
 	{
-		float safeNdotH = saturate(NdotH);
+		float safeNdotH = ((asuint(NdotH) & 0x7fffffffu) < 0x7f800000u) ? saturate(NdotH) : 0.0f;
 		float NdotH2 = safeNdotH * safeNdotH;
 		// Keep the GGX lobe finite for authored zero-roughness materials.  This
 		// floor is below a visible 8-bit roughness step but prevents INF/NaN
 		// propagation into temporal GI, bloom and reflection histories.
+		roughness = ((asuint(roughness) & 0x7fffffffu) < 0x7f800000u) ? saturate(roughness) : 1.0f;
 		float a = max(roughness * roughness, 1.0e-4f);
 		float a2 = a * a;
-		float d = NdotH2 * (a2 - 1.0) + 1.0;
-		return a2 * rcp(max(Math::PI * d * d, EPSILON_DIVISION));
+		// Avoid cancellation at NoH=1 and guard the roughness parameter rather
+		// than flattening the entire smooth lobe with a generic denominator floor.
+		precise float d = (1.0f - NdotH2) + a2 * NdotH2;
+		float ratio = a / max(d, a2);
+		return ratio * ratio / Math::PI;
 	}
 
 	// [Burley 2012, "Physically-Based Shading at Disney"]
@@ -159,10 +169,13 @@ namespace BRDF
 	// [Estevez et al. 2017, "Production Friendly Microfacet Sheen BRDF"]
 	float D_Charlie(float roughness, float NdotH)
 	{
-		float invAlpha = pow(abs(roughness), -4);
-		float cos2h = NdotH * NdotH;
-		float sin2h = 1.0 - cos2h;
-		return (2.0 + invAlpha) * pow(abs(sin2h), invAlpha * 0.5) / Math::TAU;
+		// Skin/fuzz data can come from user configs and older presets. Keep a
+		// finite sheen lobe even if an imported value requests zero roughness.
+		float safeRoughness = max(abs(roughness), 0.05f);
+		float invAlpha = pow(safeRoughness, -4);
+		float cos2h = saturate(NdotH) * saturate(NdotH);
+		float sin2h = saturate(1.0 - cos2h);
+		return (2.0 + invAlpha) * pow(sin2h, invAlpha * 0.5) / Math::TAU;
 	}
 
 	// Smith term for GGX
@@ -180,21 +193,25 @@ namespace BRDF
 	// [Heitz 2014, "Understanding the Masking-Shadowing Function in Microfacet-Based BRDFs"]
 	float Vis_SmithJointApprox(float roughness, float NdotV, float NdotL)
 	{
+		roughness = ((asuint(roughness) & 0x7fffffffu) < 0x7f800000u) ? saturate(roughness) : 1.0f;
 		float a = max(roughness * roughness, 1.0e-4f);
-		NdotV = max(saturate(NdotV), EPSILON_DOT_CLAMP);
-		NdotL = max(saturate(NdotL), EPSILON_DOT_CLAMP);
-		float Vis_SmithV = NdotL * (NdotV * (1.0 + a) + a);
-		float Vis_SmithL = NdotV * (NdotL * (1.0 + a) + a);
-		return rcp(max(Vis_SmithV + Vis_SmithL, EPSILON_DIVISION)) * 0.5;
+		NdotV = max(((asuint(NdotV) & 0x7fffffffu) < 0x7f800000u) ? saturate(NdotV) : 0.0f, 1.0e-4f);
+		NdotL = max(((asuint(NdotL) & 0x7fffffffu) < 0x7f800000u) ? saturate(NdotL) : 0.0f, 1.0e-4f);
+		float Vis_SmithV = NdotL * (NdotV * (1.0 - a) + a);
+		float Vis_SmithL = NdotV * (NdotL * (1.0 - a) + a);
+		return 0.5f / max(Vis_SmithV + Vis_SmithL, 1.0e-8f);
 	}
 
 	float Vis_SmithJoint(float roughness, float NdotV, float NdotL)
 	{
-		float a = roughness * roughness;
+		roughness = ((asuint(roughness) & 0x7fffffffu) < 0x7f800000u) ? saturate(roughness) : 1.0f;
+		float a = max(roughness * roughness, 1.0e-4f);
+		NdotV = max(((asuint(NdotV) & 0x7fffffffu) < 0x7f800000u) ? saturate(NdotV) : 0.0f, 1.0e-4f);
+		NdotL = max(((asuint(NdotL) & 0x7fffffffu) < 0x7f800000u) ? saturate(NdotL) : 0.0f, 1.0e-4f);
 		float a2 = a * a;
 		float Vis_SmithV = NdotL * sqrt(a2 + (1.0 - a2) * NdotV * NdotV);
 		float Vis_SmithL = NdotV * sqrt(a2 + (1.0 - a2) * NdotL * NdotL);
-		return rcp(max(Vis_SmithV + Vis_SmithL, EPSILON_DIVISION)) * 0.5;
+		return 0.5f / max(Vis_SmithV + Vis_SmithL, 1.0e-8f);
 	}
 
 	float Vis_SmithJointAniso(float alphaX, float alphaY, float NdotL, float NdotV, float XdotL, float YdotL, float XdotV, float YdotV)

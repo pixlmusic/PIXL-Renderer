@@ -91,6 +91,9 @@ protected:
 
 public:
 	virtual bool HasShaderDefine(RE::BSShader::Type) { return false; }
+	// Opt in only after auditing that enable/load state cannot change pipeline
+	// permutation defines. Unknown modules retain conservative invalidation.
+	virtual bool HasNoPipelinePermutationDependencies() const { return false; }
 
 	/**
 	 * @brief Returns whether a module-version change can affect one persistent shader entry.

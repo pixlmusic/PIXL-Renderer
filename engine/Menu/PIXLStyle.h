@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <imgui.h>
+#include <imgui_internal.h>
 
 #include "Fonts.h"
 #include "Controls.h"
@@ -258,10 +259,11 @@ namespace PIXLUI
 	{
 		if (!draw || !text || maximumWidth <= 0.0f)
 			return;
-		const ImVec4 clip(position.x, position.y,
-			position.x + maximumWidth,
+		const ImVec2 bounds(position.x + maximumWidth,
 			position.y + ImGui::GetTextLineHeightWithSpacing());
-		draw->AddText(nullptr, 0.0f, position, color, text, nullptr, 0.0f, &clip);
+		ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(color));
+		ImGui::RenderTextEllipsis(draw, position, bounds, bounds.x, text, nullptr, nullptr);
+		ImGui::PopStyleColor();
 	}
 
 	// Shared Director timeline. The widget draws directly into the existing PIXL
@@ -1281,6 +1283,8 @@ namespace PIXLUI
 
 	inline void SectionBanner(const char* label)
 	{
+		if (!label || !label[0])
+			return;
 		ImGui::PushID(label);
 		const ImVec2 p = ImGui::GetCursorScreenPos();
 		const float h = Ref(Layout::TuneSectionHeight);
@@ -1288,10 +1292,15 @@ namespace PIXLUI
 			std::min(ImGui::GetContentRegionAvail().x, Ref(Layout::TuneSectionWidth));
 
 		ImGui::InvisibleButton("##section", ImVec2(w, h));
+		const bool hovered = ImGui::IsItemHovered();
 		ImDrawList* draw = ImGui::GetWindowDrawList();
 		const float cy = p.y + h * 0.5f;
+		draw->AddRectFilled(p, ImVec2(p.x + w, p.y + h), Colors::InsetRaised, Ref(2.0f));
+		draw->AddRect(p, ImVec2(p.x + w, p.y + h), Colors::BorderSoft, Ref(2.0f), 0, Ref(1.0f));
+		draw->AddLine(ImVec2(p.x + Ref(1.0f), p.y + Ref(4.0f)),
+			ImVec2(p.x + Ref(1.0f), p.y + h - Ref(4.0f)), Colors::CyanSoft, Ref(1.5f));
 		const float r = Ref(4.0f);
-		const ImVec2 diamond(p.x + Ref(8.0f), cy);
+		const ImVec2 diamond(p.x + Ref(11.0f), cy);
 
 		draw->AddQuadFilled(
 			ImVec2(diamond.x, diamond.y - r),
@@ -1300,15 +1309,16 @@ namespace PIXLUI
 			ImVec2(diamond.x - r, diamond.y),
 			Colors::CyanSoft);
 
+		const float textX = p.x + Ref(23.0f);
+		const float textMaxX = std::max(textX, p.x + w - Ref(8.0f));
 		const ImVec2 textSize = ImGui::CalcTextSize(label);
-		draw->AddText(
-			ImVec2(p.x + Ref(20.0f), cy - textSize.y * 0.5f),
-			Colors::TextMuted, label);
-
-		draw->AddLine(
-			ImVec2(p.x + Ref(28.0f) + textSize.x, cy),
-			ImVec2(p.x + w, cy),
-			Colors::BorderSoft, Ref(1.0f));
+		const ImVec2 textPosition(textX, cy - textSize.y * 0.5f);
+		const ImVec2 textMax(textMaxX, p.y + h - Ref(2.0f));
+		ImGui::PushStyleColor(ImGuiCol_Text, ToVec4(Colors::TextMuted));
+		ImGui::RenderTextEllipsis(draw, textPosition, textMax, textMaxX, label, nullptr, &textSize);
+		ImGui::PopStyleColor();
+		if (hovered && textSize.x > textMaxX - textX)
+			ImGui::SetTooltip("%s", label);
 		ImGui::PopID();
 	}
 
@@ -1329,6 +1339,8 @@ namespace PIXLUI
 	inline void RailDivider(const char* label)
 	{
 		const float width = ImGui::GetContentRegionAvail().x;
+		if (width <= 0.0f || !label || !label[0])
+			return;
 		const ImVec2 start = ImGui::GetCursorScreenPos();
 		const float h = Ref(25.0f);
 		ImGui::Dummy(ImVec2(width, h));
@@ -1339,21 +1351,23 @@ namespace PIXLUI
 		const float textY = start.y + (h - textSize.y) * 0.5f;
 		const float gap = Ref(10.0f);
 		const float lineY = start.y + h * 0.5f;
+		const float visibleTextWidth = std::min(textSize.x, std::max(0.0f, width - Ref(32.0f)));
 
 		draw->AddLine(
 			ImVec2(start.x + Ref(6.0f), lineY),
-			ImVec2(centerX - textSize.x * 0.5f - gap, lineY),
+			ImVec2(centerX - visibleTextWidth * 0.5f - gap, lineY),
 			Colors::BorderBright,
 			Ref(1.0f));
 		draw->AddLine(
-			ImVec2(centerX + textSize.x * 0.5f + gap, lineY),
+			ImVec2(centerX + visibleTextWidth * 0.5f + gap, lineY),
 			ImVec2(start.x + width - Ref(6.0f), lineY),
 			Colors::BorderBright,
 			Ref(1.0f));
-		draw->AddText(
-			ImVec2(centerX - textSize.x * 0.5f, textY),
-			Colors::TextMuted,
-			label);
+		const ImVec2 textMin(centerX - visibleTextWidth * 0.5f, textY);
+		const ImVec2 textMax(textMin.x + visibleTextWidth, start.y + h - Ref(1.0f));
+		ImGui::PushStyleColor(ImGuiCol_Text, ToVec4(Colors::TextMuted));
+		ImGui::RenderTextEllipsis(draw, textMin, textMax, textMax.x, label, nullptr, &textSize);
+		ImGui::PopStyleColor();
 	}
 
 	inline bool NavItem(const char* id, const char* label, bool selected, float height = 0.0f)
@@ -1463,20 +1477,21 @@ namespace PIXLUI
 			Ref(1.5f) *
 			selectT;
 
-		draw->AddText(
-			ImVec2(
-				p.x +
-					Ref(25.0f) +
-					textNudge,
-				cy -
-					textSize.y * 0.5f),
-			MixColor(
+		const ImVec2 textPosition(p.x + Ref(25.0f) + textNudge, cy - textSize.y * 0.5f);
+		const float textMaxX = std::max(textPosition.x, p.x + w - Ref(8.0f));
+		const ImVec2 textMax(textMaxX, p.y + h - Ref(2.0f));
+		const ImU32 textColor = MixColor(
 				Colors::TextMuted,
 				Colors::Text,
 				std::max(
 					selectT,
-					hoverT * 0.55f)),
-			label);
+				hoverT * 0.55f));
+		ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(textColor));
+		ImGui::RenderTextEllipsis(draw, textPosition, textMax, textMaxX,
+			label, nullptr, &textSize);
+		ImGui::PopStyleColor();
+		if (hovered && textSize.x > textMaxX - textPosition.x)
+			ImGui::SetTooltip("%s", label);
 
 		if (selectT > 0.01f) {
 			draw->AddLine(

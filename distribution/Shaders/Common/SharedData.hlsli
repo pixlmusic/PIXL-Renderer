@@ -254,6 +254,10 @@ namespace SharedData
 		float FoamStrength;
 		float FoamScale;
 		float SSRTraceQuality;
+
+		float ProjectedCausticsStrength;
+		float ProjectedCausticsDistance;
+		float2 ProjectedCausticsPadding;
 	};
 
 	struct PostProcessSettings

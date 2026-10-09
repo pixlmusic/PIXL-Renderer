@@ -50,8 +50,14 @@ namespace PIXL::Metadata
 			"RainResponse.MaxRainWetness", "RainResponse", "Rain Wetness", "Weather",
 			SettingType::FloatingPoint, 1.388, 0.0, 2.5, true, true, false };
 		inline constexpr SettingDescriptor WaterCausticsStrength{
-			"WaterOptics.CausticsStrength", "WaterOptics", "Caustics Intensity", "Water",
+			"WaterOptics.CausticsStrength", "WaterOptics", "Underwater Caustic Intensity", "Water",
 			SettingType::FloatingPoint, 1.2, 0.0, 2.0, true, true, false };
+		inline constexpr SettingDescriptor WaterProjectedCausticsStrength{
+			"WaterOptics.ProjectedCausticsStrength", "WaterOptics", "Caustic Light Bounce", "Water",
+			SettingType::FloatingPoint, 2.0, 0.0, 3.0, true, true, false };
+		inline constexpr SettingDescriptor WaterProjectedCausticsDistance{
+			"WaterOptics.ProjectedCausticsDistance", "WaterOptics", "Caustic Bounce Reach", "Water",
+			SettingType::FloatingPoint, 300.0, 64.0, 800.0, true, true, false };
 
 		inline constexpr std::array All{
 			MaterialVertexAO,
@@ -59,7 +65,9 @@ namespace PIXL::Metadata
 			HybridWorldCacheStrength,
 			GroundResponseStrength,
 			RainWetness,
-			WaterCausticsStrength
+			WaterCausticsStrength,
+			WaterProjectedCausticsStrength,
+			WaterProjectedCausticsDistance
 		};
 	}
 
@@ -88,7 +96,7 @@ namespace PIXL::Metadata
 		inline constexpr ShaderABIDescriptor RainResponse{
 			"RainResponse", "FeatureData.RainResponse", "PIXL.RainResponse.FeatureData.v1", 6, 256, 16 };
 		inline constexpr ShaderABIDescriptor WaterOptics{
-			"WaterOptics", "FeatureData.WaterOpticsSettings", "PIXL.WaterOptics.FeatureData.v1", 6, 64, 16 };
+			"WaterOptics", "FeatureData.WaterOpticsSettings", "PIXL.WaterOptics.FeatureData.v2", 6, 80, 16 };
 
 		inline constexpr std::array All{
 			MaterialForge,
