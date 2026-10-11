@@ -212,7 +212,11 @@ float SampleDirectionalWorldShadow(float3 positionWS)
 	worldShadow *= TerrainOcclusion::GetTerrainShadow(positionWS + FrameBuffer::CameraPosAdjust.xyz, LinearSampler);
 #endif
 #if defined(SKY_VEIL)
-	worldShadow *= SkyVeil::GetCloudShadowMult(positionWS, LinearSampler);
+	// Froxel positions are camera-relative; SkyVeil projects against a
+	// world-anchored cloud field, so restore the frame's absolute world offset.
+	worldShadow *= SkyVeil::GetCloudShadowMult(
+		positionWS + FrameBuffer::CameraPosAdjust.xyz,
+		LinearSampler);
 #endif
 	return worldShadow;
 }

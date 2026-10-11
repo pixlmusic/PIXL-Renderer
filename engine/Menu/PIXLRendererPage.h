@@ -30,7 +30,7 @@ namespace PIXLRendererPage
 		"CAMERA"
 	};
 
-	inline constexpr std::array<Placement, 35> Placements{ {
+	inline constexpr std::array<Placement, 36> Placements{ {
 		{ "HybridGI", CategoryOrder[0], "INDIRECT LIGHT & REFLECTIONS", "Lighting controls are real time. Resolution and pipeline toggles automatically rebuild the affected compute shaders." },
 		{ "WorldProbes", CategoryOrder[0], "INDIRECT LIGHT & REFLECTIONS", "Environment probes update automatically with the scene. Probe-authoring tools are available only in Developer Mode." },
 		{ "SkyBounce", CategoryOrder[0], "INDIRECT LIGHT & REFLECTIONS", "Visibility controls are real time; zenith changes automatically queue a safe probe refresh." },
@@ -42,6 +42,7 @@ namespace PIXLRendererPage
 		{ "SkyVeil", CategoryOrder[0], "SKY & ATMOSPHERE", "Cloud-shadow opacity follows weather in real time; enabling the shader hook requires a restart." },
 		{ "InteriorDaylight", CategoryOrder[0], "SKY & ATMOSPHERE", "Interior sun matching updates with cells and weather; boot-state changes require a restart." },
 		{ "SkyContinuity", CategoryOrder[0], "SKY & ATMOSPHERE", "Synchronizes sky state with the renderer's atmospheric lighting in real time." },
+		{ "VolumetricClouds", CategoryOrder[0], "SKY & ATMOSPHERE", "Weather-linked volumetric clouds are available here; weather transitions and controls update in real time." },
 		{ "Atmosphere", CategoryOrder[0], "SKY & ATMOSPHERE", "Fog and scattering values are real time. Froxel resolution changes recreate volumetric resources automatically." },
 		{ "LightVolumes", CategoryOrder[0], "SKY & ATMOSPHERE", "Quality changes recreate the vanilla volumetric-lighting targets and may cause a brief one-time hitch." },
 		{ "VolumeOcclusion", CategoryOrder[0], "SKY & ATMOSPHERE", "The shared filtered shadow map is generated at runtime; boot-state changes require a restart." },
@@ -93,6 +94,7 @@ namespace PIXLRendererPage
 			Name{ "NaturalLighting", "PHYSICAL LIGHTS" }, Name{ "DistanceBlend", "DISTANCE BLEND" }, Name{ "LinearLightCore", "LINEAR LIGHT" },
 			Name{ "RadiantGrid", "LOCAL LIGHTS" }, Name{ "ContactShadows", "DIRECTIONAL SSS" },
 			Name{ "SkyVeil", "CLOUD LIGHT" }, Name{ "HorizonBlend", "DISTANT HORIZON" },
+			Name{ "VolumetricClouds", "VOLUMETRIC CLOUDS" },
 			Name{ "InteriorDaylight", "INTERIOR SUN" }, Name{ "SkyContinuity", "SKY CONTINUITY" },
 			Name{ "Atmosphere", "ATMOSPHERIC FOG" }, Name{ "LightVolumes", "LIGHT SHAFTS" },
 			Name{ "VolumeOcclusion", "VOLUMETRIC SHADOW" }, Name{ "SkinOptics", "SKIN DETAIL" },

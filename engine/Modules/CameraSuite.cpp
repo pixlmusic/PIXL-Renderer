@@ -21,6 +21,7 @@
 #include "SkyBounce.h"
 #include "State.h"
 #include "WeatherManager.h"
+#include "VolumetricClouds.h"
 #include "ImageReconstruction.h"
 #include "Renderer/ExternalPostProcessing.h"
 #include "Renderer/TemporalContext.h"
@@ -476,9 +477,11 @@ void CameraSuite::ApplyDepthOfFieldPreset(std::uint32_t preset)
 	s.dofActorTracking = true;
 	switch (std::min(preset, 3u)) {
 	case 0:
-		s.dofStrength = 0.72f; s.dofFocalLengthMm = 28.0f; s.dofFStop = 4.0f;
-		s.dofMaxBokehPixels = 5.0f; s.dofNearBlurIntensity = 0.0f; s.dofFarBlurIntensity = 0.72f;
-		s.dofFarBlurDistance = 30000.0f; s.dofFocusRange = 15000.0f;
+		// Keep normal exploration legible: use a deeper gameplay focus and push
+		// the optional far-field blur beyond the usual mountain/LOD horizon.
+		s.dofStrength = 0.80f; s.dofFocalLengthMm = 28.0f; s.dofFStop = 5.6f;
+		s.dofMaxBokehPixels = 4.5f; s.dofNearBlurIntensity = 0.0f; s.dofFarBlurIntensity = 0.58f;
+		s.dofFarBlurDistance = 38000.0f; s.dofFocusRange = 15000.0f;
 		break;
 	case 1:
 		s.dofStrength = 1.0f; s.dofFocalLengthMm = 30.0f; s.dofFStop = 3.4f;
@@ -1024,7 +1027,7 @@ void CameraSuite::DrawSettings()
 				DrawSettingsTooltip("Controls foreground/near-field blur independently from autofocus. Higher values expand nearby bokeh more strongly over the background.");
 				changed |= ImGui::SliderFloat("Far / Distance Blur", &settings.dofFarBlurIntensity, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 				DrawSettingsTooltip("Adds controllable distance blur over autofocus to soften distant LOD transitions and background detail. Higher values increase the far-field haze.");
-				changed |= ImGui::SliderFloat("Distance Blur Start", &settings.dofFarBlurDistance, 500.0f, 30000.0f, "%.0f game units", ImGuiSliderFlags_AlwaysClamp);
+				changed |= ImGui::SliderFloat("Distance Blur Start", &settings.dofFarBlurDistance, 500.0f, 50000.0f, "%.0f game units", ImGuiSliderFlags_AlwaysClamp);
 				DrawSettingsTooltip("The distance where the additional far-field haze begins. Autofocus remains physical-camera based and independent of this threshold.");
 				changed |= ImGui::SliderFloat("Focus / Distance Fade", &settings.dofFocusRange, 240.0f, 20000.0f, "%.0f game units", ImGuiSliderFlags_AlwaysClamp);
 				DrawSettingsTooltip("Controls the soft focus transition and how gradually the distance blur reaches full strength. Long values such as 10000-15000 keep gameplay readable while hiding distant LOD changes.");
@@ -3089,7 +3092,12 @@ void CameraSuite::RunDepthOfFieldPasses(ID3D11ShaderResourceView* sceneSRV)
 		dofCoCHistoryTexture->srv.get(),
 		motionTarget.SRV
 	};
-	if (!dispatch("CameraSuite::DOF::CoC", GetDofCoCCS(), cocInputs, 4u, dofCoCTexture))
+	ID3D11ShaderResourceView* cloudMask = globals::pipeline::volumetricClouds.GetDofCloudMaskSRV();
+	context->CSSetShaderResources(18, 1, &cloudMask);
+	const bool cocReady = dispatch("CameraSuite::DOF::CoC", GetDofCoCCS(), cocInputs, 4u, dofCoCTexture);
+	ID3D11ShaderResourceView* noCloudMask = nullptr;
+	context->CSSetShaderResources(18, 1, &noCloudMask);
+	if (!cocReady)
 		return;
 	context->CopyResource(dofCoCHistoryTexture->resource.get(), dofCoCTexture->resource.get());
 	ID3D11ShaderResourceView* halfInputs[1] = { sceneSRV };

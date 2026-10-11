@@ -6,6 +6,7 @@
 #include "Modules/Atmosphere.h"
 #include "Modules/MaterialLayers.h"
 #include "Modules/ThinSurface.h"
+#include "Modules/FurShells.h"
 #include "Modules/GroundResponse.h"
 #include "Modules/ActorSurfaceEffects.h"
 #include "Modules/ClothDynamics.h"
@@ -32,6 +33,7 @@
 #include "Modules/DistantLife.h"
 #include "Modules/ReactiveFX.h"
 #include "Modules/Microclimates.h"
+#include "Modules/VolumetricClouds.h"
 #include "Modules/SkyContinuity.h"
 #include "Modules/SkyBounce.h"
 #include "Modules/TissueDiffusion.h"
@@ -109,6 +111,7 @@ namespace globals
 		DistantLife distantLife{};
 		ReactiveFX reactiveFX{};
 		Microclimates microclimates{};
+		VolumetricClouds volumetricClouds{};
 
 		namespace llf
 		{
@@ -314,5 +317,6 @@ namespace globals
 	{
 		stl::detour_vfunc<14, ID3D11DeviceContext_Map>(a_context);
 		stl::detour_vfunc<15, ID3D11DeviceContext_Unmap>(a_context);
+		FurShells::InstallD3DContextHooks(a_context);
 	}
 }

@@ -385,6 +385,10 @@ public:
 
 	ConstantBuffer* sharedDataCB = nullptr;
 	ConstantBuffer* featureDataCB = nullptr;
+	// CPU mirror of SharedDataCB::DirLightDirection, filled immediately before
+	// render-module prepasses so directional screen-space effects trace the exact
+	// source used by the scene shaders (including Sky Continuity's sun/moon blend).
+	float3 currentDirectionalLightDirection{};
 
 	PermutationCB permutationData{};
 	PermutationCB permutationDataPrevious{};

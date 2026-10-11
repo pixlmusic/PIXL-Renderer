@@ -10,6 +10,10 @@
 #include "State.h"
 #include "Utils/D3D.h"
 
+#include <algorithm>
+#include <cmath>
+#include <exception>
+
 #define I18N_KEY_PREFIX "feature.contact_shadows."
 
 #pragma warning(push)
@@ -36,6 +40,9 @@ void ContactShadows::DrawSettings()
 		Util::UIntCheckbox(T(TKEY("enable"), "Directional SSS"), &bendSettings.Enable);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", T(TKEY("enable_tooltip"), "Refines the active Skyrim sun or moon directional shadow. The source is read every frame; PBR Local Contact Shadows remains separate for point and clustered lights."));
+		ImGui::Checkbox("Objects Cast Shadows on Grass", &EnableGrassShadowCasting);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Controls Skyrim's bShadowsOnGrass receiver option: nearby objects can cast shadows onto grass. This does not make grass cast shadows. The setting works independently of Directional SSS and the original Skyrim value is restored when disabled.");
 
 		Util::UIntSlider(T(TKEY("sample_count"), "Directional Ray Quality"), &bendSettings.SampleCount, 1, 12);
 		if (auto _tt = Util::HoverTooltipWrapper())
@@ -66,6 +73,77 @@ void ContactShadows::DrawSettings()
 		ImGui::Spacing();
 		ImGui::Spacing();
 		ImGui::TreePop();
+	}
+}
+
+void ContactShadows::UpdateGrassShadowSetting()
+{
+	auto* setting = globals::game::bShadowsOnGrass;
+	if (!setting)
+		return;
+
+	const bool shouldEnable = EnableGrassShadowCasting;
+	if (shouldEnable) {
+		if (!capturedGrassShadowSetting) {
+			originalGrassShadowSetting = setting->data.b;
+			capturedGrassShadowSetting = true;
+			logger::info("[PIXL][ShadowsOnGrass] Skyrim object-to-grass shadows requested; prior bShadowsOnGrass was {}.",
+				originalGrassShadowSetting ? "enabled" : "disabled");
+		}
+		if (!setting->data.b) {
+			setting->data.b = true;
+			logger::info("[PIXL][ShadowsOnGrass] Enabled Skyrim object shadows on grass (grass remains a receiver, not a caster).");
+		}
+	} else if (capturedGrassShadowSetting) {
+		if (setting->data.b != originalGrassShadowSetting) {
+			setting->data.b = originalGrassShadowSetting;
+			logger::info("[PIXL][ShadowsOnGrass] Restored Skyrim bShadowsOnGrass to its prior setting.");
+		}
+		capturedGrassShadowSetting = false;
+	}
+}
+
+bool ContactShadows::EnsureShadowTexture(std::uint32_t width, std::uint32_t height)
+{
+	if (!globals::d3d::device || !globals::d3d::context || width == 0 || height == 0)
+		return false;
+	if (contactShadowsTexture &&
+		contactShadowsTexture->desc.Width == width &&
+		contactShadowsTexture->desc.Height == height)
+		return true;
+
+	ID3D11ShaderResourceView* nullView = nullptr;
+	globals::d3d::context->PSSetShaderResources(45, 1, &nullView);
+	contactShadowsTexture.reset();
+
+	D3D11_TEXTURE2D_DESC textureDesc{};
+	textureDesc.Width = width;
+	textureDesc.Height = height;
+	textureDesc.MipLevels = 1;
+	textureDesc.ArraySize = 1;
+	textureDesc.Format = DXGI_FORMAT_R8_UNORM;
+	textureDesc.SampleDesc.Count = 1;
+	textureDesc.Usage = D3D11_USAGE_DEFAULT;
+	textureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+
+	try {
+		auto texture = std::make_unique<Texture2D>(textureDesc, "ContactShadows::ShadowTexture");
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+		srvDesc.Format = textureDesc.Format;
+		srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Texture2D.MipLevels = 1;
+		texture->CreateSRV(srvDesc);
+		D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
+		uavDesc.Format = textureDesc.Format;
+		uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+		uavDesc.Texture2D.MipSlice = 0;
+		texture->CreateUAV(uavDesc);
+		contactShadowsTexture = std::move(texture);
+		logger::info("[PIXL][DirectionalSSS] Shadow field matches render resolution: {}x{}.", width, height);
+		return true;
+	} catch (const std::exception& error) {
+		logger::error("[PIXL][DirectionalSSS] Could not create {}x{} shadow field: {}", width, height, error.what());
+		return false;
 	}
 }
 
@@ -153,47 +231,26 @@ void ContactShadows::DrawShadows()
 	TracyD3D11Zone(globals::state->tracyCtx, "Contact Shadows");
 
 	auto context = globals::d3d::context;
-
-	auto accumulator = *globals::game::currentAccumulator.get();
-	RE::ShadowSceneNode* shadowSceneNode = accumulator ?
-		accumulator->GetRuntimeData().activeShadowSceneNode : nullptr;
-	// Some interior/exterior transitions leave the accumulator's active node empty
-	// for a frame even though Skyrim's shadow manager already owns the new one.
-	// RadiantGrid and the vanilla lighting path use this same stable fallback.
-	if (!shadowSceneNode && globals::game::smState)
-		shadowSceneNode = globals::game::smState->shadowSceneNode[0];
+	// State::UpdateSharedData uploads this same direction to b5 immediately before
+	// module prepasses. Reuse that CPU mirror instead of independently rebuilding
+	// it from a potentially different active-shadow-node light. This also follows
+	// Sky Continuity's final sun/moon direction and its transition fader exactly.
+	RE::ShadowSceneNode* shadowSceneNode = globals::game::smState ?
+		globals::game::smState->shadowSceneNode[0] : nullptr;
 	if (!shadowSceneNode || !shadowSceneNode->GetRuntimeData().sunLight ||
 		!shadowSceneNode->GetRuntimeData().sunLight->light) {
 		UpdateDirectionalSource(nullptr);
 		return;
 	}
-	auto dirLight = skyrim_cast<RE::NiDirectionalLight*>(
-		shadowSceneNode->GetRuntimeData().sunLight->light.get());
-	if (!dirLight) {
-		UpdateDirectionalSource(nullptr);
-		return;
-	}
-	UpdateDirectionalSource(dirLight);
-
-	// The active NiDirectionalLight is authoritative. A sky-node position can be
-	// camera-relative and may still describe the sun while Skyrim has selected the
-	// moon, which made the ray march disagree with the actual directional light.
-	auto& directionNi = dirLight->GetWorldDirection();
-	float3 light{ directionNi.x, directionNi.y, directionNi.z };
-	if (light.LengthSquared() < 1.0e-6f) {
-		if (auto sky = globals::game::sky; sky && sky->sun && sky->sun->root && sky->root) {
-			const auto& sunPos = sky->sun->root->world.translate;
-			const auto& skyPos = sky->root->world.translate;
-			light = { sunPos.x - skyPos.x, sunPos.y - skyPos.y, sunPos.z - skyPos.z };
-		}
-	}
+	UpdateDirectionalSource(shadowSceneNode->GetRuntimeData().sunLight->light.get());
+	float3 light = globals::state->currentDirectionalLightDirection;
 	if (!std::isfinite(light.x) || !std::isfinite(light.y) || !std::isfinite(light.z) ||
 		light.LengthSquared() < 1.0e-6f) {
 		UpdateDirectionalSource(nullptr);
 		return;
 	}
 	light.Normalize();
-	float4 lightProjection = float4(-light.x, -light.y, -light.z, 0.0f);
+	float4 lightProjection = float4(light.x, light.y, light.z, 0.0f);
 
 	// Helper lambda to calculate light projection
 	auto CalculateLightProjection = [&]() -> std::array<float, 4> {
@@ -315,11 +372,22 @@ void ContactShadows::DrawShadows()
 
 void ContactShadows::Prepass()
 {
+	UpdateGrassShadowSetting();
 	auto context = globals::d3d::context;
-	if (!context || !contactShadowsTexture || !contactShadowsTexture->uav ||
-		!contactShadowsTexture->srv) {
+	if (!context || !globals::game::graphicsState) {
 		return;
 	}
+	auto renderSize = Util::ConvertToDynamic(float2{
+		static_cast<float>(globals::game::graphicsState->screenWidth),
+		static_cast<float>(globals::game::graphicsState->screenHeight) });
+	const auto width = static_cast<std::uint32_t>(std::max(std::lround(renderSize.x), 0l));
+	const auto height = static_cast<std::uint32_t>(std::max(std::lround(renderSize.y), 0l));
+	if (!EnsureShadowTexture(width, height) || !contactShadowsTexture->uav || !contactShadowsTexture->srv)
+		return;
+
+	// Unbind last frame's pixel-shader SRV before clearing/writing through the UAV.
+	ID3D11ShaderResourceView* nullView = nullptr;
+	context->PSSetShaderResources(45, 1, &nullView);
 
 	float white[4] = { 1, 1, 1, 1 };
 	context->ClearUnorderedAccessViewFloat(contactShadowsTexture->uav.get(), white);
@@ -339,6 +407,7 @@ void ContactShadows::Prepass()
 void ContactShadows::LoadSettings(json& o_json)
 {
 	bendSettings = o_json;
+	EnableGrassShadowCasting = o_json.is_object() ? o_json.value("EnableGrassShadowCasting", true) : true;
 	bendSettings.Enable = bendSettings.Enable ? 1u : 0u;
 	bendSettings.SampleCount = std::clamp(bendSettings.SampleCount, 1u, 12u);
 	bendSettings.SurfaceThickness = std::clamp(bendSettings.SurfaceThickness, 0.005f, 0.05f);
@@ -352,6 +421,7 @@ void ContactShadows::LoadSettings(json& o_json)
 void ContactShadows::SaveSettings(json& o_json)
 {
 	o_json = bendSettings;
+	o_json["EnableGrassShadowCasting"] = EnableGrassShadowCasting;
 }
 
 void ContactShadows::Reset()
@@ -375,14 +445,8 @@ bool ContactShadows::HasShaderDefine(RE::BSShader::Type shaderType)
 
 void ContactShadows::SetupResources()
 {
-	if (!globals::d3d::device || !globals::d3d::context || !globals::game::renderer) {
+	if (!globals::d3d::device || !globals::d3d::context || !globals::game::renderer || !globals::game::graphicsState) {
 		logger::error("[PIXL Contact Shadows] D3D11 renderer state unavailable; resources were not created");
-		return;
-	}
-	auto renderer = globals::game::renderer;
-	auto shadowMask = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGET::kSHADOW_MASK];
-	if (!shadowMask.texture || !shadowMask.SRV) {
-		logger::error("[PIXL Contact Shadows] Skyrim shadow-mask resources are unavailable");
 		return;
 	}
 
@@ -409,26 +473,11 @@ void ContactShadows::SetupResources()
 		Util::SetResourceName(pointBorderSampler, "ContactShadows::PointBorderSampler");
 	}
 
-	{
-		D3D11_TEXTURE2D_DESC texDesc{};
-		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-
-		shadowMask.texture->GetDesc(&texDesc);
-		shadowMask.SRV->GetDesc(&srvDesc);
-
-		texDesc.Format = DXGI_FORMAT_R8_UNORM;
-		texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-
-		srvDesc.Format = texDesc.Format;
-
-		D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {
-			.Format = texDesc.Format,
-			.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D,
-			.Texture2D = { .MipSlice = 0 }
-		};
-		contactShadowsTexture = new Texture2D(texDesc, "ContactShadows::ShadowTexture");
-		contactShadowsTexture->CreateSRV(srvDesc);
-		contactShadowsTexture->CreateUAV(uavDesc);
-	}
+	auto renderSize = Util::ConvertToDynamic(float2{
+		static_cast<float>(globals::game::graphicsState->screenWidth),
+		static_cast<float>(globals::game::graphicsState->screenHeight) });
+	EnsureShadowTexture(
+		static_cast<std::uint32_t>(std::max(std::lround(renderSize.x), 0l)),
+		static_cast<std::uint32_t>(std::max(std::lround(renderSize.y), 0l)));
 }
 #undef I18N_KEY_PREFIX

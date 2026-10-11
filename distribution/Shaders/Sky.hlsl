@@ -393,14 +393,21 @@ PS_OUTPUT main(PS_INPUT input)
 #		else
 
 #		if USE_PIXL_LAYERED_VOLUMETRIC_CLOUDS && defined(CLOUDS) && defined(SKY_VEIL)
+		if (SharedData::skyVeilSettings.pad0.x < 0.001f) {
 	baseColor = ApplyMicroclimateSkyWeather(baseColor, input.FogPosition.xyz);
 	float worldLengthSq = dot(input.WorldPosition.xyz, input.WorldPosition.xyz);
 	float3 worldDirection = worldLengthSq > 1e-8f ? input.WorldPosition.xyz * rsqrt(worldLengthSq) : float3(0.0f, 1.0f, 0.0f);
 	baseColor = ApplyPixlLayeredClouds(baseColor, input.TexCoord0.xy, worldDirection);
+		}
 #		endif
 
 	psout.Color.w = input.Color.w * baseColor.w;
 	psout.Color.xyz = Color::Sky(input.Color.xyz) * baseColor.xyz + skyScale;
+#		endif
+
+#		if defined(CLOUDS)
+		float cloudAlphaForShadow = psout.Color.w;
+		psout.Color.w *= 1.0f - saturate(SharedData::skyVeilSettings.pad0.x);
 #		endif
 
 #	else
@@ -422,7 +429,7 @@ PS_OUTPUT main(PS_INPUT input)
 	psout.Normal = float4(0.5, 0.5, 0, psout.Color.w);
 
 #	if defined(SKY_VEIL) && defined(CLOUDS) && !defined(DEFERRED)
-	psout.SkyVeil = psout.Color.w;
+	psout.SkyVeil = cloudAlphaForShadow;
 
 	// Keep sun behind scene depth to prevent halo leaks through geometry.
 	float depth = TexDepthSampler.Load(int3(input.Position.xy, 0));

@@ -74,7 +74,9 @@ namespace ShadowSampling
 #endif
 
 #if defined(SKY_VEIL)
-		worldShadow *= SkyVeil::GetCloudShadowMult(positionWS, LinearSampler);
+		// SkyVeil's cloud map is world-anchored; scene positions in this shader
+		// are camera-relative and need the same offset as the terrain shadow path.
+		worldShadow *= SkyVeil::GetCloudShadowMult(positionWS + offset, LinearSampler);
 #endif
 
 		return worldShadow;

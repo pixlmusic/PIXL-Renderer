@@ -109,6 +109,10 @@ struct VS_OUTPUT
 	float4 FogParam: COLOR1;
 
 	float3 ModelPosition: TEXCOORD12;
+#if defined(AUTO_FUR)
+	// Set by PIXL's procedural fur shell geometry stage; zero for the original skin surface.
+	nointerpolation uint FurShellLayer: TEXCOORD14;
+#endif
 #if defined(GROUND_RESPONSE) && defined(LANDSCAPE)
 	// Base (undisplaced) terrain position survives the GroundResponse HS/DS path.
 	// Lighting still receives WorldPosition at the unified geometric snow/mud surface.
@@ -297,6 +301,9 @@ VS_OUTPUT main(VS_INPUT input)
 #	endif  // SKINNED
 
 	vsout.Position = viewPos;
+#if defined(AUTO_FUR)
+	vsout.FurShellLayer = 0u;
+#endif
 
 #	if defined(LODLANDNOISE) || defined(LODLANDSCAPE)
 	vsout.Position.z += min(1, 1e-4 * max(0, viewPos.z - 70000)) * 0.5;
@@ -1547,6 +1554,20 @@ float4 PixlGroundMarkSample(float2 absoluteXY)
 PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 {
 	PS_OUTPUT psout;
+    float pixlFurFiberVariation = 0.5f;
+#if defined(AUTO_FUR)
+	if (input.FurShellLayer > 0u) {
+		// Stable object-space seeds form continuous tapered strands across the shell
+		// stack. Dense inner coverage hides the substrate; sparse outer coverage
+		// breaks the silhouette into fine fibers without adding a texture fetch.
+		const int3 cell = (int3)floor(input.ModelPosition * 12.0f);
+		const float noise = Random::pcg2d(asuint(cell.xy + cell.z * int2(17, 31))).x / 4294967296.0f;
+		const float layer = saturate(float(input.FurShellLayer) / 8.0f);
+		const float coverage = lerp(0.88f, 0.12f, layer);
+		pixlFurFiberVariation = noise;
+		clip(coverage - noise);
+	}
+#endif
 #	if defined(PIXL_VIRTUAL_DEPTH_OUTPUT)
 	psout.Depth = input.Position.z;
 	float pixlVirtualDepth = input.Position.z;
@@ -2512,6 +2533,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	baseColor.xyz = pow(abs(baseColor.xyz), SharedData::distanceBlendSettings.LODTerrainGamma) * SharedData::distanceBlendSettings.LODTerrainBrightness;
 #		endif
 #	endif  // DISTANCE_BLEND
+
+#	if defined(AUTO_FUR)
+	if (input.FurShellLayer > 0u)
+		baseColor.rgb *= lerp(0.90f, 1.08f, pixlFurFiberVariation);
+#	endif
 
 #	if defined(SKIN) && defined(PIXL_SKIN)
 	float4 skinsk = 0;
@@ -3518,7 +3544,7 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 		physicalSurface.Roughness = MaterialDetail::ApplyRoughnessDetail(
 			physicalSurface.Roughness, pixlDetailRoughnessDelta);
 #		endif
-	material.BaseColor = physicalSurface.BaseColor;
+		material.BaseColor = physicalSurface.BaseColor;
 	material.Roughness = physicalSurface.Roughness;
 	material.F0 = physicalSurface.F0;
 #		if defined(AUTO_FUR)

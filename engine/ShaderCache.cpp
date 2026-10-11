@@ -34,7 +34,7 @@ namespace SIE
 	// liquid optics update is included by Lighting.hlsl, so retaining the old
 	// revision would incorrectly treat pre-update Lighting permutations as
 	// valid and hide the new runtime path behind the disk cache.
-	static constexpr const char* kPipelineShaderRevision = "PIXL.Shaders.20261003.Visibility1";
+	static constexpr const char* kPipelineShaderRevision = "PIXL.Shaders.20261011.FurShellCloudPolish1";
 
 	// Custom include handler to track all includes during shader compilation
 	class TrackingIncludeHandler : public ID3DInclude
@@ -1474,13 +1474,15 @@ namespace SIE
 
 			if (FAILED(compileResult)) {
 				if (errorBlob != nullptr) {
-					logger::error("Failed to compile {} shader {}::{:X}:\n{}",
+					logger::error("Failed to compile {} shader {}::{:X} (HRESULT 0x{:08X}, defines: {}):\n{}",
 						magic_enum::enum_name(shaderClass), magic_enum::enum_name(type), descriptor,
+						static_cast<std::uint32_t>(compileResult), MergeDefinesString(defines),
 						static_cast<char*>(errorBlob->GetBufferPointer()));
 					errorBlob->Release();
 				} else {
-					logger::error("Failed to compile {} shader {}::{:X}",
-						magic_enum::enum_name(shaderClass), magic_enum::enum_name(type), descriptor);
+					logger::error("Failed to compile {} shader {}::{:X} (HRESULT 0x{:08X}, defines: {}; diagnostics unavailable)",
+						magic_enum::enum_name(shaderClass), magic_enum::enum_name(type), descriptor,
+						static_cast<std::uint32_t>(compileResult), MergeDefinesString(defines));
 				}
 				if (shaderBlob != nullptr) {
 					shaderBlob->Release();

@@ -1092,6 +1092,11 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 		const auto& direction = dirLight->GetWorldDirection();
 		data.DirLightDirection = { -direction.x, -direction.y, -direction.z, 0.0f };
 		data.DirLightDirection.Normalize();
+		currentDirectionalLightDirection = {
+			data.DirLightDirection.x,
+			data.DirLightDirection.y,
+			data.DirLightDirection.z
+		};
 
 		data.CameraData = Util::GetCameraData();
 		data.BufferDim = { (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight, 1.0f / (float)globals::game::graphicsState->screenWidth, 1.0f / (float)globals::game::graphicsState->screenHeight };

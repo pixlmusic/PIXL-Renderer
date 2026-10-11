@@ -15,6 +15,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <mutex>
 
@@ -52,7 +53,8 @@ namespace
 	{
 		auto isBoundary = [](char character) {
 			return character == '\\' || character == '/' || character == '_' ||
-				character == '-' || character == '.' || character == ' ';
+				character == '-' || character == '.' || character == ' ' ||
+				(character >= '0' && character <= '9');
 		};
 
 		std::size_t cursor = 0;
@@ -67,57 +69,84 @@ namespace
 		return false;
 	}
 
+	std::string_view ResourceLeaf(std::string_view path)
+	{
+		const auto separator = path.find_last_of("\\/");
+		return separator == std::string_view::npos ? path : path.substr(separator + 1u);
+	}
+
+	template <class Range>
+	bool ContainsAny(std::string_view text, const Range& tokens)
+	{
+		return std::ranges::any_of(tokens, [text](std::string_view token) {
+			return text.find(token) != std::string_view::npos;
+		});
+	}
+
+	bool ContainsAny(std::string_view text, std::initializer_list<std::string_view> tokens)
+	{
+		return std::ranges::any_of(tokens, [text](std::string_view token) {
+			return text.find(token) != std::string_view::npos;
+		});
+	}
+
 	float ClassifyFurEvidence(std::string_view texturePath, std::string_view meshPath = {})
 	{
-		const std::string evidence =
-			NormalizeResourceName(std::string(texturePath) + "\\" + std::string(meshPath));
-		if (evidence.empty())
+		const std::string texture = NormalizeResourceName(texturePath);
+		const std::string mesh = NormalizeResourceName(meshPath);
+		const std::string_view textureLeaf = ResourceLeaf(texture);
+		// MaterialForge builds this hierarchy from the draw geometry upward. Only
+		// the draw's own name is reliable for classifying a submesh; parent actor or
+		// scene names commonly describe unrelated equipment in the same hierarchy.
+		const auto parentSeparator = mesh.find('\\');
+		const std::string_view meshLeaf = parentSeparator == std::string::npos
+			? std::string_view(mesh)
+			: std::string_view(mesh).substr(0u, parentSeparator);
+		if (texture.empty() && mesh.empty())
 			return 0.0f;
 
-		// Explicit authoring vocabulary is authoritative. Boundary-aware matching
-		// avoids false positives such as "furniture" and "furnace".
+		// Hard anatomical and manufactured surfaces always win, even when a mod
+		// stores their textures beneath a creature/fur folder.
+		constexpr std::string_view hardSurfaceTokens[]{
+			"eye", "teeth", "tooth", "claw", "talon", "horn", "antler", "tusk",
+			"skull", "bone", "weapon", "hoof", "beak" };
+		if (ContainsAny(textureLeaf, hardSurfaceTokens) || ContainsAny(meshLeaf, hardSurfaceTokens))
+			return 0.0f;
+
+		// Generic equipment names are excluded before species fallback. This keeps
+		constexpr std::string_view apparelTokens[]{
+			"armor", "armour", "helmet", "hood", "robe", "cloth", "shirt", "dress",
+			"glove", "boot", "shoe", "cloak", "cape", "tunic", "sleeve", "skirt",
+			"pants", "trousers", "belt", "bracer", "cuirass", "outfit", "clothing",
+			"saddle", "quiver", "backpack" };
+		if (ContainsAny(texture, apparelTokens) || ContainsAny(meshLeaf, apparelTokens))
+			return 0.0f;
+
+		// Explicitly named fur sub-materials opt in only when their own material or
+		// draw name is fur-specific and not a whole garment. Fur cuffs/trim and pelt
+		// submeshes can therefore be selected without inheriting parent directories.
 		for (const auto token : { "fur", "furry", "pelt", "fleece", "sheepskin" }) {
-			if (HasFurToken(evidence, token))
+			if (HasFurToken(textureLeaf, token) || HasFurToken(meshLeaf, token))
 				return 1.0f;
 		}
-		// Common Skyrim and armour-mod assets concatenate the material family with
-		// the garment/body part (furarmor, furboots, wolfbody). Keep this explicit
-		// instead of accepting a raw "fur" substring, which would regress the
-		// furniture/furnace false-positive protection below.
-		for (const auto token : {
-				 "furarmor", "furarmour", "furboot", "furshoe", "furglove",
-				 "furgauntlet", "furbracer", "furcloak", "furcape", "furhood",
-				 "furtrim", "furcollar", "pelts", "furs" }) {
-			if (evidence.find(token) != std::string::npos)
-				return 0.96f;
-		}
+		// Bethesda and common replacers use concatenated names such as
+		// sabrecatpelt01; recognize pelt compounds and dedicated pelt folders.
+		if (texture.find("pelt") != std::string::npos ||
+			textureLeaf.find("pelt") != std::string_view::npos ||
+			meshLeaf.find("pelt") != std::string_view::npos)
+			return 1.0f;
 
-		// Explicit non-fur sub-materials on otherwise furry creatures must win over
-		// directory/name evidence. Substring matching is intentional here because
-		// common assets concatenate tokens (wolfeyes, sabrecatclaws, bearteeth).
-		for (const auto token : {
-				 "eye", "teeth", "tooth", "claw", "talon", "horn", "antler",
-				 "weapon", "armor", "armour", "saddle", "hoof", "beak" }) {
-			if (evidence.find(token) != std::string::npos)
-				return 0.0f;
-		}
-
-		// Creature names alone are not enough (eyes, claws and armour often share a
-		// directory), so require a body/skin/coat cue as corroborating evidence.
-		bool creature = false;
-		for (const auto token : {
-				 "wolf", "fox", "bear", "sabrecat", "sabercat", "werewolf",
-				 "khajiit", "mammoth", "dog", "rabbit", "hare", "goat",
-				 "deer", "elk", "horse", "cow" }) {
-			creature = creature || evidence.find(token) != std::string::npos;
-		}
-		bool coat = false;
-		for (const auto token : { "body", "skin", "coat", "torso", "hide" })
-			coat = coat || evidence.find(token) != std::string::npos;
-
-		// Main creature textures often use only a species/variant filename. The
-		// explicit eye/claw/horn/armour exclusions above already remove unsafe
-		// sub-materials, so proven furry species can use a conservative fallback.
+		// Use only the local material and draw names for automatic creature fallback.
+		// Do not inherit species or body cues from the rest of an actor hierarchy.
+		const std::string localNames = std::string(textureLeaf) + "\\" + std::string(meshLeaf);
+		// Automatic classification is deliberately limited to familiar fur-bearing
+		// animals. Do not infer fur from humanoid races (including Khajiit), generic
+		// mammals, or broad actor names: those cues can include clothing and hard
+		// anatomy in the same draw hierarchy. Other content can opt in with an
+		// explicitly named fur/pelt material above.
+		const bool creature = ContainsAny(localNames, {
+			"wolf", "fox", "bear", "dog", "rabbit", "hare" });
+		const bool coat = ContainsAny(localNames, { "body", "skin", "coat", "torso", "hide", "tail" });
 		return creature ? (coat ? 0.90f : 0.82f) : 0.0f;
 	}
 

@@ -12,6 +12,7 @@ Texture2D<float4> SceneTex : register(t0);
 Texture2D<float4> FocusTex : register(t1);
 Texture2D<float> PreviousCoCTex : register(t2);
 Texture2D<float2> MotionVectorTex : register(t3);
+Texture2D<float4> VolumetricCloudTex : register(t18);
 SamplerState LinearClampSampler : register(s0);
 RWTexture2D<float> CoCOut : register(u0);
 
@@ -140,13 +141,13 @@ float SkyDofProtection(float2 uv)
 		return 0.0f;
 	float3 rayDirection = ray * rsqrt(rayLengthSq);
 	const float SKY_DOME_RADIUS = 50000.0f;
-	const float HIGH_HROTHGAR_REFERENCE_Z = 18000.0f;
-	const float UPPER_SKY_PROTECTED_Z = 24000.0f;
+	const float LOWER_SKY_DOF_FADE_Z = 12000.0f;
+	const float UPPER_SKY_DOF_FADE_Z = 40000.0f;
 	float skyDomeAbsoluteZ = FrameBuffer::CameraPosAdjust.z +
 		rayDirection.z * SKY_DOME_RADIUS;
 	return smoothstep(
-		HIGH_HROTHGAR_REFERENCE_Z,
-		UPPER_SKY_PROTECTED_Z,
+		LOWER_SKY_DOF_FADE_Z,
+		UPPER_SKY_DOF_FADE_Z,
 		skyDomeAbsoluteZ);
 }
 
@@ -244,7 +245,24 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 	else
 		coc *= 1.0f - ThirdPersonSubjectProtection(uv, depth) * 0.92f;
 	coc = StabilizeCoCWithReconstruction(uv, coc);
-	if (sky)
-		coc *= 1.0f - SkyDofProtection(uv);
+	if (sky) {
+		// Fade sky defocus gradually across a broad elevation range. Keep 45% of
+		// the optical CoC at the top of the dome so foliage silhouettes do not hit
+		// a sharp blurred-geometry / protected-sky boundary in the bokeh passes.
+		float skyFade = SkyDofProtection(uv);
+		coc *= 1.0f - skyFade * 0.55f;
+	}
+	// Clouds have no geometry depth, so they inherit Skyrim's far-sky distance and
+	// become fully defocused even when their reconstructed volume is visibly near.
+	// Their resolved alpha stores transmittance; protect only pixels with meaningful
+	// cloud opacity and leave clear sky and the terrain horizon under normal DOF.
+	uint cloudWidth, cloudHeight;
+	VolumetricCloudTex.GetDimensions(cloudWidth, cloudHeight);
+	float cloudCoverage = 0.0f;
+	if (cloudWidth > 0u && cloudHeight > 0u) {
+		float cloudTransmittance = VolumetricCloudTex.SampleLevel(LinearClampSampler, uv, 0.0f).a;
+		cloudCoverage = saturate((1.0f - cloudTransmittance) * 8.0f);
+	}
+	coc *= 1.0f - cloudCoverage;
 	CoCOut[dispatchID.xy] = coc;
 }

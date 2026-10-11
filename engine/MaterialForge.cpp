@@ -17,6 +17,7 @@
 #include "Modules/HairReconstruction.h"
 #include "Modules/MaterialLayers.h"
 #include "Modules/GroundResponse.h"
+#include "Modules/FurShells.h"
 #include "Hooks.h"
 #include "I18n/I18n.h"
 #include "ShaderCache.h"
@@ -25,10 +26,35 @@
 
 #include <cmath>
 #include <cctype>
+#include <atomic>
 #define I18N_KEY_PREFIX "feature.material_forge."
 
 namespace
 {
+	uint32_t gEnableProceduralFurShells = 1;
+	float gFurShellLength = 1.8f;
+	std::atomic_flag gFurClassificationLogged = ATOMIC_FLAG_INIT;
+
+	bool SupportsAutomaticFurTechnique(SIE::ShaderCache::LightingShaderTechniques a_technique)
+	{
+		using enum SIE::ShaderCache::LightingShaderTechniques;
+		// Fur often uses environment, glow, or parallax materials. Those legacy
+		// permutations still run the same PIXL material and lighting setup, so they
+		// can use AUTO_FUR safely. Keep landscape and LOD techniques out of this path.
+		switch (a_technique) {
+		case None:
+		case Envmap:
+		case Glowmap:
+		case Parallax:
+		case ParallaxOcc:
+		case MultilayerParallax:
+		case TreeAnim:
+			return true;
+		default:
+			return false;
+		}
+	}
+
 	void QueueGroundBloodDecal(
 		const RE::NiPoint3& a_position,
 		const RE::NiPoint3& a_direction,
@@ -331,6 +357,11 @@ void MaterialForge::DrawSettings()
 		ImGui::SeparatorText("Physical Light Quality");
 		DrawUIntCheckbox("Inverse-Square Local Lights", settings.EnablePhysicalLocalLightFalloff);
 		DrawTooltip("When enabled, blends Skyrim's conventional radius falloff toward PIXL's regularized inverse-square model. At 0 the lights use the vanilla falloff; at 1 they use the full physical model. Disable to restore Natural Lighting's per-light falloff exactly.");
+		DrawUIntCheckbox("Procedural Fur Shells", gEnableProceduralFurShells);
+		DrawTooltip("Adds eight procedurally covered geometry layers to confidently classified animal coats and explicit fur or pelt materials. The layered draw costs more GPU work.");
+		if (ImGui::SliderFloat("Fur Shell Length", &gFurShellLength, 0.2f, 4.0f, "%.1f units", ImGuiSliderFlags_AlwaysClamp))
+			FurShells::SetShellLength(gFurShellLength);
+		DrawTooltip("Controls how far the fur layers extrude from the surface. Shorter values give a tighter coat and reduce silhouette expansion; longer values make the fur more visible.");
 		if (settings.EnablePhysicalLocalLightFalloff != 0) {
 			ImGui::SliderFloat("Physical Falloff Strength", &settings.PhysicalLocalLightFalloffStrength,
 				0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -641,11 +672,20 @@ void MaterialForge::SaveSettings(json& o_json)
 {
 	o_json = settings;
 	o_json["Legacy Conversion Tuning"] = legacyTuningSettings;
+	o_json["Procedural Fur Shells"] = gEnableProceduralFurShells;
+	o_json["Fur Shell Length"] = gFurShellLength;
 }
 
 void MaterialForge::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	if (const auto it = o_json.find("Procedural Fur Shells"); it != o_json.end() && it->is_number())
+		gEnableProceduralFurShells = it->get<uint32_t>() != 0 ? 1u : 0u;
+	if (const auto it = o_json.find("Fur Shell Length"); it != o_json.end() && it->is_number_float()) {
+		const float value = it->get<float>();
+		if (std::isfinite(value)) gFurShellLength = std::clamp(value, 0.2f, 4.0f);
+	}
+	FurShells::SetShellLength(gFurShellLength);
 	settings.EnablePhysicalLocalLightFalloff = settings.EnablePhysicalLocalLightFalloff ? 1u : 0u;
 	settings.LocalLightMinimumDistance = std::clamp(
 		std::isfinite(settings.LocalLightMinimumDistance) ? settings.LocalLightMinimumDistance : 28.0f,
@@ -662,6 +702,9 @@ void MaterialForge::LoadSettings(json& o_json)
 void MaterialForge::RestoreDefaultSettings()
 {
 	settings = {};
+	gEnableProceduralFurShells = 1;
+	gFurShellLength = 1.8f;
+	FurShells::SetShellLength(gFurShellLength);
 	legacyTuningSettings = {};
 }
 
@@ -670,6 +713,7 @@ void MaterialForge::RestoreDefaultSettings()
 void MaterialForge::SetupResources()
 {
 	logger::debug("[MaterialForge] SetupResources begin");
+	FurShells::Initialize();
 	SetupTextureSetData();
 	SetupMaterialObjectData();
 
@@ -1137,7 +1181,6 @@ struct BSLightingShaderProperty_GetRenderPasses
 		if (property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexLighting) && (property->material->GetFeature() == RE::BSShaderMaterial::Feature::kDefault || property->material->GetFeature() == RE::BSShaderMaterial::Feature::kMultiTexLandLODBlend)) {
 			isPbr = true;
 		}
-		const char* geometryName = geometry != nullptr ? geometry->name.c_str() : nullptr;
 		std::string geometryHierarchy;
 		for (auto* object = static_cast<RE::NiAVObject*>(geometry); object != nullptr && geometryHierarchy.size() < 512u; object = object->parent) {
 			const char* objectName = object->name.c_str();
@@ -1147,12 +1190,23 @@ struct BSLightingShaderProperty_GetRenderPasses
 				geometryHierarchy.append(objectName);
 			}
 		}
-		const float automaticFurConfidence =
-			!isPbr && property->material != nullptr
-				? PhysicalMaterial::ClassifyAutomaticFur(
-					  *static_cast<RE::BSLightingShaderMaterialBase*>(property->material),
-					  geometryName != nullptr ? std::string_view(geometryName) : std::string_view{})
-				: 0.0f;
+		float automaticFurConfidence = 0.0f;
+		if (property->material != nullptr) {
+			automaticFurConfidence = PhysicalMaterial::ClassifyAutomaticFur(
+				*static_cast<RE::BSLightingShaderMaterialBase*>(property->material),
+				geometryHierarchy);
+			if (isPbr && !property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape)) {
+				auto* pbrMaterial = static_cast<BSLightingShaderMaterialPBR*>(property->material);
+				// Explicit Material Forge authoring is authoritative. Path classification
+				// also covers PBR materials whose texture set replaces vanilla Khajiit assets.
+				if (pbrMaterial->pbrFlags.any(PBRFlags::FurShell))
+					automaticFurConfidence = 1.0f;
+				else if (!pbrMaterial->inputFilePath.empty())
+					automaticFurConfidence = std::max(
+						automaticFurConfidence,
+						PhysicalMaterial::ClassifyAutomaticFur(*pbrMaterial, pbrMaterial->inputFilePath));
+			}
+		}
 		float automaticHairConfidence = property->material != nullptr
 			? PhysicalMaterial::ClassifyAutomaticHair(
 				  *static_cast<RE::BSLightingShaderMaterialBase*>(property->material),
@@ -1165,7 +1219,6 @@ struct BSLightingShaderProperty_GetRenderPasses
 		if (automaticHairConfidence > 0.0f &&
 			property->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kBackLighting))
 			automaticHairConfidence = std::min(1.0f, automaticHairConfidence + 0.02f);
-
 		auto currentPass = renderPasses->head;
 		while (currentPass != nullptr) {
 			if (currentPass->shader->shaderType == RE::BSShader::Type::Lighting) {
@@ -1177,13 +1230,17 @@ struct BSLightingShaderProperty_GetRenderPasses
 				// authoritative material state so a recycled render pass cannot retain a
 				// stale fur/hair classification after an equipment or hairstyle change.
 				lightingFlags &= ~0b11111000u;
+				const float resolvedFurConfidence = automaticFurConfidence;
 				const bool automaticFurEligible =
-					automaticFurConfidence >= 0.80f &&
-					(lightingFlags & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Skinned)) != 0 &&
-					(lightingType == SIE::ShaderCache::LightingShaderTechniques::None ||
-					 lightingType == SIE::ShaderCache::LightingShaderTechniques::TreeAnim);
-				if (automaticFurEligible)
+					resolvedFurConfidence >= 0.80f &&
+					(lightingFlags & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::WorldMap)) == 0 &&
+					SupportsAutomaticFurTechnique(lightingType);
+				if (automaticFurEligible) {
 					lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::AutoFur);
+					if (!gFurClassificationLogged.test_and_set())
+						logger::info("[FurShells] First eligible material: confidence {:.2f}, technique {}, geometry '{}'",
+							resolvedFurConfidence, static_cast<std::uint32_t>(lightingType), geometryHierarchy);
+				}
 
 				const bool nativeHair =
 					lightingType == SIE::ShaderCache::LightingShaderTechniques::Hair;
@@ -1581,6 +1638,13 @@ struct BSLightingShader_SetupGeometry
 		shader->currentRawTechnique |= (std::min((pass->numLights - 1), 7) << 3);
 
 		func(shader, pass, renderFlags);
+
+		const uint32_t activeTechnique = pass ? pass->passEnum - 0x4800002D : 0u;
+		const bool automaticFur = (activeTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::AutoFur)) != 0;
+		FurShells::ArmForNextDraw(
+			automaticFur && gEnableProceduralFurShells != 0,
+			(activeTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ModelSpaceNormals)) != 0,
+			(activeTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Skinned)) != 0);
 
 		shader->currentRawTechnique = originalTechnique;
 

@@ -33,6 +33,7 @@
 #include "Modules/DistantLife.h"
 #include "Modules/ReactiveFX.h"
 #include "Modules/Microclimates.h"
+#include "Modules/VolumetricClouds.h"
 #include "Modules/SkyContinuity.h"
 #include "Modules/SkyBounce.h"
 #include "Modules/TissueDiffusion.h"
@@ -278,6 +279,7 @@ const std::vector<RenderModule*>& RenderModule::GetModuleList()
 		&globals::pipeline::waterbody,
 		&globals::pipeline::horizonBlend,
 		&globals::pipeline::microclimates,
+		&globals::pipeline::volumetricClouds,
 		&globals::pipeline::atmosphere,
 		&globals::pipeline::cameraSuite,
 		&globals::pipeline::skinOptics,

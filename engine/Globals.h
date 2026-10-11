@@ -47,6 +47,7 @@ struct CurvedSurfaceMapping;
 struct DistantLife;
 struct ReactiveFX;
 struct Microclimates;
+struct VolumetricClouds;
 
 class State;
 class Deferred;
@@ -142,6 +143,7 @@ namespace globals
 		extern DistantLife distantLife;
 		extern ReactiveFX reactiveFX;
 		extern Microclimates microclimates;
+		extern VolumetricClouds volumetricClouds;
 
 	}
 

@@ -1092,6 +1092,18 @@ void FoliageOptimizer::Hooks::DrawInstanceTriShape::thunk(RE::BSRenderPass* pass
 		drawVanilla();
 		return;
 	}
+	// The optimizer's visibility state is built from the player camera. Shadow-map
+	// cascades have a different frustum, so using camera-culled indirect args here
+	// drops off-screen grass that should still cast into a visible cascade. Keep
+	// Skyrim's native grass caster path for these utility passes.
+	uint32_t descriptor = 0;
+	if (globals::game::currentPixelShader && *globals::game::currentPixelShader)
+		descriptor = (*globals::game::currentPixelShader)->id;
+	constexpr uint32_t kShadowMapDescriptorBits = (1u << 14) | (1u << 15);  // UtilityShaderFlags::RenderShadowmap[Clamped]
+	if ((descriptor & kShadowMapDescriptorBits) != 0) {
+		drawVanilla();
+		return;
+	}
 	RE::NiSourceTexture* diffuseTexture = shaderProperty->GetBaseTexture();
 	if (!diffuseTexture) {
 		drawVanilla();
@@ -1101,9 +1113,6 @@ void FoliageOptimizer::Hooks::DrawInstanceTriShape::thunk(RE::BSRenderPass* pass
 	const uint64_t descVal = *reinterpret_cast<uint64_t*>(&geometry->GetGeometryRuntimeData().vertexDesc);
 	const uint32_t frame = globals::game::graphicsState->frameCount;
 
-	uint32_t descriptor = 0;
-	if (globals::game::currentPixelShader && *globals::game::currentPixelShader)
-		descriptor = (*globals::game::currentPixelShader)->id;
 	const uint64_t passKey = (static_cast<uint64_t>(pass->passEnum) << 32) | descriptor;
 
 	GrassBucket* b = nullptr;

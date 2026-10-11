@@ -131,7 +131,7 @@ namespace SharedData
 	{
 		uint EnableLightsVisualisation;
 		uint LightsVisualisationMode;
-		float2 pad0;
+		float2 pad0; // x: suppress vanilla cloud meshes while PIXL Volumetric Clouds is active
 		uint4 ClusterSize;
 	};
 

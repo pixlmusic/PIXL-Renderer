@@ -5,6 +5,7 @@
 #include "State.h"
 #include "Utils/D3D.h"
 #include "Modules/Microclimates.h"
+#include "Modules/VolumetricClouds.h"
 
 #define I18N_KEY_PREFIX "feature.sky_veil."
 
@@ -86,10 +87,14 @@ void SkyVeil::RestoreDefaultSettings()
 
 SkyVeil::Settings SkyVeil::GetCommonBufferData()
 {
-	if (!loaded)
-		return settings;
-
 	auto data = settings;
+	// Reuse the existing two-float padding without changing SharedData's ABI.
+	// The sky shader uses this runtime bit to hide Skyrim's 2D cloud meshes while
+	// the independent volumetric pass is enabled, avoiding stacked cloud layers.
+	const auto& volumetricClouds = globals::pipeline::volumetricClouds;
+	const bool useVolumetricClouds = volumetricClouds.loaded && volumetricClouds.settings.Enabled;
+	data.pad[0] = useVolumetricClouds ?
+		1.0f - std::clamp(volumetricClouds.settings.VanillaCloudVisibility, 0.0f, 1.0f) : 0.0f;
 
 	return data;
 }

@@ -4010,18 +4010,20 @@ void GroundResponse::QueueCollisions()
 				[&](RE::bhkNiCollisionObject* a_object) -> RE::BSVisit::BSVisitControl {
 					// Legacy centre/radius path remains byte-for-byte compatible for
 					// grass. Surface interaction uses the richer live AABB separately.
-					RE::NiPoint3 centerPos{};
-					float radius = 0.0f;
-					if (Util::GetShapeBound(a_object, centerPos, radius)) {
-						const bool finiteBound =
-							GroundFinitePoint(centerPos) &&
-							std::isfinite(radius);
-						if (finiteBound &&
-							radius > MIN_COLLISION_RADIUS &&
-							radius <= MAX_COLLISION_RADIUS &&
-							radius >= distance * MIN_COLLISION_RADIUS_DISTANCE_SCALE) {
-							collisionShapes.push_back(
-								float4{ centerPos.x, centerPos.y, centerPos.z, radius });
+					if (settings.EnableGroundResponse) {
+						RE::NiPoint3 centerPos{};
+						float radius = 0.0f;
+						if (Util::GetShapeBound(a_object, centerPos, radius)) {
+							const bool finiteBound =
+								GroundFinitePoint(centerPos) &&
+								std::isfinite(radius);
+							if (finiteBound &&
+								radius > MIN_COLLISION_RADIUS &&
+								radius <= MAX_COLLISION_RADIUS &&
+								radius >= distance * MIN_COLLISION_RADIUS_DISTANCE_SCALE) {
+								collisionShapes.push_back(
+									float4{ centerPos.x, centerPos.y, centerPos.z, radius });
+							}
 						}
 					}
 
@@ -4051,8 +4053,9 @@ void GroundResponse::QueueCollisions()
 		// deformable receiver; grass still consumes the unchanged legacy bounds.
 		// First-person equipment remains grass-only so equip/unequip cannot reset
 		// or redirect snow history.
-		collectRoot(primaryRoot, surfaceContactAllowed);
-		if (firstPersonRoot && firstPersonRoot != primaryRoot)
+		if (settings.EnableGroundResponse || surfaceContactAllowed)
+			collectRoot(primaryRoot, surfaceContactAllowed);
+		if (settings.EnableGroundResponse && firstPersonRoot && firstPersonRoot != primaryRoot)
 			collectRoot(firstPersonRoot, false);
 
 		const std::uint32_t actorID = actor->GetFormID();
@@ -4404,7 +4407,7 @@ void GroundResponse::QueueCollisions()
 		previousSurfaceActorPositions[actorID] = actorPosition;
 
 		// Preserve the existing grass interaction field exactly.
-		if (isPlayer && !playerProxyQueued) {
+		if (settings.EnableGroundResponse && isPlayer && !playerProxyQueued) {
 			const auto playerPos = player->GetPosition();
 			collisionShapes.push_back(float4{
 				playerPos.x,
@@ -8288,11 +8291,12 @@ void GroundResponse::UpdateCollisionTexture()
 	context->PSSetShaderResources(100, 1, &nullInteractionSRV);
 	context->DSSetShaderResources(100, 1, &nullInteractionSRV);
 
-	if (!settings.EnableGroundResponse && !settings.EnableDeformableGround) {
-		float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-		context->ClearUnorderedAccessViewFloat(collisionTexture->uav.get(), clearColor);
+	// Snow/mud deformation has its own absolute-world fields. It must not keep
+	// producing the legacy grass collider texture when grass collision is off.
+	// The grass draw hook binds null while disabled, and a later enable rebuilds
+	// this field from the current actor bounds and clipmap history.
+	if (!settings.EnableGroundResponse)
 		return;
-	}
 
 	{
 		ID3D11Buffer* buffers[1] = { *globals::game::perFrame };

@@ -7,6 +7,8 @@
 
 #include "Buffer.h"
 
+#include <memory>
+
 struct ContactShadows : RenderModule
 {
 public:
@@ -58,6 +60,9 @@ public:
 	static_assert(sizeof(BendSettings) == 32, "ContactShadows::BendSettings must match RaymarchCS b1 exactly.");
 
 	BendSettings bendSettings;
+	// Controls Skyrim's object-to-grass shadow receiver option. This does not enable
+	// grass as a shadow caster; restore the original game setting when disabled.
+	bool EnableGrassShadowCasting = true;
 
 	struct alignas(16) RaymarchCB
 	{
@@ -85,7 +90,9 @@ public:
 	ConstantBuffer* raymarchCB = nullptr;
 	ID3D11ComputeShader* raymarchCS = nullptr;
 
-	Texture2D* contactShadowsTexture = nullptr;
+	std::unique_ptr<Texture2D> contactShadowsTexture;
+	bool capturedGrassShadowSetting = false;
+	bool originalGrassShadowSetting = false;
 
 	/** @brief Creates the raymarch constant buffer, point border sampler, and shadow output texture. */
 	virtual void SetupResources() override;
@@ -118,6 +125,8 @@ public:
 	// The directional light is reacquired from Skyrim's active shadow scene every prepass.
 	// This cached pointer exists only to report source transitions; it never supplies render data.
 	void UpdateDirectionalSource(const void* source);
+	void UpdateGrassShadowSetting();
+	bool EnsureShadowTexture(std::uint32_t width, std::uint32_t height);
 	const void* activeDirectionalSource = nullptr;
 	std::uint64_t directionalSourceEpoch = 0;
 

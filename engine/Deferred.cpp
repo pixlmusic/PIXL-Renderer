@@ -22,6 +22,7 @@
 #include "Modules/RainResponse.h"
 #include "Modules/MaterialLayers.h"
 #include "Modules/DistantLife.h"
+#include "Modules/VolumetricClouds.h"
 
 #include "Hooks.h"
 
@@ -443,6 +444,10 @@ void Deferred::DeferredPasses()
 	// Dedicated rain runoff is composited after the opaque/deferred scene is
 	// resolved but before later forward precipitation/effects. It therefore has
 	// real scene depth available and no longer depends on Skyrim rain-card placement.
+	auto& volumetricClouds = globals::pipeline::volumetricClouds;
+	if (volumetricClouds.loaded)
+		volumetricClouds.DrawClouds();
+
 	auto& distantLife = globals::pipeline::distantLife;
 	if (distantLife.loaded)
 		distantLife.DrawDistantLife();

@@ -36,6 +36,7 @@
 #include "Modules/LightVolumes.h"
 #include "Modules/SkyBounce.h"
 #include "Modules/SkyVeil.h"
+#include "Modules/VolumetricClouds.h"
 #include "Modules/WorldProbes.h"
 #include "MaterialForge.h"
 #include "Modules/MaterialLayers.h"
@@ -1076,8 +1077,12 @@ namespace
 			slider("Volumetric Scattering", &s.volumetricDirectionalScatteringIntensity, 0.0f, 3.0f);
 			slider("Sky Scattering", &s.volumetricSkyLightingIntensity, 0.0f, 3.0f);
 		} else if (name == "ContactShadows") {
-			auto& s = globals::pipeline::contactShadows.bendSettings;
+			auto& contactShadowsFeature = globals::pipeline::contactShadows;
+			auto& s = contactShadowsFeature.bendSettings;
 			toggle("Enabled", &s.Enable);
+			changed |= ImGui::Checkbox("Objects Cast Shadows on Grass", &contactShadowsFeature.EnableGrassShadowCasting);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Controls Skyrim's bShadowsOnGrass receiver option. This allows objects to cast shadows onto grass; it does not make grass cast shadows. Works independently of Directional SSS; the previous Skyrim value is restored when disabled.");
 			slider("Directional SSS Strength", &s.Strength, 0.0f, 2.0f);
 			slider("Surface Thickness", &s.SurfaceThickness, 0.0f, 0.2f);
 			slider("Shadow Contrast", &s.ShadowContrast, 0.0f, 2.0f);
