@@ -13,6 +13,7 @@ Texture2D<float4> FocusTex : register(t1);
 Texture2D<float> PreviousCoCTex : register(t2);
 Texture2D<float2> MotionVectorTex : register(t3);
 Texture2D<float4> VolumetricCloudTex : register(t18);
+Texture2D<float> VolumetricCloudDepthTex : register(t19);
 SamplerState LinearClampSampler : register(s0);
 RWTexture2D<float> CoCOut : register(u0);
 
@@ -72,10 +73,13 @@ float SignedCircleOfConfusionPixels(float depth)
 	// restrained; Director/Photo/Video reaches the full cinematic radius. This
 	// happens before tile classification so it receives the same edge rejection
 	// and reconstruction as optical far blur.
-	float fadeWidth = max(dofFocusRange, 240.0f);
+	float sceneAltitude = max(FrameBuffer::CameraPosAdjust.z, 0.0f);
+	float altitudeGate = DofDirectorPresentation() ? 0.0f : smoothstep(8000.0f, 26000.0f, sceneAltitude);
+	float gameplayFarStart = dofControlFarBlurDistance + altitudeGate * 36000.0f;
+	float fadeWidth = max(dofFocusRange, 240.0f) + altitudeGate * 16000.0f;
 	float distanceFade = smoothstep(
-		dofControlFarBlurDistance,
-		dofControlFarBlurDistance + fadeWidth,
+		gameplayFarStart,
+		gameplayFarStart + fadeWidth,
 		depth);
 	float presentationScale = DofDirectorPresentation() ? 1.0f : 0.55f;
 	float distanceCoC = distanceFade * dofControlMaxCoCPixels *
@@ -123,10 +127,8 @@ float ThirdPersonSubjectProtection(float2 uv, float depth)
 
 float SkyDofProtection(float2 uv)
 {
-	// Treat Skyrim's far-depth sky as a camera-centred dome, then classify it by
-	// absolute world elevation rather than screen position or viewing angle.
-	// The low dome remains in DOF to blend the landscape horizon; sky above the
-	// approximate High Hrothgar elevation feathers into full protection.
+	// Feather sky protection by camera-relative ray elevation. Absolute world
+	// height made the same horizon ray change classification at High Hrothgar.
 	float2 clipXY = uv * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f);
 	// Do not unproject z=1 through the combined inverse: Skyrim may use an
 	// infinite far projection where that valid point has homogeneous w=0.
@@ -141,14 +143,7 @@ float SkyDofProtection(float2 uv)
 		return 0.0f;
 	float3 rayDirection = ray * rsqrt(rayLengthSq);
 	const float SKY_DOME_RADIUS = 50000.0f;
-	const float LOWER_SKY_DOF_FADE_Z = 12000.0f;
-	const float UPPER_SKY_DOF_FADE_Z = 40000.0f;
-	float skyDomeAbsoluteZ = FrameBuffer::CameraPosAdjust.z +
-		rayDirection.z * SKY_DOME_RADIUS;
-	return smoothstep(
-		LOWER_SKY_DOF_FADE_Z,
-		UPPER_SKY_DOF_FADE_Z,
-		skyDomeAbsoluteZ);
+	return smoothstep(2500.0f, 28000.0f, rayDirection.z * SKY_DOME_RADIUS);
 }
 
 float StabilizeCoCWithReconstruction(float2 uv, float currentCoC)
@@ -252,17 +247,22 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 		float skyFade = SkyDofProtection(uv);
 		coc *= 1.0f - skyFade * 0.55f;
 	}
-	// Clouds have no geometry depth, so they inherit Skyrim's far-sky distance and
-	// become fully defocused even when their reconstructed volume is visibly near.
-	// Their resolved alpha stores transmittance; protect only pixels with meaningful
-	// cloud opacity and leave clear sky and the terrain horizon under normal DOF.
-	uint cloudWidth, cloudHeight;
-	VolumetricCloudTex.GetDimensions(cloudWidth, cloudHeight);
-	float cloudCoverage = 0.0f;
-	if (cloudWidth > 0u && cloudHeight > 0u) {
-		float cloudTransmittance = VolumetricCloudTex.SampleLevel(LinearClampSampler, uv, 0.0f).a;
-		cloudCoverage = saturate((1.0f - cloudTransmittance) * 8.0f);
+	// Cloud exclusion applies only to distant cloud volume on clear-depth sky
+	// pixels. Nearby cloud layers retain normal gameplay DOF, and a cloud mask
+	// can never suppress defocus on foreground geometry beneath the same screen UV.
+	if (sky) {
+		uint cloudWidth, cloudHeight;
+		VolumetricCloudTex.GetDimensions(cloudWidth, cloudHeight);
+		if (cloudWidth > 0u && cloudHeight > 0u) {
+			float cloudDistance = VolumetricCloudDepthTex.SampleLevel(LinearClampSampler, uv, 0.0f);
+			float cloudTransmittance = VolumetricCloudTex.SampleLevel(LinearClampSampler, uv, 0.0f).a;
+			float cloudCoverage = saturate((1.0f - cloudTransmittance) * 8.0f);
+			float gameplayFarDistance = max(dofControlFarBlurDistance,
+				dofControlFocusDistance + max(dofFocusRange, 1.0f) * 2.0f);
+			float cloudDistanceFade = smoothstep(gameplayFarDistance,
+				gameplayFarDistance + max(dofFocusRange, 4000.0f), cloudDistance);
+			coc *= 1.0f - cloudCoverage * cloudDistanceFade;
+		}
 	}
-	coc *= 1.0f - cloudCoverage;
 	CoCOut[dispatchID.xy] = coc;
 }

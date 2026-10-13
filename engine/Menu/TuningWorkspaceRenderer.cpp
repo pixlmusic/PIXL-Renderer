@@ -768,6 +768,12 @@ namespace
 	bool LoadDirectorVideoPath(const std::filesystem::path& path)
 	{
 		try {
+			std::error_code sizeError;
+			const auto fileSize = std::filesystem::file_size(path, sizeError);
+			if (sizeError || fileSize > DirectorCameraPath::kMaximumFileBytes) {
+				logger::warn("[PIXL Director] Rejected oversized or unreadable Video path '{}'", path.string());
+				return false;
+			}
 			std::ifstream stream(path);
 			if (!stream) {
 				logger::warn("[PIXL Director] Cannot open Video path '{}'", path.string());
@@ -845,6 +851,10 @@ namespace
 
 	void CaptureDirectorVideoPointFromCamera()
 	{
+		if (g_directorVideo.path.points.size() >= DirectorCameraPath::kMaximumPointCount) {
+			logger::warn("[PIXL Director] Video path reached the {} point limit", DirectorCameraPath::kMaximumPointCount);
+			return;
+		}
 		auto* playerCamera = RE::PlayerCamera::GetSingleton();
 		if (!playerCamera || !playerCamera->IsInFreeCameraMode()) {
 			logger::warn("[PIXL Director] Cannot capture Video point without PIXL's active free camera");
@@ -1543,7 +1553,8 @@ namespace
 			const auto weatherClass = WeatherManager::GetSingleton()->ClassifyWeather(weather);
 			const bool semanticMatch =
 				(preset == DirectorWeatherPreset::Clear && weatherClass == WeatherManager::WeatherClass::Clear) ||
-				(preset == DirectorWeatherPreset::Cloudy && weatherClass == WeatherManager::WeatherClass::Cloudy) ||
+				(preset == DirectorWeatherPreset::Cloudy &&
+					(weatherClass == WeatherManager::WeatherClass::Cloudy || weatherClass == WeatherManager::WeatherClass::Fog)) ||
 				(preset == DirectorWeatherPreset::Rain &&
 					(weatherClass == WeatherManager::WeatherClass::Rain || weatherClass == WeatherManager::WeatherClass::Storm)) ||
 				(preset == DirectorWeatherPreset::Snow && weatherClass == WeatherManager::WeatherClass::Snow);
@@ -5512,6 +5523,11 @@ bool TuningWorkspaceRenderer::IsDirectorPhotoModeActive()
 		g_directorPhotoMode.active;
 }
 
+bool TuningWorkspaceRenderer::IsDirectorStillPhotoModeActive()
+{
+	return g_directorPhotoMode.active && !IsDirectorVideoMode();
+}
+
 std::optional<float> TuningWorkspaceRenderer::GetDirectorFocusDistance()
 {
 	if (!g_directorPhotoMode.active ||
@@ -5580,7 +5596,13 @@ TuningWorkspaceRenderer::TunerInteractionMode TuningWorkspaceRenderer::GetTunerI
 bool TuningWorkspaceRenderer::IsDirectorInspectionMoving()
 {
 	const bool tunerOpen = globals::menu && globals::menu->IsEnabled;
-	return (g_tunerOwnsInspection || IsDirectorVideoMode() || tunerOpen) &&
+	const bool directorVideo = IsDirectorVideoMode();
+	// The Video editor uses Shift as its explicit fly hold. Gate the UI lock on
+	// the physical key state as well as the queued key transition so a lost key-up
+	// (focus change / input hook ordering) can never strand the POI panel with
+	// ImGuiWindowFlags_NoInputs applied.
+	const bool flyModifierDown = !directorVideo || (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+	return flyModifierDown && (g_tunerOwnsInspection || directorVideo || tunerOpen) &&
 		g_directorPhotoMode.active && g_tunerInspectionMoving &&
 		!g_directorExitRequested.load(std::memory_order_acquire);
 }
@@ -8095,7 +8117,9 @@ namespace
 
 		ImGui::SetNextWindowPos(ImVec2(margin, top), ImGuiCond_Always);
 		ImGui::SetNextWindowSize(ImVec2(width, height), ImGuiCond_Always);
-		ImGui::PushStyleColor(ImGuiCol_WindowBg, PIXLUI::ToVec4(PIXLUI::Colors::Window));
+		// The Director editor is a late presentation overlay. Keep its surface
+		// opaque so the intentionally defocused scene cannot bleed through the UI.
+		ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(7.0f / 255.0f, 9.0f / 255.0f, 11.0f / 255.0f, 1.0f));
 		ImGui::PushStyleColor(ImGuiCol_Border, PIXLUI::ToVec4(PIXLUI::Colors::BorderSoft));
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(PIXLUI::Ref(14.0f), PIXLUI::Ref(12.0f)));
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, PIXLUI::Ref(5.0f));
@@ -8117,8 +8141,14 @@ namespace
 			ImGui::SameLine();
 			ImGui::TextDisabled("TO FLY  /  RELEASE TO EDIT  /  DELETE CLEAN VIEW");
 
-			if (PIXLUI::ActionButton("CAPTURE POI", ImVec2(PIXLUI::Ref(128.0f), PIXLUI::Ref(30.0f)), true))
+			const bool canCapturePoint = g_directorVideo.path.points.size() < DirectorCameraPath::kMaximumPointCount;
+			ImGui::BeginDisabled(!canCapturePoint);
+			const bool capturePoi = PIXLUI::ActionButton("CAPTURE POI", ImVec2(PIXLUI::Ref(128.0f), PIXLUI::Ref(30.0f)), true);
+			ImGui::EndDisabled();
+			if (capturePoi)
 				CaptureDirectorVideoPointFromCamera();
+			if (!canCapturePoint)
+				ImGui::TextDisabled("This path has reached the %zu point limit.", DirectorCameraPath::kMaximumPointCount);
 			ImGui::SameLine();
 			const bool playable = g_directorVideo.path.IsValid();
 			ImGui::BeginDisabled(!playable);
@@ -8332,7 +8362,11 @@ namespace
 		if (PIXLUI::ActionButton("DELETE SPLINE", ImVec2(PIXLUI::Ref(140.0f), PIXLUI::Ref(30.0f)), false))
 			ImGui::OpenPopup("Clear Director route?");
 		ImGui::SameLine();
-		if (PIXLUI::ActionButton("CAPTURE POINT", ImVec2(PIXLUI::Ref(148.0f), PIXLUI::Ref(30.0f)), true))
+		const bool canCapturePoint = g_directorVideo.path.points.size() < DirectorCameraPath::kMaximumPointCount;
+		ImGui::BeginDisabled(!canCapturePoint);
+		const bool capturePoint = PIXLUI::ActionButton("CAPTURE POINT", ImVec2(PIXLUI::Ref(148.0f), PIXLUI::Ref(30.0f)), true);
+		ImGui::EndDisabled();
+		if (capturePoint)
 			CaptureDirectorVideoPointFromCamera();
 		ImGui::SameLine();
 		ImGui::Checkbox("Loop route", &g_directorVideo.loop);
@@ -8502,7 +8536,10 @@ namespace
 			ImGui::SameLine();
 			if (PIXLUI::ActionButton("GO TO POINT", ImVec2(PIXLUI::Ref(128.0f), PIXLUI::Ref(30.0f)), false))
 				MoveDirectorCameraToPoint(g_directorVideo.selectedPoint);
-			if (PIXLUI::ActionButton("CAPTURE TARGET", ImVec2(PIXLUI::Ref(148.0f), PIXLUI::Ref(30.0f)), false)) {
+			ImGui::BeginDisabled(!canCapturePoint);
+			const bool captureTarget = PIXLUI::ActionButton("CAPTURE TARGET", ImVec2(PIXLUI::Ref(148.0f), PIXLUI::Ref(30.0f)), false);
+			ImGui::EndDisabled();
+			if (captureTarget) {
 				const std::size_t selected = g_directorVideo.selectedPoint;
 				const std::size_t before = g_directorVideo.path.points.size();
 				CaptureDirectorVideoPointFromCamera();

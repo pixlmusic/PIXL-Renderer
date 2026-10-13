@@ -362,6 +362,9 @@ Texture2D<float4> RawSSRReflectionTex : register(t11);
 // it follows tessellated/displaced water rather than a legacy flat overlay.
 Texture2D<float> WaterFoamStencil : register(t66);
 Texture2D<float4> AuthoredRapidWater : register(t67);
+// Volumetric clouds are composited after opaque water, so environment cubemaps
+// cannot contain them. Use the resolved camera sky for reflected-sky fallback.
+Texture2D<float4> VolumetricCloudReflection : register(t68);
 
 cbuffer PerTechnique : register(b0)
 {
@@ -857,7 +860,31 @@ float3 GetWaterSpecularColor(PS_INPUT input, float3 normal, float3 viewDirection
 
 	if (SharedData::HideSky)
 		reflectionAmount = 0.0;
-		reflectionColor = lerp(dynamicCubemap, reflectionColor, reflectionAmount);
+				reflectionColor = lerp(dynamicCubemap, reflectionColor, reflectionAmount);
+#			endif
+
+#			if USE_PIXL_WATER_OPTICS
+	// The volumetric pass is screen-space, while this water pass falls back to
+	// Skyrim's preintegrated environment cubemap at the horizon. Project the
+	// reflected view ray back into the current sky image and composite its cloud
+	// radiance/transmittance over that cubemap sample. Clear-depth sky rays have
+	// no screen-space hit, so this specifically fills the distant reflection gap.
+	// R is a world-space reflection direction (the same basis used by the
+	// environment cubemaps). The cloud texture is projected in camera view
+	// space, so rotate the direction before applying the projection matrix.
+	float3 reflectedViewDirection = mul((float3x3)FrameBuffer::CameraView, R);
+	float4 reflectedClip = mul(FrameBuffer::CameraProj, float4(reflectedViewDirection, 0.0f));
+	uint cloudReflectionWidth, cloudReflectionHeight;
+	VolumetricCloudReflection.GetDimensions(cloudReflectionWidth, cloudReflectionHeight);
+	if (cloudReflectionWidth > 0u && cloudReflectionHeight > 0u &&
+		all(isfinite(reflectedClip)) && reflectedClip.w > 1e-4f) {
+		float2 reflectedSkyUV = reflectedClip.xy / reflectedClip.w * float2(0.5f, -0.5f) + 0.5f;
+		if (all(reflectedSkyUV >= 0.0f) && all(reflectedSkyUV <= 1.0f)) {
+			float4 reflectedCloud = VolumetricCloudReflection.SampleLevel(CubeMapSampler, reflectedSkyUV, 0.0f);
+			float cloudOpacity = saturate(1.0f - reflectedCloud.a);
+			reflectionColor = max(reflectedCloud.rgb, 0.0f.xxx) + reflectionColor * (1.0f - cloudOpacity);
+		}
+	}
 #			endif
 
 #			if USE_PIXL_WATER_OPTICS

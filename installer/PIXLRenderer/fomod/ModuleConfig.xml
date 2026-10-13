@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>PIXL Renderer 1.0.7</moduleName>
+  <moduleName>PIXL Renderer 1.0.8</moduleName>
   <moduleImage path="fomod\images\pixl-hero.jpg" showImage="true" showFade="true" height="240" />
   <requiredInstallFiles>
     <folder source="PIXL-Core" destination="" priority="0" />
@@ -26,15 +26,15 @@ Install with Vortex, MO2, or by extracting into the game Data folder. Launch thr
     </installStep>
     <installStep name="New updates">
       <optionalFileGroups order="Explicit">
-        <group name="New in 1.0.7" type="SelectExactlyOne">
+        <group name="New in 1.0.8" type="SelectExactlyOne">
           <plugins order="Explicit">
             <plugin name="See what's new">
-              <description>PIXL Renderer 1.0.7 highlights
+              <description>PIXL Renderer 1.0.8 highlights
 
+- Smoothed weather-driven volumetric cloud cover, cloud height, detail and wind while preserving PIXL's low mountain cloud base.
+- Refined gameplay depth of field for high elevations, sky horizons and terrain autofocus.
 - Improved camera reconstruction and temporal stability, including Photo Mode and Director Mode.
-- More consistent Hybrid GI, world-cache updates, emissive lighting and fire response.
-- Refined water, projected caustic lighting, terrain response, vegetation and atmospheric effects.
-- Updated materials, camera effects, quality settings and user-facing setup.
+- Continued refinements to lighting, water, terrain response, vegetation, materials and setup.
 
 Shader compilation happens on first launch. Allow it to finish before evaluating visuals or performance. Existing user settings are preserved.</description>
               <image path="fomod\images\pixl-hero.jpg" />
@@ -49,7 +49,7 @@ Shader compilation happens on first launch. Allow it to finish before evaluating
       <optionalFileGroups order="Explicit">
         <group name="Ready to install" type="SelectExactlyOne">
           <plugins order="Explicit">
-            <plugin name="Install PIXL Renderer 1.0.7">
+            <plugin name="Install PIXL Renderer 1.0.8">
               <description>PIXL Renderer will install with the regular default look and a validated prebuilt shader cache.
 
 After installation, start Skyrim through SKSE. Complete Quick Setup if prompted and let any missing or changed shader permutations compile.</description>

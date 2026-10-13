@@ -970,7 +970,12 @@ namespace BackgroundBlur
 			}
 
 			// Skip Pulse Profiler window (no blur)
-			if (window->Name && std::string_view(window->Name) == "Pulse Profiler") {
+			// Director Video is a late, interactive overlay. Blurring its backing
+			// capture here makes the POI editor look defocused even though it is
+			// drawn after the scene's DOF pass.
+			if (window->Name &&
+				(std::string_view(window->Name) == "Pulse Profiler" ||
+					std::string_view(window->Name) == "##PIXLVideoDirectorEditor")) {
 				continue;
 			}
 

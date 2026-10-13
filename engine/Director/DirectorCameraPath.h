@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Additional permissions are described in the repository EXCEPTIONS.md.
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -17,6 +18,8 @@ namespace DirectorCameraPath
 	// Version 2 adds the explicit path-facing rotation option.  Version 1 paths
 	// remain accepted so previously saved routes continue to load unchanged.
 	inline constexpr std::uint32_t kSchemaVersion = 2;
+	inline constexpr std::size_t kMaximumPointCount = 512;
+	inline constexpr std::uintmax_t kMaximumFileBytes = 4 * 1024 * 1024;
 
 	struct Vec3
 	{

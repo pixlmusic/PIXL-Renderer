@@ -4,18 +4,59 @@
 #include "Util.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <ctime>
+#include <format>
 #include <fstream>
 #include <iomanip>
 #include <regex>
 #include <sstream>
+#include <string_view>
+
+#include <Windows.h>
 
 using namespace SKSE;
 
 namespace
 {
+	bool WriteJsonAtomically(const std::filesystem::path& path, const json& value, std::string_view description)
+	{
+		static std::atomic_uint64_t sequence{ 0 };
+		auto temporaryPath = path;
+		temporaryPath += std::format(L".tmp.{}.{}", GetCurrentProcessId(), sequence.fetch_add(1, std::memory_order_relaxed));
+		try {
+			const auto serialized = value.dump(1);
+			{
+				std::ofstream output{ temporaryPath, std::ios::out | std::ios::binary | std::ios::trunc };
+				if (!output.is_open()) {
+					logger::warn("Could not open temporary {} file: {}", description, temporaryPath.string());
+					return false;
+				}
+				output.write(serialized.data(), static_cast<std::streamsize>(serialized.size()));
+				output.flush();
+				if (!output.good()) {
+					output.close();
+					DeleteFileW(temporaryPath.c_str());
+					logger::warn("Failed to flush temporary {} file: {}", description, temporaryPath.string());
+					return false;
+				}
+			}
+			if (!MoveFileExW(temporaryPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+				const auto error = GetLastError();
+				DeleteFileW(temporaryPath.c_str());
+				logger::warn("Could not publish {} file '{}': Win32 error {}", description, path.string(), error);
+				return false;
+			}
+			return true;
+		} catch (const std::exception& exception) {
+			DeleteFileW(temporaryPath.c_str());
+			logger::warn("Could not serialize {} file '{}': {}", description, path.string(), exception.what());
+			return false;
+		}
+	}
+
 	// Simple hash function for file contents
 	std::string ComputeContentHash(const std::string& content)
 	{
@@ -372,21 +413,7 @@ void SettingsOverrideManager::SaveAppliedOverridesTracking(const json& appliedOv
 			}
 		}
 
-		std::ofstream file(trackingPath);
-		if (file.is_open()) {
-			try {
-				file << appliedOverrides.dump(1);
-				file.flush();
-
-				if (file.fail()) {
-					logger::warn("Failed to write applied overrides tracking file completely");
-				}
-			} catch (const json::exception& e) {
-				logger::warn("JSON error writing applied overrides tracking file: {}", e.what());
-			}
-		} else {
-			logger::warn("Could not open applied overrides tracking file for writing: {}", trackingPath.string());
-		}
+		WriteJsonAtomically(trackingPath, appliedOverrides, "applied overrides tracking");
 	} catch (const std::filesystem::filesystem_error& e) {
 		logger::warn("Filesystem error saving applied overrides tracking: {}", e.what());
 	} catch (const std::exception& e) {
@@ -1059,22 +1086,9 @@ bool SettingsOverrideManager::SaveUserOverride(const std::string& featureName, c
 
 		auto userFilePath = userDir / (featureName + ".user.json");
 
-		std::ofstream file(userFilePath);
-		if (!file.is_open()) {
-			logger::warn("Could not create user override file: {}", userFilePath.string());
+		if (!WriteJsonAtomically(userFilePath, currentSettings, "user override")) {
 			return false;
 		}
-
-		file << currentSettings.dump(1);
-		file.flush();
-
-		if (file.fail()) {
-			logger::warn("Failed to write user override file: {}", userFilePath.string());
-			file.close();
-			return false;
-		}
-
-		file.close();
 
 		// Store the current override hash so we can detect if overrides change later
 		json tracking = LoadAppliedOverridesTracking();

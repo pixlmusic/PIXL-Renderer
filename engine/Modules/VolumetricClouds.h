@@ -17,14 +17,18 @@ struct VolumetricClouds : RenderModule
 	{
 		bool Enabled = true;
 		std::uint32_t Quality = 2;  // Performance, Balanced, High, Ultra.
-		float Coverage = 0.76f;
+		float Coverage = 0.60f;
 		float Density = 1.55f;
-		float VanillaCloudVisibility = 0.15f;
-		float CloudBase = 18124.0f;
-		float CloudThickness = 40893.0f;
-		float MaximumDistance = 525100.0f;
+		float VanillaCloudVisibility = 0.62f;
+		float OriginalSkyExposure = 0.0f;
+		float OriginalSkyContrast = 1.0f;
+		float AuroraIntensity = 0.35f;
+		float LightningIntensity = 1.0f;
+		float CloudBase = 17522.0f;
+		float CloudThickness = 50085.0f;
+		float MaximumDistance = 466346.0f;
 		float ShapeScale = 1.08f;
-		float DetailScale = 1.25f;
+		float DetailScale = 1.5f;
 		float Erosion = 0.62f;
 		float Turbulence = 0.44f;
 		float WindSpeed = 0.41f;
@@ -48,8 +52,10 @@ struct VolumetricClouds : RenderModule
 		float4 layer{};
 		float4 weather{};
 		float4 weatherSecondary{};
-		float4 windTime{};
-		float4 cloudMotion{};
+		float4 windTime{}; // wind velocity xy, reserved z, elapsed simulation time since weather update
+		float4 cloudMotion{};       // wind velocity xy, frame delta, lightning red channel
+		float4 cloudOffset{};
+		float4 weatherAdvection{};  // persistent map advection xy, lightning green/blue channels
 		float4 weatherMap{};
 		float4 previousWeatherMap{};
 		float4 shape{};
@@ -57,13 +63,15 @@ struct VolumetricClouds : RenderModule
 		float4 phase{};
 		float4 temporal{};
 		float4 composite{};
+		float4 skyEffects{};       // aurora intensity, simulation time, lightning flash, strike seed
+		float4 lightningPosition{}; // absolute strike XY, reserved
 		std::uint32_t primarySteps{};
 		std::uint32_t lightSteps{};
 		std::uint32_t weatherHistoryValid{};
 		std::uint32_t updateWeather{};
 	};
 	STATIC_ASSERT_ALIGNAS_16(CloudConstants);
-	static_assert(sizeof(CloudConstants) == 240, "Volumetric cloud CPU/HLSL ABI mismatch");
+	static_assert(sizeof(CloudConstants) == 304, "Volumetric cloud CPU/HLSL ABI mismatch");
 
 	VolumetricClouds();
 	~VolumetricClouds();
@@ -96,6 +104,10 @@ struct VolumetricClouds : RenderModule
 	void DrawClouds();
 	/** Low-resolution resolved cloud transmittance for DOF protection; null when inactive. */
 	ID3D11ShaderResourceView* GetDofCloudMaskSRV() const noexcept;
+	/** Current resolved cloud radiance/transmittance for water's reflected-sky fallback. */
+	ID3D11ShaderResourceView* GetReflectionCloudSRV() const noexcept;
+	/** Current resolved cloud distance, paired with GetDofCloudMaskSRV(). */
+	ID3D11ShaderResourceView* GetDofCloudDepthSRV() const noexcept;
 
 	Settings settings{};
 

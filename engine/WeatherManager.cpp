@@ -128,18 +128,19 @@ WeatherManager::WeatherClass WeatherManager::ClassifyWeather(RE::TESWeather* wea
 	if (!weather)
 		return WeatherClass::Unknown;
 
-	// Engine state wins for active weather because it is more reliable than names
-	// for weather-overhaul forms and generated records.
-	if (auto* sky = globals::game::sky; sky && sky->mode.get() == RE::Sky::Mode::kFull) {
-		if (weather == sky->currentWeather || weather == sky->lastWeather) {
-			if (sky->IsSnowing())
-				return WeatherClass::Snow;
-			if (sky->IsRaining()) {
-				const char* editorID = weather->GetFormEditorID();
-				const std::string lowered = editorID ? Lower(editorID) : std::string{};
-				return ContainsAny(lowered, { "storm", "thunder", "tempest", "squall" }) ?
-					WeatherClass::Storm : WeatherClass::Rain;
-			}
+	// Global precipitation state can include the outgoing weather during a
+	// transition. Never use it to reclassify both endpoints: doing so turns a
+	// clear -> rain blend into rain -> rain and suppresses the cloud-profile ramp.
+	if (auto* sky = globals::game::sky; sky && sky->mode.get() == RE::Sky::Mode::kFull &&
+		weather == sky->currentWeather) {
+		const auto flags = weather->data.flags;
+		if (sky->IsSnowing() && flags.any(RE::TESWeather::WeatherDataFlag::kSnow))
+			return WeatherClass::Snow;
+		if (sky->IsRaining() && flags.any(RE::TESWeather::WeatherDataFlag::kRainy)) {
+			const char* editorID = weather->GetFormEditorID();
+			const std::string lowered = editorID ? Lower(editorID) : std::string{};
+			return ContainsAny(lowered, { "storm", "thunder", "tempest", "squall" }) ?
+				WeatherClass::Storm : WeatherClass::Rain;
 		}
 	}
 
@@ -162,7 +163,9 @@ WeatherManager::WeatherClass WeatherManager::ClassifyWeather(RE::TESWeather* wea
 	if (weather->data.flags.any(RE::TESWeather::WeatherDataFlag::kRainy) ||
 		ContainsAny(identity, { "rain", "shower", "drizzle" }))
 		return WeatherClass::Rain;
-	if (ContainsAny(identity, { "cloud", "overcast", "fog", "mist", "haze", "grey", "gray" }))
+	if (ContainsAny(identity, { "fog", "mist", "haze" }))
+		return WeatherClass::Fog;
+	if (ContainsAny(identity, { "cloud", "overcast", "grey", "gray" }))
 		return WeatherClass::Cloudy;
 	if (ContainsAny(identity, { "clear", "sunny", "pleasant", "fair" }))
 		return WeatherClass::Clear;
@@ -175,6 +178,7 @@ float WeatherManager::ClassCloudiness(WeatherClass weatherClass)
 	switch (weatherClass) {
 	case WeatherClass::Clear: return 0.14f;
 	case WeatherClass::Cloudy: return 0.72f;
+	case WeatherClass::Fog: return 0.76f;
 	case WeatherClass::Rain: return 0.88f;
 	case WeatherClass::Storm: return 1.0f;
 	case WeatherClass::Snow: return 0.86f;
@@ -188,6 +192,7 @@ float WeatherManager::ClassFog(WeatherClass weatherClass)
 	switch (weatherClass) {
 	case WeatherClass::Clear: return 0.08f;
 	case WeatherClass::Cloudy: return 0.34f;
+	case WeatherClass::Fog: return 0.82f;
 	case WeatherClass::Rain: return 0.44f;
 	case WeatherClass::Storm: return 0.58f;
 	case WeatherClass::Snow: return 0.50f;
@@ -201,6 +206,7 @@ float WeatherManager::ClassWind(WeatherClass weatherClass)
 	switch (weatherClass) {
 	case WeatherClass::Clear: return 0.16f;
 	case WeatherClass::Cloudy: return 0.28f;
+	case WeatherClass::Fog: return 0.22f;
 	case WeatherClass::Rain: return 0.52f;
 	case WeatherClass::Storm: return 0.92f;
 	case WeatherClass::Snow: return 0.48f;
@@ -216,6 +222,7 @@ float WeatherManager::ClassStorminess(WeatherClass weatherClass)
 	case WeatherClass::Rain: return 0.48f;
 	case WeatherClass::Snow: return 0.38f;
 	case WeatherClass::Cloudy: return 0.16f;
+	case WeatherClass::Fog: return 0.05f;
 	default: return 0.0f;
 	}
 }

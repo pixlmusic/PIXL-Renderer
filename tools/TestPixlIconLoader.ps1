@@ -44,7 +44,9 @@ namespace globals::d3d { ID3D11Device* device; ID3D11DeviceContext* context; }
 struct Menu {
     struct Settings { std::string SelectedThemePreset = "Custom"; } settings;
     struct Icon { ID3D11ShaderResourceView* texture = nullptr; ImVec2 size{}; };
-    struct { Icon logo, search; } uiIcons;
+    struct {
+        Icon logo, search, tunerRenderer, tunerLighting, tunerWorld, tunerCharacter, tunerCamera;
+    } uiIcons;
     Settings& GetSettings() { return settings; }
 };
 namespace Util {

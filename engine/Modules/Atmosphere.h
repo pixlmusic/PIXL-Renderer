@@ -51,8 +51,8 @@ public:
 		uint enabled = 1;
 		uint useWorldProbes = 1;
 		float startDistance = 58680.6f;
-		float fogHeight = 11304.1f;
-		float fogHeightFalloff = 1.243f;
+		float fogHeight = 22000.0f;
+		float fogHeightFalloff = 1.283f;
 		float fogDensity = 0.138f;
 		float directionalInscatteringMultiplier = 1.17f;
 		float directionalInscatteringAnisotropy = 0.158f;

@@ -82,11 +82,11 @@ int main() {
     assert(terrain.settings.enableLODTerrainTilingFix == 1);
     HorizonBlend horizon;
     horizon.PostPostLoad();
-    assert(!horizon.loaded && !horizon.failedLoadedMessage.empty() && detectionCalls == 1 && messages == 1);
+    assert(!horizon.loaded && !horizon.failedLoadedMessage.empty() && detectionCalls == 2 && messages == 1);
     horizon.PostPostLoad();
-    assert(detectionCalls == 1 && messages == 1);
+    assert(detectionCalls == 2 && messages == 1);
     pluginPresent = true; horizon.loaded = true; horizon.PostPostLoad();
-    assert(horizon.loaded && detectionCalls == 2 && messages == 2);
+    assert(horizon.loaded && detectionCalls == 3 && messages == 2);
     std::cout << "PASS exact landscape settings/JSON: ABI, bounded and nonfinite values, toggle normalization, round trip/defaults, optional-plugin detection gate\n";
 }
 '@

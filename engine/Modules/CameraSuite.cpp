@@ -3093,10 +3093,13 @@ void CameraSuite::RunDepthOfFieldPasses(ID3D11ShaderResourceView* sceneSRV)
 		motionTarget.SRV
 	};
 	ID3D11ShaderResourceView* cloudMask = globals::pipeline::volumetricClouds.GetDofCloudMaskSRV();
+	ID3D11ShaderResourceView* cloudDepth = globals::pipeline::volumetricClouds.GetDofCloudDepthSRV();
 	context->CSSetShaderResources(18, 1, &cloudMask);
+	context->CSSetShaderResources(19, 1, &cloudDepth);
 	const bool cocReady = dispatch("CameraSuite::DOF::CoC", GetDofCoCCS(), cocInputs, 4u, dofCoCTexture);
 	ID3D11ShaderResourceView* noCloudMask = nullptr;
 	context->CSSetShaderResources(18, 1, &noCloudMask);
+	context->CSSetShaderResources(19, 1, &noCloudMask);
 	if (!cocReady)
 		return;
 	context->CopyResource(dofCoCHistoryTexture->resource.get(), dofCoCTexture->resource.get());

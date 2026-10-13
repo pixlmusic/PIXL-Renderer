@@ -40,6 +40,15 @@ template<class T> struct com_ptr {
     explicit operator bool() const { return value != nullptr; }
 };
 }
+namespace PIXL::Renderer {
+struct FrameAnnotationViews {
+    winrt::com_ptr<ID3D11ShaderResourceView> reactiveMask, transparencyMask;
+};
+struct PixelAnnotations {
+    static PixelAnnotations& Get() { static PixelAnnotations instance; return instance; }
+    FrameAnnotationViews Acquire() const { return {}; }
+};
+}
 int warnings = 0, dispatches = 0, copies = 0, profilerDepth = 0, eventDepth = 0;
 float uploadedSharpness = 0;
 uint32_t uploadedConfidence = 0;
@@ -65,6 +74,8 @@ struct ConstantBuffer {
     ID3D11Buffer* CB() { static ID3D11Buffer buffer; return &buffer; }
 };
 struct State {
+    void* tracyCtx = nullptr;
+    uint64_t frameCount = 0;
     void BeginPerfEvent(const char*) { ++eventDepth; }
     void EndPerfEvent() { --eventDepth; }
 };
@@ -115,6 +126,7 @@ struct ImageReconstruction {
     Texture2D* transparencyCompositionMaskTexture = nullptr;
     Texture2D* motionVectorCopyTexture = nullptr;
     RCAS rcas;
+    bool HasCurrentDLSSFrame() const { return true; }
     void ApplySharpening();
 };
 '@

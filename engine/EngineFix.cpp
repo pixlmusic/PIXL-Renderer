@@ -1,6 +1,7 @@
 ﻿#include "EngineFix.h"
 
 #include "EngineFixes/EffectShaderNoDecalsFix.h"
+#include "EngineFixes/LODBlendRingFix.h"
 #include "EngineFixes/ShadowmapCascadeCullingFix.h"
 #include "EngineFixes/ShadowmapCascadeRasterizerFix.h"
 
@@ -9,11 +10,13 @@ const std::vector<EngineFix*>& EngineFix::GetOnPostPostLoadFixesList()
 	// Function-local statics guarantee that fix instances exist before the
 	// registration list is first used and remain alive for the plugin lifetime.
 	static EffectShaderNoDecalsFix effectShaderNoDecalsFix;
+	auto& lodBlendRingFix = LODBlendRingFix::GetInstance();
 	static ShadowmapCascadeCullingFix shadowmapCascadeCullingFix;
 	static ShadowmapRasterizerFix shadowmapRasterizerFix;
 
 	static const std::vector<EngineFix*> fixes = {
 		&effectShaderNoDecalsFix,
+		&lodBlendRingFix,
 		&shadowmapCascadeCullingFix,
 		&shadowmapRasterizerFix
 	};

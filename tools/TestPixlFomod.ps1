@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$PackageDirectory,
     [string]$SchemaPath = "",
-    [string]$ExpectedVersion = "1.0.7"
+    [string]$ExpectedVersion = "1.0.8"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,7 +35,7 @@ for ($index = 0; $index -lt $expectedSteps.Count; ++$index) {
     if ($steps[$index].name -ne $expectedSteps[$index]) { throw "Unexpected FOMOD page order at $index." }
 }
 $allInstallerText = (Get-Content -LiteralPath $configPath,$infoPath -Raw) -join "`n"
-if ($allInstallerText -match '(?i)SurfaceTides') { throw 'SurfaceTides must not be referenced in the 1.0.7 FOMOD.' }
+if ($allInstallerText -match '(?i)SurfaceTides') { throw 'SurfaceTides must not be referenced in the 1.0.8 FOMOD.' }
 if (Get-ChildItem -LiteralPath $root -Recurse -File | Where-Object { $_.Name -in @('SurfaceTides.dll','SurfaceTides.ini') -or $_.FullName -match '[\\/]SurfaceTides[\\/]' }) {
     throw 'SurfaceTides payload is present in this FOMOD.'
 }

@@ -29,11 +29,12 @@ $prefix = @'
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 using uint = unsigned;
+struct alignas(16) float4 { float x = 0, y = 0, z = 0, w = 0; };
 '@
 $tests = @'
 int main() {
     static_assert(sizeof(FoliageDynamics::Settings) == 80);
-    static_assert(sizeof(FoliageDynamics::TuningSettings) == 96);
+    static_assert(sizeof(FoliageDynamics::TuningSettings) == 304);
     FoliageDynamics foliage;
     json baseline;
     foliage.SaveSettings(baseline);
@@ -78,7 +79,7 @@ int main() {
     roundTrip.RestoreDefaultSettings();
     roundTrip.SaveSettings(reSaved);
     assert(reSaved == baseline);
-    std::cout << "PASS exact foliage structs/JSON/functions: legacy reload, malformed extension fallback, bounds, boolean normalization, round-trip, defaults, 80/96-byte ABI sizes\n";
+    std::cout << "PASS exact foliage structs/JSON/functions: legacy reload, malformed extension fallback, bounds, boolean normalization, round-trip, defaults, 80/304-byte ABI sizes\n";
 }
 '@
 $sourcePath = Join-Path $output 'foliage-settings-tests.cpp'

@@ -66,7 +66,38 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 		}
         nearestDepth = min(nearestDepth, depth);
     }
-    float target = weight > 0.0f ? weightedDepth / weight : dofControlFocusDistance;
+    float target = weight > 0.0f ? weightedDepth / weight : 0.0f;
+    // At ridgelines the centre ROI can be entirely sky. In that case, sample a
+    // compact lower-centre region to acquire the visible terrain instead of
+    // snapping focus back to a near manual distance.
+    if (weight <= 0.0f) {
+        const float2 lowerOffsets[8] = {
+            float2(-0.04, 0.08), float2(0.0, 0.08), float2(0.04, 0.08),
+            float2(-0.04, 0.14), float2(0.0, 0.14), float2(0.04, 0.14),
+            float2(-0.02, 0.20), float2(0.02, 0.20)
+        };
+        float lowerDepthSum = 0.0f;
+        float lowerWeight = 0.0f;
+        [unroll]
+        for (uint k = 0; k < 8; ++k) {
+            bool lowerValid;
+            float lowerDepth = ReadFocusDepth(0.5f.xx + lowerOffsets[k], lowerValid);
+            if (!lowerValid || lowerDepth <= 1.0f || lowerDepth >= 2000000.0f)
+                continue;
+            if (DofThirdPersonView() && lowerDepth < 520.0f)
+                continue;
+            if (DofFirstPersonView() && lowerDepth < 220.0f)
+                continue;
+            lowerDepthSum += lowerDepth;
+            lowerWeight += 1.0f;
+        }
+        if (lowerWeight > 0.0f)
+            target = lowerDepthSum / lowerWeight;
+    }
+    float previousDistance = PreviousFocus.Load(int3(0, 0, 0)).x;
+    bool previousValid = dofControlHistoryValid != 0u && PreviousFocus.Load(int3(0, 0, 0)).y > 0.5f;
+    if (target <= 0.0f)
+        target = previousValid ? previousDistance : max(dofControlFarBlurDistance, dofControlFocusDistance);
     // Resolve a compact cluster around the nearest hit. This lets a thin tree,
     // close prop or fence under the crosshair win against the distant background,
     // but requires either the centre sample or multiple nearby supporting hits.
@@ -93,7 +124,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 		// retained and receives the full physical close-focus response.
 		target = worldWeight > 0.0f
 			? worldWeightedDepth / worldWeight
-			: dofControlFocusDistance;
+			: (previousValid ? previousDistance : max(dofControlFarBlurDistance, dofControlFocusDistance));
 		centredSubject = false;
 		supportedThinSubject = false;
 	}
@@ -102,8 +133,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     else if (!rejectedNearCameraFragment && nearestDepth < target * 0.72f)
         target = lerp(target, nearestDepth, 0.30f);
 
-    float previousDistance = PreviousFocus.Load(int3(0, 0, 0)).x;
-    bool previousValid = dofControlHistoryValid != 0u && PreviousFocus.Load(int3(0, 0, 0)).y > 0.5f;
+
     float previousDiopter = 1.0f / max(previousDistance, 1.0f);
     float targetDiopter = 1.0f / max(target, 1.0f);
     float delta = abs(targetDiopter - previousDiopter);

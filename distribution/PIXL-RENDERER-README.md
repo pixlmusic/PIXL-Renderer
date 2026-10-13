@@ -1,4 +1,4 @@
-# PIXL Renderer 1.0.7
+# PIXL Renderer 1.0.8
 
 An integrated DirectX 11 renderer for Skyrim Special Edition.
 

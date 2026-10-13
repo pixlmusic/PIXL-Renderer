@@ -11,6 +11,7 @@
 #include <cmath>
 
 #include "I18n/I18n.h"
+#include "Modules/VolumetricClouds.h"
 #include "State.h"
 
 #define I18N_KEY_PREFIX "feature.water_optics."
@@ -240,7 +241,8 @@ void WaterOptics::Prepass()
 	auto context = globals::d3d::context;
 	if (!context)
 		return;
-	ID3D11ShaderResourceView* srvs[] = { causticsView.get(), foamStencilView.get(), rapidWaterView.get() };
+	ID3D11ShaderResourceView* srvs[] = { causticsView.get(), foamStencilView.get(), rapidWaterView.get(),
+		globals::pipeline::volumetricClouds.GetReflectionCloudSRV() };
 	context->PSSetShaderResources(65, static_cast<UINT>(std::size(srvs)), srvs);
 }
 

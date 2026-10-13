@@ -318,6 +318,10 @@ namespace DirectorCameraPath
 		effectiveSpeeds.clear();
 		totalLength = 0.0f;
 		totalDuration = 0.0f;
+		if (points.size() > kMaximumPointCount) {
+			if (error) *error = "A camera path cannot contain more than 512 points.";
+			return false;
+		}
 		for (const auto& point : points) {
 			if (!IsFinite(point.worldPosition)) {
 				if (error) *error = "A camera point has a non-finite position.";
@@ -630,6 +634,7 @@ namespace DirectorCameraPath
 			if (document.contains("duration")) path.explicitDuration = document.at("duration").get<float>();
 			const auto& entries = document.at("points");
 			if (!entries.is_array()) throw std::runtime_error("points must be an array");
+			if (entries.size() > kMaximumPointCount) throw std::runtime_error("camera path exceeds the 512 point limit");
 			for (const auto& entry : entries) {
 				Point point{};
 				point.id = entry.value("id", 0u);
@@ -646,8 +651,8 @@ namespace DirectorCameraPath
 				point.rollDegrees = ClampFinite(entry.value("roll", 0.0f), -180.0f, 180.0f, 0.0f);
 				point.autoBank = entry.value("autoBank", false);
 				point.bankStrength = ClampFinite(entry.value("bankStrength", 1.0f), 0.0f, 4.0f, 1.0f);
-				if (entry.contains("exposure")) point.exposure = entry.at("exposure").get<float>();
-				if (entry.contains("focusDistance")) point.focusDistance = entry.at("focusDistance").get<float>();
+				if (entry.contains("exposure")) point.exposure = ClampFinite(entry.at("exposure").get<float>(), -16.0f, 16.0f, 0.0f);
+				if (entry.contains("focusDistance")) point.focusDistance = ClampFinite(entry.at("focusDistance").get<float>(), 0.1f, 100000.0f, 1000.0f);
 				path.points.push_back(std::move(point));
 			}
 			std::string rebuildError;

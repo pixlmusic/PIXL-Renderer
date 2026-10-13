@@ -14,7 +14,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $base = (Resolve-Path -LiteralPath $BasePackageDirectory).Path
-$revisionVersion = "1.0.7$ReleaseRevision"
+$revisionVersion = "1.0.8$ReleaseRevision"
 if ([string]::IsNullOrWhiteSpace($ProductVersion)) { $ProductVersion = $revisionVersion }
 elseif ($ReleaseRevision -and $ProductVersion -ne $revisionVersion) { throw 'ProductVersion conflicts with ReleaseRevision.' }
 if ($SurfaceTidesSource -and $PrebuiltSurfaceTidesDirectory) { throw 'Provide at most one SurfaceTides source.' }

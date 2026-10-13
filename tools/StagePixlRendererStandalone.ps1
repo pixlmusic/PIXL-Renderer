@@ -24,7 +24,7 @@ if (-not [string]::IsNullOrWhiteSpace($NeuralRuntimePath)) {
     throw 'NR runtimes are manual-install only and cannot be bundled. Omit -NeuralRuntimePath.'
 }
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$revisionVersion = "1.0.7$PackageRevision"
+$revisionVersion = "1.0.8$PackageRevision"
 if ([string]::IsNullOrWhiteSpace($ProductVersion)) { $ProductVersion = $revisionVersion }
 elseif ($PackageRevision -and $ProductVersion -ne $revisionVersion) { throw 'ProductVersion conflicts with PackageRevision.' }
 if ($ProductVersion -notmatch '^\d+\.\d+\.\d+(?:r\d+)?$') { throw "Invalid package product version: $ProductVersion" }

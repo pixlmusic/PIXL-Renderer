@@ -2,7 +2,7 @@
 <fomod>
   <Name>PIXL Renderer</Name>
   <Author>PIXL Studio</Author>
-  <Version MachineVersion="1.0.7.0">1.0.7</Version>
+  <Version MachineVersion="1.0.8.0">1.0.8</Version>
   <Website>https://www.nexusmods.com/skyrimspecialedition/mods/189836</Website>
   <Description>Modern DirectX 11 rendering for Skyrim Special Edition, with a validated shader cache for faster first launch. Missing or changed permutations compile on your system.</Description>
   <Groups>

@@ -25,6 +25,7 @@ public:
 		Unknown = 0,
 		Clear,
 		Cloudy,
+		Fog,
 		Rain,
 		Storm,
 		Snow,

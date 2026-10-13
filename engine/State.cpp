@@ -2,14 +2,18 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <codecvt>
 #include <cstring>
 #include <filesystem>
 #include <thread>
 
+#include <Windows.h>
+
 #include <pystring/pystring.h>
 
 #include "Deferred.h"
+#include "EngineFixes/LODBlendRingFix.h"
 #include "PipelineHealth.h"
 #include "Modules/SkyVeil.h"
 #include "Modules/Atmosphere.h"
@@ -235,6 +239,7 @@ void State::Reset()
 	PIXL::Renderer::LightTransportWorld::Get().BeginFrame(static_cast<std::uint64_t>(frameCount) + 1u);
 
 	RenderModule::ForEachLoadedModule("Reset", [](RenderModule* feature) { feature->Reset(); });
+	LODBlendRingFix::GetInstance().Update();
 	if (!globals::game::ui->GameIsPaused())
 		timer += RE::GetSecondsSinceLastFrame();
 
@@ -714,27 +719,41 @@ void State::Save(ConfigMode a_configMode)
 		return;
 	}
 
-	std::ofstream o{ configPath, std::ios::out | std::ios::trunc };
-
-	// Check if the file opened successfully
-	if (!o.is_open()) {
-		logger::warn("Failed to open config file for saving: {}", configPath.string());
-		return;  // Exit early if file cannot be opened
-	}
-
-	json settings;
-	SaveToJson(settings);
-
+	static std::atomic_uint64_t writeSequence{ 0 };
+	auto temporaryPath = configPath;
+	temporaryPath += std::format(L".tmp.{}.{}", GetCurrentProcessId(), writeSequence.fetch_add(1, std::memory_order_relaxed));
 	try {
-		o << settings.dump(1);
-		o.flush();
-		if (!o.good()) {
-			logger::warn("Failed to flush settings file: {}", configPath.string());
+		// Serialize and write beside the destination, then publish atomically. A
+		// failed save must leave the user's last valid settings file untouched.
+		json settings;
+		SaveToJson(settings);
+		const auto serialized = settings.dump(1);
+		{
+			std::ofstream output{ temporaryPath, std::ios::out | std::ios::binary | std::ios::trunc };
+			if (!output.is_open()) {
+				DeleteFileW(temporaryPath.c_str());
+				logger::warn("Failed to open temporary settings file for saving: {}", temporaryPath.string());
+				return;
+			}
+			output.write(serialized.data(), static_cast<std::streamsize>(serialized.size()));
+			output.flush();
+			if (!output.good()) {
+				output.close();
+				DeleteFileW(temporaryPath.c_str());
+				logger::warn("Failed to flush temporary settings file: {}", temporaryPath.string());
+				return;
+			}
+		}
+		if (!MoveFileExW(temporaryPath.c_str(), configPath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+			const auto error = GetLastError();
+			DeleteFileW(temporaryPath.c_str());
+			logger::warn("Failed to publish settings file ({}): Win32 error {}", configPath.string(), error);
 			return;
 		}
 		logger::info("Saving settings to {}", configPath.string());
 	} catch (const std::exception& e) {
-		logger::warn("Failed to write settings to file: {}. Error: {}", configPath.string(), e.what());
+		DeleteFileW(temporaryPath.c_str());
+		logger::warn("Failed to write settings file: {}. Error: {}", configPath.string(), e.what());
 	}
 }
 

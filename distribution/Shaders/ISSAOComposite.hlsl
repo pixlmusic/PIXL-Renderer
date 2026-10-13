@@ -195,8 +195,26 @@ PS_OUTPUT main(PS_INPUT input)
 	if (exponentialHeightFogEnabled) {
 		float4 fogScreenPosition = float4(monoUV * SharedData::BufferDim.xy, depth, 1.0f);
 		atmosphere = Atmosphere::GetAtmosphere(positionWS.xyz, FrameBuffer::CameraPosAdjust.xyz, fogColor, fogScreenPosition);
-		if (!isGeometryDepth)
-			atmosphere.w *= 1.0f - saturate(SharedData::atmosphereSettings.skyProtection);
+		float skyProtection = saturate(SharedData::atmosphereSettings.skyProtection);
+		if (skyProtection > 1.0e-3f) {
+			// Feather sky protection across the sky/geometry depth boundary. Sample
+			// the actual adjacent texels: spacing these samples several pixels apart
+			// leaves an unsampled halo around thin branches and distant ridgelines.
+			uint depthWidth, depthHeight;
+			depthTex.GetDimensions(depthWidth, depthHeight);
+			float2 texel = 1.0f / float2(max(depthWidth, 1u), max(depthHeight, 1u));
+			float skyCoverage = isGeometryDepth ? 0.0f : 1.0f;
+			skyCoverage += depthTex.SampleLevel(depthSampler, screenPosition + float2(texel.x, 0.0f), 0).x >= GeometryDepthMax ? 1.0f : 0.0f;
+			skyCoverage += depthTex.SampleLevel(depthSampler, screenPosition - float2(texel.x, 0.0f), 0).x >= GeometryDepthMax ? 1.0f : 0.0f;
+			skyCoverage += depthTex.SampleLevel(depthSampler, screenPosition + float2(0.0f, texel.y), 0).x >= GeometryDepthMax ? 1.0f : 0.0f;
+			skyCoverage += depthTex.SampleLevel(depthSampler, screenPosition - float2(0.0f, texel.y), 0).x >= GeometryDepthMax ? 1.0f : 0.0f;
+			skyCoverage += depthTex.SampleLevel(depthSampler, screenPosition + texel, 0).x >= GeometryDepthMax ? 1.0f : 0.0f;
+			skyCoverage += depthTex.SampleLevel(depthSampler, screenPosition - texel, 0).x >= GeometryDepthMax ? 1.0f : 0.0f;
+			skyCoverage += depthTex.SampleLevel(depthSampler, screenPosition + float2(texel.x, -texel.y), 0).x >= GeometryDepthMax ? 1.0f : 0.0f;
+			skyCoverage += depthTex.SampleLevel(depthSampler, screenPosition + float2(-texel.x, texel.y), 0).x >= GeometryDepthMax ? 1.0f : 0.0f;
+			skyCoverage *= (1.0f / 9.0f);
+			atmosphere.w *= 1.0f - skyProtection * skyCoverage;
+		}
 	}
 	if (isGeometryDepth || exponentialHeightFogEnabled) {
 		float fogFade = exponentialHeightFogEnabled ? Atmosphere::GetVanillaFogFade(FogNearColor.w) : FogNearColor.w;
