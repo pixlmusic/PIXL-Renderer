@@ -147,6 +147,8 @@ private:
 
 	bool moonAndStarsLoaded = false;
 	RE::TESObjectCELL* currentCell = nullptr;
+	bool currentCellIsInterior = false;
+	std::uint32_t currentWorldspaceID = 0;
 	float sunAngle = 90.0f;
 	float currentSkyRotation = D3D11_FLOAT32_MAX;
 	float lastGameHour = -1.0f;

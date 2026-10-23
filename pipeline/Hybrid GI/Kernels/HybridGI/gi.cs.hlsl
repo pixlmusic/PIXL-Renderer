@@ -34,6 +34,18 @@
 #include "HybridGI/common.hlsli"
 #include "HybridGI/worldCache.hlsli"
 
+float GISmootherStep(float value)
+{
+	float t = saturate(value);
+	return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+}
+
+float2 GISmootherStep(float2 value)
+{
+	float2 t = saturate(value);
+	return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+}
+
 Texture2D<float> srcWorkingDepth : register(t0);
 Texture2D<float4> srcNormalRoughness : register(t1);
 Texture2D<float3> srcRadiance : register(t2);  // maybe half-res
@@ -126,8 +138,8 @@ bool ReadWorldVoxelCascade(
 				float leakReduction = saturate(WorldCacheLeakReduction);
 				float leakWeight = 1.0f;
 				[branch] if (leakReduction > 1e-4f) {
-					float receiverGate = smoothstep(-0.05f, 0.10f, receiverFacingSigned);
-					float sourceGate = smoothstep(-0.05f, 0.15f, sourceFacingSigned);
+					float receiverGate = GISmootherStep((receiverFacingSigned + 0.05f) / 0.15f);
+					float sourceGate = GISmootherStep((sourceFacingSigned + 0.05f) / 0.20f);
 					leakWeight = lerp(1.0f, receiverGate * sourceGate, leakReduction);
 				}
 				// A back-facing/dark surface still blocks transport; rejecting its
@@ -161,14 +173,14 @@ bool ReadWorldVoxelCascade(
 								float neighborOccupancy = UnpackWorldOccupancy(neighborSurface) *
 									UnpackWorldConfidence(neighborSurface) * WorldCacheAgeFade(neighborAge, WorldCacheMaxAge);
 								if (neighborOccupancy > (1.0f / 255.0f) && dot(sourceNormal, neighborNormal) > 0.85f) {
-									float neighborGate = lerp(1.0f, smoothstep(-0.05f, 0.10f, receiverFacingSigned) *
-										smoothstep(-0.05f, 0.15f, dot(neighborNormal, -sourceDirection)), leakReduction);
+									float neighborGate = lerp(1.0f, GISmootherStep((receiverFacingSigned + 0.05f) / 0.15f) *
+										GISmootherStep((dot(neighborNormal, -sourceDirection) + 0.05f) / 0.20f), leakReduction);
 									float3 neighborRadiance = WorldCacheEvaluateRadiance(
 										srcWorldSH0.Load(int3(neighborCoord, 0)),
 										srcWorldSH1.Load(int3(neighborCoord, 0)),
 										srcWorldSH2.Load(int3(neighborCoord, 0)),
 										-sourceDirection) * neighborGate;
-									float weight = 0.5f * (1.0f - smoothstep(0.0f, 0.25f, edgeDistance));
+								float weight = 0.5f * (1.0f - GISmootherStep(edgeDistance * 4.0f));
 									irradiance = lerp(irradiance, neighborRadiance, weight);
 									occupancy = lerp(occupancy, neighborOccupancy, weight);
 								}
@@ -221,7 +233,7 @@ bool ReadWorldVoxel(
 			irradiance = nearIrradiance;
 			// Do not carry a lone near voxel at full weight to the window edge;
 			// the far cascade may still be warming up after camera movement.
-			occupancy = nearOccupancy * (1.0f - smoothstep(0.35f, 0.999f, blend));
+			occupancy = nearOccupancy * (1.0f - GISmootherStep((blend - 0.35f) / 0.649f));
 			valid = occupancy > (1.0f / 255.0f);
 		} else if (farValid) {
 			irradiance = farIrradiance;
@@ -641,7 +653,7 @@ void CalculateGI(
 					float backCosine = dot(backDelta, viewVec) * rsqrt(max(dot(backDelta, backDelta), EPSILON_LENGTH_SQ));
 					float angleBack = FastMath::ACos(clamp(backCosine, -1.0f, 1.0f));
 					float2 angleRange = -sideSign * (sideSign == -1 ? float2(angleFront, angleBack) : float2(angleBack, angleFront));
-					angleRange = smoothstep(0, 1, (angleRange + n) * Math::INV_PI + .5);
+					angleRange = GISmootherStep((angleRange + n) * Math::INV_PI + .5);
 					maskedBits = QuantizeAngularMask(angleRange);
 				}
 

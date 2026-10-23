@@ -37,6 +37,14 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	ProjectedCausticsStrength,
 	ProjectedCausticsDistance)
 
+namespace
+{
+	float FiniteSetting(float value, float fallback, float minimum, float maximum)
+	{
+		return std::clamp(std::isfinite(value) ? value : fallback, minimum, maximum);
+	}
+}
+
 void WaterOptics::DrawSettings()
 {
 	bool changed = false;
@@ -138,29 +146,30 @@ void WaterOptics::LoadSettings(json& o_json)
 		settings = {};
 
 	settings.EnableEnhancedCaustics = settings.EnableEnhancedCaustics ? 1u : 0u;
-	settings.CausticsStrength = std::clamp(settings.CausticsStrength,
+	const Settings defaults{};
+	settings.CausticsStrength = FiniteSetting(settings.CausticsStrength, defaults.CausticsStrength,
 		static_cast<float>(PIXL::Metadata::Settings::WaterCausticsStrength.minimum),
 		static_cast<float>(PIXL::Metadata::Settings::WaterCausticsStrength.maximum));
-	settings.CausticsDispersion = std::clamp(settings.CausticsDispersion, 0.0f, 1.5f);
-	settings.CausticsFocus = std::clamp(settings.CausticsFocus, 0.25f, 2.0f);
+	settings.CausticsDispersion = FiniteSetting(settings.CausticsDispersion, defaults.CausticsDispersion, 0.0f, 1.5f);
+	settings.CausticsFocus = FiniteSetting(settings.CausticsFocus, defaults.CausticsFocus, 0.25f, 2.0f);
 	settings.EnableEnhancedSSR = settings.EnableEnhancedSSR ? 1u : 0u;
-	settings.SSRThicknessScale = std::clamp(settings.SSRThicknessScale, 0.25f, 3.0f);
-	settings.SSRDistanceScale = std::clamp(settings.SSRDistanceScale, 0.25f, 1.5f);
-	settings.SSREdgeFade = std::clamp(settings.SSREdgeFade, 0.25f, 2.0f);
-	settings.SurfaceSSRStrength = std::clamp(settings.SurfaceSSRStrength, 0.0f, 1.5f);
-	settings.CausticsVisibility = std::clamp(settings.CausticsVisibility, 0.0f, 2.5f);
-	settings.ProjectedCausticsStrength = std::clamp(settings.ProjectedCausticsStrength,
+	settings.SSRThicknessScale = FiniteSetting(settings.SSRThicknessScale, defaults.SSRThicknessScale, 0.25f, 3.0f);
+	settings.SSRDistanceScale = FiniteSetting(settings.SSRDistanceScale, defaults.SSRDistanceScale, 0.25f, 1.5f);
+	settings.SSREdgeFade = FiniteSetting(settings.SSREdgeFade, defaults.SSREdgeFade, 0.25f, 2.0f);
+	settings.SurfaceSSRStrength = FiniteSetting(settings.SurfaceSSRStrength, defaults.SurfaceSSRStrength, 0.0f, 1.5f);
+	settings.CausticsVisibility = FiniteSetting(settings.CausticsVisibility, defaults.CausticsVisibility, 0.0f, 2.5f);
+	settings.ProjectedCausticsStrength = FiniteSetting(settings.ProjectedCausticsStrength, defaults.ProjectedCausticsStrength,
 		static_cast<float>(PIXL::Metadata::Settings::WaterProjectedCausticsStrength.minimum),
 		static_cast<float>(PIXL::Metadata::Settings::WaterProjectedCausticsStrength.maximum));
-	settings.ProjectedCausticsDistance = std::clamp(settings.ProjectedCausticsDistance,
+	settings.ProjectedCausticsDistance = FiniteSetting(settings.ProjectedCausticsDistance, defaults.ProjectedCausticsDistance,
 		static_cast<float>(PIXL::Metadata::Settings::WaterProjectedCausticsDistance.minimum),
 		static_cast<float>(PIXL::Metadata::Settings::WaterProjectedCausticsDistance.maximum));
-	settings.WaterTintStrength = std::clamp(settings.WaterTintStrength, 0.0f, 1.0f);
-	settings.ReflectionBrightness = std::clamp(settings.ReflectionBrightness, 0.5f, 1.15f);
+	settings.WaterTintStrength = FiniteSetting(settings.WaterTintStrength, defaults.WaterTintStrength, 0.0f, 1.0f);
+	settings.ReflectionBrightness = FiniteSetting(settings.ReflectionBrightness, defaults.ReflectionBrightness, 0.5f, 1.15f);
 	settings.EnableDynamicFoam = settings.EnableDynamicFoam ? 1u : 0u;
-	settings.FoamStrength = std::clamp(settings.FoamStrength, 0.0f, 2.0f);
-	settings.FoamScale = std::clamp(settings.FoamScale, 0.5f, 2.0f);
-	settings.SSRTraceQuality = std::clamp(std::round(settings.SSRTraceQuality), 0.0f, 3.0f);
+	settings.FoamStrength = FiniteSetting(settings.FoamStrength, defaults.FoamStrength, 0.0f, 2.0f);
+	settings.FoamScale = FiniteSetting(settings.FoamScale, defaults.FoamScale, 0.5f, 2.0f);
+	settings.SSRTraceQuality = std::round(FiniteSetting(settings.SSRTraceQuality, defaults.SSRTraceQuality, 0.0f, 3.0f));
 }
 void WaterOptics::SaveSettings(json& o_json) { o_json = settings; }
 void WaterOptics::RestoreDefaultSettings() { settings = {}; }
@@ -174,16 +183,16 @@ void WaterOptics::SetupResources()
 		return;
 	}
 
-	constexpr auto causticsPath = L"Data\\Shaders\\WaterOptics\\watercaustics.dds";
+	constexpr auto causticsPath = L"Data\\PIXL-Shaders\\WaterOptics\\watercaustics.dds";
 	const auto result = DirectX::CreateDDSTextureFromFile(device, context, causticsPath, nullptr, causticsView.put());
 	if (FAILED(result) || !causticsView) {
-		logger::error("[Water Optics] Failed to load required caustics texture (HRESULT 0x{:08X}): {}", static_cast<std::uint32_t>(result), "Data/Shaders/WaterOptics/watercaustics.dds");
+		logger::error("[Water Optics] Failed to load required caustics texture (HRESULT 0x{:08X}): {}", static_cast<std::uint32_t>(result), "Data/PIXL-Shaders/WaterOptics/watercaustics.dds");
 	} else {
-		logger::info("[Water Optics] Loaded caustics texture: {}", "Data/Shaders/WaterOptics/watercaustics.dds");
+		logger::info("[Water Optics] Loaded caustics texture: {}", "Data/PIXL-Shaders/WaterOptics/watercaustics.dds");
 	}
 
 	foamStencilView = nullptr;
-	constexpr auto foamStencilPath = L"Data\\Shaders\\WaterOptics\\FoamStencil2K.png";
+	constexpr auto foamStencilPath = L"Data\\PIXL-Shaders\\WaterOptics\\FoamStencil2K.png";
 	// Grayscale values are shader data, not display colour. Supplying the immediate
 	// context lets DirectXTK allocate and generate the complete mip chain, avoiding
 	// shimmer when the high-resolution mask recedes into the distance.
@@ -241,9 +250,21 @@ void WaterOptics::Prepass()
 	auto context = globals::d3d::context;
 	if (!context)
 		return;
-	ID3D11ShaderResourceView* srvs[] = { causticsView.get(), foamStencilView.get(), rapidWaterView.get(),
-		globals::pipeline::volumetricClouds.GetReflectionCloudSRV() };
+	ID3D11ShaderResourceView* srvs[] = { causticsView.get(), foamStencilView.get(), rapidWaterView.get() };
 	context->PSSetShaderResources(65, static_cast<UINT>(std::size(srvs)), srvs);
+	RefreshCloudResources();
+}
+
+void WaterOptics::RefreshCloudResources() const noexcept
+{
+	auto context = globals::d3d::context;
+	if (!context)
+		return;
+	ID3D11ShaderResourceView* cloudViews[] = {
+		globals::pipeline::volumetricClouds.GetReflectionCloudSRV(),
+		globals::pipeline::volumetricClouds.GetDofCloudDepthSRV()
+	};
+	context->PSSetShaderResources(68, static_cast<UINT>(std::size(cloudViews)), cloudViews);
 }
 
 bool WaterOptics::HasShaderDefine(RE::BSShader::Type shaderType)

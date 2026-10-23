@@ -43,34 +43,38 @@ void BSLightingShaderMaterialPBRLandscape::CopyMembers(RE::BSShaderMaterial* tha
 
 	auto* pbrThat = static_cast<BSLightingShaderMaterialPBRLandscape*>(that);
 
-	pbrThat->numLandscapeTextures = numLandscapeTextures;
+	numLandscapeTextures = pbrThat->numLandscapeTextures;
 
 	for (uint32_t textureIndex = 0; textureIndex < NumTiles; ++textureIndex) {
-		pbrThat->landscapeBaseColorTextures[textureIndex] = landscapeBaseColorTextures[textureIndex];
-		pbrThat->landscapeNormalTextures[textureIndex] = landscapeNormalTextures[textureIndex];
-		pbrThat->landscapeDisplacementTextures[textureIndex] = landscapeDisplacementTextures[textureIndex];
-		pbrThat->landscapeRMAOSTextures[textureIndex] = landscapeRMAOSTextures[textureIndex];
+		landscapeBaseColorTextures[textureIndex] = pbrThat->landscapeBaseColorTextures[textureIndex];
+		landscapeNormalTextures[textureIndex] = pbrThat->landscapeNormalTextures[textureIndex];
+		landscapeDisplacementTextures[textureIndex] = pbrThat->landscapeDisplacementTextures[textureIndex];
+		landscapeRMAOSTextures[textureIndex] = pbrThat->landscapeRMAOSTextures[textureIndex];
 	}
-	pbrThat->terrainOverlayTexture = terrainOverlayTexture;
-	pbrThat->terrainNoiseTexture = terrainNoiseTexture;
-	pbrThat->landBlendParams = landBlendParams;
-	pbrThat->isPbr = isPbr;
-	pbrThat->roughnessScales = roughnessScales;
-	pbrThat->displacementScales = displacementScales;
-	pbrThat->specularLevels = specularLevels;
-	pbrThat->terrainTexOffsetX = terrainTexOffsetX;
-	pbrThat->terrainTexOffsetY = terrainTexOffsetY;
-	pbrThat->terrainTexFade = terrainTexFade;
-	pbrThat->glintParameters = glintParameters;
+	terrainOverlayTexture = pbrThat->terrainOverlayTexture;
+	terrainNoiseTexture = pbrThat->terrainNoiseTexture;
+	landBlendParams = pbrThat->landBlendParams;
+	isPbr = pbrThat->isPbr;
+	roughnessScales = pbrThat->roughnessScales;
+	displacementScales = pbrThat->displacementScales;
+	specularLevels = pbrThat->specularLevels;
+	terrainTexOffsetX = pbrThat->terrainTexOffsetX;
+	terrainTexOffsetY = pbrThat->terrainTexOffsetY;
+	terrainTexFade = pbrThat->terrainTexFade;
+	glintParameters = pbrThat->glintParameters;
 
-	All[this] = All[pbrThat];
+	// Copy authoring from the source, matching the base material and object path.
+	if (const auto extension = All.find(pbrThat); extension != All.end())
+		All[this] = extension->second;
+	else
+		All.erase(this);
 
 	// PIXL_GROUND_SNOW_METADATA_V2_COPY
-	// CopyMembers copies from this source into pbrThat.
-	if (auto snowIt = SnowMetadataByMaterial.find(this); snowIt != SnowMetadataByMaterial.end()) {
-		SnowMetadataByMaterial[pbrThat] = snowIt->second;
+	// The argument is the source; never overwrite its snow classification.
+	if (auto snowIt = SnowMetadataByMaterial.find(pbrThat); snowIt != SnowMetadataByMaterial.end()) {
+		SnowMetadataByMaterial[this] = snowIt->second;
 	} else {
-		SnowMetadataByMaterial.erase(pbrThat);
+		SnowMetadataByMaterial.erase(this);
 	}
 }
 
@@ -188,6 +192,9 @@ PhysicalMaterial::Descriptor BSLightingShaderMaterialPBRLandscape::GetPhysicalMa
 	setTexture(PhysicalMaterial::Texture::Normal, landscapeNormalTextures[textureIndex]);
 	setTexture(PhysicalMaterial::Texture::Rmaos, landscapeRMAOSTextures[textureIndex], defaultWhite);
 	setTexture(PhysicalMaterial::Texture::Displacement, landscapeDisplacementTextures[textureIndex], defaultBlack);
+	const auto extension = All.find(const_cast<BSLightingShaderMaterialPBRLandscape*>(this));
+	const auto* config = extension != All.end() ? extension->second[textureIndex] : nullptr;
+	descriptor.surfaceProfile = MaterialSurface::Pack(config ? config->surface : MaterialSurface::Profile{}, descriptor.HasTexture(PhysicalMaterial::Texture::Rmaos));
 
 	descriptor.roughnessScale = roughnessScales[textureIndex];
 	descriptor.displacementScale = displacementScales[textureIndex];

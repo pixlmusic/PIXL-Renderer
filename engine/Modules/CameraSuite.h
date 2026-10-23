@@ -12,11 +12,17 @@
 
 #include <DirectXMath.h>
 #include <cstddef>
+#include <cstdint>
 #include <dxgi.h>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 struct CameraSuite : public RenderModule
 {
@@ -24,28 +30,28 @@ private:
 	static constexpr std::string_view MOD_ID = "179371";
 
 public:
-	virtual inline std::string GetName() override { return "Camera Suite"; }
-	virtual std::string GetDisplayName() override { return T("feature.camera_suite.name", "Camera Suite"); }
-	virtual inline std::string GetShortName() override { return "CameraSuite"; }
-	virtual inline std::string GetModuleSupportLink() override { return MakeNexusModURL(MOD_ID); }
-	virtual inline std::string_view GetCategory() const override { return "Display"; }
-	virtual inline bool IsCore() const override { return false; }
+	std::string GetName() override { return "Camera Suite"; }
+	std::string GetDisplayName() override { return T("feature.camera_suite.name", "Camera Suite"); }
+	std::string GetShortName() override { return "CameraSuite"; }
+	std::string GetModuleSupportLink() override { return MakeNexusModURL(MOD_ID); }
+	std::string_view GetCategory() const override { return "Display"; }
+	bool IsCore() const override { return false; }
 
-	virtual inline std::string_view GetShaderDefineName() override { return "CAMERA_SUITE"; }
+	std::string_view GetShaderDefineName() override { return "CAMERA_SUITE"; }
 	/** @brief Returns true for ImageSpace and Sky shader types. */
-	virtual inline bool HasShaderDefine(RE::BSShader::Type shaderType) override
+	bool HasShaderDefine(RE::BSShader::Type shaderType) override
 	{
 		return shaderType == RE::BSShader::Type::ImageSpace || shaderType == RE::BSShader::Type::Sky;
 	}
 
 	/** @brief Returns a localized description and key feature bullet points for the UI. */
-	virtual std::pair<std::string, std::vector<std::string>> GetModuleSummary() override
+	std::pair<std::string, std::vector<std::string>> GetModuleSummary() override
 	{
 		return { T("feature.camera_suite.description", "HDR display output plus PIXL Physical Camera exposure and tone mapping for SDR/HDR."),
 			{ T("feature.camera_suite.key_feature_1", "HDR10 output support with 16-bit intermediate rendering and unclamped highlight transport."),
 				T("feature.camera_suite.key_feature_2", "PIXL Physical Camera: histogram auto exposure, highlight protection, local adaptation and a luminance-preserving camera response."),
 				T("feature.camera_suite.key_feature_3", "Optional experimental bodycam emulation with sensor/lens behavior kept separate from the neutral camera defaults.") } };
-	};
+	}
 
 	struct Settings
 	{
@@ -56,8 +62,7 @@ public:
 		bool dontShowHDRWarning = false;  // User preference to suppress HDR warning popup
 		bool hdrAutoDetected = false;     // Has auto-detection run at least once?
 
-		// PIXL Physical Camera. Defaults are intentionally neutral and preserve
-		// the authored palette while recovering highlight/shadow information.
+		// Neutral defaults preserve the authored palette and scene detail.
 		bool enablePhysicalCamera = true;
 		bool cameraAutoExposure = true;
 		float cameraExposureCompensationEV = 0.0f;
@@ -79,16 +84,13 @@ public:
 		uint lookPreset = 0;              // 0=Original, 1..11=curated PIXL LUTs
 		float lookOpacity = 0.35f;
 
-		// PIXL-owned global finishing policy. These replace the need for an
-		// external injector while keeping Skyrim's existing bloom pass.
+		// PIXL finishing; Skyrim's bloom pass remains available.
 		bool enableBloom = false;
 		float bloomStrength = 0.80f;
 		float bloomThreshold = 1.20f;
 		float bloomRadius = 1.00f;
 
-		// Stormglass is PIXL's weather-reactive optical surface. It is procedural
-		// and consumes Skyrim's real precipitation intensity; no external lens
-		// texture or injector is required.
+		// Procedural Stormglass uses Skyrim's precipitation intensity.
 		bool enableStormglass = true;
 		float stormglassStrength = 0.58f;
 		float stormglassDropScale = 1.00f;
@@ -96,17 +98,14 @@ public:
 		float stormglassTrails = 0.55f;
 		float stormglassDryingRate = 0.055f;
 
-		// A conservative extension of Skyrim's authored underwater presentation.
-		// The surface-break film feeds Stormglass as the camera leaves the water.
+		// Underwater optics transfer a surface-break film to Stormglass.
 		bool enableSubmergedOptics = true;
 		float submergedStrength = 0.32f;
 		float submergedBlur = 0.22f;
 		float submergedRefraction = 0.42f;
 		float submergedTransitionSpeed = 3.20f;
 
-		// Environmental and impact-reactive edge optics. The cold layer is driven
-		// by real snow weather plus exterior altitude; elemental pulses are fed by
-		// confirmed player projectile impacts rather than by camera proximity.
+		// Cold: snow/altitude; elemental pulses: confirmed player hits.
 		bool enableColdLens = true;
 		float coldLensStrength = 0.28f;
 		float coldAltitudeStart = 28000.0f;
@@ -114,8 +113,7 @@ public:
 		bool enableElementalDamageLens = true;
 		float elementalLensStrength = 0.45f;
 
-		// Release-tested PIXL physical DOF baseline. CinematicDoF hand-off remains
-		// available, but new installs use the native buffer-integrated path.
+		// Native DOF by default, with optional CinematicDoF hand-off.
 		bool enableSkyrimDepthOfField = false;
 		bool preferCinematicDoF = false;
 		bool enableEnhancedDepthOfField = true;
@@ -129,12 +127,11 @@ public:
 		float dofFocusEdgeProtection = 0.95f;
 		float dofForegroundCoverage = 0.55f;
 		float dofNearBlurIntensity = 0.0f;
-		float dofFarBlurIntensity = 0.81f;
-		float dofFarBlurDistance = 30000.0f;
+		float dofFarBlurIntensity = 0.5f;
+		float dofFarBlurDistance = 50000.0f;
 		float dofCatEye = 0.12f;
 		float dofAnamorphicRatio = 1.0f;
-		// Auto-DOF lens controls. Defaults retain the restrained gameplay look;
-		// Director/Photo/Video modes may opt into the physical lens model.
+		// Lens controls shared by gameplay and Director/Photo/Video.
 		bool dofPhysicalLens = true;
 		float dofFocalLengthMm = 30.0f;
 		float dofFStop = static_cast<float>(PIXL::Metadata::Settings::CameraDofFStop.defaultValue);
@@ -146,10 +143,7 @@ public:
 		float dofBladeCurvature = 0.63f;
 		float dofApertureRotation = 0.06981317f;
 
-		// Depth-aware camera motion blur. This is deliberately opt-in so the
-		// accepted PIXL High presentation remains unchanged until requested.
-		// The final CameraSuite pass reconstructs camera motion from scene depth;
-		// UI is composited afterwards and therefore remains perfectly sharp.
+		// Opt-in depth-aware motion blur; UI composes afterwards, unblurred.
 		bool enableModernMotionBlur = false;
 		float motionBlurStrength = 0.45f;
 		float motionBlurShutter = 0.50f;
@@ -179,8 +173,7 @@ public:
 	Settings settings;
 	uint32_t cameraQuality = 2;  // 0 Low .. 3 Cinematic; never changes the authored camera look.
 	std::mutex settingsMutex;
-	// While Director applies a temporary camera profile, all ordinary State saves
-	// must continue serialising the gameplay profile captured at entry.
+	// Director's temporary profile must never replace saved gameplay settings.
 	std::optional<Settings> persistentSettingsOverride;
 
 	struct alignas(16) PostProcessSettings
@@ -196,136 +189,79 @@ public:
 		uint32_t DofQuality;
 	};
 	STATIC_ASSERT_ALIGNAS_16(PostProcessSettings);
+	static_assert(sizeof(PostProcessSettings) == 32);
+	static_assert(offsetof(PostProcessSettings, DofForegroundCoverage) == 16);
 
-	/** @brief Resets HDR settings to defaults, auto-detecting HDR monitor status. */
-	virtual void RestoreDefaultSettings() override;
-	/** @brief Loads HDR settings from JSON and schedules auto-detection if needed. */
-	virtual void LoadSettings(json& o_json) override;
-	/** @brief Saves HDR settings to JSON (thread-safe). */
-	virtual void SaveSettings(json& o_json) override;
+	// Module lifecycle and serialized gameplay/Director camera profiles.
+	void RestoreDefaultSettings() override;
+	void LoadSettings(json& o_json) override;
+	void SaveSettings(json& o_json) override;
 	void BeginTransientSettings(const Settings& persistentBaseline);
 	void EndTransientSettings();
-	/** @brief Draws the HDR output and PIXL Physical Camera settings UI. */
-	virtual void DrawSettings() override;
-	/** Applies the shared gameplay/balanced/portrait/cinema depth-of-field profile. */
+	void DrawSettings() override;
 	void ApplyDepthOfFieldPreset(std::uint32_t preset);
+	void DataLoaded() override;         // Enable bUse64bitsHDRRenderTarget.
+	void SetupResources() override;    // Create textures/buffers and upgrade LDR targets.
+	void ClearShaderCache() override;  // Also resets optional shader failure flags.
+	void PostPostLoad() override;      // Install HDR hooks only without ImageReconstruction.
 
-	/** @brief Enables the bUse64bitsHDRRenderTarget INI setting for float16 render targets. */
-	virtual void DataLoaded() override;
-	/** @brief Creates HDR, output, and UI textures, constant buffer, and upgrades LDR render targets. */
-	virtual void SetupResources() override;
-	/** @brief Releases cached HDR, physical-camera, and UI compute shaders. */
-	virtual void ClearShaderCache() override;
-	/** @brief Installs HDR pipeline hooks when the ImageReconstruction feature is not loaded. */
-	virtual void PostPostLoad() override;
-
-	/** @brief Returns the HDR shared data (enable flag, paper white, peak nits, menu scene encoding). */
+	// Shared shader parameters, external-look translation and image-space policy.
 	float4 GetSharedDataHDR() const;
 	PostProcessSettings GetPostProcessData() const;
-	/** Applies translated external preset values through the camera settings lock. */
 	void ApplyExternalLook(float exposureEV, float contrast, float saturation, float adaptationSeconds, float highlightProtection, float shadowDetail, float toe, float shoulder, bool bloomEnabled, float bloomStrength, uint lookPreset = 0, float lookOpacity = 0.0f, float influence = 0.85f);
-	/** @brief Updates the HDR constant buffer with current settings and menu state. */
 	void UpdateHDRData() const;
-	/** Applies PIXL's user-facing bloom policy to the current image-space state. */
 	void ApplyPlayerPostProcessing() const;
 	[[nodiscard]] bool IsCinematicDoFLoaded() const { return cinematicDoFLoaded; }
 	[[nodiscard]] bool UsesCinematicDoF() const { return cinematicDoFLoaded && settings.preferCinematicDoF; }
-	/** @brief Suspends PIXL depth-dependent camera effects while Director owns the camera. */
+	// Depth-effect isolation and confirmed fire/frost impact pulses (0..1).
 	void SetPhotoModeDofIsolation(bool enabled);
-	/** @brief Adds a confirmed player-hit elemental optical pulse (0..1). */
 	void TriggerElementalLens(float fireAmount, float frostAmount);
 	[[nodiscard]] bool IsPhotoModeDofIsolated() const { return photoModeDofIsolation; }
-	/** @brief Sets the swap chain color space to HDR10 (PQ/BT.2020) or SDR (sRGB) based on settings. */
-	void UpdateSwapChainColorSpace() const;
+	void UpdateSwapChainColorSpace() const;  // HDR10 PQ/BT.2020 or SDR sRGB.
 
-	/** @brief Redirects UI rendering to the separate UI texture for HDR compositing. */
+	// UI and HDR framebuffer redirection: always restore matching saved targets.
 	void BeginUIRendering();
-	/** @brief Restores the original render target after UI rendering. */
 	void EndUIRendering();
-	/** @brief Returns true while UI is being rendered to the separate UI texture. */
 	bool IsRenderingUI() const { return renderingUI; }
-
-	/** @brief Redirects kFRAMEBUFFER to the float16 HDR texture so ISHDR can write values above 1.0. */
 	void RedirectFramebuffer();
-	/** @brief Restores the original kFRAMEBUFFER texture, SRV, and RTV after HDR rendering. */
 	void RestoreFramebuffer();
-
-	/** @brief Redirects kFRAMEBUFFER.RTV to the UI texture for vanilla UI capture. */
 	void SetUIBuffer();
-	/** @brief Clears the UI texture and restores the original kFRAMEBUFFER.RTV. */
 	void ClearUIBuffer();
-	/** @brief Returns true when HDR, camera, bloom, or a LUT needs PIXL's final presentation pass. */
 	bool NeedsPresentationComposite() const;
-	/** @brief Returns true when non-FG HDR deferred compositing is active (composite after Present-hook mods). */
-	bool UsesDeferredPresentComposite() const;
-	/** @brief Aligns kFRAMEBUFFER.RTV with uiTexture for engine paths when ImGui has already bound the OM. */
+	bool UsesDeferredPresentComposite() const;  // Composite after Present-hook mods, non-FG.
 	void SyncFramebufferUIRedirect();
 
-	/** @brief Scales UI brightness in the Frame Gen UI buffer using the UI brightness compute shader. */
+	// Frame-generation UI and final HDR/SDR presentation.
 	void ScaleUIBrightnessForFG();
-	/** @brief Returns true when the D3D12 UI buffer path should be used for frame generation. */
 	bool ShouldUseD3D12UIBuffer();
-
-	/** @brief Runs the HDR output compute shader to composite scene and UI, then copies to the back buffer. */
 	void ApplyHDR();
 
-	/** @brief Snapshots hdrTexture before the menu blur dirties it in place. */
+	// Snapshot before menu blur; freshness tracks the current render frame.
 	void SnapshotCleanScene();
-
-	/** @brief Returns true when the snapshot was refreshed this frame; stale means hdrTexture wasn't blurred. */
 	bool IsCleanSceneCaptureFresh() const;
 
-	/** @brief Runs the HDR output transform on a clean scene (no UI buffer) and writes into outputTexture.
-	 *  @param sceneSRV The clean HDR scene SRV.
-	 *  @param sdrPreview If true, applies SDR preview transform instead of HDR output.
-	 *  @return The composed output texture.
-	 */
+	// Clean capture (no UI): SDR preview or HDR output into outputTexture.
 	ID3D11Texture2D* ComposeCleanCapture(ID3D11ShaderResourceView* sceneSRV, bool sdrPreview);
 
-	/**
-	 * @brief Returns a patched blend state with corrected alpha blending for HDR UI compositing.
-	 * @param original The original blend state to potentially patch.
-	 * @return The patched blend state, or the original if no patch is needed.
-	 */
+	// Returns the patched alpha blend state, or original if no patch is needed.
 	ID3D11BlendState* GetPatchedAlphaBlendState(ID3D11BlendState* original);
 
-	/**
-	 * @brief Installs swap chain Present vtable hooks and OMSetBlendState detour for HDR pipeline.
-	 * @param swapChain The DXGI swap chain to hook.
-	 */
+	// Installs the Present vtable hooks and OMSetBlendState detour.
 	static void InstallSwapChainPresentHooks(IDXGISwapChain* swapChain);
-	/**
-	 * @brief Handles the swap chain Present call, drawing ImGui overlay and running HDR compositing.
-	 * @param swapChain The DXGI swap chain.
-	 * @param syncInterval VSync interval.
-	 * @param flags Present flags.
-	 * @param presentChain The original Present call chain to invoke.
-	 * @return The HRESULT from the final Present call.
-	 */
+	// Composites HDR/ImGui and returns the original Present chain HRESULT.
 	HRESULT HandleSwapChainPresent(
 		IDXGISwapChain* swapChain,
 		UINT syncInterval,
 		UINT flags,
 		const std::function<HRESULT(IDXGISwapChain*, UINT, UINT)>& presentChain);
-	/**
-	 * @brief Draws and processes PIXL's ImGui overlay on the active D3D11
-	 * presentation target.
-	 *
-	 * The native D3D11 Present hook and the D3D12 frame-generation proxy must
-	 * both call this exactly once per presented game frame.
-	 */
+	// D3D11 Present and D3D12 FG proxy must call exactly once per presented frame.
 	void DrawRendererUIForPresent();
 
-	/** @brief Returns true while the Present bottom hook is suppressed during deferred compositing. */
+	// Bottom Present suppression during deferred HDR composition.
 	bool IsPresentSuppressed() const { return presentSuppressed; }
-	/**
-	 * @brief Sets whether the Present bottom hook should be suppressed.
-	 * @param value True to suppress, false to allow.
-	 */
 	void SetPresentSuppressed(bool value) { presentSuppressed = value; }
 
-	/** @brief Releases all HDR textures, constant buffers, and restores LDR render targets. */
-	void DestroyResources();
+	void DestroyResources();  // Releases HDR resources and restores upgraded targets.
 
 	XM_ALIGNED_STRUCT(16)
 	HDRDataCB
@@ -340,7 +276,7 @@ public:
 		float fgTweenMenuMidAlphaBoost;  ///< 1.0 = TweenMenu (pause) open — FG UIBrightnessCS mid-alpha boost only
 		float previewSDR;                ///< 1.0 = emit sRGB SDR (crop preview) instead of PQ HDR10
 		float applyAutoHDR;              ///< Reserved compatibility field; PIXL owns the tonemap path and writes zero
-		float menuSceneBrightness;          ///< Display-referred gain for main/loading imagery; reuses legacy c2.z padding.
+		float menuSceneBrightness;       ///< Display gain for main/loading; legacy c2.z padding.
 		float stormglassLateralInertia;  ///< Signed filtered camera-yaw inertia, -1..1; reuses c2.w padding
 
 		float physicalCameraEnabled;
@@ -469,8 +405,7 @@ public:
 	static_assert(offsetof(ExposureControlCB, compensationDeltaEV) == 4);
 	std::unique_ptr<ConstantBuffer> exposureControlCB;
 
-	// Private DOF ABI. Lens/focus controls stay isolated from HDRDataCB so the
-	// rest of CameraSuite does not inherit another shared register contract.
+	// Private DOF shader ABI: isolated from HDRDataCB.
 	struct DofControlCB
 	{
 		float focusDistance;
@@ -518,8 +453,7 @@ public:
 	bool exposureHoldLogged = false;
 	bool cinematicDoFLoaded = false;
 
-	// Presentation-state integration is updated at most once per rendered frame
-	// even when clean capture and frame-generation paths request extra composites.
+	// Update environment state once per frame, including extra FG/capture composites.
 	mutable bool environmentStateValid = false;
 	mutable std::uint32_t environmentStateFrame = 0;
 	mutable float environmentTime = 0.0f;
@@ -534,16 +468,12 @@ public:
 	mutable float coldLensState = 0.0f;
 	mutable float fireLensState = 0.0f;
 	mutable float frostImpactLensState = 0.0f;
-	// Main/loading preview geometry can arrive one render pass before its authored
-	// colour textures. A short scene-only reveal masks that white placeholder
-	// frame without dimming UI text or affecting gameplay exposure.
+	// Mask early white menu/loading placeholder frames without dimming the UI.
 	mutable bool displayMenuWasActive = false;
 	mutable std::uint32_t displayMenuTransitionFrame = UINT32_MAX;
 	mutable float displayMenuTransition = 1.0f;
 
-	// Director keeps PIXL's optional depth-dependent camera effects isolated from
-	// its clean capture path. Skyrim's native DOF remains governed by the public
-	// enableSkyrimDepthOfField setting.
+	// Director isolation does not override Skyrim's native DOF setting.
 	bool photoModeDofIsolation = false;
 
 	Texture2D* hdrTexture = nullptr;
@@ -553,8 +483,7 @@ public:
 	uint cleanSceneCaptureFrame = UINT32_MAX;  // frameCount when cleanSceneCapture was last refreshed
 
 	ID3D11ComputeShader* hdrOutputCS = nullptr;
-	// Avoid retrying a missing/invalid optional HDR shader every frame. The
-	// failure is retried when the module shader cache is explicitly cleared.
+	// Retry a failed optional shader only after ClearShaderCache().
 	bool hdrOutputCompileFailed = false;
 	winrt::com_ptr<ID3D11ShaderResourceView> lookTextureView;
 	winrt::com_ptr<ID3D11ShaderResourceView> frostLensTextureView;
@@ -562,7 +491,7 @@ public:
 	winrt::com_ptr<ID3D11SamplerState> lookSampler;
 	void LoadLookTexture();
 	void LoadElementalLensTextures();
-	/** @brief Returns the HDR/physical-camera output compute shader, compiling it on first use. */
+	// Lazy shader compile (failed compiles are cached).
 	ID3D11ComputeShader* GetHDROutputCS();
 
 	Texture2D* cameraHistogramTexture = nullptr;  // 256-bin R32_UINT log-luminance histogram
@@ -576,9 +505,7 @@ public:
 	Texture2D* bloomEighthScratchTexture = nullptr;
 	Texture2D* bloomQuarterScratchTexture = nullptr;
 	Texture2D* bloomHalfScratchTexture = nullptr;
-	// Auto-DOF is kept in explicit intermediate layers. A signed CoC field
-	// and separate near/far half-resolution blurs prevent the single-pass gather
-	// from smearing silhouettes across the entire presentation image.
+	// Separate signed CoC and near/far layers prevent silhouette smearing.
 	Texture2D* dofCoCTexture = nullptr;
 	Texture2D* dofCoCHistoryTexture = nullptr;
 	Texture2D* dofFocusTexture = nullptr;
@@ -629,17 +556,17 @@ public:
 	void SetupCameraFinishingResources(const D3D11_TEXTURE2D_DESC& sceneDesc);
 
 	ID3D11ComputeShader* uiBrightnessCS = nullptr;
-	/** @brief Returns the UI brightness scaling compute shader, compiling it on first use. */
+	// Lazy shader compile.
 	ID3D11ComputeShader* GetUIBrightnessCS();
 
-	/** @brief Detects whether Windows HDR is currently active on the swap chain's monitor. */
+	// Detect active HDR on the swap-chain display.
 	static bool DetectHDR();
 	static bool isHDRMonitor;            // Windows HDR is active (enabled in OS settings)
 	static bool isHDRCapableMonitor;     // Monitor supports HDR but Windows HDR may be off
 	static bool wasExclusiveFullscreen;  // EFS detected at swapchain creation; incompatible with HDR
 	bool pendingAutoDetect = false;
 
-	/** @brief Queries the DXGI output for the display's maximum luminance in nits. */
+	// DXGI display luminance in nits.
 	float GetDisplayMaxLuminance() const;
 	mutable float cachedDisplayMaxLuminance = 1000.0f;
 	mutable float dofFocusDistanceState = 2200.0f;
@@ -654,24 +581,23 @@ public:
 	bool renderingUI = false;
 	ID3D11RenderTargetView* savedRTV = nullptr;
 	ID3D11DepthStencilView* savedDSV = nullptr;
-	ID3D11RenderTargetView* savedFramebufferRTV = nullptr;  // Original kFRAMEBUFFER.RTV for restoration
+	REX::W32::ID3D11RenderTargetView* savedFramebufferRTV = nullptr;  // Original kFRAMEBUFFER.RTV for restoration
 
 	// Saved kFRAMEBUFFER state for HDR redirect (ISHDR writes to hdrTexture instead)
-	ID3D11Texture2D* savedFramebufferTexture = nullptr;
-	ID3D11ShaderResourceView* savedFramebufferSRV = nullptr;
+	REX::W32::ID3D11Texture2D* savedFramebufferTexture = nullptr;
+	REX::W32::ID3D11ShaderResourceView* savedFramebufferSRV = nullptr;
 	bool framebufferRedirected = false;
 
-	/** @brief Upgrades post-tonemapping LDR render targets to R16G16B16A16_FLOAT for HDR values. */
+	// Promote post-tonemap targets to float16 and restore their original formats.
 	void UpgradeLDRRenderTargets();
-	/** @brief Restores all upgraded render targets to their original format and releases upgraded resources. */
 	void RestoreLDRRenderTargets();
 
 	struct SavedRenderTarget
 	{
-		ID3D11Texture2D* texture = nullptr;
-		ID3D11RenderTargetView* RTV = nullptr;
-		ID3D11ShaderResourceView* SRV = nullptr;
-		ID3D11UnorderedAccessView* UAV = nullptr;
+		REX::W32::ID3D11Texture2D* texture = nullptr;
+		REX::W32::ID3D11RenderTargetView* RTV = nullptr;
+		REX::W32::ID3D11ShaderResourceView* SRV = nullptr;
+		REX::W32::ID3D11UnorderedAccessView* UAV = nullptr;
 	};
 
 	std::vector<std::pair<RE::RENDER_TARGETS::RENDER_TARGET, SavedRenderTarget>> savedLDRTargets;
@@ -704,6 +630,5 @@ private:
 	// Bind scene (t0), UI (t1, may be null), UAV (u0), CB (b0); dispatch the output CS; unbind.
 	void DispatchHDROutput(ID3D11ShaderResourceView* sceneSRV, ID3D11ShaderResourceView* uiSRV, ID3D11UnorderedAccessView* uav);
 
-	// True when FFX frame generation is actively compositing UI this frame.
-	bool IsFGCompositingThisFrame() const;
+	bool IsFGCompositingThisFrame() const;  // FFX is compositing UI this frame.
 };

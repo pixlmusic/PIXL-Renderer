@@ -43,6 +43,12 @@ namespace WindowLife
         float4 Presentation1;
     };
 
+	float WindowSmootherStep(float edge0, float edge1, float value)
+	{
+		float t = saturate((value - edge0) / max(edge1 - edge0, 1.0e-5f));
+		return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+	}
+
     Texture2D<float4> WindowLifeGlassGrime : register(t122);
     Texture2D<float4> WindowLifeOccupantAtlas : register(t123);
     Texture2D<float4> WindowLifeCurtainAtlas : register(t124);
@@ -165,7 +171,7 @@ namespace WindowLife
     {
         float2 i = floor(p);
         float2 f = frac(p);
-        float2 u = f * f * (3.0f - 2.0f * f);
+        float2 u = f * f * f * (f * (f * 6.0f - 15.0f) + 10.0f);
         float a = Hash21(i);
         float b = Hash21(i + float2(1.0f, 0.0f));
         float c = Hash21(i + float2(0.0f, 1.0f));
@@ -189,7 +195,9 @@ namespace WindowLife
 
     float ShapeMask(float distanceValue, float softness)
     {
-        return 1.0f - smoothstep(-softness, softness, distanceValue);
+		softness = max(softness, 5.0e-4f);
+		float antialiasWidth = max(fwidth(distanceValue), softness * 0.15f);
+		return 1.0f - smoothstep(-softness - antialiasWidth, softness + antialiasWidth, distanceValue);
     }
 
     float TaperedCapsuleDistance(float2 p, float2 a, float2 b, float radiusA, float radiusB)
@@ -215,8 +223,9 @@ namespace WindowLife
         p /= max(scale, 0.25f);
 
         float side = direction > 0.5f ? 1.0f : -1.0f;
-        float gait = sin(motionPhase * 12.5663706f + pose * 5.7f);
-        float gaitOpposite = sin(motionPhase * 12.5663706f + pose * 5.7f + 3.1415927f);
+		float gaitPhase = motionPhase * 12.5663706f + pose * 5.7f;
+		float gait = sin(gaitPhase) * (0.86f + 0.14f * sin(gaitPhase * 0.5f + variant * 4.1f));
+		float gaitOpposite = sin(gaitPhase + 3.1415927f);
         float lean = side * ((pose - 0.5f) * 0.055f + gait * 0.012f);
         p.y += abs(gait) * 0.008f;
 
@@ -288,17 +297,20 @@ namespace WindowLife
 
     float ActivityEnvelope(float phase)
     {
-        return smoothstep(0.04f, 0.16f, phase) * (1.0f - smoothstep(0.82f, 0.97f, phase));
+		phase = saturate(phase);
+		return WindowSmootherStep(0.03f, 0.18f, phase) * (1.0f - WindowSmootherStep(0.80f, 0.98f, phase));
     }
 
     float MotionX(float phase, float mode, float direction)
     {
+		phase = saturate(phase);
         float eased = phase * phase * (3.0f - 2.0f * phase);
+		eased = eased * eased * (3.0f - 2.0f * eased);
         if (mode < 0.55f)
             return lerp(-0.62f, 0.62f, direction > 0.5f ? eased : 1.0f - eased);
         if (mode < 0.80f) {
-            float arrive = smoothstep(0.04f, 0.28f, phase);
-            float leave = smoothstep(0.68f, 0.94f, phase);
+			float arrive = WindowSmootherStep(0.04f, 0.28f, phase);
+			float leave = WindowSmootherStep(0.68f, 0.94f, phase);
             float side = direction > 0.5f ? 1.0f : -1.0f;
             return lerp(side * -0.62f, side * 0.04f, arrive) + side * 0.58f * leave;
         }
@@ -505,38 +517,69 @@ namespace WindowLife
         // ornate or metallic. Combine tangent-normal slope with local continuity
         // so bright mullions and carved frames do not become pane pixels.
         float2 tangentSlope = normalSample.xy * 2.0f - 1.0f;
-        float flatness = 1.0f - smoothstep(0.20f, 0.62f, length(tangentSlope));
+		float flatness = 1.0f - WindowSmootherStep(0.20f, 0.62f, length(tangentSlope));
         float normalVariation =
             length(ddx_coarse(normalSample.xy)) +
             length(ddy_coarse(normalSample.xy));
-        float continuity = 1.0f - smoothstep(0.035f, 0.24f, normalVariation);
+		float continuity = 1.0f - WindowSmootherStep(0.035f, 0.24f, normalVariation);
         return saturate(flatness * lerp(0.72f, 1.0f, continuity));
     }
 
-    float ProceduralPaneMask(float3 baseColor, float4 normalSample)
+    float ProceduralPaneLuma(float2 materialUV, float2 uvDx, float2 uvDy)
+    {
+        // The procedural fallback has no authored glass silhouette to erode.
+        // Require the adjacent screen-space texels to also look like pane so
+        // bright trim and texture-filtered frame edges do not expand the mask.
+        const float2 neighborX = uvDx * 2.0f;
+        const float2 neighborY = uvDy * 2.0f;
+        float3 colorX0 = TexColorSampler.SampleGrad(SampColorSampler, materialUV - neighborX, uvDx, uvDy).rgb;
+        float3 colorX1 = TexColorSampler.SampleGrad(SampColorSampler, materialUV + neighborX, uvDx, uvDy).rgb;
+        float3 colorY0 = TexColorSampler.SampleGrad(SampColorSampler, materialUV - neighborY, uvDx, uvDy).rgb;
+        float3 colorY1 = TexColorSampler.SampleGrad(SampColorSampler, materialUV + neighborY, uvDx, uvDy).rgb;
+        float lumaX0 = dot(max(colorX0, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
+        float lumaX1 = dot(max(colorX1, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
+        float lumaY0 = dot(max(colorY0, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
+        float lumaY1 = dot(max(colorY1, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
+        return min(min(lumaX0, lumaX1), min(lumaY0, lumaY1));
+    }
+
+    float ProceduralPaneMask(float3 baseColor, float4 normalSample, float2 materialUV)
     {
         if (!IsCandidate())
             return 0.0f;
 
+        float2 uvDx = ddx_coarse(materialUV);
+        float2 uvDy = ddy_coarse(materialUV);
+        if (!(HasDiffuseNamedWindow() || HasNamedGlass()))
+            return 0.0f;
+
         float3 safeColor = max(baseColor, 0.0f);
         float luma = dot(safeColor, float3(0.2126f, 0.7152f, 0.0722f));
-        float diffusePane = smoothstep(GetSurface0().z, GetSurface0().z + max(GetSurface0().w, 0.01f), luma);
+        // Keep user threshold control, but cap the procedural feather: a broad
+        // transition can let frame texels partially suppress POM or receive glass.
+        float proceduralFeather = clamp(GetSurface0().w, 0.01f, 0.10f);
+        float diffusePane = smoothstep(GetSurface0().z, GetSurface0().z + proceduralFeather, luma);
+        if (diffusePane <= 1.0e-4f)
+            return 0.0f;
+
+        float neighborLuma = ProceduralPaneLuma(materialUV, uvDx, uvDy);
+        float neighborPane = smoothstep(
+            GetSurface0().z, GetSurface0().z + proceduralFeather, neighborLuma);
+        float paneCore = smoothstep(0.35f, 0.80f, neighborPane);
         float smoothEvidence = smoothstep(0.10f, 0.64f, saturate(normalSample.w));
         float flatEvidence = PaneNormalEvidence(normalSample);
 
         // Explicit window/glass materials can be non-emissive by day, but still
         // need flat-normal evidence. Brightness or gloss alone would select frames.
-        float namedPane = (HasDiffuseNamedWindow() || HasNamedGlass())
-            ? diffusePane * flatEvidence * lerp(0.58f, 1.0f, smoothEvidence)
-            : 0.0f;
-        return saturate(namedPane);
+        return saturate(diffusePane * paneCore * flatEvidence *
+                        lerp(0.58f, 1.0f, smoothEvidence));
     }
 
-    float PreParallaxPaneMask(float3 baseColor, float4 normalSample)
+    float PreParallaxPaneMask(float3 baseColor, float4 normalSample, float2 materialUV)
     {
         // Authored pane evidence takes precedence. The conservative procedural
         // path is also used below if a named window's glow SRV is absent.
-        return HasAuthoredPaneTexture() ? 0.0f : ProceduralPaneMask(baseColor, normalSample);
+        return HasAuthoredPaneTexture() ? 0.0f : ProceduralPaneMask(baseColor, normalSample, materialUV);
     }
 
     float SamplePaneGlowEvidence(float2 materialUV, float2 atlasTile, float maskMip)
@@ -556,7 +599,7 @@ namespace WindowLife
 
     float PaneMask(float3 baseColor, float4 normalSample, float glowLuma, float2 materialUV)
     {
-        float pre = PreParallaxPaneMask(baseColor, normalSample);
+        float pre = PreParallaxPaneMask(baseColor, normalSample, materialUV);
         if (!HasAuthoredPaneTexture())
             return pre;
 
@@ -570,7 +613,7 @@ namespace WindowLife
             // or glass may fall back to diffuse/normal evidence. A generic
             // facade must stay opaque instead of promoting bright masonry.
             return (HasDiffuseNamedWindow() || HasDiffuseNamedGlass())
-                ? ProceduralPaneMask(baseColor, normalSample)
+                ? ProceduralPaneMask(baseColor, normalSample, materialUV)
                 : 0.0f;
         }
 
@@ -1948,7 +1991,12 @@ namespace WindowLife
             float3 nightColor = outdoorSample.rgb * float3(0.075f, 0.10f, 0.16f);
             if (nightWidth == width && nightHeight == height && nightMips > 0)
                 nightColor = WindowLifeCurtainAtlas.SampleLevel(SampGlowSampler, atlasUV, min(mip, (float)nightMips - 1.0f)).rgb;
-            float viewEmission = clamp(GetPresentation0().y, 0.0f, 8.0f);
+            // Exterior atlas art is display-referred, while its control is an
+            // HDR multiplier. Compress high values so a bright landscape remains
+            // contained behind the pane instead of overpowering the glass/frame.
+            float authoredViewEmission = clamp(GetPresentation0().y, 0.0f, 8.0f);
+            float viewEmission = authoredViewEmission /
+                max(0.25f + authoredViewEmission * 0.75f, 1.0e-4f);
             // Bright daytime visibility must not turn the night atlas into daylight.
             float nightEmission = min(viewEmission, 1.0f) * 0.35f;
             result.roomColor = max(lerp(outdoorSample.rgb * viewEmission, nightColor * nightEmission, night), 0.0f);

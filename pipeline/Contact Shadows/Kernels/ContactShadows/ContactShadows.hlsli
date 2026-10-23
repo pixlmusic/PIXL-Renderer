@@ -1,6 +1,12 @@
 
 namespace ContactShadows
 {
+	float ContactSmootherStep(float edge0, float edge1, float value)
+	{
+		float t = saturate((value - edge0) / max(edge1 - edge0, 1.0e-5f));
+		return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+	}
+
 	Texture2D<unorm float> ContactShadowsTexture : register(t45);
 
 	float GetScreenSpaceShadow(float3 screenPosition, float2 uv, float noise)
@@ -39,7 +45,7 @@ namespace ContactShadows
 			max(max(abs(depthL - viewDepth), abs(depthR - viewDepth)),
 				max(abs(depthU - viewDepth), abs(depthD - viewDepth))) /
 			max(viewDepth, 1.0f);
-		float discontinuity = smoothstep(
+		float discontinuity = ContactSmootherStep(
 			0.0025f, 0.022f, max(depthFootprint, neighborhoodDepthSpan));
 		float blur = edge * edge * 0.72f * (1.0f - discontinuity);
 		// Screen-space shadows refine the authoritative shadow map; they must not
@@ -52,7 +58,7 @@ namespace ContactShadows
 		// useful outdoor sun shadowing even though the ray pass remained stable out to
 		// 12288 units. Depth discontinuity rejection still prevents long-range walls,
 		// roofs and alpha silhouettes from becoming broad false blockers.
-		float rangeConfidence = 1.0f - smoothstep(6144.0f, 12288.0f, viewDepth);
+		float rangeConfidence = 1.0f - ContactSmootherStep(6144.0f, 12288.0f, viewDepth);
 		float receiverConfidence =
 			rangeConfidence * (1.0f - discontinuity * (1.0f - rangeConfidence));
 		return lerp(1.0f, shadow, receiverConfidence);
@@ -87,7 +93,7 @@ namespace ContactShadows
 		float3 originVS = FrameBuffer::WorldToView(originWS);
 		float viewDistance = abs(originVS.z);
 		float distanceConfidence =
-			1.0f - smoothstep(2048.0f, 5120.0f, viewDistance);
+			1.0f - ContactSmootherStep(2048.0f, 5120.0f, viewDistance);
 		strength *= distanceConfidence;
 		if (strength <= 1e-3f)
 			return 1.0f;
@@ -123,8 +129,8 @@ namespace ContactShadows
 				float baseThickness = max(3.0f, abs(rayPositionVS.z) * 0.0025f);
 				float thickness = baseThickness * lerp(0.90f, 1.20f, rayT);
 
-				float enter = smoothstep(1.0f, 2.0f, depthDelta);
-				float leave = 1.0f - smoothstep(thickness * 0.60f, thickness * 0.90f, depthDelta);
+				float enter = ContactSmootherStep(1.0f, 2.0f, depthDelta);
+				float leave = 1.0f - ContactSmootherStep(thickness * 0.60f, thickness * 0.90f, depthDelta);
 				float hit = saturate(enter * leave);
 
 				float contact = 1.0f - smoothstep(0.10f, 0.50f, rayT);

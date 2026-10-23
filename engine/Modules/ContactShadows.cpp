@@ -66,6 +66,7 @@ void ContactShadows::DrawSettings()
 
 		ImGui::SliderFloat("SSS Falloff Start", &bendSettings.FalloffStart, 256.0f, 20000.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
 		ImGui::SliderFloat("SSS Falloff End", &bendSettings.FalloffEnd, 512.0f, 24000.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
+		bendSettings.FalloffEnd = std::max(bendSettings.FalloffEnd, bendSettings.FalloffStart + 256.0f);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Fades the screen-space directional shadow to neutral over view distance. Lower values reduce raymarch work and avoid unstable far-depth shadows; Skyrim's normal shadow map remains active beyond this range.");
 		ImGui::TextDisabled("Current fade-out: %.0f m (%.0f Skyrim units)", bendSettings.FalloffEnd / 70.0f, bendSettings.FalloffEnd);
@@ -214,7 +215,7 @@ ID3D11ComputeShader* ContactShadows::GetComputeRaymarch()
 		// (R24_UNORM_X8_TYPELESS game depth) to `Texture2D<float>` (R32_FLOAT blendedDepth).
 		if (globals::pipeline::terrainSeam.loaded)
 			defines.push_back({ "TERRAIN_SEAM", "" });
-		raymarchCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\ContactShadows\\RaymarchCS.hlsl", defines, "cs_5_0");
+		raymarchCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\PIXL-Shaders\\ContactShadows\\RaymarchCS.hlsl", defines, "cs_5_0");
 	}
 	return raymarchCS;
 }
@@ -407,15 +408,20 @@ void ContactShadows::Prepass()
 void ContactShadows::LoadSettings(json& o_json)
 {
 	bendSettings = o_json;
+	const BendSettings defaults{};
+	auto finiteClamp = [](float value, float fallback, float minimum, float maximum) {
+		return std::clamp(std::isfinite(value) ? value : fallback, minimum, maximum);
+	};
 	EnableGrassShadowCasting = o_json.is_object() ? o_json.value("EnableGrassShadowCasting", true) : true;
 	bendSettings.Enable = bendSettings.Enable ? 1u : 0u;
 	bendSettings.SampleCount = std::clamp(bendSettings.SampleCount, 1u, 12u);
-	bendSettings.SurfaceThickness = std::clamp(bendSettings.SurfaceThickness, 0.005f, 0.05f);
-	bendSettings.BilinearThreshold = std::clamp(bendSettings.BilinearThreshold, 0.02f, 1.0f);
-	bendSettings.ShadowContrast = std::clamp(bendSettings.ShadowContrast, 1.0f, 4.0f);
-	bendSettings.Strength = std::clamp(bendSettings.Strength, 0.0f, 1.0f);
-	bendSettings.FalloffStart = std::clamp(bendSettings.FalloffStart, 256.0f, 20000.0f);
-	bendSettings.FalloffEnd = std::clamp(std::max(bendSettings.FalloffEnd, bendSettings.FalloffStart + 256.0f), 512.0f, 24000.0f);
+	bendSettings.SurfaceThickness = finiteClamp(bendSettings.SurfaceThickness, defaults.SurfaceThickness, 0.005f, 0.05f);
+	bendSettings.BilinearThreshold = finiteClamp(bendSettings.BilinearThreshold, defaults.BilinearThreshold, 0.02f, 1.0f);
+	bendSettings.ShadowContrast = finiteClamp(bendSettings.ShadowContrast, defaults.ShadowContrast, 1.0f, 4.0f);
+	bendSettings.Strength = finiteClamp(bendSettings.Strength, defaults.Strength, 0.0f, 1.0f);
+	bendSettings.FalloffStart = finiteClamp(bendSettings.FalloffStart, defaults.FalloffStart, 256.0f, 20000.0f);
+	bendSettings.FalloffEnd = std::max(finiteClamp(bendSettings.FalloffEnd, defaults.FalloffEnd, 512.0f, 24000.0f),
+		bendSettings.FalloffStart + 256.0f);
 }
 
 void ContactShadows::SaveSettings(json& o_json)

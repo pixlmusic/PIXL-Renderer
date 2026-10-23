@@ -90,6 +90,8 @@ public:
 
 	/** @brief Binds water optics, rapid-water coverage, and foam-mask SRVs to the pixel shader. */
 	virtual void Prepass() override;
+	/** @brief Refreshes resolved cloud radiance/depth immediately before the water draw. */
+	void RefreshCloudResources() const noexcept;
 	virtual void DrawSettings() override;
 	virtual void LoadSettings(json& o_json) override;
 	virtual void SaveSettings(json& o_json) override;

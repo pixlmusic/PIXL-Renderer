@@ -2,9 +2,9 @@
 
 ## Status
 
-PIXL Renderer can optionally evaluate the NVIDIA DLSS Neural Rendering 310.8 runtime through PIXL's existing D3D11-to-D3D12 presentation sidecar. The feature is disabled by default and ordinary DLSS remains the fallback image for every discovery, initialization, resource, or evaluation failure.
+PIXL Renderer can optionally evaluate NVIDIA DLSS Neural Rendering runtimes 310.8.x and 310.9.16 through PIXL's existing D3D11-to-D3D12 presentation sidecar. The feature is disabled by default and ordinary DLSS remains the fallback image for every discovery, initialization, resource, or evaluation failure.
 
-This is an experimental integration of a private, versioned NGX Feature 18 contract. It is not part of the public Streamline 2.10.3 API shipped by the current project. PIXL therefore accepts only the locally validated `nvngx_dlssnr.dll` 310.8.x runtime and refuses unknown versions instead of guessing their parameter ABI.
+This is an experimental integration of a private, versioned NGX Feature 18 contract. It is not part of the public Streamline 2.10.3 API shipped by the current project. PIXL accepts the existing 310.8.x runtime and the explicitly allowlisted 310.9.16 test candidate; other versions remain rejected instead of guessing their parameter ABI. The 310.9.16 path has not yet been validated in-game.
 
 ## Architecture
 
@@ -52,12 +52,12 @@ Neural Rendering remains experimental. Hardware-specific validation is required;
 The primary runtime location is:
 
 ```text
-Data/Shaders/ImageReconstruction/Streamline/nvngx_dlssnr.dll
+Data/PIXL-Shaders/ImageReconstruction/Streamline/nvngx_dlssnr.dll
 ```
 
-Legacy PIXL Streamline locations are searched only as fallbacks. Loading is dynamic, so the DLL is not a plugin dependency and its absence cannot prevent `PIXLRenderer.dll` from loading.
+PIXL resolves the runtime only from this canonical `PIXL-Shaders` location; it never falls back to the legacy `Data/Shaders` tree. Loading is dynamic, so the DLL is not a plugin dependency and its absence cannot prevent `PIXLRenderer.dll` from loading.
 
-The 310.8 runtime expects the signed NGX core identity during its internal validation. PIXL temporarily patches only the loaded DLSSNR module's `GetModuleFileNameW` import slot while making the relevant vendor call, immediately restores the import, and disables NR if the scoped operation cannot be established. This behavior is confined to the optional runtime bridge.
+The supported runtimes expect the signed NGX core identity during internal validation. PIXL temporarily patches only the loaded DLSSNR module's `GetModuleFileNameW` import slot while making the relevant vendor call, immediately restores the import, and disables NR if the scoped operation cannot be established. This behavior is confined to the optional runtime bridge.
 
 ## User controls
 
@@ -101,7 +101,7 @@ Skyrim / PIXL render-resolution scene
   -> UI / present
 ```
 
-Feature 18 receives display-resolution post-DLSS colour plus render-resolution depth and motion guides. A gameplay pre-DLSS option is intentionally not exposed: it would receive Skyrim's linear HDR `kMAIN` surface instead of the validated display colour, would require a hard DX12-to-DX11 hand-back every real frame, and would contradict the installed 310.8 extent/colour contract. Photo Finish uses the same validated ordering and reconstructs its larger still-image output from completed neural frames.
+Feature 18 receives display-resolution post-DLSS colour plus render-resolution depth and motion guides. A gameplay pre-DLSS option is intentionally not exposed: it would receive Skyrim's linear HDR `kMAIN` surface instead of the supported display-colour path, would require a hard DX12-to-DX11 hand-back every real frame, and would contradict the current extent/colour contract. Photo Finish uses the same ordering and reconstructs its larger still-image output from completed neural frames.
 
 ## Current compatibility gates
 
@@ -110,7 +110,7 @@ The native PIXL path runs only when all of the following are true:
 - DLSS is the selected reconstruction method.
 - Neural Rendering was enabled when the process created the swap chain.
 - the PIXL DX12 sidecar is active;
-- `nvngx_dlssnr.dll` reports version 310.8.x and exports the required D3D12 entry points;
+- `nvngx_dlssnr.dll` reports version 310.8.x or exactly 310.9.16 and exports the required D3D12 entry points;
 - if Frame Generation is enabled, its dedicated raw guide resources and runtime remain healthy;
 - PIXL HDR output is off (validated path is SDR only);
 - `renodx-dlss.addon64` is not loaded.
@@ -144,7 +144,7 @@ Runtime and visual validation are still required. Recommended first test:
 2. select DLSS, SDR, and Frame Generation Off;
 3. enable Neural Rendering and choose Natural; Frame Generation may be left off for the first A/B, then enabled for the combined-path test;
 4. restart Skyrim;
-5. confirm the log reports `Initialized DLSSNR 310.8... through PIXL DX12 sidecar`;
+5. confirm the log reports `Initialized DLSSNR 310.9.16 through PIXL DX12 sidecar` (or 310.8.x when using the older runtime);
 6. confirm the GUI's successful-frame counter advances;
 7. test camera rotation, actor motion, foliage, particles, UI, loading, FOV changes, and dynamic resolution;
 8. enter Photo Mode, press `Insert`, enable `Neural Final Composite`, select 8, 16, 24 or 32 fresh frames, capture at Native and 2x, and confirm the log reports `neural source on` and `Photo Finish accumulation complete`;

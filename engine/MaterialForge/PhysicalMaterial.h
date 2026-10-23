@@ -14,7 +14,7 @@
  */
 namespace PhysicalMaterial
 {
-	inline constexpr std::uint32_t SchemaVersion = 3;
+	inline constexpr std::uint32_t SchemaVersion = 4;
 	inline constexpr std::size_t MaxTextureBindings = 9;
 
 	using MaterialID = std::uint64_t;
@@ -165,6 +165,10 @@ namespace PhysicalMaterial
 		Glint glint;
 		Glint projectedGlint;
 
+		// CPU semantic table only; the DX11 cbuffer layout is unchanged.
+		std::uint32_t surfaceProfile = 0;
+		std::array<std::uint32_t, 3> reserved{};
+
 		/** @brief Tests whether a physical feature is enabled. */
 		[[nodiscard]] constexpr bool HasTrait(MaterialTrait a_feature) const
 		{
@@ -204,7 +208,7 @@ namespace PhysicalMaterial
 	static_assert(static_cast<std::uint32_t>(RasterFlag::HasEmissive) == (1u << 0));
 	static_assert(static_cast<std::uint32_t>(RasterFlag::ProjectedGlint) == (1u << 12));
 	static_assert(static_cast<std::uint32_t>(RasterFlag::FurShell) == (1u << 13));
-	static_assert(sizeof(Descriptor) == 208, "Descriptor schema 3 layout changed without a schema-version update.");
+	static_assert(sizeof(Descriptor) == 224, "Descriptor schema 4 layout changed without a schema-version update.");
 	static_assert(sizeof(TextureBinding) == 16, "TextureBinding must retain its backend upload layout.");
 	static_assert(std::is_standard_layout_v<Descriptor>);
 	static_assert(std::is_trivially_copyable_v<Descriptor>);

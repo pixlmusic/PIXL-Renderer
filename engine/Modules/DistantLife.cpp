@@ -281,7 +281,8 @@ void DistantLife::Prepass()
 	scanCountdown -= dt;
 
 	auto* player = RE::PlayerCharacter::GetSingleton();
-	if (!settings.Enabled || (!settings.StaticLights && !settings.FarFieldActivity) || !player || !player->GetWorldspace() || !player->GetParentCell() ||
+	if (!settings.Enabled || (!settings.StaticLights && !settings.ActorTorches && !settings.FarFieldActivity && !settings.FarFieldSmoke) ||
+		!player || !player->GetWorldspace() || !player->GetParentCell() ||
 		player->GetParentCell()->IsInteriorCell()) {
 		emitters.clear();
 		worldspace = 0;
@@ -401,7 +402,7 @@ ID3D11ComputeShader* DistantLife::GetBuildMaskShader()
 {
 	if (!buildMaskCS)
 		buildMaskCS.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
-			L"Data\\Shaders\\DistantLife\\DistantLifeCS.hlsl", {}, "cs_5_0", "BuildMaskCS")));
+			L"Data\\PIXL-Shaders\\DistantLife\\DistantLifeCS.hlsl", {}, "cs_5_0", "BuildMaskCS")));
 	return buildMaskCS.get();
 }
 
@@ -409,13 +410,13 @@ ID3D11ComputeShader* DistantLife::GetCompositeShader()
 {
 	if (!compositeCS)
 		compositeCS.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
-			L"Data\\Shaders\\DistantLife\\DistantLifeCS.hlsl", {}, "cs_5_0", "CompositeCS")));
+			L"Data\\PIXL-Shaders\\DistantLife\\DistantLifeCS.hlsl", {}, "cs_5_0", "CompositeCS")));
 	return compositeCS.get();
 }
 
 void DistantLife::DrawDistantLife()
 {
-	if (!loaded || !settings.Enabled || (!settings.FarFieldActivity && uploadedCount == 0) || Util::IsInterior())
+	if (!loaded || !settings.Enabled || (!settings.FarFieldActivity && !settings.FarFieldSmoke && uploadedCount == 0) || Util::IsInterior())
 		return;
 	auto* renderer = globals::game::renderer;
 	auto* context = globals::d3d::context;
@@ -430,7 +431,7 @@ void DistantLife::DrawDistantLife()
 	if (!main.texture || !main.UAV || !depth.depthSRV)
 		return;
 	D3D11_TEXTURE2D_DESC mainDesc{};
-	main.texture->GetDesc(&mainDesc);
+	main.texture->GetDesc(REX::W32::AsW32(&mainDesc));
 	if (!mainDesc.Width || !mainDesc.Height)
 		return;
 	const float2 active = Util::ConvertToDynamic(
@@ -477,8 +478,8 @@ void DistantLife::DrawDistantLife()
 	context->CSSetConstantBuffers(12, 2, &constantBuffers[1]);
 
 	globals::profiler->BeginPass("DistantLifeBuild");
-	ID3D11ShaderResourceView* buildSRVs[2]{ emitterSRV.get(), depth.depthSRV };
-	ID3D11UnorderedAccessView* maskUAV = mask->uav.get();
+	ID3D11ShaderResourceView* buildSRVs[2]{ emitterSRV.get(), REX::W32::AsReal(depth.depthSRV) };
+	ID3D11UnorderedAccessView* maskUAV = REX::W32::AsReal(mask->uav.get());
 	context->CSSetShaderResources(0, 2, buildSRVs);
 	context->CSSetUnorderedAccessViews(0, 1, &maskUAV, nullptr);
 	context->CSSetShader(buildShader, nullptr, 0);
@@ -493,8 +494,8 @@ void DistantLife::DrawDistantLife()
 
 	globals::profiler->BeginPass("DistantLifeComposite");
 	ID3D11ShaderResourceView* maskSRV = mask->srv.get();
-	ID3D11ShaderResourceView* compositeSRVs[2]{ maskSRV, depth.depthSRV };
-	ID3D11UnorderedAccessView* mainUAV = main.UAV;
+	ID3D11ShaderResourceView* compositeSRVs[2]{ maskSRV, REX::W32::AsReal(depth.depthSRV) };
+	ID3D11UnorderedAccessView* mainUAV = REX::W32::AsReal(main.UAV);
 	context->CSSetShaderResources(0, 2, compositeSRVs);
 	context->CSSetUnorderedAccessViews(0, 1, &mainUAV, nullptr);
 	context->CSSetShader(compositeShader, nullptr, 0);

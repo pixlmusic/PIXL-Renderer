@@ -101,6 +101,7 @@ namespace DeformableGround
 			saturate(
 				texelPosition -
 				float2(baseTexel));
+		f = f * f * f * (f * (f * 6.0f - 15.0f) + 10.0f);
 
 		float4 s00 = LoadLogical(baseTexel);
 		float4 s10 = LoadLogical(baseTexel + int2(1, 0));
@@ -406,10 +407,9 @@ namespace DeformableGround
 		result.amount = amount;
 		result.depth = safeDepth * amount;
 		result.freshness = saturate(centre.y);
-		result.edge =
-			saturate(
-				gradientMagnitude * 2.0f) *
-			amount;
+		float edgeResponse = saturate(gradientMagnitude * 2.0f);
+		edgeResponse = edgeResponse * edgeResponse * (3.0f - 2.0f * edgeResponse);
+		result.edge = edgeResponse * amount;
 		result.normal = deformationNormal;
 #endif
 		return result;

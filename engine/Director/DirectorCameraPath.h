@@ -98,7 +98,9 @@ namespace DirectorCameraPath
 		// do not allocate while drawing point markers.
 		void GetPointTimelineTimes(std::vector<float>& output) const;
 		// Editor-only route samples. Call this after Rebuild() and retain the
-		// output in UI state; playback never allocates this data per frame.
+		// output in UI state; playback never allocates this data per frame. The
+		// returned polyline is bounded to 2049 points, including the closing point
+		// for a closed route.
 		void GetPreviewSamples(std::vector<Vec3>& output, std::uint32_t samplesPerSegment = 24) const;
 		[[nodiscard]] Pose EvaluateNormalized(float normalizedDistance) const noexcept;
 		[[nodiscard]] Pose EvaluateTime(float seconds, bool loop) const noexcept;

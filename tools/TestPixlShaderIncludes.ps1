@@ -24,7 +24,7 @@ $prefix = @'
 '@
 $test = @'
 int main() {
-    const auto root = std::filesystem::current_path() / "Shaders";
+    const auto root = std::filesystem::current_path() / "PIXL-Shaders";
     std::filesystem::create_directories(root / "Common");
     std::ofstream(root / "Common/test.hlsli") << "test";
     std::ofstream(root / "empty.hlsli");

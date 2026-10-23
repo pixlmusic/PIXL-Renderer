@@ -1,6 +1,7 @@
 #include "ThinSurface.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include "../I18n/I18n.h"
 #include "../ShaderCache.h"
@@ -21,6 +22,9 @@ const RE::BSFixedString ThinSurface::NiExtraDataName_AnisotropicAlphaMaterial = 
 
 void ThinSurface::BSLightingShader_SetupGeometry(RE::BSRenderPass* pass)
 {
+	if (!globals::state)
+		return;
+
 	auto SetFeatureDescriptor = [](int material) {
 		auto& descriptor = globals::state->permutationData.ExtraFeatureDescriptor;
 		static constexpr int mask = ExtraFeatureDescriptorMask << ExtraFeatureDescriptorShift;
@@ -30,6 +34,8 @@ void ThinSurface::BSLightingShader_SetupGeometry(RE::BSRenderPass* pass)
 
 	// Clear the ExtraFeatureDescriptor to disable this effect on default
 	SetFeatureDescriptor(MaterialModel::DescriptorDisabled);
+	if (!pass || !pass->geometry)
+		return;
 
 	auto& property0 = pass->geometry->GetGeometryRuntimeData().alphaProperty;
 	auto& property1 = pass->geometry->GetGeometryRuntimeData().shaderProperty;
@@ -153,9 +159,12 @@ void ThinSurface::LoadSettings(json& o_json)
 	// Match UI bounds; in particular SoftClamp's limit must stay in [1, 2].
 	if (settings.AlphaMode > MaterialModel::AnisotropicFabric)
 		settings.AlphaMode = MaterialModel::Disabled;
-	settings.AlphaReduction = std::clamp(settings.AlphaReduction, 0.0f, 1.0f);
-	settings.AlphaSoftness = std::clamp(settings.AlphaSoftness, 0.0f, 1.0f);
-	settings.AlphaStrength = std::clamp(settings.AlphaStrength, 0.0f, 1.0f);
+	const auto safeUnit = [](float value, float fallback) {
+		return std::isfinite(value) ? std::clamp(value, 0.0f, 1.0f) : fallback;
+	};
+	settings.AlphaReduction = safeUnit(settings.AlphaReduction, 0.15f);
+	settings.AlphaSoftness = safeUnit(settings.AlphaSoftness, 0.0f);
+	settings.AlphaStrength = safeUnit(settings.AlphaStrength, 0.0f);
 }
 
 void ThinSurface::SaveSettings(json& o_json)

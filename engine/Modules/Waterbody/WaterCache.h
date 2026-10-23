@@ -13,6 +13,7 @@ public:
 	/** @brief Describes a single water tile placement with position, size, and water form data. */
 	struct Instruction
 	{
+		static constexpr uint32_t kOpenOcean = 1u << 0;
 		union Form
 		{
 			uint32_t id;
@@ -25,6 +26,7 @@ public:
 		int32_t y{};
 		uint32_t size{};
 		float waterHeight{};
+		uint32_t flags{};
 	};
 
 	/** @brief Instruction list for a LOD chunk, plus the runtime cache instance backing it so the caller can keep it alive. */
@@ -60,6 +62,10 @@ public:
 	 * @return Result with a null instructions pointer if unavailable; otherwise the cache keeps the instructions alive for as long as the result is held.
 	 */
 	InstructionResult GetInstructions(const RE::TESWorldSpace* worldSpace, uint32_t lodLevel, uint32_t x, uint32_t y);
+	/** @brief Queries the cell-level ocean classification from the LOD4 cache. */
+	bool IsOpenOceanCell(const RE::TESWorldSpace* worldSpace, int32_t x, int32_t y);
+	/** Returns the classified ocean level in Skyrim world units. */
+	bool GetOpenOceanCellHeight(const RE::TESWorldSpace* worldSpace, int32_t x, int32_t y, float& height);
 
 	/** @brief Generates precache height data for Tamriel using extended data sets. */
 	static void GenerateTamrielPrecache();
@@ -106,6 +112,7 @@ private:
 		Heights heights{};
 		RE::FormID formID{};
 		RE::TESWaterForm* form = nullptr;
+		bool openOcean{};
 	};
 
 	// Precache contains height data generated with sheson's extended Tamriel data set
@@ -202,6 +209,7 @@ private:
 	std::mutex currentCacheMutex;
 	std::shared_ptr<RuntimeCache> currentCache;
 	std::string currentWorldSpace;
+	RE::FormID currentWorldSpaceFormID{};
 
 	/** @brief Same as SetCurrentWorldSpace, but assumes currentCacheMutex is already held. */
 	bool SetCurrentWorldSpaceLocked(const RE::TESWorldSpace* worldSpace);
@@ -210,6 +218,7 @@ private:
 
 	static void BuildPreCache(RE::TESWorldSpace* worldSpace, PreCache& cache);
 	static bool BuildDiskCache(RE::TESWorldSpace* worldSpace, DiskCache& diskCache);
+	static void ClassifyOpenOceanCells(const WorldSpaceHeader& header, std::vector<CellData>& cellData);
 	static void GenerateInstructions(int32_t lodLevel, DiskCache& diskCache, const std::vector<CellData>& cellData, int32_t& instructionCount);
 	static bool TryBuildRuntimeCache(const DiskCache& diskCache, RuntimeCache& cache);
 	static std::vector<RE::TESWorldSpace*> GetValidWorldSpaces();

@@ -25,17 +25,17 @@ void VolumeOcclusion::SetupResources()
 	// Compile compute shaders
 	std::vector<std::pair<const char*, const char*>> defines;
 	defines.push_back({ "DOWNSAMPLE_SHADOW_MIP0", nullptr });
-	downsampleShadowMip0CS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\VolumeOcclusion\\DownsampleShadowCS.hlsl", defines, "cs_5_0"));
+	downsampleShadowMip0CS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\VolumeOcclusion\\DownsampleShadowCS.hlsl", defines, "cs_5_0"));
 	defines.clear();
 	defines.push_back({ "DOWNSAMPLE_SHADOW_MIP1", nullptr });
-	downsampleShadowMip1CS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\VolumeOcclusion\\DownsampleShadowCS.hlsl", defines, "cs_5_0"));
+	downsampleShadowMip1CS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\VolumeOcclusion\\DownsampleShadowCS.hlsl", defines, "cs_5_0"));
 
 	defines.clear();
 	defines.push_back({ "BLUR_HORIZONTAL", nullptr });
-	blurShadowHorizontalCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\VolumeOcclusion\\BlurShadowCS.hlsl", defines, "cs_5_0"));
+	blurShadowHorizontalCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\VolumeOcclusion\\BlurShadowCS.hlsl", defines, "cs_5_0"));
 	defines.clear();
 	defines.push_back({ "BLUR_VERTICAL", nullptr });
-	blurShadowVerticalCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\VolumeOcclusion\\BlurShadowCS.hlsl", defines, "cs_5_0"));
+	blurShadowVerticalCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\VolumeOcclusion\\BlurShadowCS.hlsl", defines, "cs_5_0"));
 }
 
 void VolumeOcclusion::ClearShaderCache()
@@ -59,17 +59,17 @@ void VolumeOcclusion::ClearShaderCache()
 
 	std::vector<std::pair<const char*, const char*>> defines;
 	defines.push_back({ "DOWNSAMPLE_SHADOW_MIP0", nullptr });
-	downsampleShadowMip0CS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\VolumeOcclusion\\DownsampleShadowCS.hlsl", defines, "cs_5_0"));
+	downsampleShadowMip0CS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\VolumeOcclusion\\DownsampleShadowCS.hlsl", defines, "cs_5_0"));
 	defines.clear();
 	defines.push_back({ "DOWNSAMPLE_SHADOW_MIP1", nullptr });
-	downsampleShadowMip1CS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\VolumeOcclusion\\DownsampleShadowCS.hlsl", defines, "cs_5_0"));
+	downsampleShadowMip1CS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\VolumeOcclusion\\DownsampleShadowCS.hlsl", defines, "cs_5_0"));
 
 	defines.clear();
 	defines.push_back({ "BLUR_HORIZONTAL", nullptr });
-	blurShadowHorizontalCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\VolumeOcclusion\\BlurShadowCS.hlsl", defines, "cs_5_0"));
+	blurShadowHorizontalCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\VolumeOcclusion\\BlurShadowCS.hlsl", defines, "cs_5_0"));
 	defines.clear();
 	defines.push_back({ "BLUR_VERTICAL", nullptr });
-	blurShadowVerticalCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\VolumeOcclusion\\BlurShadowCS.hlsl", defines, "cs_5_0"));
+	blurShadowVerticalCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\VolumeOcclusion\\BlurShadowCS.hlsl", defines, "cs_5_0"));
 }
 
 void VolumeOcclusion::CopyShadowLightData()
@@ -86,9 +86,10 @@ void VolumeOcclusion::CopyShadowLightData()
 		}
 
 		context->PSGetShaderResources(4, 1, &shadowView);
+		bool copiedShadow = false;
 
 		// Downsample shadow texture array to fixed 512x512 (mip1: 256x256)
-		if (shadowView) {
+		if (shadowView && downsampleShadowMip0CS && downsampleShadowMip1CS && blurShadowHorizontalCS && blurShadowVerticalCS && linearSampler) {
 			constexpr uint32_t SHADOW_COPY_SIZE = 512;
 
 			// Lazily create fixed-size output textures
@@ -182,7 +183,7 @@ void VolumeOcclusion::CopyShadowLightData()
 					auto renderer = globals::game::renderer;
 					auto& esramDepthStencil = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kVOLUMETRIC_LIGHTING_SHADOWMAPS_ESRAM];
 
-					ID3D11ShaderResourceView* csSrvs[2]{ shadowView, esramDepthStencil.depthSRV };
+					ID3D11ShaderResourceView* csSrvs[2]{ shadowView, REX::W32::AsReal(esramDepthStencil.depthSRV) };
 					context->CSSetShaderResources(0, 2, csSrvs);
 
 					context->CSSetSamplers(0, 1, &linearSampler);
@@ -294,6 +295,7 @@ void VolumeOcclusion::CopyShadowLightData()
 					ID3D11SamplerState* nullSampler = nullptr;
 					context->CSSetSamplers(0, 1, &nullSampler);
 					context->CSSetShader(nullptr, nullptr, 0);
+					copiedShadow = true;
 
 					shadowTexture->Release();
 				}
@@ -301,7 +303,7 @@ void VolumeOcclusion::CopyShadowLightData()
 			}
 		}
 
-		auto* srv = shadowView ? (shadowCopySRV ? shadowCopySRV : shadowView) : nullptr;
+		auto* srv = copiedShadow && shadowCopySRV ? shadowCopySRV : shadowView;
 		SetSharedShadowMapSRV(context, srv);
 
 		if (shadowView)
@@ -368,8 +370,8 @@ struct CreateDepthStencil_VolumetricLighting
 	static void thunk(RE::BSGraphics::Renderer* This, uint32_t a_target, RE::BSGraphics::DepthStencilTargetProperties* a_properties)
 	{
 		RE::BSGraphics::DepthStencilTargetProperties properties = *a_properties;
-		a_properties->height = 1024;
-		a_properties->width = 1024;
+		properties.height = 1024;
+		properties.width = 1024;
 		func(This, a_target, &properties);
 	}
 	static inline REL::Relocation<decltype(thunk)> func;

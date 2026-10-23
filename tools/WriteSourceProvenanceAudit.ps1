@@ -35,8 +35,7 @@ $pixlOriginal = @(
     'engine/Modules/ContainedLiquid*', 'pipeline/Contained Liquids/*',
     'engine/Modules/DistantLife.*', 'pipeline/Distant Life/*',
     'engine/Modules/WindowLife.*', 'pipeline/WindowLife/Kernels/WindowLife/WindowLife.hlsli',
-    'engine/Renderer/RenderOrigin.*', 'distribution/Shaders/Common/PIXLRenderOrigin.hlsli',
-    'engine/Modules/CurvedSurfaceMapping.*', 'pipeline/Curved Surface Mapping/*',
+    'engine/Renderer/RenderOrigin.*', 'distribution/PIXL-Shaders/Common/PIXLRenderOrigin.hlsli',
     'engine/Director/DirectorCameraPath.*',
     'pipeline/Camera Suite/Kernels/CameraSuite/DOF*',
     'pipeline/Camera Suite/Kernels/CameraSuite/DofControl.hlsli',
@@ -48,7 +47,7 @@ $pixlOriginal = @(
     'pipeline/Ground Response/Kernels/GroundResponse/GroundMarkUpdateCS.hlsl'
 )
 $derived = @(
-    'engine/*', 'pipeline/*', 'distribution/Shaders/*', 'cmake/*', 'CMakeLists.txt',
+    'engine/*', 'pipeline/*', 'distribution/PIXL-Shaders/*', 'cmake/*', 'CMakeLists.txt',
     'CMakePresets.json', 'Build*.bat', 'DeployPIXL.bat', 'tools/*'
 )
 

@@ -22,7 +22,7 @@
 class FidelityFX
 {
 public:
-	static constexpr const wchar_t* PluginDir = L"Data\\Shaders\\ImageReconstruction\\FidelityFX";
+	static constexpr const wchar_t* PluginDir = L"Data\\PIXL-Shaders\\ImageReconstruction\\FidelityFX";
 
 	HMODULE module = nullptr;
 

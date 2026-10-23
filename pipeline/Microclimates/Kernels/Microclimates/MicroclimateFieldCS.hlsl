@@ -29,7 +29,7 @@ float FrontNoise(float2 worldXY)
 	float2 grid = worldXY / 420000.0f;
 	float2 cell = floor(grid);
 	float2 f = frac(grid);
-	f = f * f * (3.0f - 2.0f * f);
+	f = f * f * f * (f * (f * 6.0f - 15.0f) + 10.0f);
 	float a = HashCell(cell);
 	float b = HashCell(cell + float2(1.0f, 0.0f));
 	float c = HashCell(cell + float2(0.0f, 1.0f));
@@ -55,7 +55,8 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 
 	float2 uv = (float2(dispatchID.xy) + 0.5f) / float2(width, height);
 	float2 worldXY = FieldOriginExtent.xy + uv * FieldOriginExtent.z;
-	float2 previousWorldXY = worldXY - PreviousOriginWind.zw * max(FieldOriginExtent.w, 0.0f);
+	float dt = clamp(isfinite(FieldOriginExtent.w) ? FieldOriginExtent.w : 0.0f, 0.0f, 0.25f);
+	float2 previousWorldXY = worldXY - PreviousOriginWind.zw * dt;
 	float2 previousUV = (previousWorldXY - PreviousOriginWind.xy) / max(FieldOriginExtent.z, 1.0f);
 	float4 oldValue = 0.0f.xxxx;
 	float2 oldStorm = 0.0f.xx;
@@ -63,6 +64,8 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 	{
 		oldValue = PreviousField.SampleLevel(FieldSampler, previousUV, 0.0f);
 		oldStorm = PreviousStormField.SampleLevel(FieldSampler, previousUV, 0.0f);
+		oldValue = all(isfinite(oldValue)) ? saturate(oldValue) : 0.0f.xxxx;
+		oldStorm = all(isfinite(oldStorm)) ? saturate(oldStorm) : 0.0f.xx;
 	}
 
 	float2 emitterDelta = worldXY - EmitterPosition.xy;
@@ -85,8 +88,9 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 	// cell, consumers retain Skyrim's base weather; a clear transition decays the
 	// previous regional field instead of leaving stale clouds behind.
 	float4 value = max(oldValue * persistence, forcing);
-	value = lerp(value, forcing, saturate(FieldOriginExtent.w * 0.22f));
+	float response = 1.0f - exp2(-dt * 0.3174f);
+	value = lerp(value, forcing, response);
 	NextField[dispatchID.xy] = saturate(value);
 	float2 stormValue = max(oldStorm * persistence, float2(stormForcing, influenceForcing));
-	NextStormField[dispatchID.xy] = saturate(lerp(stormValue, float2(stormForcing, influenceForcing), saturate(FieldOriginExtent.w * 0.22f)));
+	NextStormField[dispatchID.xy] = saturate(lerp(stormValue, float2(stormForcing, influenceForcing), response));
 }

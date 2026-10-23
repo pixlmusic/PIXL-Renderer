@@ -61,12 +61,12 @@ namespace ActorSurfaceEffects
 
 	float StableBreakup(float3 localPosition, float seed)
 	{
-		// Low-frequency, actor-local analytic breakup avoids texture repetition and
-		// remains stable as the camera moves. Two incommensurate waves suppress the
-		// obvious horizontal cutoff without introducing reconstruction shimmer.
+		// Three octave, actor-local breakup removes the remaining two-direction
+		// interference pattern while staying deterministic under camera motion.
 		float waveA = sin(dot(localPosition, float3(0.117f, 0.073f, 0.091f)) + seed * 17.13f);
 		float waveB = sin(dot(localPosition, float3(-0.061f, 0.139f, 0.047f)) - seed * 29.71f);
-		return (waveA + waveB) * 0.25f;
+		float waveC = sin(dot(localPosition, float3(0.181f, -0.043f, 0.127f)) + seed * 43.37f);
+		return waveA * 0.22f + waveB * 0.19f + waveC * 0.09f;
 	}
 
 	float UnionCoverage(float current, float addition)
@@ -76,6 +76,9 @@ namespace ActorSurfaceEffects
 
 	SurfaceSample EvaluateLocal(float3 localPosition, float3 worldPosition)
 	{
+		// Derivatives must be taken before event-dependent branches/continues.
+		float3 worldDx = ddx(worldPosition), worldDy = ddy(worldPosition);
+		float3 localDx = ddx(localPosition), localDy = ddy(localPosition);
 		SurfaceSample result;
 		result.SnowFresh = 0.0f;
 		result.SnowMelting = 0.0f;
@@ -101,21 +104,36 @@ namespace ActorSurfaceEffects
 				PIXLCharacterRuntime::ActorSurfaceEvents[index];
 			bool boneAnchored = dot(eventData.WorldToDeposit0.xyz, eventData.WorldToDeposit0.xyz) > 1e-8f;
 			float3 depositPosition = localPosition;
+			float3 depositDx = localDx, depositDy = localDy;
 			if (boneAnchored) {
 				float4 surfacePoint = float4(worldPosition, 1.0f);
 				depositPosition = float3(dot(eventData.WorldToDeposit0, surfacePoint),
 					dot(eventData.WorldToDeposit1, surfacePoint), dot(eventData.WorldToDeposit2, surfacePoint));
+				depositDx = float3(dot(eventData.WorldToDeposit0.xyz, worldDx), dot(eventData.WorldToDeposit1.xyz, worldDx), dot(eventData.WorldToDeposit2.xyz, worldDx));
+				depositDy = float3(dot(eventData.WorldToDeposit0.xyz, worldDy), dot(eventData.WorldToDeposit1.xyz, worldDy), dot(eventData.WorldToDeposit2.xyz, worldDy));
 			}
 			float3 delta = depositPosition - eventData.LocalCenterRadius.xyz;
 			float horizontalRadius = max(eventData.LocalCenterRadius.w, 1.0f);
 			float verticalRadius = max(eventData.VerticalAmounts.x, 1.0f);
 			float2 normalizedXY = delta.xy / horizontalRadius;
+			// Both the contact ellipsoid and the narrower splash are empty this
+			// far from the anchor, so skip breakup and derivative work.
+			if (dot(normalizedXY, normalizedXY) > 4.0f)
+				continue;
 			float normalizedZ = abs(delta.z) / verticalRadius;
 			float ellipsoidSquared = dot(normalizedXY, normalizedXY) + normalizedZ * normalizedZ;
 			float breakup = StableBreakup(depositPosition, eventData.State.z) * breakupStrength;
 			float inner = max(1.0f - softness, 0.05f);
 			float outer = 1.0f + softness;
-			float coverage = 1.0f - smoothstep(inner * inner, outer * outer, ellipsoidSquared + breakup);
+			float depositDistance = max(ellipsoidSquared + breakup, 0.0f);
+			float3 ellipsoidGradient = 2.0f * delta / float3(horizontalRadius * horizontalRadius, horizontalRadius * horizontalRadius, verticalRadius * verticalRadius);
+			// Bound the three sine gradients without additional trigonometric work.
+			float breakupFootprint = (length(depositDx) + length(depositDy)) * (0.085f * breakupStrength);
+			float depositFootprint = max(abs(dot(ellipsoidGradient, depositDx)) + abs(dot(ellipsoidGradient, depositDy)) + breakupFootprint, 1.0e-3f);
+			float coverage = saturate(1.0f - smoothstep(
+				inner * inner - depositFootprint,
+				outer * outer + depositFootprint,
+				depositDistance));
 
 			// Moving mud/snow produces a small, irregular upward splash without
 			// turning the primary contact into a uniform vertical band.
@@ -126,8 +144,15 @@ namespace ActorSurfaceEffects
 				float splashShape =
 					length(normalizedXY * 1.75f) +
 					abs(delta.z - splashHeight * 0.35f) / splashHeight;
+				float upwardGate = smoothstep(-verticalRadius * 0.12f, verticalRadius * 0.42f, delta.z);
+				float splashDistance = splashShape + breakup * 1.4f;
+				float2 radialGradient = normalizedXY * rsqrt(max(dot(normalizedXY, normalizedXY), 1.0e-8f)) * (1.75f / horizontalRadius);
+				float3 splashGradient = float3(radialGradient, sign(delta.z - splashHeight * 0.35f) / splashHeight);
+				float splashFootprint = max(abs(dot(splashGradient, depositDx)) + abs(dot(splashGradient, depositDy)) + breakupFootprint * 1.4f, 0.015f);
 				splashCoverage =
-					(1.0f - smoothstep(0.55f, 1.15f, splashShape + breakup * 1.4f)) * splash;
+					(1.0f - smoothstep(0.55f - splashFootprint,
+						1.15f + splashFootprint, splashDistance)) * splash;
+				splashCoverage *= upwardGate;
 			}
 			coverage = max(coverage, splashCoverage * 0.58f);
 
@@ -142,8 +167,13 @@ namespace ActorSurfaceEffects
 				sin(depositPosition.z * 0.17f - eventData.State.z * 13.0f),
 				sin(depositPosition.x * 0.21f + eventData.State.z * 7.0f));
 			if (boneAnchored) {
-				micro = normalize(eventData.WorldToDeposit0.xyz) * micro.x +
-					normalize(eventData.WorldToDeposit1.xyz) * micro.y + normalize(eventData.WorldToDeposit2.xyz) * micro.z;
+				float3 row0 = eventData.WorldToDeposit0.xyz;
+				float3 row1 = eventData.WorldToDeposit1.xyz;
+				float3 row2 = eventData.WorldToDeposit2.xyz;
+				row0 *= rsqrt(max(dot(row0, row0), 1.0e-8f));
+				row1 *= rsqrt(max(dot(row1, row1), 1.0e-8f));
+				row2 *= rsqrt(max(dot(row2, row2), 1.0e-8f));
+				micro = row0 * micro.x + row1 * micro.y + row2 * micro.z;
 			} else {
 				float c = PIXLCharacterRuntime::ActorRotationHeight.x;
 				float s = PIXLCharacterRuntime::ActorRotationHeight.y;
@@ -209,6 +239,9 @@ namespace ActorSurfaceEffects
 		float mudWet = saturate(sample.MudWet * materialAcceptance);
 		float mudDry = saturate(sample.MudDry * materialAcceptance);
 		float wetness = saturate(sample.Wetness * materialAcceptance);
+		// Deposited solids displace the exposed water film. This prevents stacked
+		// snow, mud and wetness from over-darkening a single contact footprint.
+		wetness *= 1.0f - saturate(max(max(snowFresh, snowMelting), max(mudWet, mudDry)) * 0.72f);
 		// Warm exposed skin retains less crystalline snow and reads as meltwater
 		// sooner, while preserving the underlying Skin Optics material response.
 		float warmSkinMelt = saturate(skinResponse) * snowFresh * 0.28f;
@@ -221,14 +254,15 @@ namespace ActorSurfaceEffects
 			PIXLCharacterRuntime::ActorSnowAppearance.rgb,
 			PIXLAdvancedSnowMaterial::Tint() * 0.50f);
 		float snowMaterialStrength = saturate(PIXLCharacterRuntime::ActorSnowAppearance.w);
+		float snowGrain = StableBreakup(sample.LocalPosition, 0.73f);
+		snowTint *= 1.0f + clamp(snowGrain * 0.045f, -0.025f, 0.025f);
 		float3 detailedSnow = snowTint * lerp(0.48f, 1.05f, saturate(luminance * 1.8f));
 		detailedSnow = lerp(baseColor * 0.62f, detailedSnow, snowMaterialStrength);
 		float snowCoverage = UnionCoverage(snowFresh, snowMelting * 0.88f);
 		baseColor = lerp(baseColor, detailedSnow, snowCoverage * 0.90f);
-		roughness = lerp(
-			roughness,
-			PIXLAdvancedSnowMaterial::ThinAccumulationRoughness(snowFresh, snowMelting),
-			snowCoverage * 0.88f);
+		float snowRoughness = PIXLAdvancedSnowMaterial::ThinAccumulationRoughness(snowFresh, snowMelting);
+		snowRoughness = clamp(snowRoughness + snowGrain * 0.025f, 0.55f, 1.0f);
+		roughness = lerp(roughness, snowRoughness, snowCoverage * 0.88f);
 		f0 = lerp(
 			f0,
 			PIXLAdvancedSnowMaterial::DielectricF0(snowFresh),
@@ -247,7 +281,8 @@ namespace ActorSurfaceEffects
 		// Meltwater/rain is a thin dielectric film: darken the substrate and
 		// smooth its microsurface rather than multiplying specular like metal.
 		baseColor *= lerp(1.0f, 0.77f, wetness * 0.74f);
-		roughness = lerp(roughness, 0.085f, wetness * 0.76f);
+		float wetFilmWeight = wetness * wetness * (3.0f - 2.0f * wetness);
+		roughness = lerp(roughness, 0.085f, wetFilmWeight * 0.76f);
 		f0 = lerp(f0, 0.0205f.xxx, wetness * 0.64f);
 		metallic = lerp(metallic, 0.0f, wetness * 0.70f);
 

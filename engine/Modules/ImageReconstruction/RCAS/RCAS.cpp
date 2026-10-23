@@ -32,7 +32,7 @@ void RCAS::Initialize()
 void RCAS::CreateComputeShader()
 {
 	std::vector<std::pair<const char*, const char*>> defines;
-	rcasComputeShader.attach((ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\ImageReconstruction\\RCAS\\RCAS.hlsl", defines, "cs_5_0"));
+	rcasComputeShader.attach((ID3D11ComputeShader*)Util::CompileShader(L"Data\\PIXL-Shaders\\ImageReconstruction\\RCAS\\RCAS.hlsl", defines, "cs_5_0"));
 	if (!rcasComputeShader)
 		logger::warn("[RCAS] Compute shader unavailable; DLSS output will be resolved without sharpening");
 }

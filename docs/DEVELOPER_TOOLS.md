@@ -35,7 +35,7 @@ before it can enter the archive. Public Release packages never include a user
 configuration.
 
 Core and FOMOD output remains under `dist/`. FOMOD assembly calls the existing
-`BuildPixlFomod.ps1` validator and requires a valid SurfaceTides source tree.
+`BuildPixlFomod.ps1` validator and packages PIXL files only.
 
 ## Targeted iteration
 

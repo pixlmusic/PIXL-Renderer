@@ -1,4 +1,9 @@
-# PIXL Renderer 1.0.2 / SurfaceTides integration guide
+# Historical: PIXL / SurfaceTides integration
+
+> Superseded. PIXL no longer ships or supports this compatibility bridge from
+> the 1.0.8 release line onward. Do not use this document as current install
+> guidance. PIXL's native water work is being developed in the renderer itself;
+> this historical bridge is not a runtime dependency or source code base.
 
 ## Current result
 
@@ -65,7 +70,7 @@ if this contract changes. A future plain-data ABI would reduce that dependency.
   and Waterbody cache keys. Bind SurfaceTides VS/HS/DS and patch topology while
   preserving PIXL PS, PS constants, textures and samplers. Restore touched state.
   Use the original SurfaceTides path for positively identified native water.
-- `Data/Shaders/SurfaceTides/Water.hlsl`: ST_PIXL_GEOMETRY and ST_PIXL_WATERBODY
+- `Data/PIXL-Shaders/SurfaceTides/Water.hlsl`: ST_PIXL_GEOMETRY and ST_PIXL_WATERBODY
   variants match PIXL output semantics and Waterbody scaled/wading flow UVs.
   Keep original-source PS reflection separate from the geometry-only variant.
 - `Data/SKSE/Plugins/SurfaceTides.ini`: document AllowPIXL; source default is 0.

@@ -231,6 +231,10 @@ void TissueDiffusion::DrawSSS()
 {
 	if (!validMaterials)
 		return;
+	if (!globals::state || !globals::game::shadowState || !globals::game::renderer ||
+		!globals::d3d::context || !globals::deferred || !blurCB ||
+		!diffuseNoAlbedoTex || !blurHorizontalTemp)
+		return;
 
 	// Leave the original scene untouched if any required stage failed to compile.
 	if (!GetComputeShaderPrepass())
@@ -287,11 +291,11 @@ void TissueDiffusion::DrawSSS()
 		auto normal = renderer->GetRuntimeData().renderTargets[NORMALROUGHNESS];
 
 		ID3D11ShaderResourceView* views[5];
-		views[0] = main.SRV;
+		views[0] = REX::W32::AsReal(main.SRV);
 		views[1] = Util::GetCurrentSceneDepthSRV(true);
-		views[2] = mask.SRV;
-		views[3] = albedo.SRV;
-		views[4] = normal.SRV;
+		views[2] = REX::W32::AsReal(mask.SRV);
+		views[3] = REX::W32::AsReal(albedo.SRV);
+		views[4] = REX::W32::AsReal(normal.SRV);
 
 		context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 
@@ -341,7 +345,7 @@ void TissueDiffusion::DrawSSS()
 				views[0] = blurHorizontalTemp->srv.get();
 				context->CSSetShaderResources(0, 1, views);
 
-				ID3D11UnorderedAccessView* uavs[1] = { main.UAV };
+				ID3D11UnorderedAccessView* uavs[1] = { REX::W32::AsReal(main.UAV) };
 				context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
 
 				auto shader = GetComputeShaderVerticalBlur();
@@ -356,7 +360,7 @@ void TissueDiffusion::DrawSSS()
 			{
 				TracyD3D11Zone(globals::state->tracyCtx, "Tissue Diffusion - Burley");
 
-				ID3D11UnorderedAccessView* uavs[1] = { main.UAV };
+				ID3D11UnorderedAccessView* uavs[1] = { REX::W32::AsReal(main.UAV) };
 				context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
 
 				auto shader = GetComputeShaderBurley();
@@ -397,15 +401,15 @@ void TissueDiffusion::SetupResources()
 		auto main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
 
 		D3D11_TEXTURE2D_DESC texDesc{};
-		main.texture->GetDesc(&texDesc);
+		main.texture->GetDesc(REX::W32::AsW32(&texDesc));
 
 		texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 
 		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-		main.SRV->GetDesc(&srvDesc);
+		main.SRV->GetDesc(REX::W32::AsW32(&srvDesc));
 
 		D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-		main.UAV->GetDesc(&uavDesc);
+		main.UAV->GetDesc(REX::W32::AsW32(&uavDesc));
 
 		blurHorizontalTemp = new Texture2D(texDesc);
 		blurHorizontalTemp->CreateSRV(srvDesc);
@@ -512,7 +516,7 @@ ID3D11ComputeShader* TissueDiffusion::GetComputeShaderPrepass()
 {
 	if (!prepassSS) {
 		logger::debug("Compiling prepassSS");
-		prepassSS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\TissueDiffusion\\DiffuseExtractionCS.hlsl", {}, "cs_5_0");
+		prepassSS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\PIXL-Shaders\\TissueDiffusion\\DiffuseExtractionCS.hlsl", {}, "cs_5_0");
 	}
 	return prepassSS;
 }
@@ -521,7 +525,7 @@ ID3D11ComputeShader* TissueDiffusion::GetComputeShaderHorizontalBlur()
 {
 	if (!horizontalSSBlur) {
 		logger::debug("Compiling horizontalSSBlur");
-		horizontalSSBlur = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\TissueDiffusion\\SeparableSSSCS.hlsl", { { "HORIZONTAL", "" } }, "cs_5_0");
+		horizontalSSBlur = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\PIXL-Shaders\\TissueDiffusion\\SeparableSSSCS.hlsl", { { "HORIZONTAL", "" } }, "cs_5_0");
 	}
 	return horizontalSSBlur;
 }
@@ -530,7 +534,7 @@ ID3D11ComputeShader* TissueDiffusion::GetComputeShaderVerticalBlur()
 {
 	if (!verticalSSBlur) {
 		logger::debug("Compiling verticalSSBlur");
-		verticalSSBlur = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\TissueDiffusion\\SeparableSSSCS.hlsl", {}, "cs_5_0");
+		verticalSSBlur = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\PIXL-Shaders\\TissueDiffusion\\SeparableSSSCS.hlsl", {}, "cs_5_0");
 	}
 	return verticalSSBlur;
 }
@@ -539,7 +543,7 @@ ID3D11ComputeShader* TissueDiffusion::GetComputeShaderBurley()
 {
 	if (!burleySS) {
 		logger::debug("Compiling burleySS");
-		burleySS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\TissueDiffusion\\SeparableSSSCS.hlsl", { { "BURLEY", "" } }, "cs_5_0");
+		burleySS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\PIXL-Shaders\\TissueDiffusion\\SeparableSSSCS.hlsl", { { "BURLEY", "" } }, "cs_5_0");
 	}
 	return burleySS;
 }
@@ -561,6 +565,8 @@ void TissueDiffusion::BSLightingShader_SetupSkin(RE::BSRenderPass* a_pass)
 {
 	auto deferred = globals::deferred;
 	auto state = globals::state;
+	if (!a_pass || !a_pass->shaderProperty || !a_pass->geometry || !deferred || !state)
+		return;
 
 	if (deferred->deferredPass) {
 		if (a_pass->shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kFace, RE::BSShaderProperty::EShaderPropertyFlag::kFaceGenRGBTint)) {

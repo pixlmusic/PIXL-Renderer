@@ -19,14 +19,17 @@ namespace RadiantGrid
 
 	bool GetClusterIndex(in float2 uv, in float z, inout uint clusterIndex)
 	{
-		const uint3 clusterSize = SharedData::radiantGridSettings.ClusterSize.xyz;
+		const uint3 clusterSize = max(SharedData::radiantGridSettings.ClusterSize.xyz, 1u);
 
 		if (!FrameBuffer::FrameParams.y)  // Fix first person lights
 			uv = 0.5;
 
-		z = max(z, SharedData::CameraData.y);
+		const float nearPlane = max(SharedData::CameraData.y, 1.0e-3f);
+		const float farPlane = max(SharedData::CameraData.x, nearPlane + 1.0f);
+		z = clamp(z, nearPlane, farPlane);
+		uv = clamp(uv, 0.0f, 0.999999f);
 
-		uint clusterZ = log(z / SharedData::CameraData.y) * clusterSize.z / log(SharedData::CameraData.x / SharedData::CameraData.y);
+		uint clusterZ = min((uint)(log(z / nearPlane) * clusterSize.z / max(log(farPlane / nearPlane), 1.0e-5f)), clusterSize.z - 1u);
 		uint3 cluster = uint3(uint2(uv * clusterSize.xy), clusterZ);
 
 		// Bounds validation to prevent out-of-range cluster indices
@@ -40,11 +43,11 @@ namespace RadiantGrid
 	bool IsLightIgnored(Light light)
 	{
 		if (light.lightFlags & RadiantGrid::LightFlags::Shadow) {
-			return !(ShadowBitMask & (1 << light.shadowLightIndex));
+			return light.shadowLightIndex >= 32u || !(ShadowBitMask & (1u << light.shadowLightIndex));
 		}
 
 		bool lightIgnored = false;
-		if ((light.lightFlags & LightFlags::PortalStrict) && RoomIndex >= 0) {
+		if ((light.lightFlags & LightFlags::PortalStrict) && RoomIndex >= 0 && RoomIndex < 128) {
 			lightIgnored = true;
 			int roomIndex = RoomIndex;
 			[unroll] for (int flagsIndex = 0; flagsIndex < 4; ++flagsIndex)

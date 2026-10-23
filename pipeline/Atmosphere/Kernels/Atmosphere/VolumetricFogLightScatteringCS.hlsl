@@ -102,7 +102,11 @@ float2 FixupHistoryUV(float2 uv, float previousCellDepth, out bool validHistory)
 	float2 fullResOffset = fullResUV - screenCoord;
 	float2 gatherUV = (screenCoord + 1.0f) / size;
 
-	float4 previousSceneDepths = PrevConservativeDepthTexture.GatherRed(LinearSampler, gatherUV);
+	// The conservative depth texture stores farthest depth in red and nearest
+	// depth in green. Reprojection must validate against the nearest surface;
+	// accepting the farthest sample in a mixed sky/geometry froxel preserves old
+	// fog across silhouettes and produces the visible rotation trails.
+	float4 previousSceneDepths = PrevConservativeDepthTexture.GatherGreen(LinearSampler, gatherUV);
 	bool4 validSamples = previousSceneDepths >= previousCellDepth;
 
 	validHistory = true;
@@ -174,7 +178,8 @@ float SampleDirectionalShadow(float3 positionWS)
 		return 1.0f;
 
 	float splitDenom = max(endSplitDistances.x - startSplitDistances.y, 1e-4f);
-	float cascadeSelect = smoothstep(0.0f, 1.0f, saturate((shadowMapDepth - startSplitDistances.y) / splitDenom));
+	float cascadeT = saturate((shadowMapDepth - startSplitDistances.y) / splitDenom);
+	float cascadeSelect = cascadeT * cascadeT * cascadeT * (cascadeT * (cascadeT * 6.0f - 15.0f) + 10.0f);
 	uint primaryCascade = (uint)cascadeSelect;
 
 	float3 absolutePositionWS = positionWS + FrameBuffer::CameraPosAdjust.xyz;
@@ -388,7 +393,9 @@ float4 ComputeLightScattering(uint3 coord, float3 cellOffset)
 	return float4(max((directionalScattering + skyScattering + localScattering) * multipleScatter + emissive, 0.0f.xxx), extinction);
 }
 
-[numthreads(8, 8, 4)] void main(uint3 dispatchID : SV_DispatchThreadID) {
+// The integrated local-light variants exceed the preferred register budget at
+// 256 threads. Two Z slices preserve coverage while improving occupancy.
+[numthreads(8, 8, 2)] void main(uint3 dispatchID : SV_DispatchThreadID) {
 	if (!Atmosphere::IsInsideVolumetricGrid(dispatchID))
 		return;
 
@@ -419,8 +426,20 @@ float4 ComputeLightScattering(uint3 coord, float3 cellOffset)
 	{
 		historyAlpha = 0.0f;
 	}
+	else
+	{
+		// Scattering is view dependent. Reduce reuse in proportion to the
+		// reprojected screen-space travel so static fog remains smooth while camera
+		// rotation cannot drag an old sky-facing lobe over terrain silhouettes.
+		float2 currentVolumeUV = (float2(dispatchID.xy) + 0.5f.xx) * VolumetricFogInvGridSize.xy;
+		float motionInFroxels = length(
+			(historyUV.xy - currentVolumeUV) * float2(VolumetricFogGridSize.xy));
+		historyAlpha *= exp2(-1.5f * motionInFroxels);
+	}
 
-	uint sampleCount = historyAlpha < 0.001f ? VolumetricFogHistoryMissSampleCount : 1u;
+	// Partially rejected history needs the same stable current-frame estimate as a
+	// full miss; otherwise motion trades ghosting for visibly noisy fog.
+	uint sampleCount = historyAlpha < 0.25f ? VolumetricFogHistoryMissSampleCount : 1u;
 	float4 scatteringAndExtinction = 0.0f.xxxx;
 	[loop] for (uint sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++)
 	{

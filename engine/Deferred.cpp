@@ -23,6 +23,7 @@
 #include "Modules/MaterialLayers.h"
 #include "Modules/DistantLife.h"
 #include "Modules/VolumetricClouds.h"
+#include "Modules/WaterOptics.h"
 
 #include "Hooks.h"
 
@@ -80,16 +81,27 @@ void SetupRenderTarget(RE::RENDER_TARGET target, D3D11_TEXTURE2D_DESC texDesc, D
 		data.texture = nullptr;
 	}
 
-	DX::ThrowIfFailed(device->CreateTexture2D(&texDesc, nullptr, &data.texture));
+	ID3D11Texture2D* createdTexture = nullptr;
+	DX::ThrowIfFailed(device->CreateTexture2D(&texDesc, nullptr, &createdTexture));
+	data.texture = REX::W32::AsW32(createdTexture);
 
-	if (texDesc.BindFlags & D3D11_BIND_SHADER_RESOURCE)
-		DX::ThrowIfFailed(device->CreateShaderResourceView(data.texture, &srvDesc, &data.SRV));
+	if (texDesc.BindFlags & D3D11_BIND_SHADER_RESOURCE) {
+		ID3D11ShaderResourceView* createdView = nullptr;
+		DX::ThrowIfFailed(device->CreateShaderResourceView(REX::W32::AsReal(data.texture), &srvDesc, &createdView));
+		data.SRV = REX::W32::AsW32(createdView);
+	}
 
-	if (texDesc.BindFlags & D3D11_BIND_RENDER_TARGET)
-		DX::ThrowIfFailed(device->CreateRenderTargetView(data.texture, &rtvDesc, &data.RTV));
+	if (texDesc.BindFlags & D3D11_BIND_RENDER_TARGET) {
+		ID3D11RenderTargetView* createdView = nullptr;
+		DX::ThrowIfFailed(device->CreateRenderTargetView(REX::W32::AsReal(data.texture), &rtvDesc, &createdView));
+		data.RTV = REX::W32::AsW32(createdView);
+	}
 
-	if (texDesc.BindFlags & D3D11_BIND_UNORDERED_ACCESS)
-		DX::ThrowIfFailed(device->CreateUnorderedAccessView(data.texture, &uavDesc, &data.UAV));
+	if (texDesc.BindFlags & D3D11_BIND_UNORDERED_ACCESS) {
+		ID3D11UnorderedAccessView* createdView = nullptr;
+		DX::ThrowIfFailed(device->CreateUnorderedAccessView(REX::W32::AsReal(data.texture), &uavDesc, &createdView));
+		data.UAV = REX::W32::AsW32(createdView);
+	}
 }
 
 void Deferred::SetupResources()
@@ -105,10 +117,10 @@ void Deferred::SetupResources()
 		D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
 		D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
 
-		main.texture->GetDesc(&texDesc);
-		main.SRV->GetDesc(&srvDesc);
-		main.RTV->GetDesc(&rtvDesc);
-		main.UAV->GetDesc(&uavDesc);
+		main.texture->GetDesc(REX::W32::AsW32(&texDesc));
+		main.SRV->GetDesc(REX::W32::AsW32(&srvDesc));
+		main.RTV->GetDesc(REX::W32::AsW32(&rtvDesc));
+		main.UAV->GetDesc(REX::W32::AsW32(&uavDesc));
 
 		// Available targets:
 		// MAIN ONLY ALPHA
@@ -343,7 +355,7 @@ void Deferred::DeferredPasses()
 	bool interior = Util::IsInterior();
 	// Geometry/decal visibility is already complete. Effects-only relief must
 	// never replace the DSV used by Skyrim's prepass or transparent geometry.
-	globals::pipeline::materialLayers.ResolveEffectsDepth(depth.depthSRV, masks2.SRV);
+	globals::pipeline::materialLayers.ResolveEffectsDepth(REX::W32::AsReal(depth.depthSRV), REX::W32::AsReal(masks2.SRV));
 
 	auto& skyBounce = globals::pipeline::skyBounce;
 
@@ -385,16 +397,16 @@ void Deferred::DeferredPasses()
 		TracyD3D11Zone(globals::state->tracyCtx, "Deferred Composite");
 
 		ID3D11ShaderResourceView* srvs[18]{
-			specular.SRV,                                                                                   // t0  SpecularTexture
-			albedo.SRV,                                                                                     // t1  AlbedoTexture
-			normalRoughness.SRV,                                                                            // t2  NormalRoughnessTexture
-			masks.SRV,                                                                                      // t3  MasksTexture
+			REX::W32::AsReal(specular.SRV),                                                                 // t0  SpecularTexture
+			REX::W32::AsReal(albedo.SRV),                                                                   // t1  AlbedoTexture
+			REX::W32::AsReal(normalRoughness.SRV),                                                          // t2  NormalRoughnessTexture
+			REX::W32::AsReal(masks.SRV),                                                                    // t3  MasksTexture
 			globals::pipeline::materialLayers.GetEffectsDepth(Util::GetCurrentSceneDepthSRV(false)), // t4 effects depth, raster fallback
-			worldProbes.loaded ? reflectance.SRV : nullptr,                                             // t5  ReflectanceTexture
-			worldProbes.loaded ? worldProbes.envTexture->srv.get() : nullptr,                       // t6  EnvTexture
-			worldProbes.loaded ? worldProbes.envReflectionsTexture->srv.get() : nullptr,            // t7  EnvReflectionsTexture
-			worldProbes.loaded && skyBounce.loaded ? skyBounce.texProbeArray->srv.get() : nullptr,  // t8  SkyBounceProbeArray
-			masks2.SRV,                                                                                     // t9  Masks2Texture (vertexAO in .x)
+			worldProbes.loaded ? REX::W32::AsReal(reflectance.SRV) : nullptr,                            // t5  ReflectanceTexture
+			worldProbes.loaded ? REX::W32::AsReal(worldProbes.envTexture->srv.get()) : nullptr,          // t6  EnvTexture
+			worldProbes.loaded ? REX::W32::AsReal(worldProbes.envReflectionsTexture->srv.get()) : nullptr, // t7 EnvReflectionsTexture
+			worldProbes.loaded && skyBounce.loaded ? REX::W32::AsReal(skyBounce.texProbeArray->srv.get()) : nullptr, // t8 SkyBounceProbeArray
+			REX::W32::AsReal(masks2.SRV),                                                                 // t9  Masks2Texture (vertexAO in .x)
 			ssgi_ao,                                                                                        // t10 SsgiAoTexture
 			ssgi_y,                                                                                         // t11 SsgiYTexture (diffuse GI is independent of HQ specular GI)
 			ssgi_cocg,                                                                                      // t12 SsgiCoCgTexture
@@ -412,7 +424,7 @@ void Deferred::DeferredPasses()
 		auto* pixlDebugBuffer = pixlGIDebugCB->CB();
 		context->CSSetConstantBuffers(13, 1, &pixlDebugBuffer);
 
-		ID3D11UnorderedAccessView* uavs[3]{ main.UAV, normals.UAV, motionVectors.UAV };
+		ID3D11UnorderedAccessView* uavs[3]{ REX::W32::AsReal(main.UAV), REX::W32::AsReal(normals.UAV), REX::W32::AsReal(motionVectors.UAV) };
 		context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 
 		auto shader = interior ? GetComputeMainCompositeInterior() : GetComputeMainComposite();
@@ -447,6 +459,10 @@ void Deferred::DeferredPasses()
 	auto& volumetricClouds = globals::pipeline::volumetricClouds;
 	if (volumetricClouds.loaded)
 		volumetricClouds.DrawClouds();
+	// Water renders after EndDeferred returns. Refresh the cloud pair here so its
+	// pixel shader sees this frame's resolved radiance and matching depth.
+	if (globals::pipeline::waterOptics.loaded)
+		globals::pipeline::waterOptics.RefreshCloudResources();
 
 	auto& distantLife = globals::pipeline::distantLife;
 	if (distantLife.loaded)
@@ -670,7 +686,7 @@ ID3D11ComputeShader* Deferred::GetComputeMainComposite()
 		if (globals::pipeline::terrainSeam.loaded)
 			defines.push_back({ "TERRAIN_SEAM", nullptr });
 
-		mainCompositeCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\DeferredCompositeCS.hlsl", defines, "cs_5_0"));
+		mainCompositeCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\DeferredCompositeCS.hlsl", defines, "cs_5_0"));
 	}
 	return mainCompositeCS;
 }
@@ -697,7 +713,7 @@ ID3D11ComputeShader* Deferred::GetComputeMainCompositeInterior()
 		if (globals::pipeline::terrainSeam.loaded)
 			defines.push_back({ "TERRAIN_SEAM", nullptr });
 
-		mainCompositeInteriorCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\DeferredCompositeCS.hlsl", defines, "cs_5_0"));
+		mainCompositeInteriorCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\DeferredCompositeCS.hlsl", defines, "cs_5_0"));
 	}
 	return mainCompositeInteriorCS;
 }
@@ -790,14 +806,14 @@ static void SyncGroundResponseFinalDepthToTerrainSeam()
 	// Feeding the final main depth into BOTH inputs makes its min(a,b) operation
 	// an exact format-converting copy into the R32 + R16 scene-depth textures.
 	ID3D11ShaderResourceView* depthViews[2] = {
-		mainDepth.depthSRV,
-		mainDepth.depthSRV
+		REX::W32::AsReal(mainDepth.depthSRV),
+		REX::W32::AsReal(mainDepth.depthSRV)
 	};
 	context->CSSetShaderResources(0, 2, depthViews);
 
 	ID3D11UnorderedAccessView* depthUAVs[2] = {
-		terrainSeam.blendedDepthTexture->uav.get(),
-		terrainSeam.blendedDepthTexture16->uav.get()
+		REX::W32::AsReal(terrainSeam.blendedDepthTexture->uav.get()),
+		REX::W32::AsReal(terrainSeam.blendedDepthTexture16->uav.get())
 	};
 	context->CSSetUnorderedAccessViews(0, 2, depthUAVs, nullptr);
 
@@ -878,7 +894,7 @@ void Deferred::Hooks::Main_RenderWorld_BlendedDecals::thunk(RE::BSShaderAccumula
 	auto depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 	auto depthCopy = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
 
-	context->CopyResource(depthCopy.texture, depth.texture);
+	context->CopyResource(REX::W32::AsReal(depthCopy.texture), REX::W32::AsReal(depth.texture));
 
 	// After this point, water starts rendering
 };

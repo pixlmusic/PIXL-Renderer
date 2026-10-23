@@ -86,11 +86,11 @@ public:
 		float sharpnessDLSS = 0.0f;
 		uint presetDLSS = 0;  // 0=Default, 1=J, 2=K, 3=L, 4=M, 5=F
 		bool forceLatestDLSSModelOnLegacyRTX = false;
-		// Experimental DLSS Neural Rendering 310.8 / NGX Feature 18.  The
+		// Experimental DLSS Neural Rendering 310.8 / 310.9.16 NGX Feature 18. The
 		// feature is capability-gated and bypasses to ordinary DLSS on failure.
 		bool neuralRenderingEnabled = false;
 		uint neuralRenderingPreset = 0;  // 0=Natural, 1=Balanced, 2=Detail, 3=Strong, 4=Custom
-		// Feature-creation controls recovered from the installed 310.8 runtime.
+		// Feature-creation controls recovered from the inspected 310.8 runtime.
 		// Quality: 0=follow DLSS, 1=DLAA, 2=quality, 3=balanced,
 		// 4=performance, 5=ultra performance, 6=ultra quality.
 		uint neuralRenderingQualityMode = 0;

@@ -52,7 +52,11 @@ void BSLightingShaderMaterialPBR::CopyMembers(RE::BSShaderMaterial* that)
 	featuresTexture0 = pbrThat->featuresTexture0;
 	featuresTexture1 = pbrThat->featuresTexture1;
 
-	All[this] = All[pbrThat];
+	// Match the source-to-this direction of the material fields above.
+	if (const auto extension = All.find(pbrThat); extension != All.end())
+		All[this] = extension->second;
+	else
+		All.erase(this);
 }
 
 std::uint32_t BSLightingShaderMaterialPBR::ComputeCRC32(uint32_t srcHash)
@@ -60,6 +64,7 @@ std::uint32_t BSLightingShaderMaterialPBR::ComputeCRC32(uint32_t srcHash)
 	struct HashContainer
 	{
 		uint32_t pbrFlags = 0;
+		uint32_t surfaceProfile = 0;
 		float coatRoughness = 0.f;
 		float coatSpecularLevel = 0.f;
 		std::array<float, 3> fuzzColor = { 0.f, 0.f, 0.f };
@@ -84,6 +89,8 @@ std::uint32_t BSLightingShaderMaterialPBR::ComputeCRC32(uint32_t srcHash)
 	} hashes;
 
 	hashes.pbrFlags = pbrFlags.underlying();
+	if (const auto it = All.find(this); it != All.end() && it->second.textureSetData)
+		hashes.surfaceProfile = MaterialSurface::Pack(it->second.textureSetData->surface, true);
 	hashes.coatRoughness = coatRoughness * 100.f;
 	hashes.coatSpecularLevel = coatSpecularLevel * 100.f;
 	hashes.fuzzColor[0] = fuzzColor[0] * 100.f;
@@ -184,6 +191,9 @@ PhysicalMaterial::Descriptor BSLightingShaderMaterialPBR::GetPhysicalMaterialDes
 	setTexture(PhysicalMaterial::Texture::Displacement, displacementTexture, defaultBlack);
 	setTexture(PhysicalMaterial::Texture::Features0, featuresTexture0, defaultWhite);
 	setTexture(PhysicalMaterial::Texture::Features1, featuresTexture1, defaultWhite);
+	const auto extension = All.find(const_cast<BSLightingShaderMaterialPBR*>(this));
+	const auto* surface = extension != All.end() && extension->second.textureSetData ? &extension->second.textureSetData->surface : nullptr;
+	descriptor.surfaceProfile = MaterialSurface::Pack(surface ? *surface : MaterialSurface::Profile{}, descriptor.HasTexture(PhysicalMaterial::Texture::Rmaos));
 
 	if (glintParameters.enabled) {
 		descriptor.featureMask |= static_cast<std::uint32_t>(PhysicalMaterial::MaterialTrait::Glint);
@@ -249,7 +259,7 @@ void BSLightingShaderMaterialPBR::OnLoadTextureSet(std::uint64_t arg1, RE::BSTex
 		BSLightingShaderMaterialBase::OnLoadTextureSet(arg1, inTextureSet);
 	}
 
-	auto* lock = &unk98;
+	auto* lock = &textureSetLock;
 	while (_InterlockedCompareExchange(lock, 1, 0)) {
 		Sleep(0);
 	}

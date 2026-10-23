@@ -83,7 +83,7 @@ Authored room colour replaces most of the flat source emission only where a trus
 ## Integrated room atlas
 
 WindowLife ships a `2048 x 2048` atlas containing sixteen `512 x 512` room
-cells. Runtime loading prefers `Data/Shaders/WindowLife/RoomAtlas_2k.dds`, then
+cells. Runtime loading prefers `Data/PIXL-Shaders/WindowLife/RoomAtlas_2k.dds`, then
 falls back to `RoomAtlas.png`. It is bound to Lighting PS `t126` and sampled as
 a recessed back plane. WindowLife's structured per-draw payload remains at
 `t127`; the optional per-material pane mask occupies `t125`.

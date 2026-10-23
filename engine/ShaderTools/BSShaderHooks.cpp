@@ -9,7 +9,7 @@ namespace BSShaderHooks
 		if (strcmp("Lighting", bsShader->m_LoaderType) == 0) {
 			std::unordered_map<REX::TechniqueID, std::wstring> techniqueFileMap;
 
-			const auto shaderDir = std::filesystem::current_path() /= "Data/SKSE/plugins/shaders/"sv;
+			const auto shaderDir = std::filesystem::current_path() /= "Data/PIXL-Shaders/CustomOverrides/Lighting/"sv;
 
 			if (std::filesystem::exists(shaderDir)) {
 				std::size_t foundCount = 0;
@@ -42,15 +42,15 @@ namespace BSShaderHooks
 				}
 
 				if (failedCount != 0)
-					logger::warn("Legacy Lighting shader overrides: found={}, replaced={}, failed={}", foundCount, successCount, failedCount);
+					logger::warn("PIXL custom Lighting shader overrides: found={}, replaced={}, failed={}", foundCount, successCount, failedCount);
 				else if (foundCount != 0)
-					logger::info("Legacy Lighting shader overrides: found={}, replaced={}", foundCount, successCount);
+					logger::info("PIXL custom Lighting shader overrides: found={}, replaced={}", foundCount, successCount);
 			}
 		}
 
 		std::unordered_map<REX::TechniqueID, std::wstring> techniqueFileMap;
 
-		const auto shaderDir = std::filesystem::current_path() /= std::format("Data\\Shaders\\{}\\"sv, bsShader->m_LoaderType);
+		const auto shaderDir = std::filesystem::current_path() /= std::format("Data\\PIXL-Shaders\\{}\\"sv, bsShader->m_LoaderType);
 		if (std::filesystem::exists(shaderDir)) {
 			logger::debug("Scanning shader override directory {}", shaderDir.generic_string());
 

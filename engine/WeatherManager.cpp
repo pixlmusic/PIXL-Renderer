@@ -303,7 +303,10 @@ void WeatherManager::UpdateWeatherContext()
 	float snowPresence = 0.0f;
 	if (isSnowClass(fromClass)) snowPresence = std::max(snowPresence, 1.0f - t);
 	if (isSnowClass(toClass)) snowPresence = std::max(snowPresence, t);
-	if (sky->IsSnowing()) snowPresence = std::max(snowPresence, 0.85f);
+	// IsSnowing() can lag a weather transition while Skyrim retires its old
+	// precipitation node. The classified transition endpoints already include
+	// snow-flag detection for the active weather, so don't let the stale global
+	// precipitation bit keep accumulation alive after the destination is clear.
 
 	const bool precipitationPresent = sky->precip &&
 		(static_cast<bool>(sky->precip->currentPrecip) || static_cast<bool>(sky->precip->lastPrecip));

@@ -2,6 +2,9 @@
 
 #include "Buffer.h"
 #include <filesystem>
+#include <atomic>
+#include <memory>
+#include <vector>
 
 /** @brief Adds heightmap-based terrain shadow casting that updates dynamically with sun position. */
 struct TerrainOcclusion : public RenderModule
@@ -43,7 +46,20 @@ public:
 		float2 zRange;
 	};
 	std::unordered_map<std::string, HeightMapMetadata> heightmaps;
-	HeightMapMetadata* cachedHeightmap;
+	bool heightmapCatalogLoaded{};
+
+	// Immutable copy of the loaded terrain height source for gameplay ocean
+	// queries. Published only on map loads; readers never touch D3D resources.
+	struct OceanHeightfield
+	{
+		HeightMapMetadata metadata;
+		std::uint32_t worldspaceFormID{};
+		std::uint32_t width{}, height{};
+		std::vector<float> encodedHeight;
+		float Sample(float worldX, float worldY) const noexcept;
+	};
+	std::atomic<std::shared_ptr<const OceanHeightfield>> oceanHeightfield{};
+	HeightMapMetadata* cachedHeightmap{};
 
 	struct ShadowUpdateCB
 	{
@@ -98,6 +114,8 @@ public:
 	virtual void EarlyPrepass() override;
 	/** @brief Loads the heightmap DDS for the current worldspace if not already cached. */
 	void LoadHeightmap();
+	// Ocean bathymetry shares these assets even when terrain shadows are disabled.
+	void EnsureHeightmapCatalog();
 	/** @brief Creates the shadow height texture after a new heightmap is loaded. */
 	void Precompute();
 	/** @brief Dispatches the shadow update compute shader using the current sun direction. */

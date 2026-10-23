@@ -8,7 +8,7 @@ param(
     [string]$Package='None',
     [ValidateSet('Development','Production')]
     [string]$PackageMode='Development',
-    [ValidateSet('Full','Dll','Shaders','Custom')]
+    [ValidateSet('Full','Dll','Shaders','PIXLShaders','Custom')]
     [string]$DeployScope='Full',
     [string[]]$IncludePattern=@(),
     [string]$GameDirectory='',
@@ -22,6 +22,7 @@ param(
 
 $ErrorActionPreference='Stop'
 $repo=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$productVersion='1.0.8'
 $localConfig=Join-Path $repo 'build\PIXLDevTools.local.json'
 $script:step=0
 $script:coreStage=''
@@ -164,21 +165,19 @@ function Invoke-Package([string]$kind,[string]$mode) {
     if($mode -eq 'Production' -and $dirty -and -not $AllowDirtyRelease){throw 'Production packaging requires a clean worktree. Use Development or explicitly pass -AllowDirtyRelease for a private checkpoint.'}
     $stamp=Get-Date -Format 'yyyyMMdd-HHmmss'
     $label=if($mode -eq 'Production'){'Production'}else{'Dev'}
-    $stage=Join-Path $repo "dist\PIXL-Renderer-v1.0.5-$label-Core-$stamp"
+    $stage=Join-Path $repo "dist\PIXL-Renderer-v$productVersion-$label-Core-$stamp"
     $zip="$stage.zip";$compression=if($mode -eq 'Production'){9}else{1}
     $channel=if($mode -eq 'Production'){'RELEASE'}else{'RELEASE-CANDIDATE'}
-    $arguments=@('-OutputDirectory',$stage,'-ArchivePath',$zip,'-Channel',$channel,'-CompressionLevel',$compression)
+    $arguments=@('-OutputDirectory',$stage,'-ArchivePath',$zip,'-Channel',$channel,'-ProductVersion',$productVersion,'-CompressionLevel',$compression)
     if($mode -eq 'Production' -or $IncludeLiveCache){$arguments+=@('-PipelineLibrary',(Select-CacheRoot))}else{$arguments+='-SkipPipelineLibrary'}
     Write-Step "Staging $label Core"
     & (Join-Path $PSScriptRoot 'StagePixlRendererStandalone.ps1') @arguments
     if($LASTEXITCODE){throw 'Core staging failed.'}
     $script:coreStage=$stage
     if($kind -in @('FOMOD','Both')){
-        $surface=if($env:PIXL_SURFACETIDES_SOURCE){$env:PIXL_SURFACETIDES_SOURCE}else{Join-Path $repo 'build\SurfaceTides-FOMOD-Input-20260925'}
-        if(-not (Test-Path $surface)){throw 'SurfaceTides source was not found. Set PIXL_SURFACETIDES_SOURCE.'}
-        $fomod=Join-Path $repo "dist\PIXL-Renderer-v1.0.5-$label-FOMOD-$stamp"
+        $fomod=Join-Path $repo "dist\PIXL-Renderer-v$productVersion-$label-FOMOD-$stamp"
         Write-Step "Building $label FOMOD"
-        & (Join-Path $PSScriptRoot 'BuildPixlFomod.ps1') -BasePackageDirectory $stage -SurfaceTidesSource $surface -OutputDirectory $fomod -ArchivePath "$fomod.zip" -CompressionLevel $compression
+        & (Join-Path $PSScriptRoot 'BuildPixlFomod.ps1') -BasePackageDirectory $stage -OutputDirectory $fomod -ArchivePath "$fomod.zip" -ProductVersion $productVersion -CompressionLevel $compression
         if($LASTEXITCODE){throw 'FOMOD build failed.'}
     }
     Write-Host "Core: $zip" -ForegroundColor Green
@@ -191,7 +190,7 @@ function Find-LatestCore {
 function Invoke-Deploy([string]$scope) {
     Assert-GameClosed
     $stage=if($script:coreStage){$script:coreStage}else{Find-LatestCore}
-    $patterns=switch($scope){'Dll'{@('SKSE/Plugins/PIXLRenderer.dll')};'Shaders'{@('Shaders/*')};'Custom'{if(!$IncludePattern.Count){@((Read-Host 'Manifest wildcard, for example Shaders/WindowLife/*').Trim())}else{$IncludePattern}}default{@('*')}}
+    $patterns=switch($scope){'Dll'{@('SKSE/Plugins/PIXLRenderer.dll')};{$_ -in @('Shaders','PIXLShaders')}{@('PIXL-Shaders/*')};'Custom'{if(!$IncludePattern.Count){@((Read-Host 'Manifest wildcard, for example PIXL-Shaders/WindowLife/*').Trim())}else{$IncludePattern}}default{@('*')}}
     $targets=@(Select-GameRoot 'Choose deployment target' $true)
     foreach($target in $targets){
         Write-Step "Deploying $scope payload to $target"
@@ -251,7 +250,7 @@ function Invoke-Menu {
 }
 
 Set-Location $repo
-Write-Host 'PIXL RENDERER 1.0.5 | DEVELOPMENT CONSOLE' -ForegroundColor Cyan
+Write-Host "PIXL RENDERER $productVersion | DEVELOPMENT CONSOLE" -ForegroundColor Cyan
 Write-Host "Repository: $repo"
 try {
     if($Action -eq 'Menu'){Invoke-Menu;$Action=$script:requested;if($Action -eq 'Exit'){exit 0}}
@@ -268,7 +267,7 @@ try {
         Invoke-Package $kind $PackageMode
     }
     if($Action -in @('Deploy','BuildDeploy')){
-        if(-not $NonInteractive){$DeployScope=@('Full','Dll','Shaders','Custom')[(Read-Choice 'Deployment scope' @('Full verified package','DLL only','Shaders only','Custom manifest wildcard'))]}
+        if(-not $NonInteractive){$DeployScope=@('Full','Dll','PIXLShaders','Custom')[(Read-Choice 'Deployment scope' @('Full verified package','DLL only','PIXL-Shaders only','Custom manifest wildcard'))]}
         Invoke-Deploy $DeployScope
     }
     Write-Host "`nPASS: requested PIXL operation completed." -ForegroundColor Green

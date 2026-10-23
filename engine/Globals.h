@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <d3d11.h>
 
 struct SkyVeil;
 struct WorldProbes;
@@ -8,7 +9,6 @@ struct VolumeOcclusion;
 struct MaterialLayers;
 struct GroundResponse;
 struct ActorSurfaceEffects;
-struct ClothDynamics;
 struct FoliageDynamics;
 struct FoliageOptimizer;
 struct StrandShading;
@@ -32,6 +32,7 @@ struct TerrainOcclusion;
 struct Waterbody;
 struct LightVolumes;
 struct WaterOptics;
+struct OceanDynamics;
 struct PulseProfiler;
 struct RainResponse;
 struct ThinSurface;
@@ -43,7 +44,6 @@ struct PixelCapture;
 struct SkinOptics;
 struct WindowLife;
 struct ContainedLiquids;
-struct CurvedSurfaceMapping;
 struct DistantLife;
 struct ReactiveFX;
 struct Microclimates;
@@ -104,7 +104,6 @@ namespace globals
 		extern MaterialLayers materialLayers;
 		extern GroundResponse groundResponse;
 		extern ActorSurfaceEffects actorSurfaceEffects;
-		extern ClothDynamics clothDynamics;
 		extern FoliageDynamics foliageDynamics;
 		extern FoliageOptimizer foliageOptimizer;
 		extern StrandShading strandShading;
@@ -128,6 +127,7 @@ namespace globals
 		extern Waterbody waterbody;
 		extern LightVolumes lightVolumes;
 		extern WaterOptics waterOptics;
+		extern OceanDynamics oceanDynamics;
 		extern PulseProfiler pulseProfiler;
 		extern RainResponse rainResponse;
 		extern ThinSurface thinSurface;
@@ -139,7 +139,6 @@ namespace globals
 		extern SkinOptics skinOptics;
 		extern WindowLife windowLife;
 		extern ContainedLiquids containedLiquids;
-		extern CurvedSurfaceMapping curvedSurfaceMapping;
 		extern DistantLife distantLife;
 		extern ReactiveFX reactiveFX;
 		extern Microclimates microclimates;

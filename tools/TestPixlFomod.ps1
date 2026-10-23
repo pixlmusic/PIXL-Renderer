@@ -8,6 +8,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path -LiteralPath $PackageDirectory).Path
 $core = Join-Path $root 'PIXL-Core'
+$legacyShaderRoot = Join-Path $core 'Shaders'
+if (Test-Path -LiteralPath $legacyShaderRoot) { throw 'FOMOD core must not contain the old shared Shaders root.' }
 $configPath = Join-Path $root 'fomod\ModuleConfig.xml'
 $infoPath = Join-Path $root 'fomod\info.xml'
 if (!(Test-Path -LiteralPath $configPath) -or !(Test-Path -LiteralPath $infoPath)) { throw 'Missing FOMOD XML.' }
@@ -55,8 +57,7 @@ foreach ($image in $images) {
 foreach ($required in @(
     'SKSE\Plugins\PIXLRenderer.dll',
     'SKSE\Plugins\PIXL\Config\RendererDefaults.json',
-    'PIXL\PipelineLibrary\Library.ini',
-    'Shaders\Water.hlsl',
+    'PIXL-Shaders\Water.hlsl',
     'SKSE\Plugins\PIXL\Documentation\COPYING',
     'SKSE\Plugins\PIXL\Documentation\EXCEPTIONS.md',
     'SKSE\Plugins\PIXL\Documentation\NOTICE.md',
@@ -68,11 +69,29 @@ foreach ($required in @(
     if (!(Test-Path -LiteralPath (Join-Path $core $required))) { throw "Missing FOMOD core payload: $required" }
 }
 $pipelineRoot = Join-Path $core 'PIXL\PipelineLibrary'
-$pipelineCount = (Get-ChildItem -LiteralPath $pipelineRoot -File -Recurse -Filter '*.pixlbin').Count
-if ($pipelineCount -lt 3000) { throw "Bundled shader cache is incomplete ($pipelineCount stages)." }
 & (Join-Path $PSScriptRoot 'VerifyPixlPackageManifest.ps1') -PackageDirectory $core
 $manifest = Get-Content (Join-Path $core 'PIXL-RENDERER.manifest.json') -Raw | ConvertFrom-Json
-if ($manifest.cacheMode -ne 'preloaded' -or $manifest.preloadedPipelineStages -lt 3000) { throw 'FOMOD core does not declare the validated preloaded shader cache.' }
+if ($manifest.version -ne $ExpectedVersion -or $manifest.title -ne "PIXL Renderer v$ExpectedVersion") {
+    throw 'FOMOD core manifest version/title do not match the installer metadata.'
+}
+if ($manifest.cacheMode -eq 'compile-on-device' -and $info.fomod.Description -notmatch 'compile on first launch') {
+    throw 'Compile-on-device FOMOD description does not explain first-launch shader compilation.'
+}
+if ($manifest.cacheMode -eq 'preloaded' -and $info.fomod.Description -notmatch 'validated shader cache') {
+    throw 'Preloaded-cache FOMOD description does not match its payload.'
+}
+if ($manifest.cacheMode -eq 'preloaded') {
+    $pipelineCount = (Get-ChildItem -LiteralPath $pipelineRoot -File -Recurse -Filter '*.pixlbin').Count
+    if ($pipelineCount -lt 3000 -or $manifest.preloadedPipelineStages -lt 3000) {
+        throw "Bundled shader cache is incomplete ($pipelineCount stages)."
+    }
+} elseif ($manifest.channel -eq 'LIVE-TEST' -and $manifest.cacheMode -eq 'compile-on-device') {
+    if (Test-Path -LiteralPath $pipelineRoot) { throw 'LIVE-TEST compile-on-device FOMOD must not include a stale PipelineLibrary.' }
+    if ($manifest.preloadedPipelineStages -ne 0) { throw 'Compile-on-device FOMOD has an inconsistent preloaded stage count.' }
+    $pipelineCount = 0
+} else {
+    throw 'FOMOD must use a validated preloaded cache, except for explicit LIVE-TEST compile-on-device packages.'
+}
 
 $defaultsPath = Join-Path $core 'SKSE\Plugins\PIXL\Config\RendererDefaults.json'
 $defaults = Get-Content -LiteralPath $defaultsPath -Raw | ConvertFrom-Json
@@ -88,7 +107,7 @@ if ([Math]::Abs([double]$water.CausticsStrength - 1.2) -gt 0.001 -or
 
 $nestedArchives = @(Get-ChildItem -LiteralPath $root -File -Recurse | Where-Object { $_.Extension -match '^\.(zip|7z|rar|tar|gz|bz2|xz)$' })
 if ($nestedArchives.Count) { throw "FOMOD contains nested archive(s): $($nestedArchives.FullName -join ', ')" }
-$vendorRuntimeRoot = Join-Path $core 'Shaders\ImageReconstruction'
+$vendorRuntimeRoot = Join-Path $core 'PIXL-Shaders\ImageReconstruction'
 if (Test-Path -LiteralPath $vendorRuntimeRoot) {
     foreach ($vendorDll in Get-ChildItem -LiteralPath $vendorRuntimeRoot -File -Recurse -Filter '*.dll') {
         $signature = Get-AuthenticodeSignature -LiteralPath $vendorDll.FullName
@@ -97,4 +116,4 @@ if (Test-Path -LiteralPath $vendorRuntimeRoot) {
         }
     }
 }
-Write-Host "PASS: PIXL $ExpectedVersion three-page FOMOD, regular defaults, preloaded shader cache and no SurfaceTides payload validated ($pipelineCount stages)."
+Write-Host "PASS: PIXL $ExpectedVersion three-page FOMOD, regular defaults, cache mode '$($manifest.cacheMode)' and no SurfaceTides payload validated ($pipelineCount stages)."

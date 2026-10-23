@@ -1,6 +1,9 @@
 #include "SkinOptics.h"
 #include <DirectXTex.h>
 
+#include <algorithm>
+#include <cmath>
+
 #include "Deferred.h"
 #include "Globals.h"
 #include "Hooks.h"
@@ -203,7 +206,7 @@ void SkinOptics::LoadSkinDetailTexture()
 
 	DirectX::ScratchImage image;
 	try {
-		std::filesystem::path path{ "Data\\Shaders\\SkinOptics\\skin_detail_n.dds" };
+		std::filesystem::path path{ "Data\\PIXL-Shaders\\SkinOptics\\skin_detail_n.dds" };
 		DX::ThrowIfFailed(LoadFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, image));
 	} catch (const DX::com_exception& e) {
 		logger::error("{}", e.what());
@@ -295,7 +298,19 @@ SkinOptics::SkinOpticsData SkinOptics::GetCommonBufferData()
 
 void SkinOptics::LoadSettings(json& o_json)
 {
-	settings = o_json;
+	settings = o_json.is_object() ? o_json.get<Settings>() : Settings{};
+	const Settings defaults{};
+	auto finiteClamp = [](float value, float fallback, float low, float high) {
+		return std::clamp(std::isfinite(value) ? value : fallback, low, high);
+	};
+	settings.SkinMainRoughness = finiteClamp(settings.SkinMainRoughness, defaults.SkinMainRoughness, 0.0f, 1.0f);
+	settings.SkinSecondRoughness = finiteClamp(settings.SkinSecondRoughness, defaults.SkinSecondRoughness, 0.0f, 1.0f);
+	settings.F0 = finiteClamp(settings.F0, defaults.F0, 0.0f, 0.1f);
+	settings.Translucency = finiteClamp(settings.Translucency, defaults.Translucency, 0.0f, 1.0f);
+	settings.sssWidth = finiteClamp(settings.sssWidth, defaults.sssWidth, 0.0f, 1.0f);
+	settings.FuzzRoughness = finiteClamp(settings.FuzzRoughness, defaults.FuzzRoughness, 0.1f, 1.0f);
+	settings.StartSweat = finiteClamp(settings.StartSweat, defaults.StartSweat, 0.0f, 1.0f);
+	settings.FullSweat = std::min(finiteClamp(settings.FullSweat, defaults.FullSweat, 0.0f, 1.0f), settings.StartSweat);
 }
 
 void SkinOptics::SaveSettings(json& o_json)
@@ -448,8 +463,8 @@ struct SkinExtendedRendererState
 	{
 		{
 			PSTexture = {
-				newTexture ? newTexture->resourceView : nullptr,
-				newTexture2 ? newTexture2->resourceView : nullptr
+				newTexture ? REX::W32::AsReal(newTexture->resourceView) : nullptr,
+				newTexture2 ? REX::W32::AsReal(newTexture2->resourceView) : nullptr
 			};
 			PSResourceModifiedBits = 1;
 		}

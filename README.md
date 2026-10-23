@@ -124,7 +124,7 @@ Neural Rendering (NR) is experimental and optional. **The NR runtime `nvngx_dlss
 3. Use **Pinned Messages only**, and **ShortFuse's pinned version only** for the illustrated setup. Do not use unverified chat attachments or third-party mirrors. If that post is unavailable, leave NR disabled.
 4. Obtain the runtime only if you have permission to use it. Extract it if supplied in an archive, then place the DLL at:
    ```text
-   Skyrim Special Edition/Data/Shaders/ImageReconstruction/Streamline/nvngx_dlssnr.dll
+   Skyrim Special Edition/Data/PIXL-Shaders/ImageReconstruction/Streamline/nvngx_dlssnr.dll
    ```
 5. Return to PIXL and select **I've copied it — Check File**. Green means found; red means missing; cyan means ready to confirm. This verifies file presence, **not authenticity, compatibility or licensing**.
 6. Confirm and return to Quick Setup, then **Save & Continue**. Use supported NVIDIA hardware, DLSS/DLAA, SDR and borderless/windowed mode. Save your game, fully exit Skyrim, and relaunch through SKSE. A save reload is not enough: the DX11/DX12 sidecar is initialized at startup.

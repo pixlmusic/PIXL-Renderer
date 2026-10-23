@@ -250,8 +250,8 @@ is bundled. Steam was not deployed; nothing was pushed publicly.
 | engine/ShaderCache.cpp | Invalidate incompatible shared-buffer cache |
 | engine/Menu/RuntimeSettingsRenderer.cpp | Developer-only session panel |
 | engine/Modules/SkyBounce.cpp | Double cell-to-camera offset; preserve toroidal identity |
-| distribution/Shaders/Common/SharedData.hlsli | Matching GPU fields |
-| distribution/Shaders/Common/PIXLRenderOrigin.hlsli (new) | Explicit space conversions and temporal helpers |
+| distribution/PIXL-Shaders/Common/SharedData.hlsli | Matching GPU fields |
+| distribution/PIXL-Shaders/Common/PIXLRenderOrigin.hlsli (new) | Explicit space conversions and temporal helpers |
 | pipeline/Atmosphere/Kernels/Atmosphere/VolumetricFogLightScatteringCS.hlsl | Stable previous-camera conversion |
 | pipeline/Camera Suite/Kernels/CameraSuite/HDROutputCS.hlsl | Stable camera-motion reconstruction |
 | pipeline/Rain Response/Kernels/RainResponse/RoofRunoffResolveCS.hlsl | Stable history projection; retain absolute seed |

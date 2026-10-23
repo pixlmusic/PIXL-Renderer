@@ -13,7 +13,7 @@ Neural Rendering (NR) is experimental and optional. **The NR runtime `nvngx_dlss
 3. Use **Pinned Messages only**, and **ShortFuse's pinned version only** for the illustrated setup. Do not use unverified chat attachments or third-party mirrors. If that post is unavailable, leave NR disabled.
 4. Obtain the runtime only if you have permission to use it. Extract it if supplied in an archive, then place the DLL at:
    ```text
-   Skyrim Special Edition/Data/Shaders/ImageReconstruction/Streamline/nvngx_dlssnr.dll
+   Skyrim Special Edition/Data/PIXL-Shaders/ImageReconstruction/Streamline/nvngx_dlssnr.dll
    ```
 5. Return to PIXL and select **I've copied it — Check File**. Green means found; red means missing; cyan means ready to confirm. This verifies file presence, **not authenticity, compatibility or licensing**.
 6. Confirm and return to Quick Setup, then **Save & Continue**. Use supported NVIDIA hardware, DLSS/DLAA, SDR and borderless/windowed mode. Save your game, fully exit Skyrim, and relaunch through SKSE. A save reload is not enough: the DX11/DX12 sidecar is initialized at startup.
@@ -27,38 +27,18 @@ This is a third-party experimental runtime, not a NVIDIA-approved PIXL download.
 - A DirectX 11-capable GPU. DLSS/DLAA require supported NVIDIA hardware and an available runtime.
 - Borderless/windowed mode for frame generation and the optional Neural Rendering sidecar.
 
-Owner testing covers Skyrim SE 1.5.97, GOG 1.6.1179.0, and Steam 1.6.1170. The
-SurfaceTides bridge uses one CommonLibSSE-NG universal DLL for 1.5.97, Steam
-1.6.1170, GOG 1.6.1179 and 1.7.104. Its automated tests cover the shared binary;
-visual confirmation currently covers Steam 1.6.1170, so the other runtime
-combinations still require live bridge testing.
+Owner testing covers Skyrim SE 1.5.97, GOG 1.6.1179.0, and Steam 1.6.1170.
 
-### Optional SurfaceTides compatibility
+### Water
 
-PIXL 1.0.7 retains the renderer side of the SurfaceTides bridge. The FOMOD offers
-an optional bridge for the exact SurfaceTides 1.1.0 release. Select it only when
-that original release is already installed. The choice replaces SurfaceTides' DLL,
-water shader and INI with the PIXL-tuned integration preset. It enables
-`AllowPIXL=1` automatically. Back up custom SurfaceTides tuning before selecting
-the integration, then restart through SKSE.
-
-Install SurfaceTides first and PIXL second. In Vortex, make PIXL load after
-SurfaceTides; in Mod Organizer 2, place PIXL lower in the left pane. PIXL must
-win the `SurfaceTides.dll`, `Water.hlsl` and `SurfaceTides.ini` conflicts. Do not
-install a separate runtime-specific SurfaceTides DLL afterward—the PIXL DLL
-already supports 1.5.97, Steam 1.6.1170, GOG 1.6.1179 and 1.7.104. Reinstall PIXL
-and reselect the integration after any SurfaceTides reinstall or update.
-
-SurfaceTides supplies tessellation/displacement; PIXL retains water shading and
-optics. The preset strengthens and lengthens wilderness waves while the bridge
-scales displacement to 55% in city locations and 25% in interiors. Without SurfaceTides,
-PIXL uses its regular water. The compatibility patch
-is unnecessary once a supported upstream SurfaceTides build implements the bridge.
-Do not carry the bundled replacement DLL into a later SurfaceTides release.
+PIXL 1.0.8 uses PIXL's own water rendering. It does not bundle, patch, or offer
+SurfaceTides compatibility. The experimental native ocean and adaptive water
+work is being developed inside PIXL for a later release; until that work is
+validated, lakes, rivers, and other water keep the established PIXL/Skyrim path.
 
 ### Install and first launch
 
-1. Close Skyrim. Install the release ZIP with Vortex or Mod Organizer 2 as a normal **Data** mod. For manual installation, extract its contents into Skyrim's `Data` directory, not beside `SkyrimSE.exe`. PIXL installs its own files beneath `SKSE`, `Shaders` and `Interface`; do not replace the complete `Data\Shaders` directory.
+1. Close Skyrim. Install the release ZIP with Vortex or Mod Organizer 2 as a normal **Data** mod. For manual installation, extract its contents into Skyrim's `Data` directory, not beside `SkyrimSE.exe`. PIXL installs its own files beneath `SKSE`, `PIXL-Shaders` and `Interface`; leave the existing `Data\Shaders` directory untouched.
 2. Enable the included `PIXL-TerrainField.esp`. Install required dependencies separately.
 3. Disable other engine-level shader renderers and duplicate PIXL installations. Do not combine this release with Community Shaders, ENB or Kreate. ReShade is unvalidated; use a ReShade-free setup for the supported baseline. `SSEReShadeHelper.dll` is explicitly incompatible. Weather plugins and texture/mesh mods are separate from these renderers.
 4. Launch using your normal SKSE/mod-manager shortcut.
@@ -71,7 +51,7 @@ assets. It can leave `.symlink` placeholders where Skyrim expects real HLSL
 files, which commonly presents as missing modules or repeated compilation. Use
 Vortex, MO2, or a real manual extraction instead. If Vortex or MO2 reports a
 file conflict, let PIXL win only the explicitly listed feature files and keep
-the documented load order; do not enable a blanket `Data\Shaders` override.
+the documented load order; PIXL uses an isolated `Data\PIXL-Shaders` folder, so the existing `Data\Shaders` tree needs no override.
 
 The release ships owner-tuned fog and POM defaults, with reconstruction set to **Off/None**, frame generation off and real-time Neural Rendering off. Accepting the existing quality selection preserves the tuned look. The advanced tuner remains optional.
 

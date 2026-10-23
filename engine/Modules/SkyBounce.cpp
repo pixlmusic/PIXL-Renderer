@@ -13,6 +13,8 @@
 #include "Renderer/RenderOrigin.h"
 #include "Utils/D3D.h"
 
+#include <cmath>
+
 #define I18N_KEY_PREFIX "feature.sky_bounce."
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
@@ -23,7 +25,11 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 
 void SkyBounce::LoadSettings(json& o_json)
 {
-	settings = o_json;
+	settings = o_json.is_object() ? o_json.get<Settings>() : Settings{};
+	const Settings defaults{};
+	settings.MaxZenith = std::clamp(std::isfinite(settings.MaxZenith) ? settings.MaxZenith : defaults.MaxZenith, 0.0f, 1.5707963f);
+	settings.MinDiffuseVisibility = std::clamp(std::isfinite(settings.MinDiffuseVisibility) ? settings.MinDiffuseVisibility : defaults.MinDiffuseVisibility, 0.01f, 1.0f);
+	settings.MinSpecularVisibility = std::clamp(std::isfinite(settings.MinSpecularVisibility) ? settings.MinSpecularVisibility : defaults.MinSpecularVisibility, 0.01f, 1.0f);
 	queuedResetSkyBounce = true;
 }
 
@@ -97,9 +103,9 @@ void SkyBounce::SetupResources()
 		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
 		D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
 
-		precipitationOcclusion.texture->GetDesc(&texDesc);
-		precipitationOcclusion.depthSRV->GetDesc(&srvDesc);
-		precipitationOcclusion.views[0]->GetDesc(&dsvDesc);
+		precipitationOcclusion.texture->GetDesc(REX::W32::AsW32(&texDesc));
+		precipitationOcclusion.depthSRV->GetDesc(REX::W32::AsW32(&srvDesc));
+		precipitationOcclusion.views[0]->GetDesc(REX::W32::AsW32(&dsvDesc));
 
 		texOcclusion = new Texture2D(texDesc, "SkyBounce::Occlusion");
 		texOcclusion->CreateSRV(srvDesc);
@@ -200,7 +206,7 @@ void SkyBounce::CompileComputeShaders()
 		};
 
 	for (auto& info : shaderInfos) {
-		auto path = std::filesystem::path("Data\\Shaders\\SkyBounce") / info.filename;
+		auto path = std::filesystem::path("Data\\PIXL-Shaders\\SkyBounce") / info.filename;
 		if (auto rawPtr = reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(path.c_str(), info.defines, "cs_5_0")))
 			info.programPtr->attach(rawPtr);
 	}
@@ -226,6 +232,8 @@ SkyBounce::SkyBounceCB SkyBounce::GetCommonBufferData([[maybe_unused]] bool a_in
 	// transmission to black. The captured FrameBuffer position is the origin used
 	// by the current raster frame in both first and third person.
 	const auto& cameraPos = globals::game::frameBufferCached.GetCameraPosAdjust();
+	if (!std::isfinite(cameraPos.x) || !std::isfinite(cameraPos.y) || !std::isfinite(cameraPos.z))
+		return SkyBounce::SkyBounceCB{};
 	auto eyePos = float3{ cameraPos.x, cameraPos.y, cameraPos.z };
 
 	float3 cellSize = {
@@ -319,7 +327,7 @@ void SkyBounce::Prepass()
 			texOcclusion->srv.get(),
 			shadowCascadeSRV ? shadowCascadeSRV : nullptr,
 			directionalShadowSRV,
-			shadowCascadeSRV ? esramDepthStencil.depthSRV : nullptr
+			shadowCascadeSRV ? REX::W32::AsReal(esramDepthStencil.depthSRV) : nullptr
 		};
 		std::array<ID3D11UnorderedAccessView*, 4> uavs = {
 			texProbeArray->uav.get(),
@@ -653,9 +661,9 @@ void SkyBounce::RenderOcclusion()
 				auto& precipitation = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPRECIPITATION_OCCLUSION_MAP];
 				RE::BSGraphics::DepthStencilData precipitationCopy = precipitation;
 
-				precipitation.depthSRV = texOcclusion->srv.get();
-				precipitation.texture = texOcclusion->resource.get();
-				precipitation.views[0] = texOcclusion->dsv.get();
+				precipitation.depthSRV = REX::W32::AsW32(texOcclusion->srv.get());
+				precipitation.texture = REX::W32::AsW32(texOcclusion->resource.get());
+				precipitation.views[0] = REX::W32::AsW32(texOcclusion->dsv.get());
 
 				static float& PrecipitationShaderCubeSize = (*(float*)REL::RelocationID(515451, 401590).address());
 				float originalPrecipitationShaderCubeSize = PrecipitationShaderCubeSize;

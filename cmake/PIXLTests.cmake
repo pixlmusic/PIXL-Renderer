@@ -15,9 +15,15 @@ if(BUILD_TESTING)
     pixl_add_portable_test(PIXLTestCameraReprojection
         "${CMAKE_SOURCE_DIR}/tools/TestCameraReprojection.cpp")
     if(WIN32)
+		pixl_add_portable_test(PIXLTestMaterialSurface "${CMAKE_SOURCE_DIR}/tools/TestMaterialSurface.cpp")
+		target_link_libraries(PIXLTestMaterialSurface PRIVATE d3d11 d3dcompiler)
+		set_tests_properties(PIXLTestMaterialSurface PROPERTIES LABELS "portable;shader;warp" WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
         pixl_add_portable_test(PIXLTestDofTiles "${CMAKE_SOURCE_DIR}/tools/TestDofTiles.cpp")
         target_link_libraries(PIXLTestDofTiles PRIVATE d3d11 d3dcompiler)
         set_tests_properties(PIXLTestDofTiles PROPERTIES LABELS "shader;warp" WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        pixl_add_portable_test(PIXLTestOceanDynamicsFFT "${CMAKE_SOURCE_DIR}/tools/TestOceanDynamicsFFT.cpp")
+        target_link_libraries(PIXLTestOceanDynamicsFFT PRIVATE d3d11 d3dcompiler)
+        set_tests_properties(PIXLTestOceanDynamicsFFT PROPERTIES LABELS "shader;warp" WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
         pixl_add_portable_test(PIXLTestModernShaderMath
             "${CMAKE_SOURCE_DIR}/tools/TestModernShaderMath.cpp")
         target_link_libraries(PIXLTestModernShaderMath PRIVATE d3d11 d3dcompiler)
@@ -26,7 +32,7 @@ if(BUILD_TESTING)
         pixl_add_portable_test(PIXLTestCompilationArtifacts
             "${CMAKE_SOURCE_DIR}/tools/TestCompilationArtifacts.cpp")
         target_link_libraries(PIXLTestCompilationArtifacts PRIVATE d3dcompiler bcrypt)
-        set(PIXL_WINDOWS_MODERNISATION_TESTS PIXLTestCompilationArtifacts PIXLTestModernShaderMath PIXLTestDofTiles)
+        set(PIXL_WINDOWS_MODERNISATION_TESTS PIXLTestCompilationArtifacts PIXLTestModernShaderMath PIXLTestDofTiles PIXLTestOceanDynamicsFFT PIXLTestMaterialSurface)
     endif()
 	pixl_add_portable_test(PIXLTestReactiveFXSpawnSafety
 		"${CMAKE_SOURCE_DIR}/tools/TestReactiveFXSpawnSafety.cpp")
@@ -47,6 +53,13 @@ if(BUILD_TESTING)
         "${CMAKE_SOURCE_DIR}/engine/Modules/HybridGI/TemporalPolicy.cpp")
     pixl_add_portable_test(PIXLTestRendererMetadata
         "${CMAKE_SOURCE_DIR}/tools/TestRendererMetadata.cpp")
+	# Director path validation is also executed when Video Mode opens, but keep
+	# the bounded spline/serialization checks in the regular regression suite so
+	# malformed authored routes are caught without launching Skyrim.
+	pixl_add_portable_test(PIXLTestDirectorCameraPath
+		"${CMAKE_SOURCE_DIR}/tools/TestDirectorCameraPath.cpp"
+		"${CMAKE_SOURCE_DIR}/engine/Director/DirectorCameraPath.cpp")
+	target_link_libraries(PIXLTestDirectorCameraPath PRIVATE nlohmann_json::nlohmann_json)
 
     find_program(PIXL_TEST_POWERSHELL NAMES pwsh powershell)
     if(WIN32 AND PIXL_TEST_POWERSHELL)
@@ -94,6 +107,7 @@ if(BUILD_TESTING)
             PIXLTestAtmosphereWeather
             PIXLTestModulePolicies
             PIXLTestRendererMetadata
+            PIXLTestDirectorCameraPath
         USES_TERMINAL
         COMMENT "Running PIXL portable CTest validation")
 endif()

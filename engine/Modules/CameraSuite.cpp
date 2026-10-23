@@ -75,6 +75,24 @@ static constexpr DISPLAYCONFIG_DEVICE_INFO_TYPE kDisplayConfigGetAdvancedColorIn
 // https://github.com/Filoppi/Luma-Framework/blob/f1fbc2a36f2d24fd551721ce90f26821a8e754c1/Source/Core/utils/display.hpp
 namespace
 {
+	// Centralise identical lazy shader loading without altering the original retry policy.
+	// Pass a failure flag only for shaders whose compile failures are intentionally latched.
+	ID3D11ComputeShader* LoadCameraComputeShader(
+		ID3D11ComputeShader*& shader, const wchar_t* path,
+		const char* failureMessage, bool* compileFailed = nullptr)
+	{
+		if (!shader && (!compileFailed || !*compileFailed)) {
+			std::vector<std::pair<const char*, const char*>> defines;
+			shader = static_cast<ID3D11ComputeShader*>(Util::CompileShader(path, defines, "cs_5_0"));
+			if (!shader) {
+				if (compileFailed)
+					*compileFailed = true;
+				logger::error("{}", failureMessage);
+			}
+		}
+		return shader;
+	}
+
 	RE::NiCamera* FindActiveCamera(RE::NiAVObject* object)
 	{
 		if (!object)
@@ -102,7 +120,7 @@ namespace
 			return nullptr;
 		auto& mainDepth = renderer->GetDepthStencilData().depthStencils[
 			RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-		return mainDepth.depthSRV ? mainDepth.depthSRV :
+		return mainDepth.depthSRV ? REX::W32::AsReal(mainDepth.depthSRV) :
 			Util::GetCurrentSceneDepthSRV(false);
 	}
 
@@ -145,7 +163,7 @@ namespace
 	bool GetSwapChainOutputDeviceName(IDXGISwapChain* swapChain, WCHAR (&outDeviceName)[32])
 	{
 		winrt::com_ptr<IDXGIOutput> output;
-		if (FAILED(swapChain->GetContainingOutput(output.put())))
+		if (!swapChain || FAILED(swapChain->GetContainingOutput(output.put())))
 			return false;
 		DXGI_OUTPUT_DESC desc{};
 		if (FAILED(output->GetDesc(&desc)))
@@ -329,6 +347,32 @@ namespace
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("%s", text);
 	}
+
+	void CopyCameraSceneToBackBuffer(IDXGISwapChain* swapChain, ID3D11DeviceContext* context,
+		ID3D11Resource* source)
+	{
+		if (!swapChain || !context || !source)
+			return;
+		winrt::com_ptr<ID3D11Texture2D> backBuffer;
+		if (SUCCEEDED(swapChain->GetBuffer(0, IID_PPV_ARGS(backBuffer.put()))) && backBuffer)
+			context->CopyResource(backBuffer.get(), source);
+	}
+
+	void ApplyCameraLookPreset(CameraSuite::Settings& s, bool cinematic)
+	{
+		s.cameraAutoExposure = true;
+		s.cameraExposureCompensationEV = 0.0f;
+		s.cameraHighlightProtection = cinematic ? 0.78f : 0.65f;
+		s.cameraShadowDetail = cinematic ? 0.18f : 0.14f;
+		s.cameraContrast = cinematic ? 1.04f : 1.0f;
+		s.cameraLocalExposure = cinematic ? 0.18f : 0.12f;
+		s.cameraSaturation = cinematic ? 0.98f : 1.0f;
+		s.cameraToe = cinematic ? 0.16f : 0.12f;
+		s.cameraShoulder = cinematic ? 0.82f : 0.72f;
+		s.cameraInfluence = cinematic ? 0.65f : 0.35f;
+		s.experimentalBodycam = false;
+		s.enableLensEffects = false;
+	}
 }
 
 bool CameraSuite::isHDRMonitor = false;
@@ -468,6 +512,20 @@ void from_json(const nlohmann::json& json, CameraSuite::Settings& settings)
 
 void CameraSuite::ApplyDepthOfFieldPreset(std::uint32_t preset)
 {
+	// Ordered as Gameplay, Balanced, Portrait and Cinema; the original values
+	// are retained exactly, including the intentionally very distant gameplay haze.
+	struct LensPreset
+	{
+		float strength, focalLength, fStop, maxBokeh;
+		float nearBlur, farBlur, farDistance, focusRange;
+	};
+	static constexpr LensPreset presets[] = {
+		{ 0.80f, 28.0f, 5.6f, 4.5f, 0.0f, 0.58f, 38000.0f, 15000.0f },
+		{ 1.0f, 30.0f, 3.4f, 6.0f, 0.12f, 0.90f, 26000.0f, 12000.0f },
+		{ 1.0f, 50.0f, 2.2f, 12.0f, 0.55f, 1.05f, 18000.0f, 7000.0f },
+		{ 1.0f, 40.0f, 1.8f, 18.0f, 0.75f, 1.20f, 22000.0f, 9000.0f }
+	};
+	const auto& lens = presets[std::min(preset, 3u)];
 	auto& s = settings;
 	s.enableEnhancedDepthOfField = true;
 	s.preferCinematicDoF = false;
@@ -475,30 +533,14 @@ void CameraSuite::ApplyDepthOfFieldPreset(std::uint32_t preset)
 	s.dofPhysicalLens = true;
 	s.dofAutoFocus = true;
 	s.dofActorTracking = true;
-	switch (std::min(preset, 3u)) {
-	case 0:
-		// Keep normal exploration legible: use a deeper gameplay focus and push
-		// the optional far-field blur beyond the usual mountain/LOD horizon.
-		s.dofStrength = 0.80f; s.dofFocalLengthMm = 28.0f; s.dofFStop = 5.6f;
-		s.dofMaxBokehPixels = 4.5f; s.dofNearBlurIntensity = 0.0f; s.dofFarBlurIntensity = 0.58f;
-		s.dofFarBlurDistance = 38000.0f; s.dofFocusRange = 15000.0f;
-		break;
-	case 1:
-		s.dofStrength = 1.0f; s.dofFocalLengthMm = 30.0f; s.dofFStop = 3.4f;
-		s.dofMaxBokehPixels = 6.0f; s.dofNearBlurIntensity = 0.12f; s.dofFarBlurIntensity = 0.90f;
-		s.dofFarBlurDistance = 26000.0f; s.dofFocusRange = 12000.0f;
-		break;
-	case 2:
-		s.dofStrength = 1.0f; s.dofFocalLengthMm = 50.0f; s.dofFStop = 2.2f;
-		s.dofMaxBokehPixels = 12.0f; s.dofNearBlurIntensity = 0.55f; s.dofFarBlurIntensity = 1.05f;
-		s.dofFarBlurDistance = 18000.0f; s.dofFocusRange = 7000.0f;
-		break;
-	default:
-		s.dofStrength = 1.0f; s.dofFocalLengthMm = 40.0f; s.dofFStop = 1.8f;
-		s.dofMaxBokehPixels = 18.0f; s.dofNearBlurIntensity = 0.75f; s.dofFarBlurIntensity = 1.20f;
-		s.dofFarBlurDistance = 22000.0f; s.dofFocusRange = 9000.0f;
-		break;
-	}
+	s.dofStrength = lens.strength;
+	s.dofFocalLengthMm = lens.focalLength;
+	s.dofFStop = lens.fStop;
+	s.dofMaxBokehPixels = lens.maxBokeh;
+	s.dofNearBlurIntensity = lens.nearBlur;
+	s.dofFarBlurIntensity = lens.farBlur;
+	s.dofFarBlurDistance = lens.farDistance;
+	s.dofFocusRange = lens.focusRange;
 }
 
 void CameraSuite::DrawSettings()
@@ -547,12 +589,8 @@ void CameraSuite::DrawSettings()
 		{
 			std::lock_guard<std::mutex> lock(settingsMutex);
 			settings.enableHDR = currentEnableHDR;
-			if (settings.enableHDR && !oldEnableHDR) {
-				logger::info("HDR: enableHDR changed to: true");
-				UpdateHDRData();
-				UpdateSwapChainColorSpace();
-			} else if (!settings.enableHDR && oldEnableHDR) {
-				logger::info("HDR: enableHDR changed to: false");
+			if (settings.enableHDR != oldEnableHDR) {
+				logger::info("HDR: enableHDR changed to: {}", settings.enableHDR);
 				UpdateHDRData();
 				UpdateSwapChainColorSpace();
 			}
@@ -784,35 +822,13 @@ void CameraSuite::DrawSettings()
 			changed |= ImGui::SliderFloat("Camera Influence", &settings.cameraInfluence, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 			DrawSettingsTooltip("Controls the SDR blend between Skyrim's authored image and PIXL's photographic response. 25-40% retains the original art direction; HDR always uses the full display mapper.");
 			if (ImGui::Button("Neutral")) {
-				settings.cameraAutoExposure = true;
-				settings.cameraExposureCompensationEV = 0.0f;
-				settings.cameraHighlightProtection = 0.65f;
-				settings.cameraShadowDetail = 0.14f;
-				settings.cameraContrast = 1.0f;
-				settings.cameraLocalExposure = 0.12f;
-				settings.cameraSaturation = 1.0f;
-				settings.cameraToe = 0.12f;
-				settings.cameraShoulder = 0.72f;
-				settings.cameraInfluence = 0.35f;
-				settings.experimentalBodycam = false;
-				settings.enableLensEffects = false;
+				ApplyCameraLookPreset(settings, false);
 				changed = true;
 			}
 			DrawSettingsTooltip("Restores a neutral, palette-preserving physical-camera response. Applies immediately.");
 			ImGui::SameLine();
 			if (ImGui::Button("Cinematic")) {
-				settings.cameraAutoExposure = true;
-				settings.cameraExposureCompensationEV = 0.0f;
-				settings.cameraHighlightProtection = 0.78f;
-				settings.cameraShadowDetail = 0.18f;
-				settings.cameraContrast = 1.04f;
-				settings.cameraLocalExposure = 0.18f;
-				settings.cameraSaturation = 0.98f;
-				settings.cameraToe = 0.16f;
-				settings.cameraShoulder = 0.82f;
-				settings.cameraInfluence = 0.65f;
-				settings.experimentalBodycam = false;
-				settings.enableLensEffects = false;
+				ApplyCameraLookPreset(settings, true);
 				changed = true;
 			}
 			DrawSettingsTooltip("Uses stronger highlight protection and local adaptation with a restrained cinematic contrast curve. Applies immediately.");
@@ -1116,14 +1132,6 @@ void CameraSuite::SaveSettings(json& o_json)
 	std::lock_guard<std::mutex> lock(settingsMutex);
 	const auto& settingsToSave = persistentSettingsOverride ? *persistentSettingsOverride : settings;
 	o_json = settingsToSave;
-	// Keep the core settings below nlohmann's non-intrusive macro arity limit;
-	// environmental lens additions remain normal, backward-compatible keys.
-	o_json["enableColdLens"] = settingsToSave.enableColdLens;
-	o_json["coldLensStrength"] = settingsToSave.coldLensStrength;
-	o_json["coldAltitudeStart"] = settingsToSave.coldAltitudeStart;
-	o_json["coldAltitudeFull"] = settingsToSave.coldAltitudeFull;
-	o_json["enableElementalDamageLens"] = settingsToSave.enableElementalDamageLens;
-	o_json["elementalLensStrength"] = settingsToSave.elementalLensStrength;
 }
 
 void CameraSuite::BeginTransientSettings(const Settings& persistentBaseline)
@@ -1147,18 +1155,11 @@ void CameraSuite::LoadSettings(json& o_json)
 		return std::clamp(std::isfinite(value) ? value : fallback, minimum, maximum);
 	};
 
-	settings = o_json;
+	settings = o_json.is_object() ? o_json.get<Settings>() : Settings{};
 	// Older profiles had these optics implicitly tied to Bodycam. Preserve their
 	// appearance once, while new neutral profiles keep the independent pass off.
-	settings.enableLensEffects = o_json.value("enableLensEffects", settings.experimentalBodycam);
-	settings.enableColdLens = o_json.value("enableColdLens", settings.enableColdLens);
-	settings.coldLensStrength = o_json.value("coldLensStrength", settings.coldLensStrength);
-	settings.coldAltitudeStart = o_json.value("coldAltitudeStart", settings.coldAltitudeStart);
-	settings.coldAltitudeFull = o_json.value("coldAltitudeFull", settings.coldAltitudeFull);
-	settings.enableElementalDamageLens =
-		o_json.value("enableElementalDamageLens", settings.enableElementalDamageLens);
-	settings.elementalLensStrength =
-		o_json.value("elementalLensStrength", settings.elementalLensStrength);
+	const json& savedCameraSettings = o_json.is_object() ? o_json : json::object();
+	settings.enableLensEffects = savedCameraSettings.value("enableLensEffects", settings.experimentalBodycam);
 	// Camera quality belongs to the coordinated menu contract rather than the
 	// authored camera-look JSON. Restore it on startup instead of reverting to
 	// the member default after a saved Low/Medium/High selection.
@@ -1320,8 +1321,8 @@ void CameraSuite::RestoreDefaultSettings()
 	settings.dofFocusEdgeProtection = 0.95f;
 	settings.dofForegroundCoverage = 0.55f;
 	settings.dofNearBlurIntensity = 0.0f;
-	settings.dofFarBlurIntensity = 1.03f;
-	settings.dofFarBlurDistance = 25598.0f;
+	settings.dofFarBlurIntensity = 0.5f;
+	settings.dofFarBlurDistance = 50000.0f;
 	settings.dofCatEye = 0.12f;
 	settings.dofAnamorphicRatio = 1.0f;
 	settings.dofPhysicalLens = true;
@@ -1430,9 +1431,9 @@ void CameraSuite::SetupResources()
 	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
 	D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
 
-	main.texture->GetDesc(&texDesc);
-	main.SRV->GetDesc(&srvDesc);
-	main.UAV->GetDesc(&uavDesc);
+		main.texture->GetDesc(REX::W32::AsW32(&texDesc));
+		main.SRV->GetDesc(REX::W32::AsW32(&srvDesc));
+		main.UAV->GetDesc(REX::W32::AsW32(&uavDesc));
 
 	// Get the actual swap chain format for output texture
 	DXGI_FORMAT swapChainFormat = DXGI_FORMAT_R10G10B10A2_UNORM;  // 10-bit UNORM presentation format; color space selects SDR or HDR.
@@ -1780,9 +1781,9 @@ void CameraSuite::RedirectFramebuffer()
 	savedFramebufferRTV = fb.RTV;
 
 	// Redirect to hdrTexture (R16G16B16A16_FLOAT) so ISHDR can write values >1.0
-	fb.texture = reinterpret_cast<ID3D11Texture2D*>(hdrTexture->resource.get());
-	fb.SRV = hdrTexture->srv.get();
-	fb.RTV = hdrTexture->rtv.get();
+	fb.texture = REX::W32::AsW32(reinterpret_cast<ID3D11Texture2D*>(hdrTexture->resource.get()));
+	fb.SRV = REX::W32::AsW32(hdrTexture->srv.get());
+	fb.RTV = REX::W32::AsW32(hdrTexture->rtv.get());
 
 	framebufferRedirected = true;
 }
@@ -1832,6 +1833,13 @@ void CameraSuite::SetUIBuffer()
 {
 	auto& fb = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGET::kFRAMEBUFFER];
 
+	// Keep SDR main/loading imagery and its UI on Skyrim's native framebuffer.
+	// These surfaces are already display-referred and must not enter the camera
+	// output composite, which may sample a scene target that menus do not render.
+	if (!globals::pipeline::imageReconstruction.d3d12SwapChainActive && !settings.enableHDR &&
+		globals::state->IsDisplayReferredModelMenuOpen(globals::game::ui))
+		return;
+
 	// D3D12 swap chain path: route UI to uiBufferWrapped only when a compositor
 	// (ApplyHDR or FFX FG UI composition) will read it; otherwise render UI
 	// directly into the wrapped back buffer so it survives Present when both
@@ -1850,16 +1858,16 @@ void CameraSuite::SetUIBuffer()
 
 		ID3D11RenderTargetView* targetRTV = uiBufferMode.useUIBuffer ?
 		                                        imageReconstruction.dx12SwapChain.uiBufferWrapped->rtv :
-		                                    uiBufferMode.useFallbackCopy ? fb.RTV :
-		                                                                   imageReconstruction.dx12SwapChain.swapChainBufferWrapped->rtv;
+		                                        uiBufferMode.useFallbackCopy ? REX::W32::AsReal(fb.RTV) :
+															   imageReconstruction.dx12SwapChain.swapChainBufferWrapped->rtv;
 
 		if (uiBufferMode.useUIBuffer) {
 			float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 			globals::d3d::context->ClearRenderTargetView(targetRTV, clearColor);
 		}
 
-		fb.RTV = targetRTV;
-		globals::d3d::context->OMSetRenderTargets(1, &fb.RTV, nullptr);
+		fb.RTV = REX::W32::AsW32(targetRTV);
+		globals::d3d::context->OMSetRenderTargets(1, &targetRTV, nullptr);
 		return;
 	}
 
@@ -1882,13 +1890,16 @@ void CameraSuite::SetUIBuffer()
 	float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 	globals::d3d::context->ClearRenderTargetView(uiTexture->rtv.get(), clearColor);
 
-	fb.RTV = uiTexture->rtv.get();
-	globals::d3d::context->OMSetRenderTargets(1, &fb.RTV, nullptr);
+		fb.RTV = REX::W32::AsW32(uiTexture->rtv.get());
+		auto* targetRTV = REX::W32::AsReal(fb.RTV);
+		globals::d3d::context->OMSetRenderTargets(1, &targetRTV, nullptr);
 }
 
 bool CameraSuite::UsesDeferredPresentComposite() const
 {
-	return loaded && NeedsPresentationComposite() &&
+	const bool nativeSDRMenu = !globals::pipeline::imageReconstruction.d3d12SwapChainActive && !settings.enableHDR &&
+		globals::state->IsDisplayReferredModelMenuOpen(globals::game::ui);
+	return loaded && !nativeSDRMenu && NeedsPresentationComposite() &&
 	       !globals::pipeline::imageReconstruction.d3d12SwapChainActive && uiTexture && uiTexture->rtv && hdrOutputCS;
 }
 
@@ -1908,8 +1919,9 @@ void CameraSuite::SyncFramebufferUIRedirect()
 		return;
 
 	auto& fb = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGET::kFRAMEBUFFER];
-	fb.RTV = uiTexture->rtv.get();
-	globals::d3d::context->OMSetRenderTargets(1, &fb.RTV, nullptr);
+	fb.RTV = REX::W32::AsW32(uiTexture->rtv.get());
+	auto* targetRTV = REX::W32::AsReal(fb.RTV);
+	globals::d3d::context->OMSetRenderTargets(1, &targetRTV, nullptr);
 }
 
 namespace
@@ -1969,29 +1981,20 @@ ID3D11BlendState* CameraSuite::GetPatchedAlphaBlendState(ID3D11BlendState* origi
 
 	const int slotCount = desc.IndependentBlendEnable ? 8 : 1;
 	bool needsPatch = false;
-	for (int i = 0; i < slotCount; i++) {
-		const auto& rt = desc.RenderTarget[i];
-		if (rt.BlendEnable &&
-			(rt.SrcBlendAlpha != D3D11_BLEND_ONE ||
-				rt.DestBlendAlpha != D3D11_BLEND_INV_SRC_ALPHA ||
-				rt.BlendOpAlpha != D3D11_BLEND_OP_ADD)) {
-			needsPatch = true;
-			break;
-		}
+	for (int i = 0; i < slotCount; ++i) {
+		auto& rt = desc.RenderTarget[i];
+		if (!rt.BlendEnable)
+			continue;
+		needsPatch |= rt.SrcBlendAlpha != D3D11_BLEND_ONE ||
+			rt.DestBlendAlpha != D3D11_BLEND_INV_SRC_ALPHA ||
+			rt.BlendOpAlpha != D3D11_BLEND_OP_ADD;
+		rt.SrcBlendAlpha = D3D11_BLEND_ONE;
+		rt.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+		rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
 	}
-
 	if (!needsPatch) {
 		patchedBlendStateCache[original] = nullptr;
 		return original;
-	}
-
-	for (int i = 0; i < slotCount; i++) {
-		auto& rt = desc.RenderTarget[i];
-		if (rt.BlendEnable) {
-			rt.SrcBlendAlpha = D3D11_BLEND_ONE;
-			rt.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
-			rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
-		}
 	}
 	if (!desc.IndependentBlendEnable) {
 		for (int i = 1; i < 8; i++)
@@ -2028,7 +2031,7 @@ void CameraSuite::DrawImGuiForPresent(bool hdrReady)
 			target = sidecar.uiBufferWrapped->rtv;
 		} else if (uiMode.useFallbackCopy) {
 			auto& framebuffer = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGET::kFRAMEBUFFER];
-			target = framebuffer.RTV;
+			target = REX::W32::AsReal(framebuffer.RTV);
 		} else if (sidecar.swapChainBufferWrapped && sidecar.swapChainBufferWrapped->rtv) {
 			target = sidecar.swapChainBufferWrapped->rtv;
 		}
@@ -2057,7 +2060,8 @@ void CameraSuite::DrawImGuiForPresent(bool hdrReady)
 		}
 	} else {
 		auto& data = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGET::kFRAMEBUFFER];
-		globals::d3d::context->OMSetRenderTargets(1, &data.RTV, nullptr);
+			auto* targetRTV = REX::W32::AsReal(data.RTV);
+			globals::d3d::context->OMSetRenderTargets(1, &targetRTV, nullptr);
 	}
 }
 
@@ -2103,7 +2107,8 @@ HRESULT CameraSuite::RunPresentChainWithHDR(
 			ClearUIBuffer();
 		}
 		auto& data = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGET::kFRAMEBUFFER];
-		globals::d3d::context->OMSetRenderTargets(1, &data.RTV, nullptr);
+			auto* targetRTV = REX::W32::AsReal(data.RTV);
+			globals::d3d::context->OMSetRenderTargets(1, &targetRTV, nullptr);
 	}
 
 	return presentChain(swapChain, syncInterval, flags);
@@ -2116,7 +2121,10 @@ HRESULT CameraSuite::HandleSwapChainPresent(
 	const std::function<HRESULT(IDXGISwapChain*, UINT, UINT)>& presentChain)
 {
 	const bool frameGenActive = globals::pipeline::imageReconstruction.d3d12SwapChainActive;
-	const bool hdrReady = loaded && hdrDataCB && outputTexture && (NeedsPresentationComposite() || frameGenActive);
+	const bool nativeSDRMenu = !frameGenActive && !settings.enableHDR &&
+		globals::state->IsDisplayReferredModelMenuOpen(globals::game::ui);
+	const bool hdrReady = loaded && hdrDataCB && outputTexture &&
+		(NeedsPresentationComposite() || frameGenActive) && !nativeSDRMenu;
 
 	DrawRendererUIForPresent();
 
@@ -2126,7 +2134,10 @@ HRESULT CameraSuite::HandleSwapChainPresent(
 void CameraSuite::DrawRendererUIForPresent()
 {
 	const bool frameGenActive = globals::pipeline::imageReconstruction.d3d12SwapChainActive;
-	const bool hdrReady = loaded && hdrDataCB && outputTexture && (NeedsPresentationComposite() || frameGenActive);
+	const bool nativeSDRMenu = !frameGenActive && !settings.enableHDR &&
+		globals::state->IsDisplayReferredModelMenuOpen(globals::game::ui);
+	const bool hdrReady = loaded && hdrDataCB && outputTexture &&
+		(NeedsPresentationComposite() || frameGenActive) && !nativeSDRMenu;
 
 	D3D11_VIEWPORT savedViewport{};
 	UINT viewportCount = 1;
@@ -2187,9 +2198,9 @@ void CameraSuite::ApplyHDR()
 		auto* ui = globals::game::ui;
 		const bool displayReferredMenu = globals::state->IsDisplayReferredModelMenuOpen(ui);
 		ID3D11ShaderResourceView* sceneSRV =
-			(!settings.enableHDR && displayReferredMenu) ? framebufferRT.SRV :
+			(!settings.enableHDR && displayReferredMenu) ? REX::W32::AsReal(framebufferRT.SRV) :
 			(NeedsPresentationComposite() && hdrTexture && hdrTexture->srv) ? hdrTexture->srv.get() :
-																			framebufferRT.SRV;
+				REX::W32::AsReal(framebufferRT.SRV);
 
 		// Choose the correct UI buffer based on which path is active.
 		ID3D11ShaderResourceView* uiSRV = nullptr;
@@ -2204,14 +2215,12 @@ void CameraSuite::ApplyHDR()
 			if (imageReconstruction.d3d12SwapChainActive) {
 				// SetUIBuffer keeps non-FG fallback UI in kFRAMEBUFFER; FG keeps using
 				// uiBufferWrapped for FidelityFX UI composition.
-				context->CopyResource(imageReconstruction.dx12SwapChain.swapChainBufferWrapped->resource11, framebufferRT.texture);
+				if (auto* wrapped = imageReconstruction.dx12SwapChain.swapChainBufferWrapped.get();
+					wrapped && wrapped->resource11)
+					context->CopyResource(wrapped->resource11, REX::W32::AsReal(framebufferRT.texture));
 			} else {
-				ID3D11Texture2D* backBuffer = nullptr;
-				HRESULT hr = globals::d3d::swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
-				if (SUCCEEDED(hr) && backBuffer) {
-					context->CopyResource(backBuffer, framebufferRT.texture);
-					backBuffer->Release();
-				}
+				CopyCameraSceneToBackBuffer(globals::d3d::swapChain, context,
+					REX::W32::AsReal(framebufferRT.texture));
 			}
 
 			state->EndPerfEvent();
@@ -2233,12 +2242,7 @@ void CameraSuite::ApplyHDR()
 			context->CopyResource(imageReconstruction.dx12SwapChain.swapChainBufferWrapped->resource11, outputTexture->resource.get());
 		}
 	} else {
-		ID3D11Texture2D* backBuffer = nullptr;
-		HRESULT hr = globals::d3d::swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
-		if (SUCCEEDED(hr) && backBuffer) {
-			context->CopyResource(backBuffer, outputTexture->resource.get());
-			backBuffer->Release();
-		}
+		CopyCameraSceneToBackBuffer(globals::d3d::swapChain, context, outputTexture->resource.get());
 	}
 
 	state->EndPerfEvent();
@@ -2251,10 +2255,10 @@ void CameraSuite::LoadLookTexture()
 		return;
 
 	constexpr std::array<const wchar_t*, 12> paths{
-		L"", L"Data\\Shaders\\CameraSuite\\Looks\\NordicNeutral.png", L"Data\\Shaders\\CameraSuite\\Looks\\Saga.png",
-		L"Data\\Shaders\\CameraSuite\\Looks\\Dramatic.png", L"Data\\Shaders\\CameraSuite\\Looks\\Hearthfire.png", L"Data\\Shaders\\CameraSuite\\Looks\\Bleak.png",
-		L"Data\\Shaders\\CameraSuite\\Looks\\Bleach.png", L"Data\\Shaders\\CameraSuite\\Looks\\Winter.png", L"Data\\Shaders\\CameraSuite\\Looks\\Sunset.png",
-		L"Data\\Shaders\\CameraSuite\\Looks\\FantasyGreen.png", L"Data\\Shaders\\CameraSuite\\Looks\\Nightfall.png", L"Data\\Shaders\\CameraSuite\\Looks\\Cinematic.png"
+		L"", L"Data\\PIXL-Shaders\\CameraSuite\\Looks\\NordicNeutral.png", L"Data\\PIXL-Shaders\\CameraSuite\\Looks\\Saga.png",
+		L"Data\\PIXL-Shaders\\CameraSuite\\Looks\\Dramatic.png", L"Data\\PIXL-Shaders\\CameraSuite\\Looks\\Hearthfire.png", L"Data\\PIXL-Shaders\\CameraSuite\\Looks\\Bleak.png",
+		L"Data\\PIXL-Shaders\\CameraSuite\\Looks\\Bleach.png", L"Data\\PIXL-Shaders\\CameraSuite\\Looks\\Winter.png", L"Data\\PIXL-Shaders\\CameraSuite\\Looks\\Sunset.png",
+		L"Data\\PIXL-Shaders\\CameraSuite\\Looks\\FantasyGreen.png", L"Data\\PIXL-Shaders\\CameraSuite\\Looks\\Nightfall.png", L"Data\\PIXL-Shaders\\CameraSuite\\Looks\\Cinematic.png"
 	};
 	const uint index = std::min(settings.lookPreset, static_cast<uint>(paths.size() - 1));
 	// LUT bytes are sampled as encoded grading values and explicitly decoded in
@@ -2290,8 +2294,8 @@ void CameraSuite::LoadElementalLensTextures()
 		winrt::com_ptr<ID3D11ShaderResourceView>* view;
 	};
 	const LensAsset assets[] = {
-		{ L"Data\\Shaders\\CameraSuite\\Lens\\FrostMask.png", "frost", &frostLensTextureView },
-		{ L"Data\\Shaders\\CameraSuite\\Lens\\FireMask.png", "fire", &fireLensTextureView }
+		{ L"Data\\PIXL-Shaders\\CameraSuite\\Lens\\FrostMask.png", "frost", &frostLensTextureView },
+		{ L"Data\\PIXL-Shaders\\CameraSuite\\Lens\\FireMask.png", "fire", &fireLensTextureView }
 	};
 
 	for (const auto& asset : assets) {
@@ -2535,24 +2539,16 @@ void CameraSuite::DestroyResources()
 		delete texture;
 		texture = nullptr;
 	};
-	destroyTexture(cameraLocalExposureTexture);
-	destroyTexture(cameraLocalExposureHistoryTexture);
-	destroyTexture(bloomHalfTexture);
-	destroyTexture(bloomQuarterTexture);
-	destroyTexture(bloomEighthTexture);
-	destroyTexture(bloomSixteenthTexture);
-	destroyTexture(bloomEighthScratchTexture);
-	destroyTexture(bloomQuarterScratchTexture);
-	destroyTexture(bloomHalfScratchTexture);
-	destroyTexture(stormglassFieldTexture);
-	destroyTexture(dofCoCTexture);
-	destroyTexture(dofCoCHistoryTexture);
-	destroyTexture(dofFarTexture);
-	destroyTexture(dofNearTexture);
-	destroyTexture(dofFocusTexture);
-	destroyTexture(dofFocusHistoryTexture);
-	destroyTexture(dofHalfSceneTexture);
-	destroyTexture(dofTileTexture);
+	for (auto** texture : {
+		&cameraLocalExposureTexture, &cameraLocalExposureHistoryTexture,
+		&bloomHalfTexture, &bloomQuarterTexture, &bloomEighthTexture,
+		&bloomSixteenthTexture, &bloomEighthScratchTexture,
+		&bloomQuarterScratchTexture, &bloomHalfScratchTexture,
+		&stormglassFieldTexture, &dofCoCTexture, &dofCoCHistoryTexture,
+		&dofFarTexture, &dofNearTexture, &dofFocusTexture,
+		&dofFocusHistoryTexture, &dofHalfSceneTexture, &dofTileTexture
+	})
+		destroyTexture(*texture);
 	localExposurePassReady = false;
 	bloomPassReady = false;
 	stormglassPassReady = false;
@@ -2590,7 +2586,7 @@ void CameraSuite::UpgradeLDRRenderTargets()
 			continue;
 
 		D3D11_TEXTURE2D_DESC origDesc{};
-		rt.texture->GetDesc(&origDesc);
+		rt.texture->GetDesc(REX::W32::AsW32(&origDesc));
 
 		if (origDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT)
 			continue;
@@ -2633,7 +2629,7 @@ void CameraSuite::UpgradeLDRRenderTargets()
 		ID3D11UnorderedAccessView* newUAV = nullptr;
 		if (rt.UAV) {
 			D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
-			rt.UAV->GetDesc(&uavDesc);
+			rt.UAV->GetDesc(REX::W32::AsW32(&uavDesc));
 			uavDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
 			if (FAILED(device->CreateUnorderedAccessView(newTexture, &uavDesc, &newUAV))) {
@@ -2644,10 +2640,10 @@ void CameraSuite::UpgradeLDRRenderTargets()
 			}
 		}
 
-		rt.texture = newTexture;
-		rt.RTV = newRTV;
-		rt.SRV = newSRV;
-		rt.UAV = newUAV;
+		rt.texture = REX::W32::AsW32(newTexture);
+		rt.RTV = REX::W32::AsW32(newRTV);
+		rt.SRV = REX::W32::AsW32(newSRV);
+		rt.UAV = REX::W32::AsW32(newUAV);
 
 		savedLDRTargets.push_back({ targetId, saved });
 		logger::debug("[HDR] Upgraded render target {} to R16G16B16A16_FLOAT (was format {})", static_cast<int>(targetId), static_cast<int>(origDesc.Format));
@@ -2680,62 +2676,20 @@ void CameraSuite::RestoreLDRRenderTargets()
 
 void CameraSuite::ClearShaderCache()
 {
+	// Preserve the individual compile-failure latches below: some shaders retry
+	// immediately while DOF/HDR compilation waits for an explicit cache reset.
 	hdrOutputCompileFailed = false;
-	if (hdrOutputCS) {
-		hdrOutputCS->Release();
-		hdrOutputCS = nullptr;
-	}
-	if (uiBrightnessCS) {
-		uiBrightnessCS->Release();
-		uiBrightnessCS = nullptr;
-	}
-	if (physicalCameraHistogramCS) {
-		physicalCameraHistogramCS->Release();
-		physicalCameraHistogramCS = nullptr;
-	}
-	if (physicalCameraExposureCS) {
-		physicalCameraExposureCS->Release();
-		physicalCameraExposureCS = nullptr;
-	}
-	if (physicalCameraLocalExposureCS) {
-		physicalCameraLocalExposureCS->Release();
-		physicalCameraLocalExposureCS = nullptr;
-	}
-	if (bloomPrefilterCS) {
-		bloomPrefilterCS->Release();
-		bloomPrefilterCS = nullptr;
-	}
-	if (bloomDownsampleCS) {
-		bloomDownsampleCS->Release();
-		bloomDownsampleCS = nullptr;
-	}
-	if (bloomUpsampleCS) {
-		bloomUpsampleCS->Release();
-		bloomUpsampleCS = nullptr;
-	}
-	if (dofCoCCS) {
-		dofCoCCS->Release();
-		dofCoCCS = nullptr;
-	}
-	if (dofFocusResolveCS) {
-		dofFocusResolveCS->Release();
-		dofFocusResolveCS = nullptr;
-	}
-	if (dofHalfDownsampleCS) {
-		dofHalfDownsampleCS->Release();
-		dofHalfDownsampleCS = nullptr;
-	}
-	if (dofTileClassifyCS) {
-		dofTileClassifyCS->Release();
-		dofTileClassifyCS = nullptr;
-	}
-	if (dofFarBlurCS) {
-		dofFarBlurCS->Release();
-		dofFarBlurCS = nullptr;
-	}
-	if (dofNearBlurCS) {
-		dofNearBlurCS->Release();
-		dofNearBlurCS = nullptr;
+	for (auto** shader : {
+		&hdrOutputCS, &uiBrightnessCS, &physicalCameraHistogramCS,
+		&physicalCameraExposureCS, &physicalCameraLocalExposureCS,
+		&bloomPrefilterCS, &bloomDownsampleCS, &bloomUpsampleCS,
+		&dofCoCCS, &dofFocusResolveCS, &dofHalfDownsampleCS,
+		&dofTileClassifyCS, &dofFarBlurCS, &dofNearBlurCS, &stormglassFieldCS
+	}) {
+		if (*shader) {
+			(*shader)->Release();
+			*shader = nullptr;
+		}
 	}
 	dofCoCCompileFailed = false;
 	dofFarBlurCompileFailed = false;
@@ -2744,149 +2698,72 @@ void CameraSuite::ClearShaderCache()
 	dofHalfDownsampleCompileFailed = false;
 	dofTileClassifyCompileFailed = false;
 	dofPassReady = false;
-	if (stormglassFieldCS) {
-		stormglassFieldCS->Release();
-		stormglassFieldCS = nullptr;
-	}
 }
 
 ID3D11ComputeShader* CameraSuite::GetHDROutputCS()
 {
-	if (!hdrOutputCS && !hdrOutputCompileFailed) {
-		std::vector<std::pair<const char*, const char*>> defines;
-		hdrOutputCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\CameraSuite\\HDROutputCS.hlsl", defines, "cs_5_0"));
-		if (!hdrOutputCS) {
-			hdrOutputCompileFailed = true;
-			logger::error("HDR: Failed to compile HDROutputCS.hlsl");
-		}
-	}
-	return hdrOutputCS;
+	return LoadCameraComputeShader(hdrOutputCS, L"Data\\PIXL-Shaders\\CameraSuite\\HDROutputCS.hlsl",
+		"HDR: Failed to compile HDROutputCS.hlsl", &hdrOutputCompileFailed);
 }
 
 ID3D11ComputeShader* CameraSuite::GetPhysicalCameraHistogramCS()
 {
-	if (!physicalCameraHistogramCS) {
-		std::vector<std::pair<const char*, const char*>> defines;
-		physicalCameraHistogramCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\CameraSuite\\PhysicalCameraHistogramCS.hlsl", defines, "cs_5_0"));
-		if (!physicalCameraHistogramCS)
-			logger::error("PIXL Physical Camera: Failed to compile PhysicalCameraHistogramCS.hlsl");
-	}
-	return physicalCameraHistogramCS;
+	return LoadCameraComputeShader(physicalCameraHistogramCS, L"Data\\PIXL-Shaders\\CameraSuite\\PhysicalCameraHistogramCS.hlsl",
+		"PIXL Physical Camera: Failed to compile PhysicalCameraHistogramCS.hlsl");
 }
 
 ID3D11ComputeShader* CameraSuite::GetPhysicalCameraExposureCS()
 {
-	if (!physicalCameraExposureCS) {
-		std::vector<std::pair<const char*, const char*>> defines;
-		physicalCameraExposureCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\CameraSuite\\PhysicalCameraExposureCS.hlsl", defines, "cs_5_0"));
-		if (!physicalCameraExposureCS)
-			logger::error("PIXL Physical Camera: Failed to compile PhysicalCameraExposureCS.hlsl");
-	}
-	return physicalCameraExposureCS;
+	return LoadCameraComputeShader(physicalCameraExposureCS, L"Data\\PIXL-Shaders\\CameraSuite\\PhysicalCameraExposureCS.hlsl",
+		"PIXL Physical Camera: Failed to compile PhysicalCameraExposureCS.hlsl");
 }
 
 ID3D11ComputeShader* CameraSuite::GetPhysicalCameraLocalExposureCS()
 {
-	if (!physicalCameraLocalExposureCS) {
-		std::vector<std::pair<const char*, const char*>> defines;
-		physicalCameraLocalExposureCS = static_cast<ID3D11ComputeShader*>(
-			Util::CompileShader(L"Data\\Shaders\\CameraSuite\\PhysicalCameraLocalExposureCS.hlsl", defines, "cs_5_0"));
-		if (!physicalCameraLocalExposureCS)
-			logger::error("PIXL Physical Camera: Failed to compile PhysicalCameraLocalExposureCS.hlsl");
-	}
-	return physicalCameraLocalExposureCS;
+	return LoadCameraComputeShader(physicalCameraLocalExposureCS, L"Data\\PIXL-Shaders\\CameraSuite\\PhysicalCameraLocalExposureCS.hlsl",
+		"PIXL Physical Camera: Failed to compile PhysicalCameraLocalExposureCS.hlsl");
 }
 
 ID3D11ComputeShader* CameraSuite::GetBloomPrefilterCS()
 {
-	if (!bloomPrefilterCS) {
-		std::vector<std::pair<const char*, const char*>> defines;
-		bloomPrefilterCS = static_cast<ID3D11ComputeShader*>(
-			Util::CompileShader(L"Data\\Shaders\\CameraSuite\\BloomPrefilterCS.hlsl", defines, "cs_5_0"));
-		if (!bloomPrefilterCS)
-			logger::error("PIXL Camera: Failed to compile BloomPrefilterCS.hlsl");
-	}
-	return bloomPrefilterCS;
+	return LoadCameraComputeShader(bloomPrefilterCS, L"Data\\PIXL-Shaders\\CameraSuite\\BloomPrefilterCS.hlsl",
+		"PIXL Camera: Failed to compile BloomPrefilterCS.hlsl");
 }
 
 ID3D11ComputeShader* CameraSuite::GetBloomDownsampleCS()
 {
-	if (!bloomDownsampleCS) {
-		std::vector<std::pair<const char*, const char*>> defines;
-		bloomDownsampleCS = static_cast<ID3D11ComputeShader*>(
-			Util::CompileShader(L"Data\\Shaders\\CameraSuite\\BloomDownsampleCS.hlsl", defines, "cs_5_0"));
-		if (!bloomDownsampleCS)
-			logger::error("PIXL Camera: Failed to compile BloomDownsampleCS.hlsl");
-	}
-	return bloomDownsampleCS;
+	return LoadCameraComputeShader(bloomDownsampleCS, L"Data\\PIXL-Shaders\\CameraSuite\\BloomDownsampleCS.hlsl",
+		"PIXL Camera: Failed to compile BloomDownsampleCS.hlsl");
 }
 
 ID3D11ComputeShader* CameraSuite::GetBloomUpsampleCS()
 {
-	if (!bloomUpsampleCS) {
-		std::vector<std::pair<const char*, const char*>> defines;
-		bloomUpsampleCS = static_cast<ID3D11ComputeShader*>(
-			Util::CompileShader(L"Data\\Shaders\\CameraSuite\\BloomUpsampleCS.hlsl", defines, "cs_5_0"));
-		if (!bloomUpsampleCS)
-			logger::error("PIXL Camera: Failed to compile BloomUpsampleCS.hlsl");
-	}
-	return bloomUpsampleCS;
+	return LoadCameraComputeShader(bloomUpsampleCS, L"Data\\PIXL-Shaders\\CameraSuite\\BloomUpsampleCS.hlsl",
+		"PIXL Camera: Failed to compile BloomUpsampleCS.hlsl");
 }
 
 ID3D11ComputeShader* CameraSuite::GetDofCoCCS()
 {
-	if (!dofCoCCS && !dofCoCCompileFailed) {
-		std::vector<std::pair<const char*, const char*>> defines;
-		dofCoCCS = static_cast<ID3D11ComputeShader*>(
-			Util::CompileShader(L"Data\\Shaders\\CameraSuite\\DOFCoCCS.hlsl", defines, "cs_5_0"));
-		if (!dofCoCCS) {
-			dofCoCCompileFailed = true;
-			logger::error("PIXL Camera: Failed to compile DOFCoCCS.hlsl");
-		}
-	}
-	return dofCoCCS;
+	return LoadCameraComputeShader(dofCoCCS, L"Data\\PIXL-Shaders\\CameraSuite\\DOFCoCCS.hlsl",
+		"PIXL Camera: Failed to compile DOFCoCCS.hlsl", &dofCoCCompileFailed);
 }
 
 ID3D11ComputeShader* CameraSuite::GetDofFocusResolveCS()
 {
-	if (!dofFocusResolveCS && !dofFocusResolveCompileFailed) {
-		std::vector<std::pair<const char*, const char*>> defines;
-		dofFocusResolveCS = static_cast<ID3D11ComputeShader*>(
-			Util::CompileShader(L"Data\\Shaders\\CameraSuite\\DOFFocusResolveCS.hlsl", defines, "cs_5_0"));
-		if (!dofFocusResolveCS) {
-			dofFocusResolveCompileFailed = true;
-			logger::error("PIXL Camera: Failed to compile DOFFocusResolveCS.hlsl");
-		}
-	}
-	return dofFocusResolveCS;
+	return LoadCameraComputeShader(dofFocusResolveCS, L"Data\\PIXL-Shaders\\CameraSuite\\DOFFocusResolveCS.hlsl",
+		"PIXL Camera: Failed to compile DOFFocusResolveCS.hlsl", &dofFocusResolveCompileFailed);
 }
 
 ID3D11ComputeShader* CameraSuite::GetDofHalfDownsampleCS()
 {
-	if (!dofHalfDownsampleCS && !dofHalfDownsampleCompileFailed) {
-		std::vector<std::pair<const char*, const char*>> defines;
-		dofHalfDownsampleCS = static_cast<ID3D11ComputeShader*>(
-			Util::CompileShader(L"Data\\Shaders\\CameraSuite\\DOFHalfDownsampleCS.hlsl", defines, "cs_5_0"));
-		if (!dofHalfDownsampleCS) {
-			dofHalfDownsampleCompileFailed = true;
-			logger::error("PIXL Camera: Failed to compile DOFHalfDownsampleCS.hlsl");
-		}
-	}
-	return dofHalfDownsampleCS;
+	return LoadCameraComputeShader(dofHalfDownsampleCS, L"Data\\PIXL-Shaders\\CameraSuite\\DOFHalfDownsampleCS.hlsl",
+		"PIXL Camera: Failed to compile DOFHalfDownsampleCS.hlsl", &dofHalfDownsampleCompileFailed);
 }
 
 ID3D11ComputeShader* CameraSuite::GetDofTileClassifyCS()
 {
-	if (!dofTileClassifyCS && !dofTileClassifyCompileFailed) {
-		std::vector<std::pair<const char*, const char*>> defines;
-		dofTileClassifyCS = static_cast<ID3D11ComputeShader*>(
-			Util::CompileShader(L"Data\\Shaders\\CameraSuite\\DOFTileClassifyCS.hlsl", defines, "cs_5_0"));
-		if (!dofTileClassifyCS) {
-			dofTileClassifyCompileFailed = true;
-			logger::error("PIXL Camera: Failed to compile DOFTileClassifyCS.hlsl");
-		}
-	}
-	return dofTileClassifyCS;
+	return LoadCameraComputeShader(dofTileClassifyCS, L"Data\\PIXL-Shaders\\CameraSuite\\DOFTileClassifyCS.hlsl",
+		"PIXL Camera: Failed to compile DOFTileClassifyCS.hlsl", &dofTileClassifyCompileFailed);
 }
 
 ID3D11ComputeShader* CameraSuite::GetDofBlurCS(bool nearPlane)
@@ -2897,7 +2774,7 @@ ID3D11ComputeShader* CameraSuite::GetDofBlurCS(bool nearPlane)
 		std::vector<std::pair<const char*, const char*>> defines;
 		defines.emplace_back("DOF_NEAR", nearPlane ? "1" : "0");
 		shader = static_cast<ID3D11ComputeShader*>(
-			Util::CompileShader(L"Data\\Shaders\\CameraSuite\\DOFBlurCS.hlsl", defines, "cs_5_0"));
+			Util::CompileShader(L"Data\\PIXL-Shaders\\CameraSuite\\DOFBlurCS.hlsl", defines, "cs_5_0"));
 		if (!shader) {
 			failed = true;
 			logger::error("PIXL Camera: Failed to compile DOFBlurCS.hlsl ({})", nearPlane ? "near" : "far");
@@ -2908,14 +2785,8 @@ ID3D11ComputeShader* CameraSuite::GetDofBlurCS(bool nearPlane)
 
 ID3D11ComputeShader* CameraSuite::GetStormglassFieldCS()
 {
-	if (!stormglassFieldCS) {
-		std::vector<std::pair<const char*, const char*>> defines;
-		stormglassFieldCS = static_cast<ID3D11ComputeShader*>(
-			Util::CompileShader(L"Data\\Shaders\\CameraSuite\\StormglassFieldCS.hlsl", defines, "cs_5_0"));
-		if (!stormglassFieldCS)
-			logger::error("PIXL Stormglass: Failed to compile StormglassFieldCS.hlsl");
-	}
-	return stormglassFieldCS;
+	return LoadCameraComputeShader(stormglassFieldCS, L"Data\\PIXL-Shaders\\CameraSuite\\StormglassFieldCS.hlsl",
+		"PIXL Stormglass: Failed to compile StormglassFieldCS.hlsl");
 }
 
 void CameraSuite::UpdatePhysicalCameraExposure(ID3D11ShaderResourceView* sceneSRV)
@@ -3090,7 +2961,7 @@ void CameraSuite::RunDepthOfFieldPasses(ID3D11ShaderResourceView* sceneSRV)
 		sceneSRV,
 		dofFocusTexture->srv.get(),
 		dofCoCHistoryTexture->srv.get(),
-		motionTarget.SRV
+		REX::W32::AsReal(motionTarget.SRV)
 	};
 	ID3D11ShaderResourceView* cloudMask = globals::pipeline::volumetricClouds.GetDofCloudMaskSRV();
 	ID3D11ShaderResourceView* cloudDepth = globals::pipeline::volumetricClouds.GetDofCloudDepthSRV();
@@ -3213,7 +3084,7 @@ void CameraSuite::RunCameraFinishingPasses(ID3D11ShaderResourceView* sceneSRV)
 			auto& precipitationOcclusion =
 				renderer->GetDepthStencilData().depthStencils[
 					RE::RENDER_TARGETS_DEPTHSTENCIL::kPRECIPITATION_OCCLUSION_MAP];
-			precipitationOcclusionSRV = precipitationOcclusion.depthSRV;
+			precipitationOcclusionSRV = REX::W32::AsReal(precipitationOcclusion.depthSRV);
 		}
 
 		// SkyBounce's 3D probe field is a much stronger shelter signal than the
@@ -3266,14 +3137,8 @@ void CameraSuite::RunCameraFinishingPasses(ID3D11ShaderResourceView* sceneSRV)
 
 ID3D11ComputeShader* CameraSuite::GetUIBrightnessCS()
 {
-	if (!uiBrightnessCS) {
-		std::vector<std::pair<const char*, const char*>> defines;
-		uiBrightnessCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\CameraSuite\\UIBrightnessCS.hlsl", defines, "cs_5_0"));
-		if (!uiBrightnessCS) {
-			logger::error("HDR: Failed to compile UIBrightnessCS.hlsl");
-		}
-	}
-	return uiBrightnessCS;
+	return LoadCameraComputeShader(uiBrightnessCS, L"Data\\PIXL-Shaders\\CameraSuite\\UIBrightnessCS.hlsl",
+		"HDR: Failed to compile UIBrightnessCS.hlsl");
 }
 
 void CameraSuite::ScaleUIBrightnessForFG()
@@ -3547,6 +3412,21 @@ CameraSuite::HDRDataCB CameraSuite::BuildHDRData() const
 		bool playerUnderwater = false;
 		if (const auto* waterSystem = RE::TESWaterSystem::GetSingleton())
 			playerUnderwater = waterSystem->playerUnderwater;
+		// Skyrim can retain the player submersion flag after a fast surface
+		// crossing. Stormglass is camera driven, so reject a stale flag when the
+		// actual camera is clearly above the cell's water plane.
+		if (playerUnderwater) {
+			const auto* camera = RE::PlayerCamera::GetSingleton();
+			const auto* player = RE::PlayerCharacter::GetSingleton();
+			const auto* tes = RE::TES::GetSingleton();
+			if (camera && camera->cameraRoot && player && player->GetParentCell() && tes) {
+				const auto cameraPosition = camera->cameraRoot->world.translate;
+				const float waterHeight = tes->GetWaterHeight(cameraPosition, player->GetParentCell());
+				if (std::isfinite(waterHeight) &&
+					cameraPosition.z > waterHeight + 96.0f)
+					playerUnderwater = false;
+			}
+		}
 		if (hadState && wasPlayerUnderwater && !playerUnderwater) {
 			surfaceBreakFilmState = 1.0f;
 			stormglassWetnessState = std::max(stormglassWetnessState, 0.95f);

@@ -6,6 +6,9 @@
 #include "Globals.h"
 #include "Utils/Game.h"
 
+#include <cmath>
+#include <memory>
+
 #define I18N_KEY_PREFIX "feature.linear_light_core."
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
@@ -92,6 +95,18 @@ void LinearLightCore::DrawSettings()
 void LinearLightCore::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	settings.enableLinearLightCore = settings.enableLinearLightCore ? 1u : 0u;
+	const auto sanitizeGamma = [](float& value) { value = std::clamp(std::isfinite(value) ? value : 1.0f, 0.1f, 3.0f); };
+	const auto sanitizeMultiplier = [](float& value) { value = std::clamp(std::isfinite(value) ? value : 1.0f, 0.0f, 10.0f); };
+	for (float* value : { &settings.lightGamma, &settings.colorGamma, &settings.emitColorGamma, &settings.glowmapGamma,
+			 &settings.ambientGamma, &settings.fogGamma, &settings.fogAlphaGamma, &settings.effectGamma,
+			 &settings.effectAlphaGamma, &settings.skyGamma, &settings.waterGamma, &settings.vlGamma })
+		sanitizeGamma(*value);
+	for (float* value : { &settings.vanillaDiffuseColorMult, &settings.directionalLightMult, &settings.pointLightMult,
+			 &settings.ambientMult, &settings.emitColorMult, &settings.glowmapMult, &settings.effectLightingMult,
+			 &settings.membraneEffectMult, &settings.bloodEffectMult, &settings.projectedEffectMult,
+			 &settings.deferredEffectMult, &settings.otherEffectMult })
+		sanitizeMultiplier(*value);
 }
 
 void LinearLightCore::SaveSettings(json& o_json)
@@ -106,12 +121,12 @@ void LinearLightCore::RestoreDefaultSettings()
 
 void LinearLightCore::SetupResources()
 {
-	PerGeometryCB = new ConstantBuffer(ConstantBufferDesc<PerGeometryData>());
+	PerGeometryCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<PerGeometryData>());
 }
 
 void LinearLightCore::Prepass()
 {
-	bool isMainLoadingMenu = globals::state->isMainMenuOpen || globals::state->isLoadingMenuOpen;
+	bool isMainLoadingMenu = globals::state && (globals::state->isMainMenuOpen || globals::state->isLoadingMenuOpen);
 	dirLightMult = 1.0f;
 	if (!settings.enableLinearLightCore || isMainLoadingMenu)
 		return;
@@ -120,7 +135,8 @@ void LinearLightCore::Prepass()
 	if (!imageSpaceManager)
 		return;
 
-	dirLightMult = imageSpaceManager->GetRuntimeData().data.baseData.hdr.sunlightScale;
+	const float sunlightScale = imageSpaceManager->GetRuntimeData().data.baseData.hdr.sunlightScale;
+	dirLightMult = std::clamp(std::isfinite(sunlightScale) ? sunlightScale : 1.0f, 0.0f, 32.0f);
 }
 
 struct LinearLightCore::Hooks
@@ -154,7 +170,7 @@ LinearLightCore::PerFrameData LinearLightCore::GetCommonBufferData()
 		data.enableLinearLightCore = false;
 		return data;
 	}
-	bool isMainLoadingMenu = globals::state->isMainMenuOpen || globals::state->isLoadingMenuOpen;
+	bool isMainLoadingMenu = globals::state && (globals::state->isMainMenuOpen || globals::state->isLoadingMenuOpen);
 	auto data = PerFrameData{};
 	data.enableLinearLightCore = settings.enableLinearLightCore && !isMainLoadingMenu;
 	data.isDirLightLinear = isDirLightLinear;
@@ -190,6 +206,7 @@ LinearLightCore::PerFrameData LinearLightCore::GetCommonBufferData()
 
 RE::NiColor LinearLightCore::ColorToLinear(RE::NiColor inColor, float gamma)
 {
+	gamma = std::clamp(std::isfinite(gamma) ? gamma : 1.0f, 0.1f, 3.0f);
 	const auto linearizeChannel = [gamma](float channel) {
 		// Skyrim light colours are expected to be non-negative.  Guard malformed
 		// data here so a fractional gamma cannot seed NaNs into every downstream
@@ -211,19 +228,15 @@ void LinearLightCore::BSLightingShader_SetupGeometry(RE::BSRenderPass* a_pass)
 	auto& property1 = a_pass->geometry->GetGeometryRuntimeData().shaderProperty;
 	auto lightProperty = property1 && property1->GetRTTI() == globals::rtti::BSLightingShaderPropertyRTTI.get() ? static_cast<RE::BSLightingShaderProperty*>(property1.get()) : nullptr;
 
-	if (lightProperty != nullptr) {
-		float emissiveMult = 1.0f;
-		if (settings.enableLinearLightCore) {
-			emissiveMult = lightProperty->emissiveMult;
-			PerGeometryData perGeometryData{};
-			perGeometryData.emissiveMult = emissiveMult;
-			PerGeometryCB->Update(perGeometryData);
+	if (!settings.enableLinearLightCore)
+		return;
 
-			ID3D11Buffer* buffer = { PerGeometryCB->CB() };
-			auto context = globals::d3d::context;
-			context->PSSetConstantBuffers(8, 1, &buffer);
-		}
-	}
+	const float authoredEmissive = lightProperty ? lightProperty->emissiveMult : 1.0f;
+	PerGeometryData perGeometryData{};
+	perGeometryData.emissiveMult = std::isfinite(authoredEmissive) ? std::max(authoredEmissive, 0.0f) : 1.0f;
+	PerGeometryCB->Update(perGeometryData);
+	ID3D11Buffer* buffer = PerGeometryCB->CB();
+	globals::d3d::context->PSSetConstantBuffers(8, 1, &buffer);
 }
 
 #undef I18N_KEY_PREFIX

@@ -17,7 +17,7 @@ if (-not $Fxc -or -not (Test-Path -LiteralPath $Fxc -PathType Leaf)) {
 
 $output = Join-Path $repo ('build\reactive-fx-shader-tests-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $output | Out-Null
-$distributionShaders = Join-Path $repo 'distribution\Shaders'
+$distributionShaders = Join-Path $repo 'distribution\PIXL-Shaders'
 $computeSource = Join-Path $repo 'pipeline\Reactive FX\Kernels\ReactiveFX\ReactiveFXCS.hlsl'
 
 foreach ($entry in @('SpawnCS', 'SimulateCS', 'BuildMaskCS', 'CompositeCS', 'WriteReactiveMaskCS')) {

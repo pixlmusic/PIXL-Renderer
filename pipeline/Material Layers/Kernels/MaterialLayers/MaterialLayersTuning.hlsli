@@ -119,46 +119,46 @@ cbuffer PIXLMaterialLayersTuningCB : register(b9)
 	float PIXLML_ObjectVirtualDepthStrength;
 	float PIXLML_ObjectVirtualDepthMaxWorld;
 
-	// c19-c26: Curved Surface Mapping transport (owned by the CSPOM module).
-	uint PIXL_CSPOM_Enabled;
-	uint PIXL_CSPOM_Quality;
-	uint PIXL_CSPOM_CurvedSurface;
-	uint PIXL_CSPOM_SilhouetteClipping;
+	// c19-c26: Reserved retired transport; preserved to keep the established b9 ABI.
+	uint PIXL_RetiredRelief_Enabled;
+	uint PIXL_RetiredRelief_Quality;
+	uint PIXL_RetiredRelief_CurvedSurface;
+	uint PIXL_RetiredRelief_SilhouetteClipping;
 
-	uint PIXL_CSPOM_SelfOcclusion;
-	uint PIXL_CSPOM_SelfShadow;
-	uint PIXL_CSPOM_DepthWrite;
-	uint PIXL_CSPOM_DebugMode;
+	uint PIXL_RetiredRelief_SelfOcclusion;
+	uint PIXL_RetiredRelief_SelfShadow;
+	uint PIXL_RetiredRelief_DepthWrite;
+	uint PIXL_RetiredRelief_DebugMode;
 
-	float PIXL_CSPOM_Depth;
-	float PIXL_CSPOM_HeightBias;
-	float PIXL_CSPOM_CurvatureStrength;
-	float PIXL_CSPOM_SilhouetteStrength;
+	float PIXL_RetiredRelief_Depth;
+	float PIXL_RetiredRelief_HeightBias;
+	float PIXL_RetiredRelief_CurvatureStrength;
+	float PIXL_RetiredRelief_SilhouetteStrength;
 
-	float PIXL_CSPOM_FullQualityDistance;
-	float PIXL_CSPOM_MaxDistance;
-	float PIXL_CSPOM_MaxTexelShift;
-	float PIXL_CSPOM_NormalStrength;
+	float PIXL_RetiredRelief_FullQualityDistance;
+	float PIXL_RetiredRelief_MaxDistance;
+	float PIXL_RetiredRelief_MaxTexelShift;
+	float PIXL_RetiredRelief_NormalStrength;
 
-	uint PIXL_CSPOM_MinSteps;
-	uint PIXL_CSPOM_MaxSteps;
-	uint PIXL_CSPOM_BinarySteps;
-	uint PIXL_CSPOM_ShadowSteps;
+	uint PIXL_RetiredRelief_MinSteps;
+	uint PIXL_RetiredRelief_MaxSteps;
+	uint PIXL_RetiredRelief_BinarySteps;
+	uint PIXL_RetiredRelief_ShadowSteps;
 
-	uint PIXL_CSPOM_StaticOpaque;
-	uint PIXL_CSPOM_Trees;
-	uint PIXL_CSPOM_Terrain;
-	uint PIXL_CSPOM_Pad0;
+	uint PIXL_RetiredRelief_StaticOpaque;
+	uint PIXL_RetiredRelief_Trees;
+	uint PIXL_RetiredRelief_Terrain;
+	uint PIXL_RetiredRelief_Pad0;
 
-	uint PIXL_CSPOM_Pad1;
-	uint PIXL_CSPOM_Pad2;
-	uint PIXL_CSPOM_Pad3;
-	uint PIXL_CSPOM_Pad4;
+	uint PIXL_RetiredRelief_Pad1;
+	uint PIXL_RetiredRelief_Pad2;
+	uint PIXL_RetiredRelief_Pad3;
+	uint PIXL_RetiredRelief_Pad4;
 
-	float PIXL_CSPOM_OcclusionStrength;
-	float PIXL_CSPOM_ShadowStrength;
-	float PIXL_CSPOM_GrazingProtection;
-	float PIXL_CSPOM_Pad5;
+	float PIXL_RetiredRelief_OcclusionStrength;
+	float PIXL_RetiredRelief_ShadowStrength;
+	float PIXL_RetiredRelief_GrazingProtection;
+	float PIXL_RetiredRelief_Pad5;
 };
 
 namespace MaterialLayersTuning
@@ -214,7 +214,9 @@ namespace MaterialLayersTuning
 
 	float ObjectAuthoredDepthScale() { return IsValid() ? clamp(PIXLML_ObjectAuthoredDepthScale, 0.05f, 4.0f) : 1.0f; }
 	float ObjectAutoHeightScale() { return IsValid() ? clamp(PIXLML_ObjectAutoHeightScale, 0.0005f, 0.08f) : 0.014f; }
-	float ObjectMaxTexelShift() { return IsValid() ? clamp(PIXLML_ObjectMaxTexelShift, 1.0f, 64.0f) : 12.0f; }
+	// Keep authored and synthetic relief inside a conservative material footprint.
+	// Very large user values can pull unrelated texels into the surface at grazing angles.
+	float ObjectMaxTexelShift() { return IsValid() ? clamp(PIXLML_ObjectMaxTexelShift, 1.0f, 16.0f) : 12.0f; }
 	float ObjectGrazingProtection() { return IsValid() ? saturate(PIXLML_ObjectGrazingProtection) : 0.72f; }
 	float ObjectFadeStart() { return IsValid() ? max(PIXLML_ObjectFadeStart, 0.0f) : 768.0f; }
 	float ObjectFadeEnd() { return IsValid() ? max(PIXLML_ObjectFadeEnd, ObjectFadeStart() + 1.0f) : 1792.0f; }

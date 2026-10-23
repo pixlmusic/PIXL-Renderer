@@ -165,14 +165,14 @@ namespace Util
 			return GetPluginPath() / "World" / "Water";
 		}
 
-		std::filesystem::path GetShadersPath()
+		std::filesystem::path GetPIXLShadersPath()
 		{
-			return GetDataPath() / "Shaders";
+			return GetDataPath() / "PIXL-Shaders";
 		}
 
 		std::filesystem::path GetModuleCatalogPath()
 		{
-			return GetShadersPath() / "PIXL" / "Modules";
+			return GetPIXLShadersPath() / "PIXL" / "Modules";
 		}
 
 		std::filesystem::path GetCurrentModuleRealPath()
@@ -208,9 +208,9 @@ namespace Util
 			return cachedPath;
 		}
 
-		std::filesystem::path GetShadersRealPath()
+		std::filesystem::path GetPIXLShadersRealPath()
 		{
-			return GetRootRealPath() / "Shaders";
+			return GetRootRealPath() / "PIXL-Shaders";
 		}
 
 		std::filesystem::path GetThemesRealPath()
@@ -220,7 +220,7 @@ namespace Util
 
 		std::filesystem::path GetModuleCatalogRealPath()
 		{
-			return GetShadersRealPath() / "PIXL" / "Modules";
+			return GetPIXLShadersRealPath() / "PIXL" / "Modules";
 		}
 
 		std::filesystem::path GetRealPathFromDataRelative(const std::filesystem::path& dataRelativePath)
@@ -244,7 +244,7 @@ namespace Util
 
 		std::filesystem::path GetModuleKernelPath(const std::string& moduleId)
 		{
-			return GetShadersPath() / moduleId;
+			return GetPIXLShadersPath() / moduleId;
 		}
 
 		std::filesystem::path GetLogPath()

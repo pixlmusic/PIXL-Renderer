@@ -108,25 +108,25 @@ namespace Util
 
 		/**
 		 * Gets the Overrides directory path
-		 * @return CommunityShaderPath / "Overrides"
+		 * @return PIXL plugin path / "Overrides"
 		 */
 		std::filesystem::path GetOverridesPath();
 
 		/**
 		 * Gets the User Overrides directory path (for user modifications to overrides)
-		 * @return CommunityShaderPath / "Overrides" / "User"
+		 * @return PIXL plugin path / "Overrides" / "User"
 		 */
 		std::filesystem::path GetUserOverridesPath();
 
 		/**
 		 * Gets the AppliedOverrides.json file path
-		 * @return CommunityShaderPath / "AppliedOverrides.json"
+		 * @return PIXL plugin path / "Config" / "AppliedOverrides.json"
 		 */
 		std::filesystem::path GetAppliedOverridesPath();
 
 		/**
 		 * Gets the SceneSettings directory path
-		 * @return CommunityShaderPath / "SceneSettings"
+		 * @return PIXL plugin path / "World" / "Scenes"
 		 */
 		std::filesystem::path GetSceneSettingsPath();
 
@@ -137,14 +137,14 @@ namespace Util
 		std::filesystem::path GetWaterbodyCachePath();
 
 		/**
-		 * Gets the main Shaders directory path
-		 * @return Data / "Shaders"
+		 * Gets PIXL's isolated shader and runtime asset root.
+		 * @return Data / "PIXL-Shaders"
 		 */
-		std::filesystem::path GetShadersPath();
+		std::filesystem::path GetPIXLShadersPath();
 
 		/**
 		 * Gets the PIXL module catalog where integrated descriptors are stored.
-		 * @return Data / "Shaders" / "PIXL" / "Modules"
+		 * @return Data / "PIXL-Shaders" / "PIXL" / "Modules"
 		 */
 		std::filesystem::path GetModuleCatalogPath();
 
@@ -164,7 +164,7 @@ namespace Util
 		 * Returns the real file system path to the current DLL module.
 		 *
 		 * This is useful when running under Mod Organizer 2 (MO2), which uses a virtual file system (VFS).
-		 * Accessing files relative to the game's Data directory via VFS (e.g. "Data/Shaders") may not work
+		 * Accessing files relative to the game's Data directory via VFS (e.g. "Data/PIXL-Shaders") may not work
 		 * outside the game process (e.g. from Windows Explorer or ShellExecute), since those paths don't
 		 * exist on disk. This function bypasses VFS and returns the actual DLL path on disk.
 		 *
@@ -179,10 +179,10 @@ namespace Util
 		std::filesystem::path GetRootRealPath();
 
 		/**
-		 * Returns the real path to the Shaders directory located in the mod's root folder.
-		 * @return  <mod_root> / "Shaders"
+		 * Returns the real path to PIXL's shader root located in the mod's root folder.
+		 * @return  <mod_root> / "PIXL-Shaders"
 		 */
-		std::filesystem::path GetShadersRealPath();
+		std::filesystem::path GetPIXLShadersRealPath();
 
 		/**
 		 * Returns the real path to the Themes directory containing theme JSON files.
@@ -199,11 +199,11 @@ namespace Util
 		 * Resolves a game-root-relative path to a real filesystem path, bypassing MO2's VFS.
 		 *
 		 * MO2 maps the game's Data directory to a mod's physical root folder via its virtual
-		 * file system. Paths like "Data\Shaders\ImageReconstruction\FidelityFX" don't exist on disk when
+		 * file system. Paths like "Data\PIXL-Shaders\ImageReconstruction\FidelityFX" don't exist on disk when
 		 * passed to ShellExecute outside the game process. This function strips the leading
 		 * "Data\" component and prepends GetRootRealPath() to produce the real on-disk path.
 		 *
-		 * @param dataRelativePath Path relative to the game root (e.g. L"Data\\Shaders\\ImageReconstruction\\FidelityFX")
+		 * @param dataRelativePath Path relative to the game root (e.g. L"Data\\PIXL-Shaders\\ImageReconstruction\\FidelityFX")
 		 * @return Real filesystem path, or empty path if GetRootRealPath() fails
 		 */
 		std::filesystem::path GetRealPathFromDataRelative(const std::filesystem::path& dataRelativePath);

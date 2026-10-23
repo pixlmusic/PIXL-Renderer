@@ -72,7 +72,20 @@ void SkyVeil::DrawSettings()
 
 void SkyVeil::LoadSettings(json& o_json)
 {
-	settings = o_json;
+	settings = o_json.is_object() ? o_json.get<Settings>() : Settings{};
+	const Settings defaults{};
+	auto finiteRange = [](float value, float fallback, float upper) {
+		return std::isfinite(value) ? std::clamp(value, 0.0f, upper) : fallback;
+	};
+	settings.Opacity = finiteRange(settings.Opacity, defaults.Opacity, 4.0f);
+	settings.CloudDensity = std::isfinite(settings.CloudDensity) ? std::clamp(settings.CloudDensity, 0.25f, 2.5f) : defaults.CloudDensity;
+	settings.CloudDepth = finiteRange(settings.CloudDepth, defaults.CloudDepth, 1.0f);
+	settings.SelfShadowStrength = finiteRange(settings.SelfShadowStrength, defaults.SelfShadowStrength, 1.5f);
+	settings.SilverLining = finiteRange(settings.SilverLining, defaults.SilverLining, 2.0f);
+	settings.AmbientLighting = finiteRange(settings.AmbientLighting, defaults.AmbientLighting, 1.0f);
+	settings.DetailStrength = finiteRange(settings.DetailStrength, defaults.DetailStrength, 1.0f);
+	settings.PhaseEccentricity = finiteRange(settings.PhaseEccentricity, defaults.PhaseEccentricity, 0.85f);
+	settings.HorizonFade = finiteRange(settings.HorizonFade, defaults.HorizonFade, 1.0f);
 }
 
 void SkyVeil::SaveSettings(json& o_json)
@@ -180,7 +193,7 @@ void SkyVeil::SkyShaderHacks()
 
 		int side = -1;
 		for (int i = 0; i < 6; ++i)
-			if (rtvs[0] == reflections.cubeSideRTV[i]) {
+				if (rtvs[0] == REX::W32::AsReal(reflections.cubeSideRTV[i])) {
 				side = i;
 				break;
 			}
@@ -227,7 +240,8 @@ void SkyVeil::SkyShaderHacks()
 		context->OMSetBlendState(cloudShadowBlendState, blendFactor, sampleMask);
 
 		auto cubemapDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kCUBEMAP_REFLECTIONS];
-		context->PSSetShaderResources(17, 1, &cubemapDepth.depthSRV);
+		auto* cubemapDepthSRV = REX::W32::AsReal(cubemapDepth.depthSRV);
+		context->PSSetShaderResources(17, 1, &cubemapDepthSRV);
 
 		// Release COM objects to prevent memory leaks
 		for (int i = 0; i < 3; ++i) {
@@ -277,7 +291,7 @@ void SkyVeil::ModifySky(RE::BSRenderPass* Pass)
 	auto& cubeMapRenderTarget = shadowState->GetRuntimeData().cubeMapRenderTarget;
 
 	int layer = FindCloudLayer(Pass);
-	if (layer < 0)
+	if (layer < 0 || !texCloudShadowLayers[layer] || !texCloudShadowLayers[layer]->srv)
 		return;
 
 	if (cubeMapRenderTarget == RE::RENDER_TARGETS_CUBEMAP::kREFLECTIONS) {
@@ -343,8 +357,8 @@ void SkyVeil::SetupResources()
 		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
 		D3D11_RENDER_TARGET_VIEW_DESC rtvDesc{};
 
-		reflections.texture->GetDesc(&texDesc);
-		reflections.SRV->GetDesc(&srvDesc);
+		reflections.texture->GetDesc(REX::W32::AsW32(&texDesc));
+		reflections.SRV->GetDesc(REX::W32::AsW32(&srvDesc));
 
 		texDesc.Format = srvDesc.Format = DXGI_FORMAT_R8_UNORM;
 		cubemapMipLevels = texDesc.MipLevels;
@@ -356,7 +370,7 @@ void SkyVeil::SetupResources()
 			texCloudShadowLayers[layer]->CreateSRV(srvDesc);
 
 			for (int face = 0; face < 6; ++face) {
-				reflections.cubeSideRTV[face]->GetDesc(&rtvDesc);
+				reflections.cubeSideRTV[face]->GetDesc(REX::W32::AsW32(&rtvDesc));
 				rtvDesc.Format = texDesc.Format;
 				DX::ThrowIfFailed(device->CreateRenderTargetView(texCloudShadowLayers[layer]->resource.get(), &rtvDesc, &cloudShadowLayerRTVs[layer][face]));
 				Util::SetResourceName(cloudShadowLayerRTVs[layer][face], "SkyVeil::Layer[%d] RTV[%d]", layer, face);

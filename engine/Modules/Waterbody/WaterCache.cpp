@@ -45,15 +45,18 @@ bool WaterCache::SetCurrentWorldSpaceLocked(const RE::TESWorldSpace* worldSpace)
 	if (!worldSpace) {
 		currentCache.reset();
 		currentWorldSpace.clear();
+		currentWorldSpaceFormID = 0;
 		return false;
 	}
 
 	while (worldSpace->parentWorld && worldSpace->parentUseFlags.all(RE::TESWorldSpace::ParentUseFlag::kUseWaterData))
 		worldSpace = worldSpace->parentWorld;
+	if (currentCache && currentWorldSpaceFormID == worldSpace->GetFormID())
+		return true;
 
 	const auto newWorldSpace = worldSpace->GetFormEditorID();
-	if (currentWorldSpace == newWorldSpace) {
-		logger::debug("[Waterbody] [Cache] Runtime cache for {} already active", currentWorldSpace);
+	if (currentCache && currentWorldSpace == newWorldSpace) {
+		currentWorldSpaceFormID = worldSpace->GetFormID();
 		return true;
 	}
 
@@ -70,11 +73,13 @@ bool WaterCache::SetCurrentWorldSpaceLocked(const RE::TESWorldSpace* worldSpace)
 		logger::error("[Waterbody] [Cache] Failed to get runtime cache for {}", newWorldSpace);
 		currentCache.reset();
 		currentWorldSpace.clear();
+		currentWorldSpaceFormID = 0;
 		return false;
 	}
 
 	currentCache = it->second;
 	currentWorldSpace = std::move(newWorldSpace);
+	currentWorldSpaceFormID = worldSpace->GetFormID();
 	logger::debug("[Waterbody] [Cache] Runtime cache for {} activated", currentWorldSpace);
 
 	return true;
@@ -85,7 +90,8 @@ WaterCache::InstructionResult WaterCache::GetInstructions(const RE::TESWorldSpac
 	std::scoped_lock lock(currentCacheMutex);
 
 	if (!SetCurrentWorldSpaceLocked(worldSpace)) {
-		logger::error("[Waterbody] [Cache] Failed to set current cache to {} while getting instructions", worldSpace->GetFormEditorID());
+		logger::error("[Waterbody] [Cache] Failed to set current cache to {} while getting instructions",
+			worldSpace ? worldSpace->GetFormEditorID() : "<none>");
 		return {};
 	}
 
@@ -94,6 +100,41 @@ WaterCache::InstructionResult WaterCache::GetInstructions(const RE::TESWorldSpac
 	result.cache = currentCache;
 	result.instructions = currentCache->GetInstructions(lodLevel, x, y);
 	return result;
+}
+
+bool WaterCache::IsOpenOceanCell(const RE::TESWorldSpace* worldSpace, const int32_t x, const int32_t y)
+{
+	// Query the unmerged LOD4 records so local water geometry can use the same
+	// procedural cell classification as PIXL's replacement water tiles.
+	const auto result = GetInstructions(worldSpace, 4, static_cast<uint32_t>(x), static_cast<uint32_t>(y));
+	if (!result.instructions)
+		return false;
+
+	for (const auto& instruction : *result.instructions) {
+		const auto right = static_cast<int64_t>(instruction.x) + instruction.size;
+		const auto top = static_cast<int64_t>(instruction.y) + instruction.size;
+		if (x >= instruction.x && x < right && y >= instruction.y && y < top)
+			return (instruction.flags & Instruction::kOpenOcean) != 0;
+	}
+	return false;
+}
+
+bool WaterCache::GetOpenOceanCellHeight(const RE::TESWorldSpace* worldSpace,
+	const int32_t x, const int32_t y, float& height)
+{
+	const auto result = GetInstructions(worldSpace, 4, static_cast<uint32_t>(x), static_cast<uint32_t>(y));
+	if (!result.instructions)
+		return false;
+	for (const auto& instruction : *result.instructions) {
+		const auto right = static_cast<int64_t>(instruction.x) + instruction.size;
+		const auto top = static_cast<int64_t>(instruction.y) + instruction.size;
+		if (x >= instruction.x && x < right && y >= instruction.y && y < top &&
+			(instruction.flags & Instruction::kOpenOcean) != 0 && std::isfinite(instruction.waterHeight)) {
+			height = instruction.waterHeight;
+			return true;
+		}
+	}
+	return false;
 }
 
 std::vector<WaterCache::Instruction>* WaterCache::RuntimeCache::GetInstructions(const int32_t lodLevel, const int32_t x, const int32_t y)
@@ -209,7 +250,7 @@ bool WaterCache::LoadCaches()
 			continue;
 
 		DiskCache diskCache;
-		const auto fileName = std::format("{}_cache.wc", key);
+		const auto fileName = std::format("{}_ocean2_cache.wc", key);
 		if (!TryReadCacheFromFile(fileName, diskCache.header, diskCache.instructions)) {
 			logger::info("[Waterbody] [Cache] Could not locate disk cache for {}", key);
 			unavailableCount++;
@@ -248,6 +289,7 @@ bool WaterCache::LoadCaches()
 					// Dropped from the reloaded map - clear so a name match can't fast-return stale.
 					currentCache.reset();
 					currentWorldSpace.clear();
+					currentWorldSpaceFormID = 0;
 				}
 			}
 		}
@@ -300,7 +342,7 @@ bool WaterCache::GenerateCaches()
 
 		async.pool->detach_task([this, worldSpace, editorID] {
 			DiskCache cache = {};
-			const auto name = std::format("{}_cache.wc", editorID);
+			const auto name = std::format("{}_ocean2_cache.wc", editorID);
 			const auto success = BuildDiskCache(worldSpace, cache) && TryWriteCacheToFile(name, cache.header, cache.instructions);
 			if (success) {
 				logger::debug("[Waterbody] [Cache] {} generation complete", editorID);
@@ -486,9 +528,13 @@ bool WaterCache::BuildDiskCache(RE::TESWorldSpace* worldSpace, DiskCache& diskCa
 			if (form)
 				waterCellCount++;
 
-			cellData[idx] = { landHeight, waterHeight, formID, form };
+			cellData[idx] = { { landHeight, waterHeight }, formID, form, false };
 		}
 	}
+	ClassifyOpenOceanCells(hdr, cellData);
+	// The water-placement cache now stores the procedural ocean classification.
+	// Force old layouts to regenerate rather than interpreting them as current.
+	hdr.label = Util::FCC("WTC2");
 
 	if (skippedUnresolvedFormCount) {
 		logger::warn("[Waterbody] [Cache] {}: Skipped {} cells due to unresolvable water forms (first at {},{} form {:08X})",
@@ -521,6 +567,121 @@ bool WaterCache::BuildDiskCache(RE::TESWorldSpace* worldSpace, DiskCache& diskCa
 	const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 	logger::info("[Waterbody] [Cache] {}: Cache generated in {} ms", worldSpace->GetFormEditorID(), ms);
 	return true;
+}
+
+void WaterCache::ClassifyOpenOceanCells(const WorldSpaceHeader& header, std::vector<CellData>& cellData)
+{
+	// Classify broad, same-level water connected to the worldspace's outer edge.
+	// A local 5x5 water-coverage test identifies the open-water core; only a
+	// two-cell fringe is grown from that core, so narrow rivers connected to the
+	// sea do not inherit the ocean classification all the way inland.
+	constexpr float kWaterLevelTolerance = 32.0f;
+	constexpr size_t kMinimumOceanCells = 64;
+	constexpr int32_t kMinimumOceanSpan = 8;
+	constexpr int32_t kCoreCoverage = 20;
+	constexpr int32_t kShoreFringeCells = 2;
+	const int32_t width = header.width;
+	const int32_t height = header.height;
+	if (width <= 0 || height <= 0 || cellData.size() != static_cast<size_t>(width) * height)
+		return;
+
+	std::vector<uint8_t> visited(cellData.size(), 0);
+	std::vector<uint32_t> componentLabels(cellData.size(), 0);
+	std::vector<int32_t> oceanDistance(cellData.size(), -1);
+	std::vector<int32_t> component;
+	std::vector<int32_t> pending;
+	uint32_t nextComponentLabel = 1;
+	for (int32_t start = 0; start < static_cast<int32_t>(cellData.size()); ++start) {
+		const auto& seed = cellData[start];
+		if (visited[start] || !seed.form || !IsValidCellHeight(seed.heights.water))
+			continue;
+
+		component.clear();
+		pending.clear();
+		pending.push_back(start);
+		visited[start] = 1;
+		bool reachesWorldspaceEdge = false;
+		int32_t minX = width, minY = height, maxX = -1, maxY = -1;
+		while (!pending.empty()) {
+			const int32_t index = pending.back();
+			pending.pop_back();
+			const int32_t x = index % width;
+			const int32_t y = index / width;
+			component.push_back(index);
+			minX = std::min(minX, x);
+			minY = std::min(minY, y);
+			maxX = std::max(maxX, x);
+			maxY = std::max(maxY, y);
+			reachesWorldspaceEdge |= x == 0 || y == 0 || x == width - 1 || y == height - 1;
+
+			const int32_t neighbours[] = { index - 1, index + 1, index - width, index + width };
+			for (size_t direction = 0; direction < std::size(neighbours); ++direction) {
+				if ((direction == 0 && x == 0) || (direction == 1 && x == width - 1) ||
+					(direction == 2 && y == 0) || (direction == 3 && y == height - 1))
+					continue;
+				const int32_t neighbourIndex = neighbours[direction];
+				if (visited[neighbourIndex])
+					continue;
+				const auto& neighbour = cellData[neighbourIndex];
+				if (!neighbour.form || !IsValidCellHeight(neighbour.heights.water) ||
+					std::fabs(neighbour.heights.water - seed.heights.water) > kWaterLevelTolerance)
+					continue;
+				visited[neighbourIndex] = 1;
+				pending.push_back(neighbourIndex);
+			}
+		}
+
+		if (!reachesWorldspaceEdge || component.size() < kMinimumOceanCells ||
+			maxX - minX + 1 < kMinimumOceanSpan || maxY - minY + 1 < kMinimumOceanSpan)
+			continue;
+
+		const uint32_t componentLabel = nextComponentLabel++;
+		for (const int32_t index : component)
+			componentLabels[index] = componentLabel;
+
+		pending.clear();
+		for (const int32_t index : component) {
+			const int32_t x = index % width;
+			const int32_t y = index / width;
+			int32_t coveredCells = 0;
+			for (int32_t oy = -2; oy <= 2; ++oy) {
+				for (int32_t ox = -2; ox <= 2; ++ox) {
+					const int32_t sx = x + ox;
+					const int32_t sy = y + oy;
+					if (sx >= 0 && sx < width && sy >= 0 && sy < height &&
+						componentLabels[sy * width + sx] == componentLabel)
+						++coveredCells;
+				}
+			}
+			if (coveredCells >= kCoreCoverage) {
+				oceanDistance[index] = 0;
+				cellData[index].openOcean = true;
+				pending.push_back(index);
+			}
+		}
+
+		while (!pending.empty()) {
+			const int32_t index = pending.back();
+			pending.pop_back();
+			const int32_t distance = oceanDistance[index];
+			if (distance >= kShoreFringeCells)
+				continue;
+			const int32_t x = index % width;
+			const int32_t y = index / width;
+			const int32_t neighbours[] = { index - 1, index + 1, index - width, index + width };
+			for (size_t direction = 0; direction < std::size(neighbours); ++direction) {
+				if ((direction == 0 && x == 0) || (direction == 1 && x == width - 1) ||
+					(direction == 2 && y == 0) || (direction == 3 && y == height - 1))
+					continue;
+				const int32_t neighbour = neighbours[direction];
+				if (componentLabels[neighbour] != componentLabel || oceanDistance[neighbour] >= 0)
+					continue;
+				oceanDistance[neighbour] = distance + 1;
+				cellData[neighbour].openOcean = true;
+				pending.push_back(neighbour);
+			}
+		}
+	}
 }
 
 void WaterCache::GenerateInstructions(const int32_t lodLevel, DiskCache& diskCache, const std::vector<CellData>& cellData, int32_t& instructionCount)
@@ -566,7 +727,7 @@ void WaterCache::GenerateInstructions(const int32_t lodLevel, DiskCache& diskCac
 					}
 
 					const int32_t cellIndex = cellY * hdr.width + cellX;
-					const auto& [heights, formID, form] = cellData[cellIndex];
+					const auto& [heights, formID, form, openOcean] = cellData[cellIndex];
 
 					// Skip any cells without water
 					if (!form) {
@@ -579,6 +740,7 @@ void WaterCache::GenerateInstructions(const int32_t lodLevel, DiskCache& diskCac
 					const float targetHeight = heights.water;
 					const auto targetType = formID;
 					const uint8_t targetFlags = form->flags.underlying();
+					const bool targetOpenOcean = openOcean;
 
 					int32_t size = 1;
 					int32_t maxSize = 1;
@@ -601,8 +763,8 @@ void WaterCache::GenerateInstructions(const int32_t lodLevel, DiskCache& diskCac
 							const int32_t ry = baseY + newRowY;
 							const int32_t idx = ry * hdr.width + rx;
 							const int32_t cLocalIdx = newRowY * lodLevel + localX + dx;
-							const auto& [cHeights, cFormID, cForm] = cellData[idx];
-							if (processed[cLocalIdx] || !cForm || cHeights.water != targetHeight || cFormID != targetType || cForm->flags.underlying() != targetFlags) {
+							const auto& [cHeights, cFormID, cForm, cOpenOcean] = cellData[idx];
+							if (processed[cLocalIdx] || !cForm || cHeights.water != targetHeight || cFormID != targetType || cForm->flags.underlying() != targetFlags || cOpenOcean != targetOpenOcean) {
 								failed = true;
 								break;
 							}
@@ -618,8 +780,8 @@ void WaterCache::GenerateInstructions(const int32_t lodLevel, DiskCache& diskCac
 							const int32_t ry = baseY + (localY + dy);
 							const int32_t idx = ry * hdr.width + rx;
 							const int32_t cLocalIdx = (localY + dy) * lodLevel + newColX;
-							const auto& [cHeights, cFormID, cForm] = cellData[idx];
-							if (processed[cLocalIdx] || !cForm || cHeights.water != targetHeight || cFormID != targetType || cForm->flags.underlying() != targetFlags) {
+							const auto& [cHeights, cFormID, cForm, cOpenOcean] = cellData[idx];
+							if (processed[cLocalIdx] || !cForm || cHeights.water != targetHeight || cFormID != targetType || cForm->flags.underlying() != targetFlags || cOpenOcean != targetOpenOcean) {
 								failed = true;
 								break;
 							}
@@ -649,6 +811,7 @@ void WaterCache::GenerateInstructions(const int32_t lodLevel, DiskCache& diskCac
 					instruction.y = cellY + minY;
 					instruction.size = size;
 					instruction.waterHeight = targetHeight;
+					instruction.flags = targetOpenOcean ? Instruction::kOpenOcean : 0u;
 
 					// Add new instruction to list
 					instructions.push_back(instruction);
@@ -889,7 +1052,12 @@ bool WaterCache::TryWriteCacheToFile(const std::string& name, const WorldSpaceHe
 		return false;
 	}
 
-	ofs.write(reinterpret_cast<const char*>(&header), sizeof(header));
+	auto cacheHeader = header;
+	if constexpr (std::is_same_v<T, Instruction>)
+		cacheHeader.label = Util::FCC("WTC2");
+	else
+		cacheHeader.label = Util::FCC("WTCH");
+	ofs.write(reinterpret_cast<const char*>(&cacheHeader), sizeof(cacheHeader));
 	ofs.write(reinterpret_cast<const char*>(vec.data()), vec.size() * sizeof(T));
 
 	if (!ofs.good()) {
@@ -914,7 +1082,8 @@ bool WaterCache::TryReadCacheFromFile(const std::string& name, WorldSpaceHeader&
 	}
 
 	ifs.read(reinterpret_cast<char*>(&header), sizeof(header));
-	if (!ifs || header.label != Util::FCC("WTCH")) {
+	constexpr uint32_t expectedLabel = std::is_same_v<T, Instruction> ? Util::FCC("WTC2") : Util::FCC("WTCH");
+	if (!ifs || header.label != expectedLabel) {
 		logger::error("[Waterbody] [Cache] Invalid or corrupt header for '{}'", path.string());
 		return false;
 	}

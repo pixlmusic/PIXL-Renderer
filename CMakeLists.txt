@@ -126,7 +126,7 @@ target_include_directories(
     PRIVATE
         ${BSHOSHANY_THREAD_POOL_INCLUDE_DIRS}
         ${CLIB_UTIL_INCLUDE_DIRS}
-        "${CMAKE_SOURCE_DIR}/distribution/Shaders"
+        "${CMAKE_SOURCE_DIR}/distribution/PIXL-Shaders"
         "${CMAKE_SOURCE_DIR}/extern/sk_hdr_png/include"
         ${DETOURS_INCLUDE_DIRS}
 )
@@ -358,7 +358,7 @@ endif()
 # # HLSL additional include directories for VS intellisense
 # #######################################################################################################################
 
-set(HLSL_INCLUDE_DIRS ${FEATURE_SHADER_DIRS} "distribution/Shaders")
+set(HLSL_INCLUDE_DIRS ${FEATURE_SHADER_DIRS} "distribution/PIXL-Shaders")
 
 set(HLSL_INCLUDE_JSON "")
 foreach(dir IN LISTS HLSL_INCLUDE_DIRS)

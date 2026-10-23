@@ -54,9 +54,7 @@
 #include "Modules/ThinSurface.h"
 #include "Modules/CameraSuite.h"
 #include "Modules/ContainedLiquids.h"
-#include "Modules/ClothDynamics.h"
 #include "Modules/Microclimates.h"
-#include "Modules/CurvedSurfaceMapping.h"
 #include "Modules/DistantLife.h"
 #include "Modules/ReactiveFX.h"
 #include "Modules/ImageReconstruction.h"
@@ -92,6 +90,11 @@
 namespace
 {
 	constexpr std::string_view kExperimentalCategory = "EXPERIMENTAL";
+	// Same serialized order as CameraSuite's twelve supported LUTs.
+	constexpr const char* kDirectorLooks[] = {
+		"Original", "Nordic Neutral", "Saga", "Dramatic", "Hearthfire", "Bleak",
+		"Bleach", "Winter", "Sunset", "Fantasy Green", "Nightfall", "Cinematic"
+	};
 	constexpr std::string_view kRenderOriginTool = "RenderOrigin";
 	constexpr std::string_view kENBTranslatorTool = "ENBTranslator";
 	std::optional<size_t> g_pendingExperimentalMenu;
@@ -536,10 +539,20 @@ namespace
 				bool matches = searchable.find(normalizedQuery) != std::string::npos;
 				if (!matches) {
 					for (const auto& [alias, terms] : aliases) {
-						if (normalizedQuery == alias && searchable.find(terms.substr(0, terms.find(' '))) != std::string::npos) {
-							matches = true;
-							break;
+						if (normalizedQuery != alias)
+							continue;
+						std::string_view remaining = terms;
+						while (!remaining.empty()) {
+							const auto separator = remaining.find(' ');
+							if (searchable.find(remaining.substr(0, separator)) != std::string::npos) {
+								matches = true;
+								break;
+							}
+							if (separator == std::string_view::npos)
+								break;
+							remaining.remove_prefix(separator + 1);
 						}
+						break;
 					}
 				}
 				if (matches)
@@ -710,9 +723,8 @@ namespace
 				error.clear();
 				continue;
 			}
-			for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
-				if (error)
-					break;
+			for (std::filesystem::directory_iterator it(directory, error), end; !error && it != end; it.increment(error)) {
+				const auto& entry = *it;
 				if (entry.is_regular_file(error) && !error && entry.path().extension() == ".json")
 					g_directorVideo.savedPaths.push_back(entry.path());
 				error.clear();
@@ -1135,11 +1147,11 @@ namespace
 			slider("Ambient Occlusion", &s.VertexAOStrength, 0.0f, 2.0f);
 			slider("Specular Response", &s.LegacyPhysicalSpecularScale, 0.0f, 1.5f);
 			slider("Metalness Inference", &s.LegacyMetalInferenceStrength, 0.0f, 1.5f);
-			toggle("Inverse-Square Local Lights", &s.EnablePhysicalLocalLightFalloff);
+			toggle("Inverse-Distance Local Lights", &s.EnablePhysicalLocalLightFalloff);
 			ImGui::BeginDisabled(s.EnablePhysicalLocalLightFalloff == 0);
 			slider("Vanilla-to-Physical Blend", &s.PhysicalLocalLightFalloffStrength, 0.0f, 1.0f);
 			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("0 keeps Skyrim's conventional light-radius falloff; 1 uses PIXL's regularized inverse-square model. Disable Inverse-Square Local Lights to restore Natural Lighting's per-light behavior.");
+				ImGui::SetTooltip("0 keeps Skyrim's conventional light-radius falloff; 1 uses PIXL's regularized inverse-distance (1/d) model. Disable Inverse-Distance Local Lights to restore Natural Lighting's per-light behavior.");
 			ImGui::EndDisabled();
 		} else if (name == "MaterialLayers") {
 			auto& s = globals::pipeline::materialLayers.settings;
@@ -2238,23 +2250,14 @@ namespace
 
 		bool changed = false;
 
-		const char* looks[] = {
-			"Original",
-			"Nordic Neutral",
-			"Saga",
-			"Dramatic",
-			"Hearthfire",
-			"Bleak"
-		};
-
 		changed |=
 			PIXLUI::CycleSelector(
 				"Colour grade",
 				&lookPreset,
-				looks,
+				kDirectorLooks,
 				static_cast<int>(
 					std::size(
-						looks)));
+						kDirectorLooks)));
 
 		ImGui::BeginDisabled(lookPreset == 0);
 		changed |=
@@ -2859,7 +2862,7 @@ namespace
 		case DirectorQuickOption::ColourGrade:
 		{
 			std::lock_guard<std::mutex> lock(camera.settingsMutex);
-			constexpr int count = 6;
+			constexpr int count = static_cast<int>(std::size(kDirectorLooks));
 			camera.settings.lookPreset = static_cast<unsigned int>(
 				(static_cast<int>(camera.settings.lookPreset) + direction + count) % count);
 			cameraChanged = true;
@@ -3255,11 +3258,9 @@ namespace
 
 		case DirectorQuickOption::ColourGrade:
 		{
-			static constexpr const char* looks[] = {
-				"ORIGINAL", "NORDIC NEUTRAL", "SAGA", "DRAMATIC", "HEARTHFIRE", "BLEAK"
-			};
 			result.label = "Colour Grade";
-			result.value = looks[std::clamp(settingsCopy.lookPreset, 0u, 5u)];
+			result.value = kDirectorLooks[std::min(settingsCopy.lookPreset,
+				static_cast<unsigned int>(std::size(kDirectorLooks) - 1))];
 			break;
 		}
 
@@ -9228,7 +9229,7 @@ void TuningWorkspaceRenderer::DrawMenuVisitor::operator()(RenderModule* feat)
 		ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.48f);
 		// Compute scene-controlled state once for both header and settings
 		auto* sceneManager = globals::sceneSettingsManager;
-		bool sceneControlled = sceneManager->HasActiveSettingsForFeature(featureName) && !sceneManager->IsFeaturePaused(featureName);
+		bool sceneControlled = sceneManager && sceneManager->HasActiveSettingsForFeature(featureName) && !sceneManager->IsFeaturePaused(featureName);
 
 		// Render feature header with integrated action buttons
 		RenderFeatureHeader(feat, isDisabled, isLoaded, sceneControlled);

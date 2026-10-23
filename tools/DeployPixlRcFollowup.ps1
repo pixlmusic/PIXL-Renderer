@@ -19,20 +19,20 @@ $manifest = Get-Content -LiteralPath (Join-Path $package 'PIXL-RENDERER.manifest
 $relativePaths = @(
     'SKSE/Plugins/PIXLRenderer.dll',
     'SKSE/Plugins/PIXL/Config/RendererDefaults.json',
-    'Shaders/Common/SharedData.hlsli',
-    'Shaders/ISSAOComposite.hlsl',
-    'Shaders/ISHDR.hlsl',
-    'Shaders/CameraSuite/PhysicalCameraExposureCS.hlsl',
-    'Shaders/CameraSuite/PhysicalCameraHistogramCS.hlsl',
-    'Shaders/Lighting.hlsl',
-    'Shaders/Sky.hlsl',
-    'Shaders/PIXL/Modules/WindowLife.ini',
-    'Shaders/PIXL/Modules/MaterialLayers.ini',
-    'Shaders/WindowLife/WindowLife.hlsli',
-    'Shaders/WindowLife/OutdoorAtlas.png',
-    'Shaders/WindowLife/OutdoorAtlas_2k.dds',
-    'Shaders/WindowLife/OutdoorAtlasNight.png',
-    'Shaders/WindowLife/OutdoorAtlasNight_2k.dds'
+    'PIXL-Shaders/Common/SharedData.hlsli',
+    'PIXL-Shaders/ISSAOComposite.hlsl',
+    'PIXL-Shaders/ISHDR.hlsl',
+    'PIXL-Shaders/CameraSuite/PhysicalCameraExposureCS.hlsl',
+    'PIXL-Shaders/CameraSuite/PhysicalCameraHistogramCS.hlsl',
+    'PIXL-Shaders/Lighting.hlsl',
+    'PIXL-Shaders/Sky.hlsl',
+    'PIXL-Shaders/PIXL/Modules/WindowLife.ini',
+    'PIXL-Shaders/PIXL/Modules/MaterialLayers.ini',
+    'PIXL-Shaders/WindowLife/WindowLife.hlsli',
+    'PIXL-Shaders/WindowLife/OutdoorAtlas.png',
+    'PIXL-Shaders/WindowLife/OutdoorAtlas_2k.dds',
+    'PIXL-Shaders/WindowLife/OutdoorAtlasNight.png',
+    'PIXL-Shaders/WindowLife/OutdoorAtlasNight_2k.dds'
 )
 if ($Files.Count) { $relativePaths = $Files }
 function Assert-LivePath([string]$path) {

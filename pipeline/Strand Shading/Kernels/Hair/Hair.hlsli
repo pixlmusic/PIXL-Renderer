@@ -8,6 +8,12 @@
 
 namespace Hair
 {
+	float StrandSmootherStep(float value)
+	{
+		float t = saturate(value);
+		return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+	}
+
 	#ifndef USE_PIXL_HAIR_SCATTERING
 	#	define USE_PIXL_HAIR_SCATTERING 1
 	#endif
@@ -45,9 +51,10 @@ namespace Hair
 	// https://doi.org/10.1145/74334.74361
 	float3 D_KajiyaKay(float3 T, float3 H, float n)
 	{
+		n = clamp(n, 1.0f, 512.0f);
 		float TH = dot(T, H);
 		float sinTH = saturate(1 - TH * TH);
-		float dirAtten = saturate(TH + 1);
+		float dirAtten = StrandSmootherStep(TH + 1.0f);
 		float norm = (n + 2) / (2 * Math::PI);
 		return dirAtten * norm * pow(sinTH, 0.5 * n);
 	}
@@ -59,7 +66,8 @@ namespace Hair
 
 	float3 ShiftTangent(float3 T, float3 N, float shift)
 	{
-		return normalize(T + N * shift);
+		float3 shifted = T + N * shift;
+		return shifted * rsqrt(max(dot(shifted, shifted), EPSILON_LENGTH_SQ));
 	}
 
 	float3 ShiftNormal(float3 T, float3 N, float shift)
@@ -81,7 +89,8 @@ namespace Hair
 	// https://web.engr.oregonstate.edu/~mjb/cs557/Projects/Papers/HairRendering.pdf
 	void GetHairDirectLightScheuermann(out float3 dirDiffuse, out float3 dirSpecular, out float3 dirTransmission, float3 T, float3 L, float3 V, float3 N, float3 VN, DirectContext context, float shininess, float2 uv, float3 baseColor)
 	{
-		const float3 H = normalize(L + V);
+		float3 halfVector = L + V;
+		const float3 H = halfVector * rsqrt(max(dot(halfVector, halfVector), EPSILON_LENGTH_SQ));
 		const float oNdotL = dot(N, L);
 		const float NdotL = saturate(oNdotL);
 		const float VNdotV = dot(VN, V);
@@ -93,7 +102,8 @@ namespace Hair
 
 		// [Yibing Jiang 2016, "The Process of Creating Volumetric-based Materials in Uncharted 4"]
 		// https://advances.realtimerendering.com/s2016
-		dirDiffuse = saturate(oNdotL + wrapped) / (1 + wrapped);
+		float diffuseWrap = saturate((oNdotL + wrapped) / (1 + wrapped));
+		dirDiffuse = diffuseWrap * diffuseWrap * (3.0f - 2.0f * diffuseWrap);
 		float3 scatterColor = sqrt(max(baseColor, 0.0f.xxx));
 		dirDiffuse = saturate(scatterColor + NdotL) * dirDiffuse * lightColor * SharedData::strandShadingSettings.DiffuseMult;
 
@@ -112,7 +122,7 @@ namespace Hair
 		const float3 specPrimary = D_KajiyaKay(TshiftPrimary, H, shininess);
 		const float3 specSecondary = D_KajiyaKay(TshiftSecondary, H, shininess * 0.5);
 		const float3 F = BRDF::F_Schlick(HairF0(), HdotL);
-		float frontFiber = VNdotV > 0.0f ? 1.0f : 0.0f;
+		float frontFiber = StrandSmootherStep((VNdotV + 0.04f) / 0.08f);
 		float3 specR = 0.25f * F * (specPrimary + specSecondary * scatterColor) * NdotL * frontFiber;
 
 		// Integer Fresnel exponents are cheaper and more deterministic as multiply
@@ -282,11 +292,11 @@ namespace Hair
 
 	void GetHairDirectLight(out DirectLightingOutput lightingOutput, DirectContext context, MaterialProperties material, float3x3 tbnTr, float2 uv)
 	{
-		const float3 T = normalize(context.worldNormal);
-		const float3 V = normalize(context.viewDir);
-		const float3 N = normalize(context.vertexNormal);
-		const float3 VN = normalize(tbnTr[2]);
-		const float3 L = normalize(context.lightDir);
+		const float3 T = context.worldNormal * rsqrt(max(dot(context.worldNormal, context.worldNormal), EPSILON_LENGTH_SQ));
+		const float3 V = context.viewDir * rsqrt(max(dot(context.viewDir, context.viewDir), EPSILON_LENGTH_SQ));
+		const float3 N = context.vertexNormal * rsqrt(max(dot(context.vertexNormal, context.vertexNormal), EPSILON_LENGTH_SQ));
+		const float3 VN = tbnTr[2] * rsqrt(max(dot(tbnTr[2], tbnTr[2]), EPSILON_LENGTH_SQ));
+		const float3 L = context.lightDir * rsqrt(max(dot(context.lightDir, context.lightDir), EPSILON_LENGTH_SQ));
 
 		if (SharedData::strandShadingSettings.HairMode == 0) {
 			GetHairDirectLightScheuermann(lightingOutput.diffuse, lightingOutput.specular, lightingOutput.transmission, T, L, V, N, VN, context, material.Shininess, uv, material.BaseColor);
@@ -375,8 +385,8 @@ namespace Hair
 			// which visibly stair-steps across smooth hair caps and ponytails.
 			// Ramping in from the 0.5-unit self-offset and back out past the
 			// thickness estimate gives a continuous gradient at the same cost.
-			float rampIn = smoothstep(0.50f, 0.50f + 0.15f * thickness, depthDelta);
-			float rampOut = 1.0f - smoothstep(0.70f * thickness, thickness, depthDelta);
+			float rampIn = StrandSmootherStep((depthDelta - 0.50f) / max(0.15f * thickness, 1.0e-5f));
+			float rampOut = 1.0f - StrandSmootherStep((depthDelta - 0.70f * thickness) / max(0.30f * thickness, 1.0e-5f));
 			occlusionAccum += saturate(rampIn * rampOut);
 		}
 

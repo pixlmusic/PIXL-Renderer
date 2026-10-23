@@ -31,10 +31,16 @@ float HomogeneousScatteringWeight(float extinction, float distance)
 	{
 		uint3 layerCoordinate = uint3(dispatchID.xy, layerIndex);
 		float4 scatteringAndExtinction = LightScattering[layerCoordinate];
+		if (!all(isfinite(scatteringAndExtinction)))
+			scatteringAndExtinction = 0.0f.xxxx;
 
 		float layerDepth;
 		float3 layerPositionWS = Atmosphere::ComputeCellWorldPosition(layerCoordinate, 0.5f.xxx, layerDepth);
 		float stepLength = length(layerPositionWS - previousPositionWS);
+		if (!isfinite(stepLength)) {
+			IntegratedLightScattering[layerCoordinate] = float4(max(accumulatedLighting, 0.0f.xxx), saturate(accumulatedTransmittance));
+			continue;
+		}
 		previousPositionWS = layerPositionWS;
 
 		float extinction = max(scatteringAndExtinction.w, 0.0f);

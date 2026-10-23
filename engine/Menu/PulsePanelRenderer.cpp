@@ -171,6 +171,7 @@ void PulsePanelRenderer::RenderGraph()
 		return;
 
 	std::vector<legit::ProfilerTask> tasks;
+	tasks.reserve(results.size());
 
 	double accumulated = 0.0;
 	for (const auto& result : results) {
@@ -178,6 +179,8 @@ void PulsePanelRenderer::RenderGraph()
 			continue;
 
 		float timeMs = cpuMode ? result.cpuTimeMs : result.gpuTimeMs;
+		if (!std::isfinite(timeMs) || timeMs < 0.0f)
+			continue;
 
 		std::string groupName;
 		auto pos = result.name.find("::");
@@ -373,6 +376,7 @@ void PulsePanelRenderer::RenderFeatureTimers(const std::string& featurePrefix)
 	};
 
 	std::vector<Entry> entries;
+	entries.reserve(results.size());
 	float totalTimeMs = 0.0f;
 	float totalAvg = 0.0f;
 	float totalP95 = 0.0f;
@@ -390,6 +394,9 @@ void PulsePanelRenderer::RenderFeatureTimers(const std::string& featurePrefix)
 		float avg = cpuMode ? r.cpuAvgMs : r.avgMs;
 		float p95 = cpuMode ? r.cpuP95Ms : r.p95Ms;
 		float p99 = cpuMode ? r.cpuP99Ms : r.p99Ms;
+		if (!std::isfinite(timeMs) || !std::isfinite(avg) || !std::isfinite(p95) || !std::isfinite(p99) ||
+			timeMs < 0.0f || avg < 0.0f || p95 < 0.0f || p99 < 0.0f)
+			continue;
 		entries.push_back({ label, timeMs, avg, p95, p99 });
 		totalTimeMs += timeMs;
 		totalAvg += avg;
@@ -408,6 +415,7 @@ void PulsePanelRenderer::RenderFeatureTimers(const std::string& featurePrefix)
 	auto& state = featureGraphs[featurePrefix];
 
 	std::vector<legit::ProfilerTask> tasks;
+	tasks.reserve(entries.size());
 	double accumulated = 0.0;
 	for (const auto& e : entries) {
 		legit::ProfilerTask task;

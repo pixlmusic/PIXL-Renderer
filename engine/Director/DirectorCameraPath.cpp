@@ -322,9 +322,23 @@ namespace DirectorCameraPath
 			if (error) *error = "A camera path cannot contain more than 512 points.";
 			return false;
 		}
+		if (explicitDuration.has_value() && !IsFinite(*explicitDuration)) {
+			if (error) *error = "A camera path has a non-finite duration.";
+			return false;
+		}
 		for (const auto& point : points) {
 			if (!IsFinite(point.worldPosition)) {
 				if (error) *error = "A camera point has a non-finite position.";
+				return false;
+			}
+			// Skyrim world coordinates remain far below this bound. Reject corrupt or
+			// hostile values before spline subtraction can overflow under optimized
+			// floating-point builds (where a later isfinite check may be folded away).
+			constexpr float maximumWorldCoordinate = 1.0e7f;
+			if (std::abs(point.worldPosition.x) > maximumWorldCoordinate ||
+				std::abs(point.worldPosition.y) > maximumWorldCoordinate ||
+				std::abs(point.worldPosition.z) > maximumWorldCoordinate) {
+				if (error) *error = "A camera point is outside the supported Skyrim world-coordinate range.";
 				return false;
 			}
 		}
@@ -385,7 +399,21 @@ namespace DirectorCameraPath
 			const Vec3 last = easedPosition(1.0f);
 			subdivide(subdivide, 0.0f, first, 1.0f, last, 0);
 			segment.length = distance;
+			if (!IsFinite(segment.length) || segment.length < 0.0f) {
+				segments.clear();
+				effectiveSpeeds.clear();
+				totalLength = 0.0f;
+				if (error) *error = "A camera path's length overflowed; reduce its point coordinates or spacing.";
+				return false;
+			}
 			totalLength += segment.length;
+			if (!IsFinite(totalLength)) {
+				segments.clear();
+				effectiveSpeeds.clear();
+				totalLength = 0.0f;
+				if (error) *error = "A camera path's total length overflowed.";
+				return false;
+			}
 		}
 		// A nearby pair of POIs can require a large camera turn in only a few
 		// world units. Limit angular travel as part of the rebuild, so every
@@ -419,10 +447,27 @@ namespace DirectorCameraPath
 			segment.duration = segment.length * (std::abs(speedDifference) > 0.001f
 				? std::log(endSpeed / startSpeed) / speedDifference
 				: 1.0f / startSpeed);
+			if (!IsFinite(segment.duration) || segment.duration < 0.0f) {
+				segments.clear();
+				effectiveSpeeds.clear();
+				totalLength = 0.0f;
+				totalDuration = 0.0f;
+				if (error) *error = "A camera path produced an invalid segment duration.";
+				return false;
+			}
 			totalDuration += segment.duration + std::max(ClampFinite(points[end].holdDuration, 0.0f, 600.0f, 0.0f), 0.0f);
+			if (!IsFinite(totalDuration)) {
+				segments.clear();
+				effectiveSpeeds.clear();
+				totalLength = 0.0f;
+				totalDuration = 0.0f;
+				if (error) *error = "A camera path's total duration overflowed.";
+				return false;
+			}
 		}
-		if (explicitDuration.has_value())
+		if (explicitDuration.has_value()) {
 			totalDuration = std::max(*explicitDuration, 0.0f);
+		}
 		return true;
 	}
 
@@ -466,11 +511,14 @@ namespace DirectorCameraPath
 		// Keep route preview storage bounded even if a malformed path contains a
 		// very large number of points.  This is authoring data, never runtime
 		// camera data.
-		const std::uint32_t maximumSamples = 512;
+		// Keep enough curvature samples even on a route at the 512-point limit.
+		// The old lower bound forced a route-wide preview above its stated budget;
+		// 4 samples per segment gives a bounded, visibly curved preview at the cap.
+		const std::uint32_t maximumSamples = 2049;
 		samplesPerSegment = std::clamp(samplesPerSegment, 4u, 64u);
 		samplesPerSegment = std::min(samplesPerSegment,
-			std::max(4u, maximumSamples / static_cast<std::uint32_t>(count)));
-		output.reserve(std::min<std::size_t>(maximumSamples, count * (samplesPerSegment + 1)));
+			std::max(4u, (maximumSamples - 1u) / static_cast<std::uint32_t>(count)));
+		output.reserve(std::min<std::size_t>(maximumSamples, count * samplesPerSegment + 1u));
 		for (std::size_t segment = 0; segment < count; ++segment) {
 			for (std::uint32_t sample = 0; sample <= samplesPerSegment; ++sample) {
 				if (segment > 0 && sample == 0)
@@ -549,6 +597,8 @@ namespace DirectorCameraPath
 
 	Pose Path::EvaluateNormalized(float normalizedDistance) const noexcept
 	{
+		if (!IsFinite(normalizedDistance))
+			return {};
 		if (points.empty()) return {};
 		if (points.size() == 1) return { points.front().worldPosition, Normalize(points.front().worldRotation), ClampFinite(points.front().fieldOfView, 20.0f, 110.0f, 75.0f), points.front().rollDegrees, true };
 		if (!IsValid()) return {};
@@ -733,6 +783,38 @@ namespace DirectorCameraPath
 		const auto legacy = Path::FromJson(versionOne, &error);
 		if (!legacy.has_value() || legacy->points[1].followPathDirection) {
 			if (failure) *failure = "version 1 path migration failed";
+			return false;
+		}
+		Path invalidDuration{};
+		invalidDuration.points = { { 1, { 0.0f, 0.0f, 0.0f } }, { 2, { 10.0f, 0.0f, 0.0f } } };
+		invalidDuration.explicitDuration = std::numeric_limits<float>::quiet_NaN();
+		if (invalidDuration.Rebuild(&error)) {
+			if (failure) *failure = "non-finite explicit duration was accepted";
+			return false;
+		}
+		Path overflowingPath{};
+		const float largestFinite = std::numeric_limits<float>::max();
+		overflowingPath.points = { { 1, { largestFinite, 0.0f, 0.0f } }, { 2, { -largestFinite, 0.0f, 0.0f } } };
+		if (overflowingPath.Rebuild(&error)) {
+			if (failure) *failure = "overflowing path length was accepted";
+			return false;
+		}
+		Path densePreview{};
+		densePreview.points.reserve(kMaximumPointCount);
+		for (std::size_t index = 0; index < kMaximumPointCount; ++index)
+			densePreview.points.push_back({ static_cast<std::uint32_t>(index + 1),
+				{ static_cast<float>(index * 10), static_cast<float>((index % 3) * 4), 0.0f } });
+		if (!densePreview.Rebuild(&error)) {
+			if (failure) *failure = "maximum-size preview path failed to rebuild: " + error;
+			return false;
+		}
+		densePreview.GetPreviewSamples(preview, 64);
+		if (preview.size() > 2049u || preview.size() < 2045u) {
+			if (failure) *failure = "maximum-size route preview exceeded its budget or lost minimum curvature samples";
+			return false;
+		}
+		if (densePreview.EvaluateNormalized(std::numeric_limits<float>::quiet_NaN()).valid) {
+			if (failure) *failure = "non-finite normalized route time produced a valid camera pose";
 			return false;
 		}
 		Path speedRamp{};

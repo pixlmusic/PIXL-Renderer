@@ -934,11 +934,6 @@ void Menu::DrawSettings()
 		resetLayout = true;
 		previousAdvancedMode = settings.AdvancedMode;
 	}
-	if (focusChanged) {
-		OnFocusChanged();
-		focusChanged = false;
-	}
-
 	// Apply theme styling with universal contrast enhancement
 	ThemeManager::SetupImGuiStyle(*this);
 
@@ -1600,6 +1595,11 @@ void Menu::ProcessInputEventQueue()
 	std::unique_lock<std::shared_mutex> mutex(_inputEventMutex);
 	ImGuiIO& io = ImGui::GetIO();
 	for (auto& event : _keyEventQueue) {
+		const bool startupCurtain = OverlayRenderer::IsStartupCurtainActive();
+		if (startupCurtain &&
+			(event.eventType != RE::INPUT_EVENT_TYPE::kButton || event.device != RE::INPUT_DEVICE::kKeyboard)) {
+			continue;
+		}
 		if (event.eventType == RE::INPUT_EVENT_TYPE::kChar) {
 			io.AddInputCharacter(event.keyCode);
 			continue;
@@ -1648,6 +1648,8 @@ void Menu::ProcessInputEventQueue()
 			logger::trace("Detected key code {} ({})", event.keyCode, key);
 			if (key == event.keyCode)
 				key = MapVirtualKeyEx(event.keyCode, MAPVK_VSC_TO_VK_EX, GetKeyboardLayout(0));
+			if (startupCurtain && !InputCombo::MatchesKeyboardCombo(settings.SkipCompilationKey, key))
+				continue;
 
 			const bool wasCapturingHotkey = IsCapturingHotkeyInput();
 			const bool popupOpen = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
@@ -1749,7 +1751,6 @@ void Menu::ProcessInputEventQueue()
 						 // compilation. OverlayRenderer observes this flag on the same
 						 // frame and releases the exclusive compiler presentation.
 						 if (shaderCache &&
-							 !ShouldSwallowInput() &&
 							 shaderCache->IsCompiling() &&
 							 !shaderCache->backgroundCompilation &&
 							 shaderCache->menuLoaded) {
@@ -1784,6 +1785,7 @@ void Menu::ProcessInputEventQueue()
 			if (event.IsDown() && key == VK_RETURN && !io.WantTextInput && !wasCapturingHotkey && !popupOpen && (GetAsyncKeyState(VK_SHIFT) & 0x8000)) {
 				if (!LaunchExperienceRenderer::ShouldShowFirstTimeSetup())
 					ToggleMainMenuFromShortcut();
+				_comboFiredKeys.insert(key);
 				continue;
 			}
 
@@ -1843,6 +1845,11 @@ void Menu::ProcessInputEventQueue()
 				};
 				for (auto& h : hotkeyActions) {
 					if (*(h.settingFlag)) {
+						if (key == VK_ESCAPE) {
+							*(h.settingFlag) = false;
+							handled = true;
+							break;
+						}
 						// During first-time setup, don't capture Enter or Escape as hotkeys
 						// These keys are reserved for closing the dialog, unless we are recording a modifier
 						if (LaunchExperienceRenderer::ShouldShowFirstTimeSetup() && (key == VK_RETURN || key == VK_ESCAPE)) {
@@ -1959,7 +1966,7 @@ void Menu::addToEventQueue(KeyEvent e)
 
 void Menu::OnFocusChanged()
 {
-	CancelCustomHotkeyCapture();
+	CancelAllHotkeyCapture();
 	// Solves the alt+tab stuck issue, but disables tab after tabbing back in.
 	if (const auto& inputMgr = RE::BSInputDeviceManager::GetSingleton()) {
 		if (const auto& device = inputMgr->GetKeyboard()) {
@@ -2001,6 +2008,7 @@ void Menu::ProcessInputEvents(RE::InputEvent* const* a_events)
 bool Menu::ShouldSwallowInput()
 {
 	return IsEnabled || IsProfilerInteractive() ||
+		OverlayRenderer::IsStartupCurtainActive() ||
 		TuningWorkspaceRenderer::IsDirectorCameraTransitionPending() ||
 		LaunchExperienceRenderer::ShouldShowFirstTimeSetup();
 }

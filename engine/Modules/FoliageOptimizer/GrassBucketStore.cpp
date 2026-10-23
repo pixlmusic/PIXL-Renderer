@@ -46,7 +46,7 @@ ID3D11ComputeShader* GrassBucketStore::GetDetectCS()
 {
 	if (!detectCS && !detectCompileAttempted) {
 		detectCompileAttempted = true;
-		detectCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\FoliageOptimizer\\DetectComplexCS.hlsl", {}, "cs_5_0"));
+		detectCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\FoliageOptimizer\\DetectComplexCS.hlsl", {}, "cs_5_0"));
 		if (!detectCS)
 			logger::error("[GRASS OPTIMIZATIONS] detect CS load failed â€” complex detection disabled");
 	}
@@ -899,7 +899,7 @@ void GrassBucketStore::UpdateCoarseBounds(GrassBucket& b)
 bool GrassBucketStore::DetectComplexGrass(RE::NiSourceTexture* tex, ID3D11DeviceContext* ctx)
 {
 	auto* rt = tex ? tex->rendererTexture : nullptr;
-	auto* resourceView = rt ? rt->resourceView : nullptr;
+	auto* resourceView = rt ? REX::W32::AsReal(rt->resourceView) : nullptr;
 	if (!tex || !resourceView)
 		return false;
 

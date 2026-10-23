@@ -7,7 +7,7 @@
 #include "Buffer.h"
 #include "RenderModule.h"
 
-#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 
@@ -19,13 +19,21 @@ struct VolumetricClouds : RenderModule
 		std::uint32_t Quality = 2;  // Performance, Balanced, High, Ultra.
 		float Coverage = 0.60f;
 		float Density = 1.55f;
-		float VanillaCloudVisibility = 0.62f;
+		float VanillaCloudVisibility = 0.25f;
 		float OriginalSkyExposure = 0.0f;
 		float OriginalSkyContrast = 1.0f;
 		float AuroraIntensity = 0.35f;
 		float LightningIntensity = 1.0f;
-		float CloudBase = 17522.0f;
+		float CloudBase = 15000.0f;
 		float CloudThickness = 50085.0f;
+		bool EnableHighCloudLayer = false;
+		float HighCloudBase = 30000.0f;
+		float HighCloudTop = 100000.0f;
+		float HighCloudCoverage = 0.42f;
+		float HighCloudDensity = 0.80f;
+		float HighCloudDetail = 0.65f;
+		float HighCloudWindDirection = 28.0f;
+		float HighCloudWindSpeed = 0.72f;
 		float MaximumDistance = 466346.0f;
 		float ShapeScale = 1.08f;
 		float DetailScale = 1.5f;
@@ -69,9 +77,18 @@ struct VolumetricClouds : RenderModule
 		std::uint32_t lightSteps{};
 		std::uint32_t weatherHistoryValid{};
 		std::uint32_t updateWeather{};
+		float4 upperLayer{}; // base, top, weather coverage, density
+		float4 upperShape{}; // weather type, shape scale, detail scale, erosion
+		float4 upperWind{};  // independent wind velocity xy, integrated displacement xy
 	};
 	STATIC_ASSERT_ALIGNAS_16(CloudConstants);
-	static_assert(sizeof(CloudConstants) == 304, "Volumetric cloud CPU/HLSL ABI mismatch");
+	static_assert(sizeof(CloudConstants) == 352, "Volumetric cloud CPU/HLSL ABI mismatch");
+	static_assert(offsetof(CloudConstants, cloudMotion) == 96);
+	static_assert(offsetof(CloudConstants, weatherMap) == 144);
+	static_assert(offsetof(CloudConstants, skyEffects) == 256);
+	static_assert(offsetof(CloudConstants, primarySteps) == 288);
+	static_assert(offsetof(CloudConstants, upperLayer) == 304);
+	static_assert(offsetof(CloudConstants, upperWind) == 336);
 
 	VolumetricClouds();
 	~VolumetricClouds();

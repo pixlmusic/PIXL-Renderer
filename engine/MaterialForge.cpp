@@ -18,6 +18,7 @@
 #include "Modules/MaterialLayers.h"
 #include "Modules/GroundResponse.h"
 #include "Modules/FurShells.h"
+#include "MaterialForge/MaterialForgeTessellation.h"
 #include "Hooks.h"
 #include "I18n/I18n.h"
 #include "ShaderCache.h"
@@ -27,6 +28,10 @@
 #include <cmath>
 #include <cctype>
 #include <atomic>
+#include <functional>
+#include <mutex>
+#include <unordered_map>
+#include <utility>
 #define I18N_KEY_PREFIX "feature.material_forge."
 
 namespace
@@ -103,8 +108,29 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	microfacetRoughness,
 	densityRandomization);
 
+namespace MaterialSurface
+{
+	void to_json(json& j, const Profile& p)
+	{
+		j = json{ { "packedMapLayout", p.packedMapLayout }, { "wetResponse", p.wetResponse }, { "porosity", p.porosity }, { "receiveSnow", p.receiveSnow } };
+	}
+	void from_json(const json& j, Profile& p)
+	{
+		Profile candidate;
+		candidate.packedMapLayout = j.value("packedMapLayout", candidate.packedMapLayout);
+		candidate.wetResponse = j.value("wetResponse", candidate.wetResponse);
+		candidate.porosity = j.value("porosity", candidate.porosity);
+		candidate.receiveSnow = j.value("receiveSnow", candidate.receiveSnow);
+		(void)LayoutIndex(candidate.packedMapLayout);  // Reject bad authoring at load, never during a draw.
+		candidate.wetResponse = std::isfinite(candidate.wetResponse) ? std::clamp(candidate.wetResponse, 0.f, 2.f) : 1.f;
+		candidate.porosity = std::isfinite(candidate.porosity) && candidate.porosity >= 0.f ? std::clamp(candidate.porosity, 0.f, 1.f) : -1.f;
+		p = std::move(candidate);
+	}
+}
+
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	MaterialForge::PBRTextureSetData,
+	surface,
 	roughnessScale,
 	displacementScale,
 	specularLevel,
@@ -178,7 +204,10 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	MetalTintChromaLow,
 	MetalTintChromaHigh,
 	MetalColorCorrelationLow,
-	MetalColorCorrelationHigh);
+	MetalColorCorrelationHigh,
+	EnableWeatherSnow, EnableProceduralDetail, SnowStrength, ProceduralDetailStrength,
+	SnowSlopeMinimum, SnowSlopeFeather, ProceduralDetailScale, ProceduralDetailDistance,
+	SnowRoughness, SnowAlbedo, IndoorDustStrength, ExteriorDirtStrength);
 
 static bool PBRMaterialHasRequiredTextures(RE::BSLightingShaderMaterialBase const* material)
 {
@@ -253,6 +282,462 @@ namespace PNState
 	}
 }
 
+namespace
+{
+	struct MaterialForgeTessellationParameters
+	{
+		float displacementScale = 0.f;
+		float maximumFactor = 1.f;
+		float fadeStart = 768.f;
+		float fadeEnd = 1792.f;
+		UINT heightTextureSlot = 4u;
+		UINT heightChannel = 0u;
+		UINT requireAuthoredRange = 0u;
+		MaterialForgeTessellation::HeightSource heightSource = MaterialForgeTessellation::HeightSource::PBRRed;
+		bool enabled = false;
+		winrt::com_ptr<ID3D11VertexShader> expectedVertexShader;
+		winrt::com_ptr<ID3D11PixelShader> expectedPixelShader;
+		winrt::com_ptr<ID3D11InputLayout> expectedInputLayout;
+		winrt::com_ptr<ID3D11Buffer> expectedIndexBuffer;
+		DXGI_FORMAT expectedIndexFormat = DXGI_FORMAT_UNKNOWN;
+		UINT expectedIndexOffset = 0;
+		D3D11_PRIMITIVE_TOPOLOGY expectedTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+		std::array<winrt::com_ptr<ID3D11Buffer>, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> expectedVertexBuffers;
+		std::array<UINT, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> expectedVertexStrides{};
+		std::array<UINT, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> expectedVertexOffsets{};
+	};
+
+	struct alignas(16) MaterialForgeTessellationConstants
+	{
+		float displacementScale = 0.f;
+		float maximumFactor = 1.f;
+		float fadeStart = 768.f;
+		float fadeEnd = 1792.f;
+		std::uint32_t heightChannel = 0u;
+		std::uint32_t requireAuthoredRange = 0u;
+		std::uint32_t reserved0 = 0u;
+		std::uint32_t reserved1 = 0u;
+	};
+	static_assert(sizeof(MaterialForgeTessellationConstants) == 32);
+
+	thread_local MaterialForgeTessellationParameters gPendingMaterialForgeTessellation;
+	winrt::com_ptr<ID3D11Device> gMaterialForgeTessellationDevice;
+	winrt::com_ptr<ID3D11HullShader> gMaterialForgeHullShader;
+	winrt::com_ptr<ID3D11DomainShader> gMaterialForgeDomainShader;
+	winrt::com_ptr<ID3D11Buffer> gMaterialForgeTessellationConstants;
+	winrt::com_ptr<ID3D11ShaderResourceView> gMaterialForgeTessellationState;
+	std::atomic_flag gMaterialForgeTessellationCompileFailureLogged = ATOMIC_FLAG_INIT;
+	std::atomic_flag gMaterialForgePbrTessellationDrawLogged = ATOMIC_FLAG_INIT;
+	std::atomic_flag gMaterialForgeComplexTessellationDrawLogged = ATOMIC_FLAG_INIT;
+	std::atomic_flag gMaterialForgeTessellationDepthLogged = ATOMIC_FLAG_INIT;
+
+	struct MaterialForgeDepthVariant
+	{
+		winrt::com_ptr<ID3D11Device> device;
+		winrt::com_ptr<ID3D11DepthStencilState> source;
+		winrt::com_ptr<ID3D11DepthStencilState> displaced;
+	};
+
+	struct MaterialForgeDepthKey
+	{
+		ID3D11Device* device{};
+		ID3D11DepthStencilState* source{};
+		bool operator==(const MaterialForgeDepthKey&) const = default;
+	};
+
+	struct MaterialForgeDepthKeyHash
+	{
+		std::size_t operator()(const MaterialForgeDepthKey& key) const noexcept
+		{
+			const auto deviceHash = std::hash<ID3D11Device*>{}(key.device);
+			const auto stateHash = std::hash<ID3D11DepthStencilState*>{}(key.source);
+			return deviceHash ^ (stateHash + 0x9E3779B9u + (deviceHash << 6u) + (deviceHash >> 2u));
+		}
+	};
+
+	std::mutex gMaterialForgeDepthVariantsMutex;
+	std::unordered_map<MaterialForgeDepthKey, MaterialForgeDepthVariant, MaterialForgeDepthKeyHash>
+		gMaterialForgeDepthVariants;
+
+	ID3D11DepthStencilState* GetMaterialForgeDisplacedDepthState(
+		ID3D11Device* device,
+		ID3D11DepthStencilState* source)
+	{
+		if (!device)
+			return nullptr;
+
+		std::scoped_lock lock(gMaterialForgeDepthVariantsMutex);
+		const MaterialForgeDepthKey key{ device, source };
+		if (const auto it = gMaterialForgeDepthVariants.find(key); it != gMaterialForgeDepthVariants.end())
+			return it->second.displaced.get();
+
+		D3D11_DEPTH_STENCIL_DESC desc{};
+		if (source) {
+			source->GetDesc(&desc);
+			if (!desc.DepthEnable)
+				return nullptr;
+		} else {
+			desc.DepthEnable = TRUE;
+			desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+			desc.DepthFunc = D3D11_COMPARISON_LESS;
+			desc.StencilEnable = FALSE;
+			desc.StencilReadMask = D3D11_DEFAULT_STENCIL_READ_MASK;
+			desc.StencilWriteMask = D3D11_DEFAULT_STENCIL_WRITE_MASK;
+			desc.FrontFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
+			desc.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;
+			desc.FrontFace.StencilPassOp = D3D11_STENCIL_OP_KEEP;
+			desc.FrontFace.StencilFunc = D3D11_COMPARISON_ALWAYS;
+			desc.BackFace = desc.FrontFace;
+		}
+
+		// Skyrim commonly shades static geometry against a depth prepass with EQUAL.
+		// Tessellation moves those vertices, so retaining EQUAL rejects the generated
+		// surface even when the hull/domain stages ran correctly. Preserve the source
+		// stencil contract while allowing nearer displaced fragments to become the new
+		// authoritative depth, matching PIXL's other geometry displacement paths.
+		desc.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+		desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+
+		winrt::com_ptr<ID3D11DepthStencilState> displacedState;
+		if (FAILED(device->CreateDepthStencilState(&desc, displacedState.put())))
+			return nullptr;
+
+		MaterialForgeDepthVariant variant{};
+		variant.device.copy_from(device);
+		if (source)
+			variant.source.copy_from(source);
+		variant.displaced = std::move(displacedState);
+		auto [it, inserted] = gMaterialForgeDepthVariants.emplace(key, std::move(variant));
+		(void)inserted;
+		return it->second.displaced.get();
+	}
+
+	bool EnsureMaterialForgeTessellationResources()
+	{
+		auto* device = globals::d3d::device;
+		if (!device)
+			return false;
+
+		if (gMaterialForgeTessellationDevice.get() != device) {
+			gMaterialForgeHullShader = nullptr;
+			gMaterialForgeDomainShader = nullptr;
+			gMaterialForgeTessellationConstants = nullptr;
+			gMaterialForgeTessellationState = nullptr;
+			gMaterialForgeTessellationDevice.copy_from(device);
+		}
+
+		if (!gMaterialForgeHullShader || !gMaterialForgeDomainShader) {
+			auto* hull = reinterpret_cast<ID3D11HullShader*>(
+				Util::CompileShader(L"Data\\PIXL-Shaders\\MaterialForgeTessellation.hlsl", {}, "hs_5_0", "MaterialForgeHull"));
+			auto* domain = reinterpret_cast<ID3D11DomainShader*>(
+				Util::CompileShader(L"Data\\PIXL-Shaders\\MaterialForgeTessellation.hlsl", {}, "ds_5_0", "MaterialForgeDomain"));
+			if (hull && domain) {
+				gMaterialForgeHullShader.copy_from(hull);
+				gMaterialForgeDomainShader.copy_from(domain);
+			}
+			if (hull)
+				hull->Release();
+			if (domain)
+				domain->Release();
+			if (!gMaterialForgeHullShader || !gMaterialForgeDomainShader) {
+				if (!gMaterialForgeTessellationCompileFailureLogged.test_and_set())
+					logger::warn("[MaterialForge] Geometry displacement shader compilation failed; authored-height materials will use their normal draw");
+				return false;
+			}
+			logger::info("[MaterialForge] DX11 authored-height tessellation shaders compiled");
+		}
+
+		if (!gMaterialForgeTessellationConstants) {
+			D3D11_BUFFER_DESC desc{};
+			desc.ByteWidth = sizeof(MaterialForgeTessellationConstants);
+			desc.Usage = D3D11_USAGE_DEFAULT;
+			desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+			if (FAILED(device->CreateBuffer(&desc, nullptr, gMaterialForgeTessellationConstants.put())))
+				return false;
+		}
+		if (!gMaterialForgeTessellationState) {
+			const std::uint32_t active = 1u;
+			D3D11_TEXTURE2D_DESC desc{};
+			desc.Width = 1;
+			desc.Height = 1;
+			desc.MipLevels = 1;
+			desc.ArraySize = 1;
+			desc.Format = DXGI_FORMAT_R32_UINT;
+			desc.SampleDesc.Count = 1;
+			desc.Usage = D3D11_USAGE_IMMUTABLE;
+			desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+			D3D11_SUBRESOURCE_DATA initialData{};
+			initialData.pSysMem = &active;
+			initialData.SysMemPitch = sizeof(active);
+			winrt::com_ptr<ID3D11Texture2D> texture;
+			if (FAILED(device->CreateTexture2D(&desc, &initialData, texture.put())) ||
+				FAILED(device->CreateShaderResourceView(texture.get(), nullptr, gMaterialForgeTessellationState.put())))
+				return false;
+		}
+		return true;
+	}
+}
+
+namespace MaterialForgeTessellation
+{
+	bool MatchesArmedDraw(ID3D11DeviceContext* context, const MaterialForgeTessellationParameters& parameters);
+
+	void ArmForNextDraw(
+		float displacementScale,
+		float maximumTessellationFactor,
+		HeightSource heightSource,
+		float fadeStart,
+		float fadeEnd) noexcept
+	{
+		gPendingMaterialForgeTessellation = MaterialForgeTessellationParameters{};
+		if (!std::isfinite(displacementScale) || !std::isfinite(maximumTessellationFactor) || displacementScale <= 0.f)
+			return;
+
+		auto* context = globals::d3d::context;
+		if (!context)
+			return;
+
+		auto& parameters = gPendingMaterialForgeTessellation;
+		parameters.displacementScale = std::clamp(displacementScale, 0.f, 0.75f);
+		parameters.maximumFactor = std::clamp(maximumTessellationFactor, 1.f, 8.f);
+		parameters.fadeStart = std::clamp(fadeStart, 128.f, 8192.f);
+		parameters.fadeEnd = std::clamp(std::max(fadeEnd, parameters.fadeStart + 32.f), 160.f, 16384.f);
+		parameters.heightSource = heightSource;
+		if (heightSource == HeightSource::ComplexMaterialAlpha) {
+			parameters.heightTextureSlot = 5u;
+			parameters.heightChannel = 3u;
+			parameters.requireAuthoredRange = 1u;
+		}
+		context->VSGetShader(parameters.expectedVertexShader.put(), nullptr, nullptr);
+		context->PSGetShader(parameters.expectedPixelShader.put(), nullptr, nullptr);
+		context->IAGetInputLayout(parameters.expectedInputLayout.put());
+		context->IAGetIndexBuffer(parameters.expectedIndexBuffer.put(), &parameters.expectedIndexFormat, &parameters.expectedIndexOffset);
+		context->IAGetPrimitiveTopology(&parameters.expectedTopology);
+
+		ID3D11Buffer* rawVertexBuffers[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT]{};
+		context->IAGetVertexBuffers(
+			0,
+			D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT,
+			rawVertexBuffers,
+			parameters.expectedVertexStrides.data(),
+			parameters.expectedVertexOffsets.data());
+		bool hasVertexBuffer = false;
+		for (size_t index = 0; index < parameters.expectedVertexBuffers.size(); ++index) {
+			parameters.expectedVertexBuffers[index].attach(rawVertexBuffers[index]);
+			hasVertexBuffer |= rawVertexBuffers[index] != nullptr;
+		}
+
+		parameters.enabled = parameters.expectedVertexShader && parameters.expectedPixelShader &&
+			parameters.expectedInputLayout && parameters.expectedIndexBuffer && hasVertexBuffer &&
+			parameters.expectedTopology == D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+	}
+
+	struct DrawState::Impl
+	{
+		ID3D11DeviceContext* context = nullptr;
+		winrt::com_ptr<ID3D11HullShader> previousHullShader;
+		winrt::com_ptr<ID3D11DomainShader> previousDomainShader;
+		winrt::com_ptr<ID3D11Buffer> previousHullConstants;
+		winrt::com_ptr<ID3D11Buffer> previousDomainFrame;
+		winrt::com_ptr<ID3D11Buffer> previousDomainConstants;
+		winrt::com_ptr<ID3D11ShaderResourceView> previousHullHeightTexture;
+		winrt::com_ptr<ID3D11SamplerState> previousHullHeightSampler;
+		winrt::com_ptr<ID3D11ShaderResourceView> previousHeightTexture;
+		winrt::com_ptr<ID3D11SamplerState> previousHeightSampler;
+		winrt::com_ptr<ID3D11ShaderResourceView> previousPixelTessellationState;
+		winrt::com_ptr<ID3D11DepthStencilState> previousDepthState;
+		UINT previousStencilReference = 0;
+		D3D11_PRIMITIVE_TOPOLOGY previousTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+		bool active = false;
+
+		Impl(ID3D11DeviceContext* a_context, const MaterialForgeTessellationParameters& a_parameters)
+		{
+			if (!a_context || !EnsureMaterialForgeTessellationResources())
+				return;
+			if (!MatchesArmedDraw(a_context, a_parameters))
+				return;
+
+			context = a_context;
+			context->IAGetPrimitiveTopology(&previousTopology);
+			if (previousTopology != D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST)
+				return;
+
+			context->HSGetShader(previousHullShader.put(), nullptr, nullptr);
+			context->DSGetShader(previousDomainShader.put(), nullptr, nullptr);
+			// Terrain and water own their hull/domain stages and must keep their bindings.
+			if (previousHullShader || previousDomainShader)
+				return;
+
+			winrt::com_ptr<ID3D11Buffer> vertexFrame;
+			winrt::com_ptr<ID3D11ShaderResourceView> heightTexture;
+			winrt::com_ptr<ID3D11SamplerState> heightSampler;
+			context->VSGetConstantBuffers(12, 1, vertexFrame.put());
+			context->PSGetShaderResources(a_parameters.heightTextureSlot, 1, heightTexture.put());
+			context->PSGetSamplers(a_parameters.heightTextureSlot, 1, heightSampler.put());
+			if (!vertexFrame || !heightTexture || !heightSampler)
+				return;
+
+			context->HSGetConstantBuffers(13, 1, previousHullConstants.put());
+			context->HSGetShaderResources(4, 1, previousHullHeightTexture.put());
+			context->HSGetSamplers(4, 1, previousHullHeightSampler.put());
+			context->DSGetConstantBuffers(12, 1, previousDomainFrame.put());
+			context->DSGetConstantBuffers(13, 1, previousDomainConstants.put());
+			context->DSGetShaderResources(4, 1, previousHeightTexture.put());
+			context->DSGetSamplers(4, 1, previousHeightSampler.put());
+			context->PSGetShaderResources(119, 1, previousPixelTessellationState.put());
+			context->OMGetDepthStencilState(previousDepthState.put(), &previousStencilReference);
+			ID3D11DepthStencilState* displacedDepthState =
+				GetMaterialForgeDisplacedDepthState(globals::d3d::device, previousDepthState.get());
+			if (!displacedDepthState)
+				return;
+
+			const MaterialForgeTessellationConstants constants{
+				a_parameters.displacementScale,
+				a_parameters.maximumFactor,
+				a_parameters.fadeStart,
+				a_parameters.fadeEnd,
+				a_parameters.heightChannel,
+				a_parameters.requireAuthoredRange,
+				0u,
+				0u
+			};
+			context->UpdateSubresource(gMaterialForgeTessellationConstants.get(), 0, nullptr, &constants, 0, 0);
+
+			ID3D11Buffer* tessellationConstants = gMaterialForgeTessellationConstants.get();
+			ID3D11Buffer* frame = vertexFrame.get();
+			ID3D11ShaderResourceView* height = heightTexture.get();
+			ID3D11SamplerState* sampler = heightSampler.get();
+			ID3D11ShaderResourceView* tessellationState = gMaterialForgeTessellationState.get();
+			context->HSSetConstantBuffers(13, 1, &tessellationConstants);
+			// The hull shader performs the conservative authored-height test before
+			// assigning edge factors. It must see the same map and sampler as the
+			// domain shader; leaving HS t4/s4 unbound collapses Complex Material to
+			// factor one even though the draw hook itself is active.
+			context->HSSetShaderResources(4, 1, &height);
+			context->HSSetSamplers(4, 1, &sampler);
+			context->DSSetConstantBuffers(12, 1, &frame);
+			context->DSSetConstantBuffers(13, 1, &tessellationConstants);
+			context->DSSetShaderResources(4, 1, &height);
+			context->DSSetSamplers(4, 1, &sampler);
+			// t119 is reserved by PIXL Lighting as a per-draw marker. A dedicated PBR
+			// height draw uses it to choose tessellation over duplicate POM. Complex
+			// Material keeps fine POM relief because its CPU-side draw classification
+			// cannot validate environment-mask alpha before the hull-stage range test.
+			context->PSSetShaderResources(119, 1, &tessellationState);
+			context->OMSetDepthStencilState(displacedDepthState, previousStencilReference);
+			context->HSSetShader(gMaterialForgeHullShader.get(), nullptr, 0);
+			context->DSSetShader(gMaterialForgeDomainShader.get(), nullptr, 0);
+			context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST);
+			active = true;
+			if (!gMaterialForgeTessellationDepthLogged.test_and_set()) {
+				D3D11_DEPTH_STENCIL_DESC sourceDesc{};
+				if (previousDepthState)
+					previousDepthState->GetDesc(&sourceDesc);
+				logger::info(
+					"[MaterialForge] Geometry displacement depth contract active (source func {}, write {}; displaced func LESS_EQUAL, write ALL)",
+					static_cast<unsigned>(sourceDesc.DepthFunc),
+					static_cast<unsigned>(sourceDesc.DepthWriteMask));
+			}
+			auto& drawLogged = a_parameters.heightSource == HeightSource::ComplexMaterialAlpha
+				? gMaterialForgeComplexTessellationDrawLogged
+				: gMaterialForgePbrTessellationDrawLogged;
+			if (!drawLogged.test_and_set()) {
+				logger::info(
+					"[MaterialForge] First {} static mesh reached DX11 tessellation (scale {:.2f}, factor {:.2f}, fade {:.0f}-{:.0f})",
+					a_parameters.heightSource == HeightSource::ComplexMaterialAlpha ? "Complex Material" : "PBR height",
+					a_parameters.displacementScale,
+					a_parameters.maximumFactor,
+					a_parameters.fadeStart,
+					a_parameters.fadeEnd);
+			}
+		}
+
+		~Impl()
+		{
+			if (!active)
+				return;
+			context->HSSetShader(previousHullShader.get(), nullptr, 0);
+			context->DSSetShader(previousDomainShader.get(), nullptr, 0);
+			ID3D11Buffer* hullConstants = previousHullConstants.get();
+			ID3D11Buffer* domainFrame = previousDomainFrame.get();
+			ID3D11Buffer* domainConstants = previousDomainConstants.get();
+			ID3D11ShaderResourceView* hullHeightTexture = previousHullHeightTexture.get();
+			ID3D11SamplerState* hullHeightSampler = previousHullHeightSampler.get();
+			ID3D11ShaderResourceView* heightTexture = previousHeightTexture.get();
+			ID3D11SamplerState* heightSampler = previousHeightSampler.get();
+			ID3D11ShaderResourceView* tessellationState = previousPixelTessellationState.get();
+			context->HSSetConstantBuffers(13, 1, &hullConstants);
+			context->HSSetShaderResources(4, 1, &hullHeightTexture);
+			context->HSSetSamplers(4, 1, &hullHeightSampler);
+			context->DSSetConstantBuffers(12, 1, &domainFrame);
+			context->DSSetConstantBuffers(13, 1, &domainConstants);
+			context->DSSetShaderResources(4, 1, &heightTexture);
+			context->DSSetSamplers(4, 1, &heightSampler);
+			context->PSSetShaderResources(119, 1, &tessellationState);
+			context->OMSetDepthStencilState(previousDepthState.get(), previousStencilReference);
+			context->IASetPrimitiveTopology(previousTopology);
+		}
+	};
+
+	bool MatchesArmedDraw(ID3D11DeviceContext* context, const MaterialForgeTessellationParameters& parameters)
+	{
+		winrt::com_ptr<ID3D11VertexShader> vertexShader;
+		winrt::com_ptr<ID3D11PixelShader> pixelShader;
+		winrt::com_ptr<ID3D11InputLayout> inputLayout;
+		winrt::com_ptr<ID3D11Buffer> indexBuffer;
+		DXGI_FORMAT indexFormat = DXGI_FORMAT_UNKNOWN;
+		UINT indexOffset = 0;
+		D3D11_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+		std::array<winrt::com_ptr<ID3D11Buffer>, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> vertexBuffers;
+		std::array<UINT, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> vertexStrides{};
+		std::array<UINT, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> vertexOffsets{};
+
+		context->VSGetShader(vertexShader.put(), nullptr, nullptr);
+		context->PSGetShader(pixelShader.put(), nullptr, nullptr);
+		context->IAGetInputLayout(inputLayout.put());
+		context->IAGetIndexBuffer(indexBuffer.put(), &indexFormat, &indexOffset);
+		context->IAGetPrimitiveTopology(&topology);
+		ID3D11Buffer* rawVertexBuffers[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT]{};
+		context->IAGetVertexBuffers(0, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT, rawVertexBuffers, vertexStrides.data(), vertexOffsets.data());
+		for (size_t index = 0; index < vertexBuffers.size(); ++index)
+			vertexBuffers[index].attach(rawVertexBuffers[index]);
+
+		if (vertexShader.get() != parameters.expectedVertexShader.get() ||
+			pixelShader.get() != parameters.expectedPixelShader.get() ||
+			inputLayout.get() != parameters.expectedInputLayout.get() ||
+			indexBuffer.get() != parameters.expectedIndexBuffer.get() ||
+			indexFormat != parameters.expectedIndexFormat || indexOffset != parameters.expectedIndexOffset ||
+			topology != parameters.expectedTopology) {
+			return false;
+		}
+		for (size_t index = 0; index < vertexBuffers.size(); ++index) {
+			if (vertexBuffers[index].get() != parameters.expectedVertexBuffers[index].get() ||
+				vertexStrides[index] != parameters.expectedVertexStrides[index] ||
+				vertexOffsets[index] != parameters.expectedVertexOffsets[index]) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	DrawState::DrawState(ID3D11DeviceContext* context, bool allowTessellation)
+	{
+		const auto parameters = std::exchange(gPendingMaterialForgeTessellation, MaterialForgeTessellationParameters{});
+		if (allowTessellation && parameters.enabled) {
+			impl = std::make_unique<Impl>(context, parameters);
+			if (!impl->active)
+				impl.reset();
+		}
+	}
+
+	DrawState::~DrawState() = default;
+
+	bool DrawState::IsActive() const noexcept
+	{
+		return impl && impl->active;
+	}
+}
+
 void SetupPBRLandscapeTextureParameters(BSLightingShaderMaterialPBRLandscape& material, const MaterialForge::PBRTextureSetData& textureSetData, uint32_t textureIndex);
 
 namespace
@@ -279,6 +764,24 @@ namespace
 
 void MaterialForge::DrawSettings()
 {
+	if (ImGui::TreeNodeEx("Surface Weather and Detail", ImGuiTreeNodeFlags_DefaultOpen)) {
+		DrawUIntCheckbox("Weather Snow Layer", legacyTuningSettings.EnableWeatherSnow);
+		DrawTooltip("Adds snow to exposed static surfaces using Ground Response's accumulated snow and melt state. Requires Ground Response and SkyBounce for weather and shelter. Characters, glass and existing snow are protected.");
+		ImGui::BeginDisabled(legacyTuningSettings.EnableWeatherSnow == 0);
+		ImGui::SliderFloat("Snow Coverage", &legacyTuningSettings.SnowStrength, 0.f, 1.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat("Snow Slope Limit", &legacyTuningSettings.SnowSlopeMinimum, 0.f, 0.8f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::EndDisabled();
+		DrawUIntCheckbox("Procedural Surface Detail", legacyTuningSettings.EnableProceduralDetail);
+		DrawTooltip("Adds two filtered scales of world-anchored microstructure to rough static materials. Independent of UV seams; fades below pixel size. No extra textures. Excludes characters, glass and layered coatings.");
+		ImGui::BeginDisabled(legacyTuningSettings.EnableProceduralDetail == 0);
+		ImGui::SliderFloat("Microstructure Strength", &legacyTuningSettings.ProceduralDetailStrength, 0.f, 1.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::EndDisabled();
+		ImGui::SliderFloat("Indoor Dust Film", &legacyTuningSettings.IndoorDustStrength, 0.f, 0.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		DrawTooltip("Adds subtle settled dust patches to upward-facing static interior surfaces. Zero preserves clean authored materials; excludes glass, characters and emissive surfaces.");
+		ImGui::SliderFloat("Outdoor Dirt Film", &legacyTuningSettings.ExteriorDirtStrength, 0.f, 0.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		DrawTooltip("Adds a restrained porous-surface deposit. Rain washes it back and snow covers it. No ground-contact claim is made for elevated objects.");
+		ImGui::TreePop();
+	}
 	if (ImGui::TreeNodeEx(T(TKEY("global_settings"), "Global Settings"), ImGuiTreeNodeFlags_DefaultOpen)) {
 		ImGui::SliderFloat(T(TKEY("vertex_ao_strength"), "Vertex AO Strength"), &settings.VertexAOStrength,
 			static_cast<float>(PIXL::Metadata::Settings::MaterialVertexAO.minimum),
@@ -355,8 +858,8 @@ void MaterialForge::DrawSettings()
 		}
 
 		ImGui::SeparatorText("Physical Light Quality");
-		DrawUIntCheckbox("Inverse-Square Local Lights", settings.EnablePhysicalLocalLightFalloff);
-		DrawTooltip("When enabled, blends Skyrim's conventional radius falloff toward PIXL's regularized inverse-square model. At 0 the lights use the vanilla falloff; at 1 they use the full physical model. Disable to restore Natural Lighting's per-light falloff exactly.");
+		DrawUIntCheckbox("Inverse-Distance Local Lights", settings.EnablePhysicalLocalLightFalloff);
+		DrawTooltip("When enabled, blends Skyrim's conventional radius falloff toward PIXL's regularized inverse-distance model (1/d). At 0 the lights use the vanilla falloff; at 1 they use the full model. Disable to restore Natural Lighting's per-light falloff exactly.");
 		DrawUIntCheckbox("Procedural Fur Shells", gEnableProceduralFurShells);
 		DrawTooltip("Adds eight procedurally covered geometry layers to confidently classified animal coats and explicit fur or pelt materials. The layered draw costs more GPU work.");
 		if (ImGui::SliderFloat("Fur Shell Length", &gFurShellLength, 0.2f, 4.0f, "%.1f units", ImGuiSliderFlags_AlwaysClamp))
@@ -365,10 +868,10 @@ void MaterialForge::DrawSettings()
 		if (settings.EnablePhysicalLocalLightFalloff != 0) {
 			ImGui::SliderFloat("Physical Falloff Strength", &settings.PhysicalLocalLightFalloffStrength,
 				0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			DrawTooltip("0.00 matches Skyrim's conventional light-radius falloff; 1.00 is fully inverse-square. Lower values preserve more of the vanilla look.");
+			DrawTooltip("0.00 matches Skyrim's conventional light-radius falloff; 1.00 uses full inverse-distance (1/d) falloff. Lower values preserve more of the vanilla look.");
 			ImGui::SliderFloat("Local Emitter Radius", &settings.LocalLightMinimumDistance,
 				7.0f, 70.0f, "%.0f units", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
-			DrawTooltip("Finite emitter radius used near the light to prevent an inverse-square singularity. Larger values produce broader, softer near-light response.");
+			DrawTooltip("Finite emitter radius used near the light to keep inverse-distance attenuation bounded. Larger values produce broader, softer near-light response.");
 		}
 		DrawUIntCheckbox("Local Contact Shadows", settings.EnableLocalContactShadows);
 		DrawTooltip("Traces a short, temporally stable screen-space visibility ray for the strongest local lights. Updates in real time; disable for the lowest GPU cost.");
@@ -480,9 +983,29 @@ void MaterialForge::DrawSettings()
 
 		if (selectedPbrTextureSet != nullptr) {
 			bool wasEdited = false;
+			auto& surface = selectedPbrTextureSet->surface;
+			static constexpr const char* layouts[] = { "RMAOS", "ORM", "MRA", "RMA", "MaskMap" };
+			int layout = static_cast<int>(MaterialSurface::LayoutIndex(surface.packedMapLayout));
+			if (ImGui::Combo("Packed Map Layout", &layout, layouts, IM_ARRAYSIZE(layouts))) {
+				surface.packedMapLayout = layouts[layout];
+				wasEdited = true;
+			}
+			DrawTooltip("Channel order in the existing material-properties texture. RMAOS: roughness/metal/AO/specular; ORM: AO/roughness/metal; MRA: metal/roughness/AO; RMA: roughness/metal/AO; MaskMap: metal/AO/detail/smoothness. Texture data must be linear.");
+			wasEdited |= ImGui::SliderFloat("Wet Response", &surface.wetResponse, 0.f, 2.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			DrawTooltip("Scales this material's existing rain and shoreline response. Zero keeps it dry; one uses the normal weather response. No additional samples.");
+			bool automaticPorosity = surface.porosity < 0.f;
+			if (ImGui::Checkbox("Automatic Absorption", &automaticPorosity)) {
+				surface.porosity = automaticPorosity ? -1.f : 0.5f;
+				wasEdited = true;
+			}
+			DrawTooltip("Derives absorption from roughness and metallic coverage. Disable to author porous stone/wood or sealed surfaces explicitly.");
+			wasEdited |= ImGui::Checkbox("Receives Weather Snow", &surface.receiveSnow);
+			if (!automaticPorosity)
+				wasEdited |= ImGui::SliderFloat("Absorption", &surface.porosity, 0.f, 1.f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 			if (ImGui::SliderFloat(T(TKEY("displacement_scale"), "Displacement Scale"), &selectedPbrTextureSet->displacementScale, 0.f, 3.f, "%.3f")) {
 				wasEdited = true;
 			}
+			DrawTooltip("Controls POM and, when an authored height map is present on a compatible static PBR mesh, automatically drives matching near-field geometry relief. Tessellation detail adapts to projected triangle size.");
 			if (ImGui::SliderFloat(T(TKEY("roughness_scale"), "Roughness Scale"), &selectedPbrTextureSet->roughnessScale, 0.f, 3.f, "%.3f")) {
 				wasEdited = true;
 			}
@@ -697,6 +1220,17 @@ void MaterialForge::LoadSettings(json& o_json)
 		legacyTuningSettings = it->get<LegacyTuningSettings>();
 	legacyTuningSettings.Magic = LegacyTuningMagic;
 	legacyTuningSettings.Version = LegacyTuningVersion;
+	auto finiteRange = [](float value, float fallback, float low, float high) { return std::isfinite(value) ? std::clamp(value, low, high) : fallback; };
+	legacyTuningSettings.SnowStrength = finiteRange(legacyTuningSettings.SnowStrength, 0.8f, 0.f, 1.f);
+	legacyTuningSettings.ProceduralDetailStrength = finiteRange(legacyTuningSettings.ProceduralDetailStrength, 0.25f, 0.f, 1.f);
+	legacyTuningSettings.SnowSlopeMinimum = finiteRange(legacyTuningSettings.SnowSlopeMinimum, 0.3f, 0.f, 0.8f);
+	legacyTuningSettings.SnowSlopeFeather = finiteRange(legacyTuningSettings.SnowSlopeFeather, 0.35f, 0.05f, 0.8f);
+	legacyTuningSettings.ProceduralDetailScale = finiteRange(legacyTuningSettings.ProceduralDetailScale, 0.6f, 0.05f, 2.f);
+	legacyTuningSettings.ProceduralDetailDistance = finiteRange(legacyTuningSettings.ProceduralDetailDistance, 512.f, 64.f, 2048.f);
+	legacyTuningSettings.SnowRoughness = finiteRange(legacyTuningSettings.SnowRoughness, 0.78f, 0.4f, 1.f);
+	legacyTuningSettings.SnowAlbedo = finiteRange(legacyTuningSettings.SnowAlbedo, 0.76f, 0.4f, 0.9f);
+	legacyTuningSettings.IndoorDustStrength = finiteRange(legacyTuningSettings.IndoorDustStrength, 0.08f, 0.f, 0.5f);
+	legacyTuningSettings.ExteriorDirtStrength = finiteRange(legacyTuningSettings.ExteriorDirtStrength, 0.f, 0.f, 0.5f);
 }
 
 void MaterialForge::RestoreDefaultSettings()
@@ -750,6 +1284,12 @@ void MaterialForge::Prepass()
 		try {
 			legacyTuningSettings.Magic = LegacyTuningMagic;
 			legacyTuningSettings.Version = LegacyTuningVersion;
+			const auto& ground = globals::pipeline::groundResponse;
+			const bool snowAvailable = ground.loaded && ground.settings.EnableDeformableGround &&
+				ground.settings.EnableWeatherSnowAccumulation && ground.currentPerFrame.EnvironmentExterior > 0.5f;
+			legacyTuningSettings.WeatherSnowCoverage = snowAvailable ? std::clamp(ground.weatherSnowRaiseState / std::max(ground.settings.WeatherSnowMaximumRaise, 0.25f), 0.f, 1.f) : 0.f;
+			legacyTuningSettings.WeatherSnowMeltWetness = snowAvailable ?
+				std::clamp(ground.surfaceMoistureState * (1.f - ground.weatherSnowIntensityState) * legacyTuningSettings.WeatherSnowCoverage, 0.f, 1.f) : 0.f;
 			legacyTuningCB->Update(legacyTuningSettings);
 			auto* legacyTuningBuffer = legacyTuningCB->CB();
 			context->PSSetConstantBuffers(10, 1, &legacyTuningBuffer);
@@ -803,7 +1343,7 @@ void MaterialForge::SetupGlintsTexture()
 	glintsNoiseTexture->CreateUAV(uav_desc);
 
 	// Compile
-	auto noiseGenProgram = reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\Common\\Glints\\noisegen.cs.hlsl", {}, "cs_5_0"));
+	auto noiseGenProgram = reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\Common\\Glints\\noisegen.cs.hlsl", {}, "cs_5_0"));
 	if (!noiseGenProgram) {
 		logger::error("Failed to compile glints noise generation shader!");
 		return;
@@ -1048,7 +1588,7 @@ struct ExtendedRendererState
 
 	void SetPSTexture(size_t textureIndex, RE::BSGraphics::Texture* newTexture)
 	{
-		ID3D11ShaderResourceView* resourceView = newTexture ? newTexture->resourceView : nullptr;
+		ID3D11ShaderResourceView* resourceView = newTexture ? REX::W32::AsReal(newTexture->resourceView) : nullptr;
 		//if (PSTexture[textureIndex] != resourceView)
 		{
 			PSTexture[textureIndex] = resourceView;
@@ -1212,6 +1752,11 @@ struct BSLightingShaderProperty_GetRenderPasses
 				  *static_cast<RE::BSLightingShaderMaterialBase*>(property->material),
 				  geometryHierarchy)
 			: 0.0f;
+		// Anatomical exclusions must survive explicit fur and actor-path fallbacks.
+		if (property->material && PhysicalMaterial::IsFurExcluded(
+			*static_cast<RE::BSLightingShaderMaterialBase*>(property->material),
+			geometry && geometry->name.c_str() ? std::string_view(geometry->name.c_str()) : std::string_view{}))
+			automaticFurConfidence = 0.0f;
 		const bool hairHasAlpha = geometry != nullptr &&
 			geometry->GetGeometryRuntimeData().alphaProperty != nullptr;
 		if (automaticHairConfidence > 0.0f && hairHasAlpha)
@@ -1380,6 +1925,10 @@ bool MaterialForge::BSLightingShader_SetupMaterial(RE::BSLightingShader* shader,
 					}
 				}
 				shadowState->SetPSConstant(flags, RE::BSGraphics::ConstantGroupLevel::PerMaterial, lightingPSConstants.PBRFlags);
+				std::array<uint32_t, 4> profiles{};
+				for (uint32_t tile = 0; tile < BSLightingShaderMaterialPBRLandscape::NumTiles; ++tile)
+					profiles[tile / 2] |= physicalMaterials[tile].surfaceProfile << ((tile % 2) * 16);
+				shadowState->SetPSConstant(profiles, RE::BSGraphics::ConstantGroupLevel::PerMaterial, lightingPSConstants.PBRParams2);
 			}
 
 			{
@@ -1575,7 +2124,8 @@ bool MaterialForge::BSLightingShader_SetupMaterial(RE::BSLightingShader* shader,
 			}
 
 			{
-				shadowState->SetPSConstant(shaderFlags, RE::BSGraphics::ConstantGroupLevel::PerMaterial, lightingPSConstants.PBRFlags);
+				const uint32_t packedFlags = shaderFlags.underlying() | (physicalMaterial.surfaceProfile << 16);
+				shadowState->SetPSConstant(packedFlags, RE::BSGraphics::ConstantGroupLevel::PerMaterial, lightingPSConstants.PBRFlags);
 			}
 
 			{
@@ -1645,6 +2195,78 @@ struct BSLightingShader_SetupGeometry
 			automaticFur && gEnableProceduralFurShells != 0,
 			(activeTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ModelSpaceNormals)) != 0,
 			(activeTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Skinned)) != 0);
+
+		// Geometry displacement follows MaterialForge's existing authored height map
+		// and material depth controls. Keep it limited to the ordinary static opaque Lighting
+		// interface; vanilla, landscape, alpha-tested, projected, hair/fur, skinned
+		// and already-tessellated draws remain on their existing paths.
+		MaterialForgeTessellation::ArmForNextDraw(0.f, 1.f);
+		constexpr uint32_t unsupportedTessellationFlags =
+			static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Skinned) |
+			static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ModelSpaceNormals) |
+			static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::AutoFur) |
+			static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::AutoHair) |
+			static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::HairCandidate) |
+			static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ProjectedUV) |
+			static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DoAlphaTest) |
+			static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::WorldMap);
+		const uint32_t activeTechniqueFlags = activeTechnique & 0x00FFFFFFu;
+		const uint32_t activeTechniqueType = (activeTechnique >> 24) & 0x3Fu;
+		const bool tessellationGeometryCompatible = pass && pass->geometry &&
+			pass->geometry->GetGeometryRuntimeData().alphaProperty == nullptr &&
+			(activeTechniqueFlags & unsupportedTessellationFlags) == 0u;
+		if (tessellationGeometryCompatible && activeTechniqueType == 0u &&
+			(activeTechniqueFlags & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::MaterialForge)) != 0u) {
+			auto* unknownProperty = pass->geometry->GetGeometryRuntimeData().shaderProperty.get();
+			if (unknownProperty &&
+				unknownProperty->GetRTTI() == globals::rtti::BSLightingShaderPropertyRTTI.get()) {
+				auto* property = static_cast<RE::BSLightingShaderProperty*>(unknownProperty);
+				auto* material = reinterpret_cast<BSLightingShaderMaterialPBR*>(property->material);
+				if (const auto materialIt = BSLightingShaderMaterialPBR::All.find(material);
+					materialIt != BSLightingShaderMaterialPBR::All.end()) {
+					auto* graphicsState = globals::game::graphicsState;
+					const auto* defaultBlack = graphicsState
+						? graphicsState->GetRuntimeData().defaultTextureBlack.get()
+						: nullptr;
+					const bool hasAuthoredHeight = material->displacementTexture &&
+						material->displacementTexture.get() != defaultBlack;
+					// The bound MaterialForge height input is authoritative. PBR texture
+					// JSON adds tuning metadata, but requiring it here silently disabled
+					// tessellation for valid authored materials without a sidecar record.
+					const float boundScale = material->GetDisplacementScale();
+					const float pomScale = materialIt->second.textureSetData
+						? boundScale
+						: (boundScale > 0.01f
+							? boundScale
+							: globals::pipeline::materialLayers.tuningSettings.ObjectAuthoredDepthScale);
+					if (hasAuthoredHeight && std::isfinite(pomScale) && pomScale > 0.01f) {
+						// POM depth is dimensionless, while domain displacement is in Skyrim
+						// world units. Use the existing world-depth limit as the conversion
+						// contract so authored tuning remains useful and visible.
+						const auto& tuning = globals::pipeline::materialLayers.tuningSettings;
+						const float clampedPomScale = std::clamp(pomScale, 0.05f, 4.0f);
+						const float worldDepthLimit = std::clamp(tuning.ObjectVirtualDepthMaxWorld, 1.0f, 16.0f);
+						// Virtual POM depth is intentionally much larger than safe geometric
+						// relief. Feeding that value directly to the domain shader can pull
+						// static vertices several world units and expose stretched triangles.
+						const float geometryScale = std::clamp(
+							worldDepthLimit * clampedPomScale * 0.05f,
+							0.05f,
+							0.75f);
+						const float maximumTessellationFactor = std::clamp(3.0f + geometryScale * 0.35f, 3.0f, 8.0f);
+						MaterialForgeTessellation::ArmForNextDraw(
+							geometryScale,
+							maximumTessellationFactor,
+							MaterialForgeTessellation::HeightSource::PBRRed,
+							tuning.ObjectFadeStart,
+							tuning.ObjectFadeEnd);
+					}
+				}
+			}
+		}
+		// Complex Material keeps pixel-space POM. Its environment-mask alpha is
+		// also used by non-height material workflows, so it is not a safe source
+		// for geometry displacement without explicit authored-height metadata.
 
 		shader->currentRawTechnique = originalTechnique;
 

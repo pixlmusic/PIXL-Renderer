@@ -307,7 +307,22 @@ void WindowLife::DrawSettings()
 
 void WindowLife::LoadSettings(json& o_json)
 {
-    settings = o_json;
+    settings = o_json.is_object() ? o_json.get<Settings>() : Settings{};
+    const Settings defaults{};
+    auto finiteRange = [](float value, float fallback, float low, float high) {
+        return std::isfinite(value) ? std::clamp(value, low, high) : fallback;
+    };
+    settings.ParallaxDepth = finiteRange(settings.ParallaxDepth, defaults.ParallaxDepth, 0.0f, 240.0f);
+    settings.InteriorParallaxDepth = finiteRange(settings.InteriorParallaxDepth, defaults.InteriorParallaxDepth, 0.0f, 240.0f);
+    settings.Refraction = finiteRange(settings.Refraction, defaults.Refraction, 0.0f, 12.0f);
+    settings.SilhouetteSoftness = finiteRange(settings.SilhouetteSoftness, defaults.SilhouetteSoftness, 0.005f, 0.25f);
+    settings.DistanceFadeStart = finiteRange(settings.DistanceFadeStart, defaults.DistanceFadeStart, 0.0f, 32000.0f);
+    settings.DistanceFadeEnd = finiteRange(settings.DistanceFadeEnd, std::max(defaults.DistanceFadeEnd, settings.DistanceFadeStart + 1.0f), settings.DistanceFadeStart + 1.0f, 64000.0f);
+    settings.GlassStrength = finiteRange(settings.GlassStrength, defaults.GlassStrength, 0.0f, 1.0f);
+    settings.GlassRoughness = finiteRange(settings.GlassRoughness, defaults.GlassRoughness, 0.04f, 1.0f);
+    settings.GlassDistortion = finiteRange(settings.GlassDistortion, defaults.GlassDistortion, 0.0f, 0.15f);
+    settings.RoomWidth = finiteRange(settings.RoomWidth, defaults.RoomWidth, 48.0f, 320.0f);
+    settings.RoomHeight = finiteRange(settings.RoomHeight, defaults.RoomHeight, 72.0f, 360.0f);
     classificationCache.clear();
     activeDataValid = false;
     activeDataFrame = ~0u;
@@ -611,32 +626,32 @@ void WindowLife::SetupResources()
     };
 
     loadAtlas(
-        "Data\\Shaders\\WindowLife\\RoomAtlas_2k.dds",
-        "Data\\Shaders\\WindowLife\\RoomAtlas.png",
+        "Data\\PIXL-Shaders\\WindowLife\\RoomAtlas_2k.dds",
+        "Data\\PIXL-Shaders\\WindowLife\\RoomAtlas.png",
         "Room",
         roomAtlasSRV,
         false);
     loadAtlas(
-        "Data\\Shaders\\WindowLife\\OutdoorAtlas_2k.dds",
-        "Data\\Shaders\\WindowLife\\OutdoorAtlas.png",
+        "Data\\PIXL-Shaders\\WindowLife\\OutdoorAtlas_2k.dds",
+        "Data\\PIXL-Shaders\\WindowLife\\OutdoorAtlas.png",
         "Outdoor view",
         outdoorAtlasSRV,
         false);
     loadAtlas(
-        "Data\\Shaders\\WindowLife\\OutdoorAtlasNight_2k.dds",
-        "Data\\Shaders\\WindowLife\\OutdoorAtlasNight.png",
+        "Data\\PIXL-Shaders\\WindowLife\\OutdoorAtlasNight_2k.dds",
+        "Data\\PIXL-Shaders\\WindowLife\\OutdoorAtlasNight.png",
         "Outdoor night view",
         outdoorNightAtlasSRV,
         false);
     loadAtlas(
         {},
-        "Data\\Shaders\\WindowLife\\OccupantAtlas.png",
+        "Data\\PIXL-Shaders\\WindowLife\\OccupantAtlas.png",
         "Occupant",
         occupantAtlasSRV,
         true);
     loadAtlas(
-        "Data\\Shaders\\WindowLife\\CurtainAtlas_high-fidelity-2k.dds",
-        "Data\\Shaders\\WindowLife\\CurtainAtlas.png",
+        "Data\\PIXL-Shaders\\WindowLife\\CurtainAtlas_high-fidelity-2k.dds",
+        "Data\\PIXL-Shaders\\WindowLife\\CurtainAtlas.png",
         "Curtain",
         curtainAtlasSRV,
         true);
@@ -646,7 +661,7 @@ void WindowLife::SetupResources()
     // the shader retains its restrained low-frequency analytic fallback.
     glassGrimeSRV = nullptr;
     {
-        const std::filesystem::path grimePath = "Data\\Shaders\\WindowLife\\GlassGrime_1k.png";
+        const std::filesystem::path grimePath = "Data\\PIXL-Shaders\\WindowLife\\GlassGrime_1k.png";
         DirectX::TexMetadata grimeMetadata{};
         DirectX::ScratchImage grimeImage;
         DirectX::ScratchImage grimeMipChain;
@@ -757,6 +772,8 @@ void WindowLife::RefreshFrameBaseData()
         calendar = RE::Calendar::GetSingleton();
     if (calendar)
         hour = calendar->GetHour();
+    if (!std::isfinite(hour))
+        hour = 12.0f;
 
     const float night = GetDayNightBlend(hour);
     const float shadowStrength = std::lerp(

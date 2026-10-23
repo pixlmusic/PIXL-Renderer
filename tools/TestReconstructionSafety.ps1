@@ -52,9 +52,9 @@ Require 'pipeline/Camera Suite/Kernels/CameraSuite/PhysicalCameraLocalExposureCS
 Require 'engine/Modules/CameraSuite.cpp' 'std::swap\(cameraLocalExposureTexture, cameraLocalExposureHistoryTexture\)'
 Require 'pipeline/Camera Suite/Kernels/CameraSuite/Stormglass.hlsli' 'transmittance = exp\(-pathMetres'
 Require 'pipeline/Camera Suite/Kernels/CameraSuite/HDROutputCS.hlsl' 'PixlApplySubmergedGrade\(cameraScene, stormglass.uv\)'
-Require 'distribution/Shaders/Lighting.hlsl' 'lightsDiffuseColor \+= pixlLocalWaterBounce'
+Require 'distribution/PIXL-Shaders/Lighting.hlsl' 'lightsDiffuseColor \+= pixlLocalWaterBounce'
 Require 'pipeline/Water Optics/Kernels/WaterOptics/WaterCaustics.hlsli' 'waterPoint.xy \+ FrameBuffer::CameraPosAdjust.xy'
-Require 'distribution/Shaders/Water.hlsl' 'float2 edgeDistance = min\(ssrReflectionUv,'
+Require 'distribution/PIXL-Shaders/Water.hlsl' 'float2 edgeDistance = min\(ssrReflectionUv,'
 # Equal-weight histogram reference: trimmed log mean and broad highlight
 # percentile. A 1% candle must not change the meter; a broad bright region must.
 function Meter([int]$brightSamples) {

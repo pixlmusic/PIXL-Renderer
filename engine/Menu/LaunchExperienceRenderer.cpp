@@ -28,6 +28,7 @@ namespace
 	constexpr float kReminderDurationSeconds = 8.0f;
 	bool g_setupRestartNotice = false;
 	bool g_setupExitConfirmed = false;
+	bool g_setupDismissKeysArmed = false;
 }
 
 bool LaunchExperienceRenderer::ShouldSkipKeyRelease(uint32_t key)
@@ -51,6 +52,7 @@ void LaunchExperienceRenderer::OpenQuickSetup()
 {
 	g_setupRestartNotice = false;
 	g_setupExitConfirmed = false;
+	g_setupDismissKeysArmed = false;
 	quickSetupRequested = true;
 	isFirstTimeSetupShown = false;
 }
@@ -205,6 +207,7 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	static bool nrSetupConfirmed = false;
 	const bool dlssAvailable = globals::pipeline::imageReconstruction.streamline.featureDLSS;
 	if (ImGui::IsWindowAppearing()) {
+		g_setupDismissKeysArmed = false;
 		setupQuality = std::clamp(menu->GetSettings().RendererQuality, 0, 3);
 		const auto& reconstruction = globals::pipeline::imageReconstruction.settings;
 		const auto current = dlssAvailable ? reconstruction.upscaleMethod : reconstruction.upscaleMethodNoDLSS;
@@ -318,12 +321,14 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	centerItem(controlsWidth);
 	ImGui::BeginGroup();
 	ImGui::TextDisabled("PIXL RENDERER");
-	if (capturing) {
+	if (capturingMenuKey) {
 		const auto pulse = Util::GetPulsingColor(menu->GetTheme().StatusPalette.CurrentHotkey);
 		ImGui::PushStyleColor(ImGuiCol_Button, pulse);
 	}
+	ImGui::PushID("SetupMenuHotkey");
 	if (PIXLUI::ActionButton(keyLabel.c_str(), keyButtonSize, capturingMenuKey) && !capturing)
 		menu->settingToggleKey = true;
+	ImGui::PopID();
 	if (capturingMenuKey)
 		ImGui::PopStyleColor();
 	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "Quality, camera and renderer controls");
@@ -336,8 +341,10 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 		const auto pulse = Util::GetPulsingColor(menu->GetTheme().StatusPalette.CurrentHotkey);
 		ImGui::PushStyleColor(ImGuiCol_Button, pulse);
 	}
+	ImGui::PushID("SetupPhotoHotkey");
 	if (PIXLUI::ActionButton(photoKeyLabel.c_str(), keyButtonSize, capturingPhotoKey) && !capturing)
 		menu->BeginCustomHotkeyCapture(menuSettings.PhotoModeKey);
+	ImGui::PopID();
 	if (capturingPhotoKey)
 		ImGui::PopStyleColor();
 	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "Photo mode and high-quality capture");
@@ -356,8 +363,13 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 			continueSize,
 			true);
 
-	const bool escapePressed = ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Escape);
-	const bool enterPressed = ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter);
+	// Startup's Escape-to-enter shortcut can still be down when the black curtain
+	// releases input. Arm dismissal only after both keys have been released once.
+	if (!g_setupDismissKeysArmed &&
+		!ImGui::IsKeyDown(ImGuiKey_Escape) && !ImGui::IsKeyDown(ImGuiKey_Enter))
+		g_setupDismissKeysArmed = true;
+	const bool escapePressed = g_setupDismissKeysArmed && ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Escape);
+	const bool enterPressed = g_setupDismissKeysArmed && ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter);
 	const bool needsNRGuide = setupNeuralRendering && neuralAvailable && setupUpscaler >= 3 && !nrSetupConfirmed;
 	if (!capturing && !escapePressed && (continuePressed || enterPressed) && needsNRGuide)
 		ImGui::OpenPopup("NEURAL RENDERING | SETUP");

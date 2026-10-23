@@ -11,11 +11,20 @@ Texture2D<float4> PreviousFocus : register(t0);
 SamplerState LinearClampSampler : register(s0);
 RWTexture2D<float4> FocusOut : register(u0);
 
+bool DofFinite(float value)
+{
+	return (asuint(value) & 0x7f800000u) != 0x7f800000u;
+}
+
 float ReadFocusDepth(float2 uv, out bool valid)
 {
     float raw = SharedData::DepthTexture.SampleLevel(LinearClampSampler, saturate(uv), 0.0f).x;
-    valid = raw > 1.0e-5f && raw < 0.999998f && isfinite(raw);
-    return valid ? SharedData::GetScreenDepth(raw) : 0.0f;
+    valid = DofFinite(raw) && raw > 1.0e-5f && raw < 0.999998f;
+    if (!valid)
+        return 0.0f;
+    float viewDepth = SharedData::GetScreenDepth(raw);
+    valid = DofFinite(viewDepth) && viewDepth > 0.0f && viewDepth < 2000000.0f;
+    return valid ? viewDepth : 0.0f;
 }
 
 [numthreads(1, 1, 1)]
@@ -23,6 +32,9 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 {
     if (dispatchID.x != 0 || dispatchID.y != 0)
         return;
+	float fallbackFocusDistance = DofFinite(dofControlFocusDistance)
+		? clamp(dofControlFocusDistance, 25.0f, 2000000.0f)
+		: 2200.0f;
 
     // A compact centre ROI rejects a single bad depth sample while keeping the
     // focus query constant-cost regardless of the output resolution.
@@ -94,8 +106,10 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
         if (lowerWeight > 0.0f)
             target = lowerDepthSum / lowerWeight;
     }
-    float previousDistance = PreviousFocus.Load(int3(0, 0, 0)).x;
-    bool previousValid = dofControlHistoryValid != 0u && PreviousFocus.Load(int3(0, 0, 0)).y > 0.5f;
+    float4 previousFocus = PreviousFocus.Load(int3(0, 0, 0));
+	float previousDistance = previousFocus.x;
+	bool previousValid = dofControlHistoryValid != 0u && DofFinite(previousDistance) &&
+		previousDistance > 1.0f && previousDistance < 2000000.0f && DofFinite(previousFocus.y) && previousFocus.y > 0.5f;
     if (target <= 0.0f)
         target = previousValid ? previousDistance : max(dofControlFarBlurDistance, dofControlFocusDistance);
     // Resolve a compact cluster around the nearest hit. This lets a thin tree,
@@ -134,18 +148,25 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
         target = lerp(target, nearestDepth, 0.30f);
 
 
-    float previousDiopter = 1.0f / max(previousDistance, 1.0f);
-    float targetDiopter = 1.0f / max(target, 1.0f);
+	if (!DofFinite(target) || target <= 1.0f || target >= 2000000.0f)
+		target = previousValid ? previousDistance : fallbackFocusDistance;
+	float previousDiopter = previousValid ? rcp(previousDistance) : rcp(max(target, 1.0f));
+	float targetDiopter = rcp(max(target, 1.0f));
     float delta = abs(targetDiopter - previousDiopter);
-    float deadband = max(dofControlFocusDeadband * targetDiopter, 1.0e-5f);
+	float focusDeadband = DofFinite(dofControlFocusDeadband) ? clamp(dofControlFocusDeadband, 0.0f, 1.0f) : 0.0f;
+	float deadband = max(focusDeadband * targetDiopter, 1.0e-5f);
     if (previousValid && delta < deadband)
         targetDiopter = previousDiopter;
     else if (previousValid) {
 		// Time-based diopter smoothing keeps rack focus identical at 30, 60 and
 		// high refresh rates. The old fixed 1/60 step changed response speed and
 		// visible pumping with frame rate.
-		float response = 1.0f - exp(-max(dofControlFocusSpeed, 0.1f) * clamp(dofControlDeltaTime, 1.0f / 240.0f, 0.1f));
+		float focusSpeed = DofFinite(dofControlFocusSpeed) ? clamp(dofControlFocusSpeed, 0.1f, 100.0f) : 5.0f;
+		float focusDeltaTime = DofFinite(dofControlDeltaTime) ? clamp(dofControlDeltaTime, 1.0f / 240.0f, 0.1f) : 1.0f / 60.0f;
+		float response = 1.0f - exp(-focusSpeed * focusDeltaTime);
         targetDiopter = lerp(previousDiopter, targetDiopter, response);
     }
+	if (!DofFinite(targetDiopter) || targetDiopter <= 0.0f)
+		targetDiopter = rcp(fallbackFocusDistance);
     FocusOut[uint2(0, 0)] = float4(1.0f / max(targetDiopter, 1.0e-5f), 1.0f, targetDiopter, 0.0f);
 }

@@ -152,6 +152,9 @@ LightVolumes::TextureSize& LightVolumes::FetchCurrentSizeInUnits(const bool inte
 	size.Height /= 32;
 	size.Width /= 32;
 	size.Depth /= 10;
+	size.Width = std::max(size.Width, 1);
+	size.Height = std::max(size.Height, 1);
+	size.Depth = std::max(size.Depth, 1);
 
 	return size;
 }
@@ -222,34 +225,36 @@ void LightVolumes::EarlyPrepass()
 	if (width <= 0 || height <= 0)
 		return;
 
-	if (width != vlData.screenX || height != vlData.screenY) {
+	const bool dimensionsChanged = width != vlData.screenX || height != vlData.screenY;
+	if (dimensionsChanged) {
 		blurHCS = nullptr;
 		blurVCS = nullptr;
+		vlData.screenX = width;
+		vlData.screenY = height;
+		vlData.screenXMin1 = width - 1;
+		vlData.screenYMin1 = height - 1;
+		vlDataCB->Update(vlData);
 	}
-
-	vlData.screenX = width;
-	vlData.screenY = height;
-	vlData.screenXMin1 = width - 1;
-	vlData.screenYMin1 = height - 1;
-	vlDataCB->Update(vlData);
 
 	auto* tes = RE::TES::GetSingleton();
 	if (!tes)
 		return;
 	const auto interiorCell = tes->interiorCell;
 	const bool currentlyInInterior = interiorCell != nullptr;
+	const bool currentlyInteriorWithSun = currentlyInInterior && InteriorDaylight::IsInteriorWithSun(interiorCell);
 	const bool currentlyInMapMenu = globals::state && globals::state->isMapMenuOpen;
 	auto& atmosphere = globals::pipeline::atmosphere;
 	const bool currentlyAtmosphereMapProfileActive =
 		atmosphere.loaded && atmosphere.settings.enabled != 0 && atmosphere.settings.mapAtmosphereEnabled != 0;
 
-	if (initialised && currentlyInInterior == inInterior && currentlyInMapMenu == inMapMenu &&
+	if (initialised && currentlyInInterior == inInterior && currentlyInteriorWithSun == inInteriorWithSun &&
+		currentlyInMapMenu == inMapMenu &&
 		currentlyAtmosphereMapProfileActive == atmosphereMapProfileActive)
 		return;
 
 	initialised = true;
 	inInterior = currentlyInInterior;
-	inInteriorWithSun = InteriorDaylight::IsInteriorWithSun(interiorCell);
+	inInteriorWithSun = currentlyInteriorWithSun;
 	inMapMenu = currentlyInMapMenu;
 	atmosphereMapProfileActive = currentlyAtmosphereMapProfileActive;
 	SetupVL();
@@ -257,6 +262,8 @@ void LightVolumes::EarlyPrepass()
 
 void LightVolumes::SetupVL()
 {
+	if (!globals::game::bEnableVolumetricLighting || !gVolumetricLightingSizeHigh)
+		return;
 	// World/local maps use Atmosphere's dedicated analytical aerial perspective.
 	// Skyrim's legacy light volume is screen-space/temporal and adds haze without
 	// useful map depth cues, so disable it while the map camera is active.
@@ -292,7 +299,11 @@ void LightVolumes::SetVLQuality(VolumetricLightingDescriptor& descriptor, const 
 
 RE::BSImagespaceShader* LightVolumes::CreateShader(const std::string_view& name, const std::string_view& fileName, RE::BSComputeShader* computeShader)
 {
+	if (!computeShader)
+		return nullptr;
 	auto shader = RE::BSImagespaceShader::Create();
+	if (!shader)
+		return nullptr;
 	shader->shaderType = RE::BSShader::Type::ImageSpace;
 	shader->fxpFilename = fileName.data();
 	shader->name = name.data();
@@ -332,18 +343,22 @@ RE::BSImagespaceShader* LightVolumes::GetOrCreateBlurVCS(RE::BSComputeShader* co
 
 void LightVolumes::SetDimensionsCB() const
 {
+	if (!vlDataCB || !globals::d3d::context)
+		return;
 	auto cb = vlDataCB->CB();
 	globals::d3d::context->CSSetConstantBuffers(1, 1, &cb);
 }
 
 void LightVolumes::SetGroupCountsHCS(uint32_t& threadGroupCountX) const
 {
-	threadGroupCountX = (vlData.screenX + BlurThreadGroupSizeX - BlurWindow * 2u - 1u) / (BlurThreadGroupSizeX - BlurWindow * 2u);
+	constexpr uint32_t activeThreads = BlurThreadGroupSizeX - BlurWindow * 2u;
+	threadGroupCountX = (static_cast<uint32_t>(std::max(vlData.screenX, 1)) + activeThreads - 1u) / activeThreads;
 }
 
 void LightVolumes::SetGroupCountsVCS(uint32_t& threadGroupCountY) const
 {
-	threadGroupCountY = (vlData.screenY + BlurThreadGroupSizeY - BlurWindow * 2u - 1u) / (BlurThreadGroupSizeY - BlurWindow * 2u);
+	constexpr uint32_t activeThreads = BlurThreadGroupSizeY - BlurWindow * 2u;
+	threadGroupCountY = (static_cast<uint32_t>(std::max(vlData.screenY, 1)) + activeThreads - 1u) / activeThreads;
 }
 
 #undef I18N_KEY_PREFIX

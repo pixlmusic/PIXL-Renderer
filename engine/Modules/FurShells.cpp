@@ -1,6 +1,8 @@
 #include "FurShells.h"
 
 #include "Globals.h"
+#include "MaterialForge/MaterialForgeTessellation.h"
+#include "Modules/OceanDynamics.h"
 #include "Util.h"
 
 #include <utility>
@@ -165,9 +167,10 @@ std::atomic_flag furShellDepthLogged = ATOMIC_FLAG_INIT;
 	};
 
 	template <class Draw>
-	void InvokeDraw(ID3D11DeviceContext* context, Draw&& draw)
+	void InvokeDraw(ID3D11DeviceContext* context, Draw&& draw, bool allowTessellation = false)
 	{
 		const bool useFurShells = std::exchange(furShellDrawPending, false);
+		MaterialForgeTessellation::DrawState tessellationState(context, allowTessellation && !useFurShells);
 		if (!useFurShells) {
 			draw();
 			return;
@@ -184,7 +187,12 @@ std::atomic_flag furShellDepthLogged = ATOMIC_FLAG_INIT;
 	{
 		static void thunk(ID3D11DeviceContext* self, UINT indexCount, UINT startIndex, INT baseVertex)
 		{
-			InvokeDraw(self, [&] { func(self, indexCount, startIndex, baseVertex); });
+			auto& ocean = globals::pipeline::oceanDynamics;
+			const bool replaced = ocean.BeginWaterDraw(self, true);
+			InvokeDraw(self, [&] { func(self, indexCount, startIndex, baseVertex); }, true);
+			if (replaced) {
+				ocean.EndWaterDraw(self);
+			}
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -200,7 +208,14 @@ std::atomic_flag furShellDepthLogged = ATOMIC_FLAG_INIT;
 	{
 		static void thunk(ID3D11DeviceContext* self, UINT indexCount, UINT instanceCount, UINT startIndex, INT baseVertex, UINT startInstance)
 		{
-			InvokeDraw(self, [&] { func(self, indexCount, instanceCount, startIndex, baseVertex, startInstance); });
+			auto& ocean = globals::pipeline::oceanDynamics;
+			const bool eligible = instanceCount == 1 && startInstance == 0;
+			const bool replaced = eligible && ocean.BeginWaterDraw(self, true);
+			InvokeDraw(self, [&] {
+				func(self, indexCount, instanceCount, startIndex, baseVertex, startInstance);
+			}, eligible);
+			if (replaced)
+				ocean.EndWaterDraw(self);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -258,7 +273,7 @@ namespace FurShells
 			return;
 		auto compile = [](const std::vector<std::pair<const char*, const char*>>& defines) {
 			return reinterpret_cast<ID3D11GeometryShader*>(
-				Util::CompileShader(L"Data\\Shaders\\FurShellGS.hlsl", defines, "gs_5_0"));
+				Util::CompileShader(L"Data\\PIXL-Shaders\\FurShellGS.hlsl", defines, "gs_5_0"));
 		};
 		if (!furShellShader) {
 			auto* compiled = compile({});

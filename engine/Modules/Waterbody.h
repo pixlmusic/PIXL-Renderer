@@ -4,6 +4,8 @@
 #include "Waterbody/WaterCache.h"
 
 #include <atomic>
+#include <shared_mutex>
+#include <unordered_map>
 
 /** @brief Replaces distant water tiles with LOD0 water to eliminate water LOD mismatch. */
 struct Waterbody : OverlayFeature
@@ -32,6 +34,11 @@ struct Waterbody : OverlayFeature
 	};
 
 	Settings settings;
+	struct BSWaterShader_RestoreTechnique
+	{
+		static void thunk(RE::BSShader* shader, std::uint32_t technique);
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
 
 	/** @brief Hook that overrides water shader material parameters during water initialization. */
 	struct TESWaterSystem_InitializeWater_SetWaterShaderMaterialParams
@@ -115,6 +122,12 @@ struct Waterbody : OverlayFeature
 	/** @brief Returns whether the overlay should be displayed. */
 	virtual bool IsOverlayVisible() const override;
 
+	/** Classification retained for each PIXL-managed runtime water tile. */
+	bool IsOpenOceanTile(const RE::BSGeometry* geometry) const;
+	bool GetOpenOceanHeight(const RE::TESWorldSpace* worldspace, float worldX, float worldY, float& height) const;
+	void RegisterWaterForm(RE::BSGeometry* geometry, RE::FormID formID, bool openOcean);
+	void UnregisterWaterForm(RE::BSGeometry* geometry);
+
 	/** @brief Handles post-data-load initialization including flowmap and cache setup. */
 	virtual void DataLoaded() override;
 
@@ -133,6 +146,8 @@ private:
 	RE::NiPointer<RE::BSTriShape> optimisedWaterMesh;
 	std::unique_ptr<Flowmap> flowmap;
 	std::unique_ptr<WaterCache> waterCache;
+	mutable std::shared_mutex waterFormMutex;
+	std::unordered_map<const RE::BSGeometry*, bool> openOceanByGeometry;
 
 	RE::NiNode** gWaterLOD = nullptr;
 	RE::NiPointer<RE::NiSourceTexture>* gFlowMapSourceTex = nullptr;
@@ -143,6 +158,7 @@ private:
 
 	std::atomic_bool exteriorWorldspaceActive{ false };
 	std::atomic_bool mapMenuOpen{ false };
+	std::atomic<RE::TESWorldSpace*> activeWorldSpace{ nullptr };
 
 	void SetFlowmapTex() const;
 	/** @brief Returns whether the meshes and water cache built in DataLoaded are available; hooks installed in PostPostLoad run before it and survive its failure paths. */

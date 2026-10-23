@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$ReleaseDirectory,
-    [string]$Version = '1.0.5'
+    [string]$Version = '1.0.8'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,8 +20,7 @@ if ((Get-Item -LiteralPath $dll).VersionInfo.ProductVersion -cne "$Version.0") {
 $names = @(
     "PIXL-Renderer-v$Version-Core.zip",
     "PIXL-Renderer-v$Version-Source.zip",
-    "PIXL-Renderer-v$Version-FOMOD.zip",
-    'SurfaceTides-1.1.0-PIXL-Source.zip'
+    "PIXL-Renderer-v$Version-FOMOD.zip"
 )
 $artifacts = [ordered]@{}
 $checksums = [Collections.Generic.List[string]]::new()
@@ -36,7 +35,7 @@ $dllHash = (Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash
 $commit = (& git -C $repo rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve source commit.' }
 $dirty = [bool]@(& git -C $repo status --porcelain --untracked-files=normal)
-$shaderCount = @(Get-ChildItem -LiteralPath (Join-Path $core 'Shaders') -File -Recurse | Where-Object { $_.Extension -in @('.hlsl','.hlsli','.fx','.fxh') }).Count
+$shaderCount = @(Get-ChildItem -LiteralPath (Join-Path $core 'PIXL-Shaders') -File -Recurse | Where-Object { $_.Extension -in @('.hlsl','.hlsli','.fx','.fxh') }).Count
 
 [ordered]@{
     product = 'PIXL Renderer'
@@ -58,5 +57,8 @@ $shaderCount = @(Get-ChildItem -LiteralPath (Join-Path $core 'Shaders') -File -R
 } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $release 'RELEASE_MANIFEST.json') -Encoding UTF8
 $checksums | Set-Content -LiteralPath (Join-Path $release 'SHA256SUMS.txt') -Encoding ASCII
 Copy-Item -LiteralPath (Join-Path $repo 'docs\CHANGELOG.md') -Destination (Join-Path $release 'CHANGELOG.md') -Force
-Copy-Item -LiteralPath (Join-Path $repo 'docs\RELEASE_CHECKLIST_1.0.5.md') -Destination (Join-Path $release 'RELEASE_CHECKLIST_1.0.5.md') -Force
-Write-Host "PASS: release manifest, four archive hashes, $shaderCount shader files, and checklist at $release"
+$releaseChecklist = Join-Path $repo "docs\RELEASE_CHECKLIST_$Version.md"
+if (Test-Path -LiteralPath $releaseChecklist -PathType Leaf) {
+    Copy-Item -LiteralPath $releaseChecklist -Destination (Join-Path $release ([IO.Path]::GetFileName($releaseChecklist))) -Force
+}
+Write-Host "PASS: release manifest, three archive hashes, $shaderCount shader files, and checklist at $release"

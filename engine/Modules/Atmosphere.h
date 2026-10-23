@@ -77,8 +77,8 @@ public:
 		float volumetricDepthDistributionScale = 8.1f;
 		float volumetricSkyLightingIntensity = 1.0f;
 		float volumetricFogScatteringDistribution = 0.19f;
-		float volumetricHistoryWeight = 0.96f;
-		uint volumetricHistoryMissSampleCount = 4;
+		float volumetricHistoryWeight = 0.82f;
+		uint volumetricHistoryMissSampleCount = 6;
 		float volumetricSampleJitterMultiplier = 0.0f;
 		float volumetricUpsampleJitterMultiplier = 1.0f;
 		float volumetricLocalLightScatteringIntensity = 1.43f;
@@ -89,23 +89,23 @@ public:
 		uint volumetricUseDisplayResolutionGrid = 1;
 		uint volumetricDepthAwareUpsampling = 1;
 		float volumetricDepthAwareUpsamplingStrength = 8.1f;
-		float volumetricHistoryRadianceClamp = 3.9f;
+		float volumetricHistoryRadianceClamp = 2.5f;
 
-		float volumetricHistoryDepthRejection = 8.0f;
+		float volumetricHistoryDepthRejection = 16.0f;
 		uint mapAtmosphereEnabled = 1;
 		uint mapDisableVolumetricFog = 1;
 		uint mapDisableVanillaFog = 1;
 
 		// World/local map visibility profile. Gameplay values remain untouched.
-		float mapFogDensityMultiplier = 0.24f;
-		float mapFogHeightFalloffMultiplier = 0.52f;
-		float mapStartDistance = 0.0f;
-		float mapMinimumTransmittance = 0.32f;
+		float mapFogDensityMultiplier = 0.01f;
+		float mapFogHeightFalloffMultiplier = 0.05f;
+		float mapStartDistance = 3500.0f;
+		float mapMinimumTransmittance = 0.83f;
 
-		float mapAmbientInscatteringMultiplier = 0.0f;
-		float mapDirectionalInscatteringMultiplier = 1.13f;
-		float mapSunlightAttenuationMultiplier = 0.29f;
-		float mapWorldProbeMultiplier = 0.53f;
+		float mapAmbientInscatteringMultiplier = 0.80f;
+		float mapDirectionalInscatteringMultiplier = 0.55f;
+		float mapSunlightAttenuationMultiplier = 0.25f;
+		float mapWorldProbeMultiplier = 0.81f;
 
 		// Automatic mode preserves the authored sliders as a look/quality baseline,
 		// then adapts visibility, phase and range from Skyrim's live weather.

@@ -99,7 +99,25 @@ void StrandShading::DrawSettings()
 
 void StrandShading::LoadSettings(json& o_json)
 {
-	settings = o_json;
+	settings = o_json.is_object() ? o_json.get<Settings>() : Settings{};
+	const Settings defaults{};
+	auto finiteRange = [](float value, float fallback, float low, float high) {
+		return std::isfinite(value) ? std::clamp(value, low, high) : fallback;
+	};
+	settings.HairMode = std::min(settings.HairMode, 1u);
+	settings.HairGlossiness = finiteRange(settings.HairGlossiness, defaults.HairGlossiness, 0.0f, settings.HairMode ? 100.0f : 256.0f);
+	settings.SpecularMult = finiteRange(settings.SpecularMult, defaults.SpecularMult, 0.0f, 4.0f);
+	settings.DiffuseMult = finiteRange(settings.DiffuseMult, defaults.DiffuseMult, 0.0f, 4.0f);
+	settings.PrimaryTangentShift = finiteRange(settings.PrimaryTangentShift, defaults.PrimaryTangentShift, -1.0f, 1.0f);
+	settings.SecondaryTangentShift = finiteRange(settings.SecondaryTangentShift, defaults.SecondaryTangentShift, -1.0f, 1.0f);
+	settings.HairSaturation = finiteRange(settings.HairSaturation, defaults.HairSaturation, 0.0f, 2.0f);
+	settings.SpecularIndirectMult = finiteRange(settings.SpecularIndirectMult, defaults.SpecularIndirectMult, 0.0f, 4.0f);
+	settings.DiffuseIndirectMult = finiteRange(settings.DiffuseIndirectMult, defaults.DiffuseIndirectMult, 0.0f, 4.0f);
+	settings.BaseColorMult = finiteRange(settings.BaseColorMult, defaults.BaseColorMult, 0.0f, 4.0f);
+	settings.Transmission = finiteRange(settings.Transmission, defaults.Transmission, 0.0f, 1.0f);
+	settings.SelfShadowStrength = finiteRange(settings.SelfShadowStrength, defaults.SelfShadowStrength, 0.0f, 1.0f);
+	settings.SelfShadowExponent = finiteRange(settings.SelfShadowExponent, defaults.SelfShadowExponent, 0.0f, 10.0f);
+	settings.SelfShadowScale = finiteRange(settings.SelfShadowScale, defaults.SelfShadowScale, 0.0f, 10.0f);
 }
 
 void StrandShading::SaveSettings(json& o_json)
@@ -120,7 +138,7 @@ void StrandShading::SetupResources()
 	{
 		DirectX::ScratchImage image;
 		try {
-			std::filesystem::path path = "Data\\Shaders\\Hair\\TangentShift.dds";
+			std::filesystem::path path = "Data\\PIXL-Shaders\\Hair\\TangentShift.dds";
 
 			DX::ThrowIfFailed(LoadFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, image));
 		} catch (const DX::com_exception& e) {
@@ -145,7 +163,7 @@ void StrandShading::SetupResources()
 			.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
 			.Texture2D = {
 				.MostDetailedMip = 0,
-				.MipLevels = 10 }
+				.MipLevels = texTangentShift->desc.MipLevels }
 		};
 		texTangentShift->CreateSRV(srvDesc);
 	}
@@ -155,10 +173,10 @@ void StrandShading::Prepass()
 {
 	auto context = globals::d3d::context;
 
-	if (texTangentShift) {
-		ID3D11ShaderResourceView* srv = texTangentShift->srv.get();
-		context->PSSetShaderResources(73, 1, &srv);
-	}
+	if (!context)
+		return;
+	ID3D11ShaderResourceView* srv = settings.Enabled && texTangentShift ? texTangentShift->srv.get() : nullptr;
+	context->PSSetShaderResources(73, 1, &srv);
 }
 
 #undef I18N_KEY_PREFIX

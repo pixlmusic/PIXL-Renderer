@@ -24,7 +24,9 @@ namespace FoliageDynamics
 		float3 saturatedBase = saturate(baseColor);
 		float3 absorption = 1.0f.xxx - saturatedBase;
 		float3 beerTint = exp2(-absorption * (0.75f + 1.65f * saturate(thickness)));
-		return lerp(sqrt(saturatedBase), beerTint, 0.58f);
+		float3 tint = lerp(sqrt(saturatedBase), beerTint, 0.58f);
+		float tintPeak = max(tint.r, max(tint.g, tint.b));
+		return tint / max(tintPeak, 1.0f);
 	}
 
 	float ThinSurfaceDiffuseEnergy(float normalDotView, float transmission, float specularStrength)
@@ -53,6 +55,9 @@ namespace FoliageDynamics
 
 	float3 GetLightSpecularInput(float3 L, float3 V, float3 N, float3 lightColor, float shininess)
 	{
+		L = normalize(L + 1.0e-8f.xxx);
+		V = normalize(V + 1.0e-8f.xxx);
+		N = normalize(N + 1.0e-8f.xxx);
 		float3 Hsum = V + L;
 		float hLenSq = dot(Hsum, Hsum);
 		float3 H = hLenSq > 1e-6f ? Hsum * rsqrt(hLenSq) : L;
@@ -68,9 +73,9 @@ namespace FoliageDynamics
 
 		float perceptualRoughness = GlossinessToPerceptualRoughness(shininess);
 		if (SharedData::foliageDynamicsSettings.EnableEnhancedVegetation != 0) {
-			float normalVariance = max(
+			float normalVariance = min(max(
 				dot(ddx_coarse(N), ddx_coarse(N)),
-				dot(ddy_coarse(N), ddy_coarse(N)));
+				dot(ddy_coarse(N), ddy_coarse(N))), 16.0f);
 			float filtered = sqrt(
 				perceptualRoughness * perceptualRoughness +
 				saturate(normalVariance * max(SharedData::foliageDynamicsSettings.SpecularAA, 0.0f)) * 0.10f);
@@ -97,7 +102,9 @@ namespace FoliageDynamics
 	#if USE_PIXL_VEGETATION_BRDF
 		float backLighting = saturate(-dot(N, L));
 		float grazingView = sqrt(saturate(1.0f - abs(dot(N, V))));
-		float forwardScatter = pow(saturate(dot(-L, V)), 4.0f);
+		float forwardBase = saturate(dot(-L, V));
+		float forwardScatter = forwardBase * forwardBase;
+		forwardScatter *= forwardScatter;
 		float transmission = saturate(backLighting * (0.65f + 0.35f * grazingView) + forwardScatter * 0.25f);
 		float enhancedAmount = amount;
 		if (SharedData::foliageDynamicsSettings.EnableEnhancedVegetation != 0)
@@ -165,6 +172,7 @@ namespace FoliageDynamics
 	// http://www.thetenthplanet.de/archives/1180
 	float3x3 CalculateTBN(float3 N, float3 p, float2 uv)
 	{
+		N = normalize(N + 1.0e-8f.xxx);
 		// get edge vectors of the pixel triangle
 		float3 dp1 = ddx_coarse(p);
 		float3 dp2 = ddy_coarse(p);
@@ -178,7 +186,14 @@ namespace FoliageDynamics
 		float3 B = dp2perp * duv1.y + dp1perp * duv2.y;
 
 		// construct a scale-invariant frame
-		float invmax = rsqrt(max(max(dot(T, T), dot(B, B)), 1e-8f));
+		float frameEnergy = max(dot(T, T), dot(B, B));
+		if (frameEnergy <= 1.0e-8f) {
+			float3 axis = abs(N.z) < 0.999f ? float3(0, 0, 1) : float3(0, 1, 0);
+			T = normalize(cross(axis, N));
+			B = cross(N, T);
+			return float3x3(T, B, N);
+		}
+		float invmax = rsqrt(frameEnergy);
 		return float3x3(T * invmax, B * invmax, N);
 	}
 }

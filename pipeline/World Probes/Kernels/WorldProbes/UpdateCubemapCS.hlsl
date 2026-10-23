@@ -89,9 +89,11 @@ float smoothbumpstep(float edge0, float edge1, float x)
 #else
 		if (linearDepth > 16.5 && depth != 1.0) {  // Ignore objects which are too close or the sky
 #endif
-			half4 positionCS = half4(2 * half2(uv.x, -uv.y + 1) - 1, depth, 1);
+			// Full precision is needed before the inverse projection, especially near
+			// distant geometry where half precision moves the captured world point.
+			float4 positionCS = float4(2.0f * float2(uv.x, 1.0f - uv.y) - 1.0f, depth, 1.0f);
 			positionCS = mul(FrameBuffer::CameraViewProjInverse, positionCS);
-			if (abs(positionCS.w) <= 1e-6f)
+			if (!isfinite(positionCS.w) || abs(positionCS.w) <= 1e-6f)
 				return;
 			positionCS.xyz *= rcp(positionCS.w);
 

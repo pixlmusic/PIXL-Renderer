@@ -44,6 +44,8 @@ bool LightIntersectsCluster(float3 position, float radiusSquared, ClusterAABB cl
 
 	for (uint i = 0; i < LightCount; i++) {
 		Light light = lights[i];
+		if ((light.lightFlags & LightFlags::Disabled) != 0)
+			continue;
 
 		float radiusSquared = light.radius * light.radius;
 
@@ -60,8 +62,6 @@ bool LightIntersectsCluster(float3 position, float radiusSquared, ClusterAABB cl
 			float luminance = dot(max(light.color, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
 			float score = luminance * max(light.fade, 0.0f) /
 				max(dot(toLight, toLight) + max(light.sizeBias, 1.0f), 1.0f);
-			if ((light.lightFlags & LightFlags::Disabled) != 0)
-				score = -1.0f;
 			if (score > contactLightScores.x) {
 				contactLightScores.y = contactLightScores.x;
 				contactLightIndices.y = contactLightIndices.x;
@@ -85,6 +85,8 @@ bool LightIntersectsCluster(float3 position, float radiusSquared, ClusterAABB cl
 	uint writeIndex = 0;
 	for (uint j = 0; j < LightCount && writeIndex < visibleLightCount; ++j) {
 		Light light = lights[j];
+		if ((light.lightFlags & LightFlags::Disabled) != 0)
+			continue;
 		float3 positionVS = FrameBuffer::WorldToView(light.positionWS.xyz);
 		if (LightIntersectsCluster(positionVS, light.radius * light.radius, cluster)) {
 			lightIndexList[offset + writeIndex] = j;

@@ -111,7 +111,7 @@ void Atmosphere::RestoreDefaultSettings()
 
 void Atmosphere::LoadSettings(json& o_json)
 {
-	settings = o_json;
+	settings = o_json.is_object() ? o_json.get<Settings>() : Settings{};
 	auto finiteOr = [](float value, float fallback) {
 		return std::isfinite(value) ? value : fallback;
 	};
@@ -140,7 +140,10 @@ void Atmosphere::LoadSettings(json& o_json)
 	settings.volumetricDepthDistributionScale = std::clamp(finiteOr(settings.volumetricDepthDistributionScale, 8.0f), 1.0f, 128.0f);
 	settings.volumetricSkyLightingIntensity = std::clamp(finiteOr(settings.volumetricSkyLightingIntensity, 1.0f), 0.0f, 10.0f);
 	settings.volumetricFogScatteringDistribution = std::clamp(finiteOr(settings.volumetricFogScatteringDistribution, 0.2f), -0.9f, 0.9f);
-	settings.volumetricHistoryWeight = std::clamp(finiteOr(settings.volumetricHistoryWeight, 0.96f), 0.0f, 0.99f);
+	// Froxel scattering depends on view direction as well as world position.
+	// A near-unity history weight leaves old sky-facing scattering visible during
+	// camera rotation, so cap persistence while retaining lower user values.
+	settings.volumetricHistoryWeight = std::clamp(finiteOr(settings.volumetricHistoryWeight, 0.82f), 0.0f, 0.88f);
 	settings.volumetricHistoryMissSampleCount = std::clamp(settings.volumetricHistoryMissSampleCount, 1u, 16u);
 	settings.volumetricSampleJitterMultiplier = std::clamp(finiteOr(settings.volumetricSampleJitterMultiplier, 0.0f), 0.0f, 1.0f);
 	settings.volumetricUpsampleJitterMultiplier = std::clamp(finiteOr(settings.volumetricUpsampleJitterMultiplier, 0.0f), 0.0f, 1.0f);
@@ -148,19 +151,19 @@ void Atmosphere::LoadSettings(json& o_json)
 	settings.volumetricUseDisplayResolutionGrid = settings.volumetricUseDisplayResolutionGrid ? 1u : 0u;
 	settings.volumetricDepthAwareUpsampling = settings.volumetricDepthAwareUpsampling ? 1u : 0u;
 	settings.volumetricDepthAwareUpsamplingStrength = std::clamp(finiteOr(settings.volumetricDepthAwareUpsamplingStrength, 8.0f), 0.0f, 32.0f);
-	settings.volumetricHistoryRadianceClamp = std::clamp(finiteOr(settings.volumetricHistoryRadianceClamp, 4.0f), 1.0f, 12.0f);
-	settings.volumetricHistoryDepthRejection = std::clamp(finiteOr(settings.volumetricHistoryDepthRejection, 8.0f), 0.0f, 32.0f);
+	settings.volumetricHistoryRadianceClamp = std::clamp(finiteOr(settings.volumetricHistoryRadianceClamp, 2.5f), 1.0f, 12.0f);
+	settings.volumetricHistoryDepthRejection = std::clamp(finiteOr(settings.volumetricHistoryDepthRejection, 16.0f), 0.0f, 32.0f);
 	settings.mapAtmosphereEnabled = settings.mapAtmosphereEnabled ? 1u : 0u;
 	settings.mapDisableVolumetricFog = settings.mapDisableVolumetricFog ? 1u : 0u;
 	settings.mapDisableVanillaFog = settings.mapDisableVanillaFog ? 1u : 0u;
-	settings.mapFogDensityMultiplier = std::clamp(finiteOr(settings.mapFogDensityMultiplier, 0.18f), 0.0f, 1.0f);
-	settings.mapFogHeightFalloffMultiplier = std::clamp(finiteOr(settings.mapFogHeightFalloffMultiplier, 1.5f), 0.05f, 2.0f);
-	settings.mapStartDistance = std::clamp(finiteOr(settings.mapStartDistance, 2500.0f), 0.0f, 50000.0f);
-	settings.mapMinimumTransmittance = std::clamp(finiteOr(settings.mapMinimumTransmittance, 0.55f), 0.0f, 1.0f);
-	settings.mapAmbientInscatteringMultiplier = std::clamp(finiteOr(settings.mapAmbientInscatteringMultiplier, 0.65f), 0.0f, 2.0f);
-	settings.mapDirectionalInscatteringMultiplier = std::clamp(finiteOr(settings.mapDirectionalInscatteringMultiplier, 0.35f), 0.0f, 2.0f);
+	settings.mapFogDensityMultiplier = std::clamp(finiteOr(settings.mapFogDensityMultiplier, 0.01f), 0.0f, 1.0f);
+	settings.mapFogHeightFalloffMultiplier = std::clamp(finiteOr(settings.mapFogHeightFalloffMultiplier, 0.05f), 0.05f, 2.0f);
+	settings.mapStartDistance = std::clamp(finiteOr(settings.mapStartDistance, 3500.0f), 0.0f, 50000.0f);
+	settings.mapMinimumTransmittance = std::clamp(finiteOr(settings.mapMinimumTransmittance, 0.83f), 0.0f, 1.0f);
+	settings.mapAmbientInscatteringMultiplier = std::clamp(finiteOr(settings.mapAmbientInscatteringMultiplier, 0.80f), 0.0f, 2.0f);
+	settings.mapDirectionalInscatteringMultiplier = std::clamp(finiteOr(settings.mapDirectionalInscatteringMultiplier, 0.55f), 0.0f, 2.0f);
 	settings.mapSunlightAttenuationMultiplier = std::clamp(finiteOr(settings.mapSunlightAttenuationMultiplier, 0.25f), 0.0f, 1.0f);
-	settings.mapWorldProbeMultiplier = std::clamp(finiteOr(settings.mapWorldProbeMultiplier, 0.35f), 0.0f, 1.0f);
+	settings.mapWorldProbeMultiplier = std::clamp(finiteOr(settings.mapWorldProbeMultiplier, 0.81f), 0.0f, 1.0f);
 	settings.automaticWeatherFog = settings.automaticWeatherFog ? 1u : 0u;
 	settings.automaticWeatherStrength = std::clamp(finiteOr(settings.automaticWeatherStrength, 1.0f), 0.0f, 1.0f);
 	settings.minimumAtmosphereTransmittance = std::clamp(finiteOr(settings.minimumAtmosphereTransmittance, 0.06f), 0.0f, 0.35f);
@@ -193,8 +196,9 @@ Atmosphere::Settings Atmosphere::ResolveRuntimeSettings() const
 
 	if (sky->currentClimate) {
 		const auto& timing = sky->currentClimate->timing;
+		const float gameHour = std::isfinite(sky->currentGameHour) ? sky->currentGameHour : 12.0f;
 		const float sourceScale = PIXL::AtmosphereWeather::DirectionalFogScale(
-			sky->currentGameHour, timing.sunrise.begin / 6.0f, timing.sunrise.end / 6.0f,
+			gameHour, timing.sunrise.begin / 6.0f, timing.sunrise.end / 6.0f,
 			timing.sunset.begin / 6.0f, timing.sunset.end / 6.0f);
 		const float scale = std::lerp(1.0f, sourceScale, strength);
 		resolved.directionalInscatteringMultiplier *= scale;
@@ -388,7 +392,7 @@ void Atmosphere::DrawSettings()
 			ImGui::SliderScalar(T(TKEY("grid_depth_slices"), "Grid Depth Slices"), ImGuiDataType_U32, &settings.volumetricGridSizeZ, &minGridSizeZ, &maxGridSizeZ, "%u", ImGuiSliderFlags_AlwaysClamp);
 			ImGui::SliderFloat(T(TKEY("directional_shadow_bias"), "Directional Shadow Bias"), &settings.volumetricShadowBias, 0.0f, 0.05f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
 			ImGui::SliderFloat(T(TKEY("depth_distribution_scale"), "Depth Distribution Scale"), &settings.volumetricDepthDistributionScale, 1.0f, 128.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
-			ImGui::SliderFloat(T(TKEY("temporal_history_weight"), "Temporal History Weight"), &settings.volumetricHistoryWeight, 0.0f, 0.99f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+				ImGui::SliderFloat(T(TKEY("temporal_history_weight"), "Temporal History Weight"), &settings.volumetricHistoryWeight, 0.0f, 0.88f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 			uint32_t minHistoryMissSampleCount = 1;
 			uint32_t maxHistoryMissSampleCount = 16;
 			ImGui::SliderScalar(T(TKEY("history_miss_samples"), "History Miss Samples"), ImGuiDataType_U32, &settings.volumetricHistoryMissSampleCount, &minHistoryMissSampleCount, &maxHistoryMissSampleCount, "%u", ImGuiSliderFlags_AlwaysClamp);
@@ -664,7 +668,7 @@ ID3D11ComputeShader* Atmosphere::GetMaterialSetupCS()
 			defines.emplace_back("RAIN_RESPONSE", "");
 
 		materialSetupCS = static_cast<ID3D11ComputeShader*>(
-			Util::CompileShader(L"Data\\Shaders\\Atmosphere\\VolumetricFogMaterialCS.hlsl", defines, "cs_5_0"));
+			Util::CompileShader(L"Data\\PIXL-Shaders\\Atmosphere\\VolumetricFogMaterialCS.hlsl", defines, "cs_5_0"));
 	}
 	return materialSetupCS;
 }
@@ -672,7 +676,7 @@ ID3D11ComputeShader* Atmosphere::GetMaterialSetupCS()
 ID3D11ComputeShader* Atmosphere::GetConservativeDepthCS()
 {
 	if (!conservativeDepthCS)
-		conservativeDepthCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\Atmosphere\\VolumetricFogConservativeDepthCS.hlsl", {}, "cs_5_0"));
+		conservativeDepthCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\Atmosphere\\VolumetricFogConservativeDepthCS.hlsl", {}, "cs_5_0"));
 	return conservativeDepthCS;
 }
 
@@ -689,7 +693,7 @@ ID3D11ComputeShader* Atmosphere::GetLightScatteringCS()
 		if (globals::pipeline::skyVeil.loaded) {
 			defines.emplace_back("SKY_VEIL", "");
 		}
-		lightScatteringCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\Atmosphere\\VolumetricFogLightScatteringCS.hlsl", defines, "cs_5_0"));
+		lightScatteringCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\Atmosphere\\VolumetricFogLightScatteringCS.hlsl", defines, "cs_5_0"));
 	}
 	return lightScatteringCS;
 }
@@ -697,7 +701,7 @@ ID3D11ComputeShader* Atmosphere::GetLightScatteringCS()
 ID3D11ComputeShader* Atmosphere::GetIntegrationCS()
 {
 	if (!integrationCS)
-		integrationCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\Atmosphere\\VolumetricFogIntegrationCS.hlsl", {}, "cs_5_0"));
+		integrationCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\Atmosphere\\VolumetricFogIntegrationCS.hlsl", {}, "cs_5_0"));
 	return integrationCS;
 }
 
@@ -896,7 +900,8 @@ void Atmosphere::Prepass()
 
 	const uint32_t groupX = (currentGridSize.x + 7) / 8;
 	const uint32_t groupY = (currentGridSize.y + 7) / 8;
-	const uint32_t groupZ = (currentGridSize.z + 3) / 4;
+	const uint32_t materialGroupZ = (currentGridSize.z + 3) / 4;
+	const uint32_t scatteringGroupZ = (currentGridSize.z + 1) / 2;
 
 	context->CSSetShaderResources(17, 1, &depthSrv);
 	ID3D11ShaderResourceView* skyBounceSrv = hasSkyBounce ? skyBounce.texProbeArray->srv.get() : nullptr;
@@ -921,7 +926,7 @@ void Atmosphere::Prepass()
 		globals::pipeline::microclimates.BindAtmosphereField();
 		context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
 		context->CSSetShader(materialSetupShader, nullptr, 0);
-		context->Dispatch(groupX, groupY, groupZ);
+		context->Dispatch(groupX, groupY, materialGroupZ);
 		uavs[0] = nullptr;
 		context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
 		globals::pipeline::microclimates.UnbindAtmosphereField();
@@ -946,7 +951,7 @@ void Atmosphere::Prepass()
 		context->CSSetShaderResources(98, 1, &directionalShadowLightData);
 		context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
 		context->CSSetShader(lightScatteringShader, nullptr, 0);
-		context->Dispatch(groupX, groupY, groupZ);
+		context->Dispatch(groupX, groupY, scatteringGroupZ);
 		uavs[0] = nullptr;
 		context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
 	}

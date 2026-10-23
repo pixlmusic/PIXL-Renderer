@@ -5,7 +5,7 @@ $header = Get-Content -Raw (Join-Path $root 'engine/Renderer/VolumetricContext.h
 $source = Get-Content -Raw (Join-Path $root 'engine/Renderer/VolumetricContext.cpp')
 $atmosphere = Get-Content -Raw (Join-Path $root 'engine/Modules/Atmosphere.cpp')
 $atmosphereHeader = Get-Content -Raw (Join-Path $root 'engine/Modules/Atmosphere.h')
-$lighting = Get-Content -Raw (Join-Path $root 'distribution/Shaders/Lighting.hlsl')
+$lighting = Get-Content -Raw (Join-Path $root 'distribution/PIXL-Shaders/Lighting.hlsl')
 $scattering = Get-Content -Raw (Join-Path $root 'pipeline/Atmosphere/Kernels/Atmosphere/VolumetricFogLightScatteringCS.hlsl')
 $lightVolumes = Get-Content -Raw (Join-Path $root 'engine/Modules/LightVolumes.cpp')
 
@@ -34,7 +34,7 @@ foreach ($function in @('LoadSettings', 'RestoreDefaultSettings')) {
     if ($lightVolumes -notmatch $refresh) { throw "LightVolumes::$function must refresh the initialized native volume" }
 }
 foreach ($axis in @('H', 'V')) {
-    $blur = Get-Content -Raw (Join-Path $root "distribution/Shaders/ISVolumetricLightingBlur${axis}CS.hlsl")
+    $blur = Get-Content -Raw (Join-Path $root "distribution/PIXL-Shaders/ISVolumetricLightingBlur${axis}CS.hlsl")
     if ($blur -notmatch 'int2 pix = clamp\(int2\(x, y\), 0, screenSizeMin1\.xy\)') {
         throw "LightVolumes $axis blur must clamp both halo sampling boundaries"
     }

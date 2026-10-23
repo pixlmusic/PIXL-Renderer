@@ -1,12 +1,10 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$BasePackageDirectory,
-    [string]$SurfaceTidesSource = "",
-    [string]$PrebuiltSurfaceTidesDirectory = "",
-    [string]$SurfaceTidesSourceArchive = "",
     [string]$OutputDirectory = "",
     [string]$ArchivePath = "",
-    [ValidateSet("", "r2")][string]$ReleaseRevision = "",
+    [string]$AllowedOutputRoot = "",
+    [ValidateSet("", "r2", "r3")][string]$ReleaseRevision = "",
     [string]$ProductVersion = "",
     [ValidateRange(0, 9)][int]$CompressionLevel = 7
 )
@@ -17,12 +15,9 @@ $base = (Resolve-Path -LiteralPath $BasePackageDirectory).Path
 $revisionVersion = "1.0.8$ReleaseRevision"
 if ([string]::IsNullOrWhiteSpace($ProductVersion)) { $ProductVersion = $revisionVersion }
 elseif ($ReleaseRevision -and $ProductVersion -ne $revisionVersion) { throw 'ProductVersion conflicts with ReleaseRevision.' }
-if ($SurfaceTidesSource -and $PrebuiltSurfaceTidesDirectory) { throw 'Provide at most one SurfaceTides source.' }
-$surface = if ($SurfaceTidesSource) { (Resolve-Path -LiteralPath $SurfaceTidesSource).Path } else { '' }
-$prebuiltSurface = if ($PrebuiltSurfaceTidesDirectory) { (Resolve-Path -LiteralPath $PrebuiltSurfaceTidesDirectory).Path } else { '' }
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 if ($ProductVersion -notmatch '^\d+\.\d+\.\d+(?:r\d+)?$') { throw "Invalid FOMOD product version: $ProductVersion" }
-$allowedRoot = [IO.Path]::GetFullPath((Join-Path $repo 'dist'))
+$allowedRoot = [IO.Path]::GetFullPath($(if ($AllowedOutputRoot) { $AllowedOutputRoot } else { Join-Path $repo 'dist' }))
 if (!$OutputDirectory) { $OutputDirectory = Join-Path $allowedRoot "PIXL-Renderer-$ProductVersion-FOMOD-$stamp" }
 if (!$ArchivePath) { $ArchivePath = "$OutputDirectory.zip" }
 $output = [IO.Path]::GetFullPath($OutputDirectory)
@@ -41,41 +36,6 @@ function Copy-Tree([string]$source,[string]$destination) {
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
     Copy-Item -Path (Join-Path $source '*') -Destination $destination -Recurse -Force
 }
-function Repair-SurfaceTidesPixlFogContract([string]$shaderPath) {
-    if (!(Test-Path -LiteralPath $shaderPath -PathType Leaf)) { throw "Missing SurfaceTides water shader: $shaderPath" }
-    $source = [IO.File]::ReadAllText($shaderPath)
-    $structOld = '(?m)^#if !defined\(ST_PIXL_WATERBODY\)$'
-    $structNew = '#if !defined(ST_PIXL_WATERBODY) || defined(ST_PIXL_GEOMETRY)'
-    $assignOld = '(?m)^#if !defined\(ST_PIXL_WATERBODY\) \|\| defined\(SIMPLE\) \|\| defined\(LOD\)$'
-    $assignNew = '#if !defined(ST_PIXL_WATERBODY) || defined(ST_PIXL_GEOMETRY) || defined(SIMPLE) || defined(LOD)'
-    if ([regex]::IsMatch($source, $structOld)) {
-        $source = ([regex]::new($structOld)).Replace($source, $structNew, 1)
-    } elseif (!$source.Contains($structNew)) {
-        throw 'SurfaceTides water shader does not match the expected PIXL FogParam output contract.'
-    }
-    if ([regex]::IsMatch($source, $assignOld)) {
-        $source = ([regex]::new($assignOld)).Replace($source, $assignNew, 1)
-    } elseif (!$source.Contains($assignNew)) {
-        throw 'SurfaceTides water shader does not match the expected PIXL FogParam initialization contract.'
-    }
-    if (!$source.Contains('float4 FogParam : COLOR0;')) { throw 'SurfaceTides water shader lost its FogParam output.' }
-    [IO.File]::WriteAllText($shaderPath, $source, [Text.UTF8Encoding]::new($false))
-}
-function Assert-SurfaceTidesUniversalDll([string]$dll,[string]$sourceRoot) {
-    $binaryText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($dll))
-    foreach ($export in @('SKSEPlugin_Load','SKSEPlugin_Query','SKSEPlugin_Version')) {
-        if ($binaryText.IndexOf($export,[StringComparison]::Ordinal) -lt 0) {
-            throw "SurfaceTides DLL is missing required SKSE export: $export"
-        }
-    }
-    if ($sourceRoot) {
-        $main = Get-Content -LiteralPath (Join-Path $sourceRoot 'src\plugin\Main.cpp') -Raw
-        foreach ($runtime in @('1,5,97,0','1,6,1170,0','1,6,1179,0','1,7,104,0')) {
-            if ($main -notmatch [regex]::Escape($runtime)) { throw "SurfaceTides source does not allow required runtime: $runtime" }
-        }
-    }
-}
-
 Assert-Output $output
 Assert-Output $archive
 if (Test-Path -LiteralPath $output) { throw "Output already exists: $output" }
@@ -84,11 +44,11 @@ if (Test-Path -LiteralPath $archive) { throw "Archive already exists: $archive" 
 foreach ($required in @(
     'PIXL-RENDERER.manifest.json',
     'SKSE\Plugins\PIXLRenderer.dll',
-    'Shaders\Water.hlsl',
-    'Shaders\Common\Color.hlsli',
-    'Shaders\CameraSuite\HDROutputCS.hlsl',
-    'Shaders\CameraSuite\DOFCoCCS.hlsl',
-    'Shaders\CameraSuite\DOFBlurCS.hlsl',
+    'PIXL-Shaders\Water.hlsl',
+    'PIXL-Shaders\Common\Color.hlsli',
+    'PIXL-Shaders\CameraSuite\HDROutputCS.hlsl',
+    'PIXL-Shaders\CameraSuite\DOFCoCCS.hlsl',
+    'PIXL-Shaders\CameraSuite\DOFBlurCS.hlsl',
     'SKSE\Plugins\PIXL\Documentation\COPYING',
     'SKSE\Plugins\PIXL\Documentation\EXCEPTIONS.md',
     'SKSE\Plugins\PIXL\Documentation\NOTICE.md',
@@ -99,43 +59,24 @@ foreach ($required in @(
 )) {
     if (!(Test-Path -LiteralPath (Join-Path $base $required))) { throw "Incomplete PIXL package: $required" }
 }
-if ($surface) {
-    $surfaceCMakePath = Join-Path $surface 'CMakeLists.txt'
-    if (!(Test-Path -LiteralPath $surfaceCMakePath)) { throw 'SurfaceTides source version cannot be verified; use a verified 1.0.2 prebuilt bridge.' }
-    $surfaceCMake = Get-Content -LiteralPath $surfaceCMakePath -Raw
-    if ($surfaceCMake -notmatch '(?m)^project\(SurfaceTides\s+VERSION\s+1\.0\.2(?:\s|\))') {
-        throw 'This installer supports only SurfaceTides 1.0.2. The supplied source is not explicitly versioned 1.0.2; use a verified 1.0.2 prebuilt bridge.'
-    }
-    $surfaceDllCandidates = @(
-        (Join-Path $surface 'build\windows-universal-v8\Release\SurfaceTides.dll'),
-        (Join-Path $surface 'build\windows-vendored-v8d\Release\SurfaceTides.dll'),
-        (Join-Path $surface 'build\windows\Release\SurfaceTides.dll')
-    )
-    $surfaceDll = $surfaceDllCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-    $surfaceDll = if ($surfaceDll) { (Resolve-Path -LiteralPath $surfaceDll).Path } else { $surfaceDllCandidates[0] }
-    $surfaceShader = Join-Path $surface 'Data\Shaders\SurfaceTides\Water.hlsl'
-    $surfacePixlIni = Join-Path $repo 'installer\PIXLRenderer\SurfaceTides-PIXL-1.0.2.ini'
-    if (!(Test-Path -LiteralPath $surfaceDll)) { throw "Missing SurfaceTides bridge DLL: $surfaceDll" }
-    if (!(Test-Path -LiteralPath $surfaceShader)) { throw "Missing SurfaceTides bridge shader: $surfaceShader" }
-    if (!(Test-Path -LiteralPath $surfacePixlIni)) { throw "Missing PIXL SurfaceTides preset: $surfacePixlIni" }
-    Assert-SurfaceTidesUniversalDll $surfaceDll $surface
-
-    $surfaceNoticeFiles = @(
-        (Join-Path $surface 'LICENSE'),
-        (Join-Path $surface 'LICENSE.md'),
-        (Join-Path $surface 'THIRD_PARTY.md'),
-        (Join-Path $surface 'THIRD_PARTY_NOTICES.md')
-    ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
-    $surfaceLicenseDirectory = Join-Path $surface 'licenses'
-    if ($surfaceNoticeFiles.Count -eq 0 -and -not (Test-Path -LiteralPath $surfaceLicenseDirectory -PathType Container)) {
-        throw 'SurfaceTides source has no detectable licence/third-party notice set; refusing to build the bridge package.'
-    }
-}
-
 $core = Join-Path $output 'PIXL-Core'
-$bridge = Join-Path $output 'PIXL-Optional\SurfaceTides-1.0.2'
-$bridgeDocs = Join-Path $bridge 'SKSE\Plugins\PIXL\Documentation\SurfaceTidesBridge'
 Copy-Tree $base $core
+# Keep the source attribution in the installer synchronized with the current
+# repository record, even when the selected prebuilt-cache base is older.
+$creditsSource = Join-Path $repo 'distribution\SOURCE-AND-CREDITS.md'
+$creditsTarget = Join-Path $core 'SKSE\Plugins\PIXL\Documentation\SOURCE-AND-CREDITS.md'
+if (!(Test-Path -LiteralPath $creditsTarget)) { throw 'FOMOD core is missing its source-and-credits notice.' }
+Copy-Item -LiteralPath $creditsSource -Destination $creditsTarget -Force
+$manifestPath = Join-Path $core 'PIXL-RENDERER.manifest.json'
+$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+$manifest.version = $ProductVersion
+$manifest.title = "PIXL Renderer v$ProductVersion"
+$relativeCreditsPath = 'SKSE/Plugins/PIXL/Documentation/SOURCE-AND-CREDITS.md'
+$creditEntry = @($manifest.files | Where-Object { $_.path -ceq $relativeCreditsPath })
+if ($creditEntry.Count -ne 1) { throw 'FOMOD core manifest must contain exactly one source-and-credits entry.' }
+$creditEntry[0].bytes = (Get-Item -LiteralPath $creditsTarget).Length
+$creditEntry[0].sha256 = (Get-FileHash -LiteralPath $creditsTarget -Algorithm SHA256).Hash
+$manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
 Copy-Tree (Join-Path $repo 'installer\PIXLRenderer\fomod') (Join-Path $output 'fomod')
 Copy-Tree (Join-Path $repo 'installer\PIXLRenderer\images') (Join-Path $output 'fomod\images')
 Copy-Item -LiteralPath (Join-Path $repo 'installer\PIXLRenderer\PIXL-INSTALLER-NOTICE.md') -Destination (Join-Path $core 'PIXL-INSTALLER-NOTICE.md')
@@ -149,47 +90,21 @@ $infoPath = Join-Path $output 'fomod\info.xml'
 $versionNode = $info.SelectSingleNode('/fomod/Version')
 if (!$versionNode) { throw 'FOMOD metadata has no Version node.' }
 $versionNode.InnerText = $ProductVersion
+$descriptionNode = $info.SelectSingleNode('/fomod/Description')
+if (!$descriptionNode) { throw 'FOMOD metadata has no Description node.' }
+if ($manifest.cacheMode -eq 'preloaded') {
+    $descriptionNode.InnerText = 'Modern DirectX 11 rendering for Skyrim Special Edition, with a validated shader cache for faster first launch. Missing or changed permutations compile on your system.'
+} elseif ($manifest.channel -eq 'LIVE-TEST' -and $manifest.cacheMode -eq 'compile-on-device') {
+    $descriptionNode.InnerText = 'Modern DirectX 11 rendering for Skyrim Special Edition. Shader permutations compile on first launch; allow compilation to finish before evaluating performance.'
+} else {
+    throw 'Unsupported cache mode for FOMOD metadata.'
+}
 $versionMatch = [regex]::Match($ProductVersion, '^(\d+\.\d+\.\d+)(?:r(\d+))?$')
 $machineVersion = $versionMatch.Groups[1].Value + '.' + $(if ($versionMatch.Groups[2].Success) { $versionMatch.Groups[2].Value } else { '0' })
 $versionNode.SetAttribute('MachineVersion', $machineVersion)
 $info.Save($infoPath)
 
-if ($surface) {
-    New-Item -ItemType Directory -Path (Join-Path $bridge 'SKSE\Plugins'),(Join-Path $bridge 'Shaders\SurfaceTides'),$bridgeDocs -Force | Out-Null
-    Copy-Item -LiteralPath $surfaceDll -Destination (Join-Path $bridge 'SKSE\Plugins\SurfaceTides.dll')
-    Copy-Item -LiteralPath $surfaceShader -Destination (Join-Path $bridge 'Shaders\SurfaceTides\Water.hlsl')
-    Repair-SurfaceTidesPixlFogContract (Join-Path $bridge 'Shaders\SurfaceTides\Water.hlsl')
-    Copy-Item -LiteralPath $surfacePixlIni -Destination (Join-Path $bridge 'SKSE\Plugins\SurfaceTides.ini')
-    Copy-Item -LiteralPath (Join-Path $repo 'docs\SURFACETIDES-UPSTREAM.md') -Destination (Join-Path $bridgeDocs 'INSTALL-AND-SOURCE.md')
-    foreach ($notice in @('LICENSE','THIRD_PARTY.md')) {
-        $sourceNotice = Join-Path $surface $notice
-        if (Test-Path -LiteralPath $sourceNotice) { Copy-Item -LiteralPath $sourceNotice -Destination $bridgeDocs }
-    }
-    if (Test-Path -LiteralPath (Join-Path $surface 'licenses')) {
-        Copy-Item -LiteralPath (Join-Path $surface 'licenses') -Destination $bridgeDocs -Recurse
-    }
-} elseif ($prebuiltSurface) {
-    Copy-Tree $prebuiltSurface $bridge
-    Repair-SurfaceTidesPixlFogContract (Join-Path $bridge 'Shaders\SurfaceTides\Water.hlsl')
-    foreach ($requiredBridgeFile in @(
-        'SKSE\Plugins\SurfaceTides.dll',
-        'SKSE\Plugins\SurfaceTides.ini',
-        'Shaders\SurfaceTides\Water.hlsl',
-        'SKSE\Plugins\PIXL\Documentation\SurfaceTidesBridge\INSTALL-AND-SOURCE.md',
-        'SKSE\Plugins\PIXL\Documentation\SurfaceTidesBridge\LICENSE',
-        'SKSE\Plugins\PIXL\Documentation\SurfaceTidesBridge\THIRD_PARTY.md'
-    )) {
-        if (!(Test-Path -LiteralPath (Join-Path $bridge $requiredBridgeFile))) { throw "Prebuilt SurfaceTides bridge is incomplete: $requiredBridgeFile" }
-    }
-    Assert-SurfaceTidesUniversalDll (Join-Path $bridge 'SKSE\Plugins\SurfaceTides.dll') $null
-}
-if ($SurfaceTidesSourceArchive) {
-    $sourceArchive = (Resolve-Path -LiteralPath $SurfaceTidesSourceArchive).Path
-    Write-Host "SurfaceTides source companion (upload separately; never nest it): $sourceArchive"
-}
-
 $testArguments = @{ PackageDirectory=$output; ExpectedVersion=$ProductVersion }
-if ($surface) { $testArguments.SchemaPath = Join-Path $surface 'tools\fomod\ModConfig5.0.xsd' }
 & (Join-Path $repo 'tools\TestPixlFomod.ps1') @testArguments
 
 $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe'

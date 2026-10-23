@@ -59,28 +59,29 @@ cbuffer PerFrame : register(b1)
 		parameters.FarDepthValue = 1.0h;
 		parameters.NearDepthValue = 0.0h;
 	}
-	parameters.InvDepthTextureSize = InvDepthTextureSize;
+	// Keep malformed resize data from turning every sample into the border texel.
+	parameters.InvDepthTextureSize = clamp(abs(InvDepthTextureSize), 1.0f / 16384.0f, 1.0f);
 	parameters.DepthTexture = DepthTexture;
 	parameters.OutputTexture = OutputTexture;
 	parameters.PointBorderSampler = PointBorderSampler;
 
 	// Preserve runtime tuning while preventing zero/uninitialized values from
 	// collapsing the shadow ray. These defaults match Bend's recommended range.
-	parameters.SurfaceThickness = SurfaceThickness > 1e-5f ? (half)SurfaceThickness : 0.005h;
-	parameters.BilinearThreshold = BilinearThreshold > 1e-5f ? (half)BilinearThreshold : 0.02h;
+	parameters.SurfaceThickness = (half)clamp(SurfaceThickness > 1e-5f ? SurfaceThickness : 0.005f, 0.0005f, 0.25f);
+	parameters.BilinearThreshold = (half)clamp(BilinearThreshold > 1e-5f ? BilinearThreshold : 0.02f, 0.001f, 0.25f);
 	// The user-facing control is defined on [1, 4].  Values below one are
 	// clamped instead of jumping to maximum contrast.
 	parameters.ShadowContrast = clamp((half)ShadowContrast, 1.0h, 4.0h);
-	parameters.Strength = saturate((half)Strength);
-	parameters.FalloffStart = max((half)FalloffStart, 0.0h);
-	parameters.FalloffEnd = max((half)FalloffEnd, parameters.FalloffStart + 0.25h);
+	parameters.Strength = Enable != 0u ? saturate((half)Strength) : 0.0h;
+	parameters.FalloffStart = clamp((half)FalloffStart, 0.0h, 65500.0h);
+	parameters.FalloffEnd = clamp((half)FalloffEnd, parameters.FalloffStart + 0.25h, 65504.0h);
 
 	// Broad, flat interior floors still produced dark stepped blotches whenever
 	// repeated depth discontinuities were classified as edge casters. Prefer
 	// stability in PIXL's default screen-space shadow build.
 	parameters.IgnoreEdgePixels = true;
 
-	parameters.DynamicRes = DynamicRes;
+	parameters.DynamicRes = clamp(abs(DynamicRes), 1.0f / 16.0f, 16.0f);
 
 	parameters.UsePrecisionOffset = true;
 

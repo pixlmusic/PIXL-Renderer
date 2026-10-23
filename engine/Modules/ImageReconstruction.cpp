@@ -126,7 +126,7 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 	if (pSwapChainDesc->BufferCount < 2)
 		pSwapChainDesc->BufferCount = 2;
 
-	if (globals::pipeline::cameraSuite.loaded) {
+	if (globals::pipeline::cameraSuite.loaded && globals::pipeline::cameraSuite.settings.enableHDR) {
 		logger::info("[ImageReconstruction] Upgrading swap chain format from {} to R10G10B10A2_UNORM for HDR", static_cast<int>(pSwapChainDesc->BufferDesc.Format));
 		pSwapChainDesc->BufferDesc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
 	} else if (pSwapChainDesc->BufferDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) {
@@ -431,7 +431,7 @@ void ImageReconstruction::DrawSettings()
 
 			if (ImGui::TreeNodeEx("DLSS Neural Rendering (Experimental)")) {
 				ImGui::TextWrapped(
-					"Runs NVIDIA's experimental DLSSNR 310.8 model through PIXL Renderer's own DX12 sidecar. "
+					"Runs NVIDIA's experimental DLSSNR 310.8 or 310.9.16 runtime through PIXL Renderer's own DX12 sidecar. "
 					"It is optional, version-gated, and automatically retains normal DLSS output if evaluation fails.");
 
 				const bool configuredAtBoot = d3d12SwapChainActive && neuralRenderingProvisionedAtBoot;
@@ -440,14 +440,14 @@ void ImageReconstruction::DrawSettings()
 				if (settings.frameGenerationMode)
 					ImGui::TextWrapped("Frame Generation is scheduled after the neural presentation copy and uses dedicated raw depth/motion guides.");
 				if (globals::pipeline::cameraSuite.loaded && globals::pipeline::cameraSuite.settings.enableHDR)
-					Util::Text::Warning("The validated DLSSNR 310.8 path is SDR-only; HDR currently uses normal DLSS.");
+					Util::Text::Warning("The experimental DLSSNR path is SDR-only; HDR currently uses normal DLSS.");
 				if (GetModuleHandleW(L"renodx-dlss.addon64"))
 					Util::Text::Warning("RenoDX DLSS addon detected. PIXL's native path is bypassed to prevent double processing.");
 
 				ImGui::Checkbox("Enable Neural Rendering", &settings.neuralRenderingEnabled);
 				if (auto _tt = Util::HoverTooltipWrapper()) {
 					ImGui::TextWrapped(
-						"Requires nvngx_dlssnr.dll 310.8.x in Data/Shaders/ImageReconstruction/Streamline. "
+						"Requires nvngx_dlssnr.dll 310.8.x or 310.9.16 in Data/PIXL-Shaders/ImageReconstruction/Streamline. "
 						"DLSS sessions provision the sidecar at startup. The real-time toggle can remain off while Photo Finish uses the same model temporarily. No ReShade or RenoDX addon is used by PIXL's path.");
 				}
 
@@ -519,7 +519,7 @@ void ImageReconstruction::DrawSettings()
 							"Controls the real scene-render input shared by DLSS Super Resolution and Neural Rendering. "
 							"Lower modes reduce geometry, lighting and model-guide pixels before reconstruction. "
 							"This is the supported workload control shown as 'internal resolution' in DLSS benchmarks; "
-							"Feature 18's output itself must remain at display resolution with the installed 310.8 runtime.");
+							"Feature 18's output itself must remain at display resolution with the installed supported runtime.");
 					if (globals::game::graphicsState) {
 						const auto displayWidth = globals::game::graphicsState->screenWidth;
 						const auto displayHeight = globals::game::graphicsState->screenHeight;
@@ -565,12 +565,12 @@ void ImageReconstruction::DrawSettings()
 							IM_ARRAYSIZE(outputPresets)))
 						settings.neuralRenderingOutputPreset = static_cast<uint>(outputPreset);
 					if (auto _tt = Util::HoverTooltipWrapper())
-						ImGui::TextWrapped("Selects the installed 310.8 runtime's DLSSNR.Hint.Render.Preset at Feature 18 creation. These private presets are intentionally numbered because NVIDIA does not publish stable semantic names for them.");
+						ImGui::TextWrapped("Selects the installed runtime's DLSSNR.Hint.Render.Preset at Feature 18 creation. These private presets are intentionally numbered because NVIDIA does not publish stable semantic names for them.");
 
 					if (settings.neuralRenderingQualityMode != neuralRenderingQualityModeAtBoot ||
 						settings.neuralRenderingOutputPreset != neuralRenderingOutputPresetAtBoot)
 						Util::Text::Warning("Restart required to apply the NR quality contract or output preset.");
-					ImGui::TextWrapped("Model precision: NVIDIA runtime automatic. The installed 310.8 DLL exposes FP8/FP16 kernels but no application INT4 parameter, so PIXL cannot safely force INT4.");
+					ImGui::TextWrapped("Model precision: NVIDIA runtime automatic. The inspected 310.8 DLL exposes FP8/FP16 kernels but no application INT4 parameter, so PIXL cannot safely force INT4.");
 
 					if (ImGui::SliderFloat("Local Tone", &settings.neuralRenderingLocalTone, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp))
 						markCustom();
@@ -829,7 +829,7 @@ void ImageReconstruction::SaveSettings(json& o_json)
 
 void ImageReconstruction::LoadSettings(json& o_json)
 {
-	settings = o_json;
+	settings = o_json.is_object() ? o_json.get<Settings>() : Settings{};
 
 	// Sanitize loaded settings to ensure enum indices are valid
 	constexpr auto enumCount = 4;  // UpscaleMethod has 4 values: kNONE, kTAA, kFSR, kDLSS
@@ -928,8 +928,15 @@ void ImageReconstruction::PostPostLoad()
 	bool isGOG = !GetModuleHandle(L"steam_api64.dll");
 	stl::detour_thunk<MenuManagerDrawInterfaceStartHook>(REL::RelocationID(79947, 82084));
 
-	// Calculates resolution and jitter
-	stl::write_thunk_call<Main_UpdateJitter>(REL::RelocationID(75460, 77245).address() + REL::Relocate(0xE5, isGOG ? 0x133 : 0xE2));
+	// Calculates resolution and jitter. The old AE call site (+0xE2) overlaps
+	// an instruction in Skyrim 1.7.104's Main_UpdateJitter (+0xDD); a live crash
+	// confirmed the patch corrupts that instruction. Keep the native routine on
+	// 1.7.104+ until a verified runtime-specific call site is available.
+	if (REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_104) {
+		logger::warn("[ImageReconstruction] Skipping Main_UpdateJitter hook on runtime {}; native temporal jitter remains active until this patch site is validated.", REL::Module::get().version().string());
+	} else {
+		stl::write_thunk_call<Main_UpdateJitter>(REL::RelocationID(75460, 77245).address() + REL::Relocate(0xE5, isGOG ? 0x133 : 0xE2));
+	}
 
 	// Disables the original dynamic resolution system
 	REL::safe_write(REL::RelocationID(35556, 36555).address() + REL::Relocate(0x2D, 0x2D), REL::NOP5, sizeof(REL::NOP5));
@@ -1004,9 +1011,9 @@ void ImageReconstruction::CreateUpscalingTextureResources(UpscaleMethod a_upscal
 	D3D11_TEXTURE2D_DESC texDesc{};
 	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
 	D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-	main.texture->GetDesc(&texDesc);
-	main.SRV->GetDesc(&srvDesc);
-	main.UAV->GetDesc(&uavDesc);
+	main.texture->GetDesc(REX::W32::AsW32(&texDesc));
+	main.SRV->GetDesc(REX::W32::AsW32(&srvDesc));
+	main.UAV->GetDesc(REX::W32::AsW32(&uavDesc));
 
 	texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 
@@ -1032,7 +1039,7 @@ void ImageReconstruction::CreateUpscalingTextureResources(UpscaleMethod a_upscal
 	// backend describes that resource as integer color rather than depth, so FSR
 	// receives an explicitly encoded R32_FLOAT copy of the same raw device depth.
 	if (a_upscalemethod == UpscaleMethod::kFSR && !fsrDepthTexture) {
-		main.texture->GetDesc(&texDesc);
+		main.texture->GetDesc(REX::W32::AsW32(&texDesc));
 		texDesc.Format = DXGI_FORMAT_R32_FLOAT;
 		texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 		texDesc.MipLevels = 1;
@@ -1063,7 +1070,7 @@ void ImageReconstruction::CreateUpscalingTextureResources(UpscaleMethod a_upscal
 			auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 
 			D3D11_TEXTURE2D_DESC motionTexDesc{};
-			motionVector.texture->GetDesc(&motionTexDesc);
+			motionVector.texture->GetDesc(REX::W32::AsW32(&motionTexDesc));
 
 			texDesc.Format = motionTexDesc.Format;
 			srvDesc.Format = texDesc.Format;
@@ -1076,8 +1083,8 @@ void ImageReconstruction::CreateUpscalingTextureResources(UpscaleMethod a_upscal
 
 		// RCAS sharpener texture - matches kMAIN format for HDR sharpening
 		if (!sharpenerTexture) {
-			main.texture->GetDesc(&texDesc);
-			main.SRV->GetDesc(&srvDesc);
+			main.texture->GetDesc(REX::W32::AsW32(&texDesc));
+			main.SRV->GetDesc(REX::W32::AsW32(&srvDesc));
 
 			texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 
@@ -1216,7 +1223,7 @@ ID3D11ComputeShader* ImageReconstruction::GetEncodeTexturesCS()
 			break;
 		}
 
-		encodeTexturesCS[methodIndex].attach((ID3D11ComputeShader*)Util::CompileShader(L"Data/Shaders/ImageReconstruction/EncodeTexturesCS.hlsl", defines, "cs_5_0"));
+		encodeTexturesCS[methodIndex].attach((ID3D11ComputeShader*)Util::CompileShader(L"Data/PIXL-Shaders/ImageReconstruction/EncodeTexturesCS.hlsl", defines, "cs_5_0"));
 	}
 	return encodeTexturesCS[methodIndex].get();
 }
@@ -1226,7 +1233,7 @@ ID3D11PixelShader* ImageReconstruction::GetDepthRefractionUpscalePS()
 	if (!depthRefractionUpscalePS) {
 		logger::debug("Compiling DepthRefractionUpscalePS.hlsl");
 		std::vector<std::pair<const char*, const char*>> defines = { { "PSHADER", "" } };
-		depthRefractionUpscalePS.attach((ID3D11PixelShader*)Util::CompileShader(L"Data/Shaders/ImageReconstruction/DepthRefractionUpscalePS.hlsl", defines, "ps_5_0"));
+		depthRefractionUpscalePS.attach((ID3D11PixelShader*)Util::CompileShader(L"Data/PIXL-Shaders/ImageReconstruction/DepthRefractionUpscalePS.hlsl", defines, "ps_5_0"));
 	}
 
 	return depthRefractionUpscalePS.get();
@@ -1237,7 +1244,7 @@ ID3D11PixelShader* ImageReconstruction::GetUnderwaterMaskUpscalePS()
 	if (!underwaterMaskUpscalePS) {
 		logger::debug("Compiling UnderwaterMaskPS.hlsl");
 		std::vector<std::pair<const char*, const char*>> defines = { { "PSHADER", "" } };
-		underwaterMaskUpscalePS.attach((ID3D11PixelShader*)Util::CompileShader(L"Data/Shaders/ImageReconstruction/UnderwaterMaskUpscalePS.hlsl", defines, "ps_5_0"));
+		underwaterMaskUpscalePS.attach((ID3D11PixelShader*)Util::CompileShader(L"Data/PIXL-Shaders/ImageReconstruction/UnderwaterMaskUpscalePS.hlsl", defines, "ps_5_0"));
 	}
 
 	return underwaterMaskUpscalePS.get();
@@ -1247,7 +1254,7 @@ ID3D11VertexShader* ImageReconstruction::GetUpscaleVS()
 {
 	if (!upscaleVS) {
 		logger::debug("Compiling UpscaleVS.hlsl");
-		upscaleVS.attach((ID3D11VertexShader*)Util::CompileShader(L"Data/Shaders/ImageReconstruction/UpscaleVS.hlsl", { { "VSHADER", "" } }, "vs_5_0"));
+		upscaleVS.attach((ID3D11VertexShader*)Util::CompileShader(L"Data/PIXL-Shaders/ImageReconstruction/UpscaleVS.hlsl", { { "VSHADER", "" } }, "vs_5_0"));
 	}
 
 	return upscaleVS.get();
@@ -1500,9 +1507,9 @@ void ImageReconstruction::SetupResources()
 	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
 	D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
 
-	main.texture->GetDesc(&texDesc);
-	main.SRV->GetDesc(&srvDesc);
-	main.UAV->GetDesc(&uavDesc);
+	main.texture->GetDesc(REX::W32::AsW32(&texDesc));
+	main.SRV->GetDesc(REX::W32::AsW32(&srvDesc));
+	main.UAV->GetDesc(REX::W32::AsW32(&uavDesc));
 
 	texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 
@@ -1554,7 +1561,7 @@ void ImageReconstruction::SetupResources()
 	if (d3d12SwapChainActive)
 		dx12SwapChain.CreateSharedResources();
 
-	copyDepthToSharedBufferPS.attach((ID3D11PixelShader*)Util::CompileShader(L"Data\\Shaders\\ImageReconstruction\\CopyDepthToSharedBufferPS.hlsl", { { "PSHADER", "" } }, "ps_5_0"));
+	copyDepthToSharedBufferPS.attach((ID3D11PixelShader*)Util::CompileShader(L"Data\\PIXL-Shaders\\ImageReconstruction\\CopyDepthToSharedBufferPS.hlsl", { { "PSHADER", "" } }, "ps_5_0"));
 
 	if (reconstructionHistoryId == 0) {
 		reconstructionHistoryId = PIXL::Renderer::TemporalContext::Get().RegisterHistory({
@@ -1656,11 +1663,11 @@ void ImageReconstruction::CopySharedD3D12Resources(bool a_useNeuralGuides)
 	if (a_useNeuralGuides) dx12SwapChain.neuralGuides = {};
 	if (!renderer || !context || !GetUpscaleVS()) { globals::state->EndPerfEvent(); return; }
 	if (!copyDepthToSharedBufferPS)
-		copyDepthToSharedBufferPS.attach(static_cast<ID3D11PixelShader*>(Util::CompileShader(L"Data\\Shaders\\ImageReconstruction\\CopyDepthToSharedBufferPS.hlsl", {{"PSHADER", ""}}, "ps_5_0")));
+		copyDepthToSharedBufferPS.attach(static_cast<ID3D11PixelShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\ImageReconstruction\\CopyDepthToSharedBufferPS.hlsl", {{"PSHADER", ""}}, "ps_5_0")));
 	if (!copyDepthToSharedBufferPS) { globals::state->EndPerfEvent(); return; }
 
 	auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
-	ID3D11Texture2D* motionSource = motionVector.texture;
+	ID3D11Texture2D* motionSource = REX::W32::AsReal(motionVector.texture);
 	if (a_useNeuralGuides && motionVectorCopyTexture && motionVectorCopyTexture->resource)
 		motionSource = motionVectorCopyTexture->resource.get();
 	auto* motionTarget = a_useNeuralGuides
@@ -1723,7 +1730,7 @@ void ImageReconstruction::CopySharedD3D12Resources(bool a_useNeuralGuides)
 		context->OMSetBlendState(upscaleBlendState.get(), nullptr, 0xffffffff);
 
 		// Set up pixel shader resources
-		ID3D11ShaderResourceView* views[1] = { depth.depthSRV };
+		ID3D11ShaderResourceView* views[1] = { REX::W32::AsReal(depth.depthSRV) };
 		context->PSSetShaderResources(0, ARRAYSIZE(views), views);
 
 		// Set render target view for pixel shader output
@@ -2139,7 +2146,7 @@ void ImageReconstruction::LoadUpscalingSDKs()
 	streamlineDX12.renderAPI = sl::RenderAPI::eD3D12;
 	// Streamline keeps process-global interposer state. DLSS-G must therefore
 	// use a physically separate runtime directory from the D3D11 DLSS instance.
-	streamlineDX12.pluginDir = L"Data\\Shaders\\ImageReconstruction\\StreamlineDX12";
+	streamlineDX12.pluginDir = L"Data\\PIXL-Shaders\\ImageReconstruction\\StreamlineDX12";
 	streamlineDX12.instanceTag = "DX12";
 	streamlineDX12.LoadInterposer();
 }
@@ -2373,7 +2380,7 @@ void ImageReconstruction::Upscale()
 		(float)globals::game::graphicsState->screenWidth,
 		(float)globals::game::graphicsState->screenHeight });
 	PIXL::Renderer::PixelAnnotations::Get().PublishBase(
-		materialMasks.SRV, normals.SRV, temporalAAMask.SRV,
+		REX::W32::AsReal(materialMasks.SRV), REX::W32::AsReal(normals.SRV), REX::W32::AsReal(temporalAAMask.SRV),
 		static_cast<std::uint32_t>(renderSizeForAnnotations.x),
 		static_cast<std::uint32_t>(renderSizeForAnnotations.y));
 	const auto annotations = PIXL::Renderer::PixelAnnotations::Get().Acquire();
@@ -2394,8 +2401,8 @@ void ImageReconstruction::Upscale()
 		ID3D11ShaderResourceView* views[5] = {
 			annotations.temporalAAMask.get(),
 			annotations.normalWaterMask.get(),
-			motionVector.SRV,
-			depth.depthSRV,
+			REX::W32::AsReal(motionVector.SRV),
+			REX::W32::AsReal(depth.depthSRV),
 			annotations.deferredMaterialMask.get()
 		};
 		context->CSSetShaderResources(0, ARRAYSIZE(views), views);
@@ -2444,9 +2451,9 @@ void ImageReconstruction::Upscale()
 			upscaleMethod == UpscaleMethod::kFSR ? PIXL::Renderer::ReconstructionBackend::FSR :
 			PIXL::Renderer::ReconstructionBackend::Native;
 		PIXL::Renderer::ReconstructionFrame reconstructionFrame{};
-		reconstructionFrame.depth.copy_from(depth.depthSRV);
+		reconstructionFrame.depth.copy_from(REX::W32::AsReal(depth.depthSRV));
 		reconstructionFrame.motion.copy_from(upscaleMethod == UpscaleMethod::kDLSS ?
-			motionVectorCopyTexture->srv.get() : motionVector.SRV);
+			motionVectorCopyTexture->srv.get() : REX::W32::AsReal(motionVector.SRV));
 		reconstructionFrame.reactive = reactiveMaskTexture->srv;
 		reconstructionFrame.transparency = transparencyCompositionMaskTexture->srv;
 		reconstructionFrame.annotations = PIXL::Renderer::PixelAnnotations::Get().Acquire();
@@ -2474,7 +2481,7 @@ void ImageReconstruction::Upscale()
 		bool historyEvaluated = false;
 		if (upscaleMethod == UpscaleMethod::kDLSS) {
 			const bool resetReconstructionHistory = pendingDLSSReset.exchange(false, std::memory_order_acq_rel);
-			historyEvaluated = streamline.Upscale(main.texture, reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVectorCopyTexture->resource.get(), resetReconstructionHistory);
+		historyEvaluated = streamline.Upscale(REX::W32::AsReal(main.texture), reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVectorCopyTexture->resource.get(), resetReconstructionHistory);
 			dlssFrameReady = historyEvaluated;
 			if (historyEvaluated)
 				dlssFrameIndex = state->frameCount;
@@ -2484,7 +2491,7 @@ void ImageReconstruction::Upscale()
 			}
 		} else if (upscaleMethod == UpscaleMethod::kFSR) {
 			const bool resetReconstructionHistory = pendingDLSSReset.exchange(false, std::memory_order_acq_rel);
-			historyEvaluated = fidelityFX.Upscale(main.texture, fsrDepthTexture->resource.get(), reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), motionVector.texture, settings.sharpnessFSR, resetReconstructionHistory);
+		historyEvaluated = fidelityFX.Upscale(REX::W32::AsReal(main.texture), fsrDepthTexture->resource.get(), reactiveMaskTexture->resource.get(), transparencyCompositionMaskTexture->resource.get(), REX::W32::AsReal(motionVector.texture), settings.sharpnessFSR, resetReconstructionHistory);
 			if (!historyEvaluated) {
 				pendingDLSSReset.store(true, std::memory_order_release);
 				pendingNeuralRenderingReset.store(true, std::memory_order_release);
@@ -2628,18 +2635,18 @@ void ImageReconstruction::UpscaleDepth()
 
 		// Sometimes this is not already copied e.g. map menu.
 		// Skip alias copies to reduce unnecessary copy churn.
-		copyIfNonAliased(depthCopy.texture, depth.texture);
+		copyIfNonAliased(REX::W32::AsReal(depthCopy.texture), REX::W32::AsReal(depth.texture));
 
 		// Set depth stencil state to write 0x00
 		context->OMSetDepthStencilState(upscaleDepthStencilState.get(), 0x00);
 
-		copyIfNonAliased(refractionNormals.textureCopy, refractionNormals.texture);
+		copyIfNonAliased(REX::W32::AsReal(refractionNormals.textureCopy), REX::W32::AsReal(refractionNormals.texture));
 
-		ID3D11ShaderResourceView* srvs[] = { refractionNormals.SRVCopy, depthCopy.depthSRV, depthCopy.stencilSRV };
+		ID3D11ShaderResourceView* srvs[] = { REX::W32::AsReal(refractionNormals.SRVCopy), REX::W32::AsReal(depthCopy.depthSRV), REX::W32::AsReal(depthCopy.stencilSRV) };
 		context->PSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
 
-		ID3D11RenderTargetView* rtvs[] = { refractionNormals.RTV, saoCameraZ.RTV };
-		context->OMSetRenderTargets(2, rtvs, depth.views[0]);
+		ID3D11RenderTargetView* rtvs[] = { REX::W32::AsReal(refractionNormals.RTV), REX::W32::AsReal(saoCameraZ.RTV) };
+		context->OMSetRenderTargets(2, rtvs, REX::W32::AsReal(depth.views[0]));
 
 		context->PSSetShader(depthUpscalePS, nullptr, 0);
 		globals::profiler->BeginPass("ImageReconstruction::DepthUpscale");
@@ -2654,15 +2661,15 @@ void ImageReconstruction::UpscaleDepth()
 		viewport.Height = screenSize.y * 0.5f;
 		context->RSSetViewports(1, &viewport);
 
-		copyIfNonAliased(underwaterMask.textureCopy, underwaterMask.texture);
+		copyIfNonAliased(REX::W32::AsReal(underwaterMask.textureCopy), REX::W32::AsReal(underwaterMask.texture));
 
 		context->OMSetDepthStencilState(nullptr, 0x00);
 
 		// t0: vanilla mask copy, t1: original depth.
-		ID3D11ShaderResourceView* srvs[] = { underwaterMask.SRVCopy, depthCopy.depthSRV };
+		ID3D11ShaderResourceView* srvs[] = { REX::W32::AsReal(underwaterMask.SRVCopy), REX::W32::AsReal(depthCopy.depthSRV) };
 		context->PSSetShaderResources(0, ARRAYSIZE(srvs), srvs);
 
-		ID3D11RenderTargetView* rtvs[] = { underwaterMask.RTV };
+		ID3D11RenderTargetView* rtvs[] = { REX::W32::AsReal(underwaterMask.RTV) };
 		context->OMSetRenderTargets(ARRAYSIZE(rtvs), rtvs, nullptr);
 
 		context->PSSetShader(underwaterMaskPS, nullptr, 0);
@@ -2713,7 +2720,7 @@ void ImageReconstruction::ApplySharpening()
 		const auto annotations = PIXL::Renderer::PixelAnnotations::Get().Acquire();
 		sharpened = rcas.ApplySharpen(
 			sharpenerTexture->srv.get(),
-			main.UAV,
+			REX::W32::AsReal(main.UAV),
 			currentSharpness,
 			annotations.reactiveMask.get(),
 			annotations.transparencyMask.get(),
@@ -2723,7 +2730,7 @@ void ImageReconstruction::ApplySharpening()
 	if (!sharpened) {
 		// Also resolve when optional RCAS resources are unavailable, so a shader
 		// compile failure cannot discard the current reconstructed frame.
-		context->CopyResource(main.texture, sharpenerTexture->resource.get());
+		context->CopyResource(REX::W32::AsReal(main.texture), sharpenerTexture->resource.get());
 	}
 
 	globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);

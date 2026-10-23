@@ -45,6 +45,10 @@ public:
 		float& cachedFontSize,
 		float currentFontSize);
 
+	// True while the exclusive startup curtain is covering Skyrim during
+	// foreground shader compilation and its fade-out transition.
+	static bool IsStartupCurtainActive() noexcept;
+
 private:
 	static bool ShouldSkipRendering();
 	static void HandleFontReload(Menu& menu, float& cachedFontSize, float currentFontSize);

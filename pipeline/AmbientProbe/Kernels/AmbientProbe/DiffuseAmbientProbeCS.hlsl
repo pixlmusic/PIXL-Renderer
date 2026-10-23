@@ -39,6 +39,8 @@ groupshared sh2 sharedB[TOTAL_SAMPLES];
 
 	// Sample cubemap with optimized direction
 	float3 color = EnvTexture.SampleLevel(LinearSampler, -rayDir, 0).xyz;
+	// A single invalid texel would otherwise poison every SH coefficient.
+	color = all(isfinite(color)) ? max(color, 0.0f.xxx) : 0.0f.xxx;
 #if USE_PIXL_ENERGY_CALIBRATED_AMBIENT
 	color = Color::IrradianceToLinear(color);
 #endif

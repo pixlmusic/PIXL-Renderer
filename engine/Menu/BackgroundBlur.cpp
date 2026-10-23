@@ -3,6 +3,7 @@
 // License: MIT License
 
 #include "BackgroundBlur.h"
+#include "ExtensionPillar.h"
 #include "../Modules/CameraSuite.h"
 #include "../Modules/ImageReconstruction.h"
 #include "../Globals.h"
@@ -241,11 +242,11 @@ namespace BackgroundBlur
 			return true;
 		};
 
-		if (!compileShader(vertexShader, L"Data\\Shaders\\Menu\\BackgroundBlurHorizontal.hlsl", "vs_5_0", "VS_Main", "blur vertex shader") ||
-			!compileShader(horizontalPixelShader, L"Data\\Shaders\\Menu\\BackgroundBlurHorizontal.hlsl", "ps_5_0", "PS_Main", "horizontal blur pixel shader") ||
-			!compileShader(verticalPixelShader, L"Data\\Shaders\\Menu\\BackgroundBlurVertical.hlsl", "ps_5_0", "PS_Main", "vertical blur pixel shader") ||
-			!compileShader(compositePixelShader, L"Data\\Shaders\\Menu\\BackgroundBlurComposite.hlsl", "ps_5_0", "PS_Main", "composite blur pixel shader") ||
-			!compileShader(clearPixelShader, L"Data\\Shaders\\Menu\\BackgroundBlurComposite.hlsl", "ps_5_0", "PS_Clear", "clear pixel shader"))
+		if (!compileShader(vertexShader, L"Data\\PIXL-Shaders\\Menu\\BackgroundBlurHorizontal.hlsl", "vs_5_0", "VS_Main", "blur vertex shader") ||
+			!compileShader(horizontalPixelShader, L"Data\\PIXL-Shaders\\Menu\\BackgroundBlurHorizontal.hlsl", "ps_5_0", "PS_Main", "horizontal blur pixel shader") ||
+			!compileShader(verticalPixelShader, L"Data\\PIXL-Shaders\\Menu\\BackgroundBlurVertical.hlsl", "ps_5_0", "PS_Main", "vertical blur pixel shader") ||
+			!compileShader(compositePixelShader, L"Data\\PIXL-Shaders\\Menu\\BackgroundBlurComposite.hlsl", "ps_5_0", "PS_Main", "composite blur pixel shader") ||
+			!compileShader(clearPixelShader, L"Data\\PIXL-Shaders\\Menu\\BackgroundBlurComposite.hlsl", "ps_5_0", "PS_Clear", "clear pixel shader"))
 			return false;
 
 		auto checkCreate = [&](HRESULT hr, const char* name) -> bool {
@@ -837,6 +838,11 @@ namespace BackgroundBlur
 
 	void RenderBackgroundBlur()
 	{
+		// Extensions are a diagnostic/control surface, not a frosted-glass
+		// presentation panel. The blur pass also composites the shared UI buffer,
+		// so skip it completely while the pillar is expanded.
+		if (PIXLUI::Extensions::IsPillarOpen())
+			return;
 		if (!enabled) {
 			return;
 		}
@@ -949,6 +955,15 @@ namespace BackgroundBlur
 		if (!ctx || ctx->Windows.Size == 0) {
 			return;
 		}
+		// A large parent PIXL window can overlap the Extensions flyout. The blur
+		// pass folds the UI buffer into its source, so blurring that parent also
+		// blurs the extension text even when the extension itself is excluded.
+		// The visible title is not the ImGui window identity: ### gives this
+		// root window a distinct stable ID. FindWindowByName hashes the full ID.
+		constexpr const char* kExtensionsWindowName = "PIXL Extensions###PIXLExtensionPillar";
+		ImGuiWindow* extensionsWindow = ImGui::FindWindowByName(kExtensionsWindowName);
+		const bool protectExtensions = extensionsWindow && extensionsWindow->Active && !extensionsWindow->SkipItems;
+		const ImRect extensionsRect = protectExtensions ? extensionsWindow->Rect() : ImRect{};
 
 		// Apply blur behind each visible ImGui window
 		for (int i = 0; i < ctx->Windows.Size; i++) {
@@ -973,9 +988,10 @@ namespace BackgroundBlur
 			// Director Video is a late, interactive overlay. Blurring its backing
 			// capture here makes the POI editor look defocused even though it is
 			// drawn after the scene's DOF pass.
-			if (window->Name &&
+			if (window->ID == ImHashStr(kExtensionsWindowName) || (window->Name &&
 				(std::string_view(window->Name) == "Pulse Profiler" ||
-					std::string_view(window->Name) == "##PIXLVideoDirectorEditor")) {
+					std::string_view(window->Name) == "##PIXLVideoDirectorEditor" ||
+					std::string_view(window->Name).starts_with("PIXL Extensions")))) {
 				continue;
 			}
 
@@ -988,6 +1004,11 @@ namespace BackgroundBlur
 			// Use window's inner rect which includes all content drawn inside the window
 			// including custom headers and footers, not just OuterRectClipped
 			ImRect windowRect = window->Rect();
+			if (protectExtensions && window != extensionsWindow &&
+				windowRect.Min.x < extensionsRect.Max.x && windowRect.Max.x > extensionsRect.Min.x &&
+				windowRect.Min.y < extensionsRect.Max.y && windowRect.Max.y > extensionsRect.Min.y) {
+				continue;
+			}
 			ImVec2 windowMin = windowRect.Min;
 			ImVec2 windowMax = windowRect.Max;
 			if (!HasVisibleWindowArea(windowMin, windowMax, texDesc.Width, texDesc.Height)) {

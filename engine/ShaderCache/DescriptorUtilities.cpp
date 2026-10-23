@@ -10,7 +10,7 @@ namespace PIXL::ShaderCacheInternal
 {
 	std::wstring GetShaderPath(std::string_view a_name)
 	{
-		return std::format(L"Data/Shaders/{}.hlsl", std::wstring(a_name.begin(), a_name.end()));
+		return std::format(L"Data/PIXL-Shaders/{}.hlsl", std::wstring(a_name.begin(), a_name.end()));
 	}
 
 	const char* GetShaderProfile(SIE::ShaderClass a_shaderClass)

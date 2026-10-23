@@ -34,6 +34,8 @@
 #include <format>
 #include <fstream>
 #include <iomanip>
+#include <initializer_list>
+#include <iterator>
 
 #define I18N_KEY_PREFIX "feature.hybrid_gi."
 
@@ -100,7 +102,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	DebugView,
 	DebugGain)
 
-////////////////////////////////////////////////////////////////////////////////////
 
 namespace
 {
@@ -321,7 +322,6 @@ namespace
 
 }
 
-////////////////////////////////////////////////////////////////////////////////////
 
 void HybridGI::RestoreDefaultSettings()
 {
@@ -380,14 +380,14 @@ void HybridGI::DrawSettings()
 		auto guard = Util::DisableGuard(!settings.Enabled);
 		ImGui::TextUnformatted("Quality Preset");
 		if (ImGui::BeginTable("PIXL GI Presets", 4, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings)) {
-			ImGui::TableNextColumn();
-			DrawPresetButton("Low", PixlQualityPreset::Performance, activePreset);
-			ImGui::TableNextColumn();
-			DrawPresetButton("Medium", PixlQualityPreset::Balanced, activePreset);
-			ImGui::TableNextColumn();
-			DrawPresetButton("High", PixlQualityPreset::Quality, activePreset);
-			ImGui::TableNextColumn();
-			DrawPresetButton("Ultra", PixlQualityPreset::Ultra, activePreset);
+			for (const auto& [label, preset] : std::array{
+				std::pair{ "Low", PixlQualityPreset::Performance },
+				std::pair{ "Medium", PixlQualityPreset::Balanced },
+				std::pair{ "High", PixlQualityPreset::Quality },
+				std::pair{ "Ultra", PixlQualityPreset::Ultra } }) {
+				ImGui::TableNextColumn();
+				DrawPresetButton(label, preset, activePreset);
+			}
 			ImGui::EndTable();
 		}
 
@@ -1167,7 +1167,7 @@ void HybridGI::WriteDiagnosticManifest(bool complete) const
 		"upsample.cs.hlsl", "common.hlsli"
 	};
 	for (const auto shaderFile : shaderFiles) {
-		const auto path = Util::PathHelpers::GetShadersPath() / "HybridGI" / shaderFile;
+		const auto path = Util::PathHelpers::GetPIXLShadersPath() / "HybridGI" / shaderFile;
 		std::error_code sizeError;
 		if (!std::filesystem::exists(path))
 			continue;
@@ -1197,6 +1197,12 @@ void HybridGI::NotifyDiagnostic(std::string message)
 
 void HybridGI::LoadSettings(json& o_json)
 {
+	if (!o_json.is_object()) {
+		settings = {};
+		recompileFlag = true;
+		queuedResetHistory = true;
+		return;
+	}
 	settings = o_json;
 	// Append-only settings are loaded explicitly because the legacy settings
 	// serializer is already at its macro field limit. Old presets receive the
@@ -1209,6 +1215,15 @@ void HybridGI::LoadSettings(json& o_json)
 	settings.AdaptiveRayMinimum = o_json.value("AdaptiveRayMinimum", 0.50f);
 	settings.EnableEmitterInjection = o_json.value("EnableEmitterInjection", true);
 	settings.EmitterInjectionStrength = o_json.value("EmitterInjectionStrength", 0.65f);
+	const Settings defaults{};
+	const auto finiteOr = [](float value, float fallback) {
+		return std::isfinite(value) ? value : fallback;
+	};
+	settings.WorldCacheTemporalResponse = finiteOr(settings.WorldCacheTemporalResponse, defaults.WorldCacheTemporalResponse);
+	settings.RadianceFireflyClamp = finiteOr(settings.RadianceFireflyClamp, defaults.RadianceFireflyClamp);
+	settings.ReflectionTemporalResponse = finiteOr(settings.ReflectionTemporalResponse, defaults.ReflectionTemporalResponse);
+	settings.DepthFadeRange.x = finiteOr(settings.DepthFadeRange.x, defaults.DepthFadeRange.x);
+	settings.DepthFadeRange.y = finiteOr(settings.DepthFadeRange.y, defaults.DepthFadeRange.y);
 	settings.ResolutionMode = std::clamp(settings.ResolutionMode, 0, 2);
 	settings.DebugView = std::min(settings.DebugView, 13u);
 	settings.WorldCacheTraceSteps = std::clamp(settings.WorldCacheTraceSteps, 2u, 6u);
@@ -1239,6 +1254,7 @@ void HybridGI::LoadSettings(json& o_json)
 	settings.DepthFadeRange.x = std::clamp(settings.DepthFadeRange.x, 1e4f, settings.DepthFadeRange.y - 100.f);
 
 	recompileFlag = true;
+	queuedResetHistory = true;
 }
 
 void HybridGI::SaveSettings(json& o_json)
@@ -1356,7 +1372,7 @@ void HybridGI::SetupResources()
 		};
 
 		auto mainTex = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
-		mainTex.texture->GetDesc(&texDesc);
+		mainTex.texture->GetDesc(REX::W32::AsW32(&texDesc));
 		srvDesc.Format = uavDesc.Format = texDesc.Format = DXGI_FORMAT_R11G11B10_FLOAT;
 		texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 		texDesc.MipLevels = srvDesc.Texture2D.MipLevels = 5;
@@ -1430,61 +1446,31 @@ void HybridGI::SetupResources()
 
 		uavDesc.Texture2D.MipSlice = 0;
 		texDesc.MipLevels = srvDesc.Texture2D.MipLevels = 1;
+		// All single-mip storage textures use the same descriptor contract.
+		// Capture the descriptors by reference to preserve the format transitions below.
+		auto createStorageTexture = [&](const char* name) {
+			auto texture = eastl::make_unique<Texture2D>(texDesc, name);
+			texture->CreateSRV(srvDesc);
+			texture->CreateUAV(uavDesc);
+			return texture;
+		};
 		srvDesc.Format = uavDesc.Format = texDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-		{
-			texIlY[0] = eastl::make_unique<Texture2D>(texDesc, "HybridGI::IlY[0]");
-			texIlY[0]->CreateSRV(srvDesc);
-			texIlY[0]->CreateUAV(uavDesc);
+		texIlY[0] = createStorageTexture("HybridGI::IlY[0]");
+		texIlY[1] = createStorageTexture("HybridGI::IlY[1]");
+		texGiSpecular[0] = createStorageTexture("HybridGI::GiSpecular[0]");
+		texGiSpecular[1] = createStorageTexture("HybridGI::GiSpecular[1]");
+		texBentVisibility[0] = createStorageTexture("HybridGI::BentVisibility[0]");
+		texBentVisibility[1] = createStorageTexture("HybridGI::BentVisibility[1]");
 
-			texIlY[1] = eastl::make_unique<Texture2D>(texDesc, "HybridGI::IlY[1]");
-			texIlY[1]->CreateSRV(srvDesc);
-			texIlY[1]->CreateUAV(uavDesc);
-
-			texGiSpecular[0] = eastl::make_unique<Texture2D>(texDesc, "HybridGI::GiSpecular[0]");
-			texGiSpecular[0]->CreateSRV(srvDesc);
-			texGiSpecular[0]->CreateUAV(uavDesc);
-
-			texGiSpecular[1] = eastl::make_unique<Texture2D>(texDesc, "HybridGI::GiSpecular[1]");
-			texGiSpecular[1]->CreateSRV(srvDesc);
-			texGiSpecular[1]->CreateUAV(uavDesc);
-
-			texBentVisibility[0] = eastl::make_unique<Texture2D>(texDesc, "HybridGI::BentVisibility[0]");
-			texBentVisibility[0]->CreateSRV(srvDesc);
-			texBentVisibility[0]->CreateUAV(uavDesc);
-
-			texBentVisibility[1] = eastl::make_unique<Texture2D>(texDesc, "HybridGI::BentVisibility[1]");
-			texBentVisibility[1]->CreateSRV(srvDesc);
-			texBentVisibility[1]->CreateUAV(uavDesc);
-		}
 		srvDesc.Format = uavDesc.Format = texDesc.Format = DXGI_FORMAT_R16G16_FLOAT;
-		{
-			texIlCoCg[0] = eastl::make_unique<Texture2D>(texDesc, "HybridGI::IlCoCg[0]");
-			texIlCoCg[0]->CreateSRV(srvDesc);
-			texIlCoCg[0]->CreateUAV(uavDesc);
-
-			texIlCoCg[1] = eastl::make_unique<Texture2D>(texDesc, "HybridGI::IlCoCg[1]");
-			texIlCoCg[1]->CreateSRV(srvDesc);
-			texIlCoCg[1]->CreateUAV(uavDesc);
-		}
+		texIlCoCg[0] = createStorageTexture("HybridGI::IlCoCg[0]");
+		texIlCoCg[1] = createStorageTexture("HybridGI::IlCoCg[1]");
 
 		srvDesc.Format = uavDesc.Format = texDesc.Format = DXGI_FORMAT_R8_UNORM;
-		{
-			texAo[0] = eastl::make_unique<Texture2D>(texDesc, "HybridGI::AO[0]");
-			texAo[0]->CreateSRV(srvDesc);
-			texAo[0]->CreateUAV(uavDesc);
-
-			texAo[1] = eastl::make_unique<Texture2D>(texDesc, "HybridGI::AO[1]");
-			texAo[1]->CreateSRV(srvDesc);
-			texAo[1]->CreateUAV(uavDesc);
-
-			texAccumFrames[0] = eastl::make_unique<Texture2D>(texDesc, "HybridGI::AccumFrames[0]");
-			texAccumFrames[0]->CreateSRV(srvDesc);
-			texAccumFrames[0]->CreateUAV(uavDesc);
-
-			texAccumFrames[1] = eastl::make_unique<Texture2D>(texDesc, "HybridGI::AccumFrames[1]");
-			texAccumFrames[1]->CreateSRV(srvDesc);
-			texAccumFrames[1]->CreateUAV(uavDesc);
-		}
+		texAo[0] = createStorageTexture("HybridGI::AO[0]");
+		texAo[1] = createStorageTexture("HybridGI::AO[1]");
+		texAccumFrames[0] = createStorageTexture("HybridGI::AccumFrames[0]");
+		texAccumFrames[1] = createStorageTexture("HybridGI::AccumFrames[1]");
 
 		// Temporal geometry is a packed validation payload: 16-bit fixed view depth plus
 		// two 8-bit octahedral world-normal components. R32_UINT keeps the same
@@ -1513,52 +1499,36 @@ void HybridGI::SetupResources()
 		uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
 		uavDesc.Texture2D = { .MipSlice = 0 };
 
-		auto createWorldCacheUintTexture = [&](const char* name) {
-			auto texture = eastl::make_unique<Texture2D>(texDesc, name);
-			texture->CreateSRV(srvDesc);
-			texture->CreateUAV(uavDesc);
-			return texture;
-		};
-		texWorldCacheMetadata = createWorldCacheUintTexture("PIXL HybridGI::WorldMetadata");
-		texWorldCacheWinners = createWorldCacheUintTexture("PIXL HybridGI::WorldWinners");
-		texWorldCacheNormal = createWorldCacheUintTexture("PIXL HybridGI::WorldNormal");
-		texWorldCachePreviousMetadata = createWorldCacheUintTexture("PIXL HybridGI::Previous WorldMetadata");
-		texWorldCachePreviousNormal = createWorldCacheUintTexture("PIXL HybridGI::Previous WorldNormal");
+		texWorldCacheMetadata = createStorageTexture("PIXL HybridGI::WorldMetadata");
+		texWorldCacheWinners = createStorageTexture("PIXL HybridGI::WorldWinners");
+		texWorldCacheNormal = createStorageTexture("PIXL HybridGI::WorldNormal");
+		texWorldCachePreviousMetadata = createStorageTexture("PIXL HybridGI::Previous WorldMetadata");
+		texWorldCachePreviousNormal = createStorageTexture("PIXL HybridGI::Previous WorldNormal");
 		const UINT clearValue[4] = { 0, 0, 0, 0 };
-		globals::d3d::context->ClearUnorderedAccessViewUint(texWorldCacheMetadata->uav.get(), clearValue);
-		globals::d3d::context->ClearUnorderedAccessViewUint(texWorldCacheNormal->uav.get(), clearValue);
-		globals::d3d::context->ClearUnorderedAccessViewUint(texWorldCachePreviousMetadata->uav.get(), clearValue);
-		globals::d3d::context->ClearUnorderedAccessViewUint(texWorldCachePreviousNormal->uav.get(), clearValue);
+		for (auto* texture : { texWorldCacheMetadata.get(), texWorldCacheNormal.get(),
+			texWorldCachePreviousMetadata.get(), texWorldCachePreviousNormal.get() })
+			context->ClearUnorderedAccessViewUint(texture->uav.get(), clearValue);
 
 		texDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 		srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 		uavDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-		auto createWorldCacheSHTexture = [&](const char* name) {
-			auto texture = eastl::make_unique<Texture2D>(texDesc, name);
-			texture->CreateSRV(srvDesc);
-			texture->CreateUAV(uavDesc);
-			return texture;
-		};
-		texWorldCacheSH0 = createWorldCacheSHTexture("PIXL HybridGI::WorldSH L0L1");
-		texWorldCacheSH1 = createWorldCacheSHTexture("PIXL HybridGI::WorldSH L2A");
-		texWorldCacheSH2 = createWorldCacheSHTexture("PIXL HybridGI::WorldSH L2B Chroma");
-		texWorldCachePreviousSH0 = createWorldCacheSHTexture("PIXL HybridGI::Previous WorldSH L0L1");
-		texWorldCachePreviousSH1 = createWorldCacheSHTexture("PIXL HybridGI::Previous WorldSH L2A");
-		texWorldCachePreviousSH2 = createWorldCacheSHTexture("PIXL HybridGI::Previous WorldSH L2B Chroma");
+		texWorldCacheSH0 = createStorageTexture("PIXL HybridGI::WorldSH L0L1");
+		texWorldCacheSH1 = createStorageTexture("PIXL HybridGI::WorldSH L2A");
+		texWorldCacheSH2 = createStorageTexture("PIXL HybridGI::WorldSH L2B Chroma");
+		texWorldCachePreviousSH0 = createStorageTexture("PIXL HybridGI::Previous WorldSH L0L1");
+		texWorldCachePreviousSH1 = createStorageTexture("PIXL HybridGI::Previous WorldSH L2A");
+		texWorldCachePreviousSH2 = createStorageTexture("PIXL HybridGI::Previous WorldSH L2B Chroma");
 		const FLOAT clearFloat[4] = { 0.f, 0.f, 0.f, 0.f };
-		globals::d3d::context->ClearUnorderedAccessViewFloat(texWorldCacheSH0->uav.get(), clearFloat);
-		globals::d3d::context->ClearUnorderedAccessViewFloat(texWorldCacheSH1->uav.get(), clearFloat);
-		globals::d3d::context->ClearUnorderedAccessViewFloat(texWorldCacheSH2->uav.get(), clearFloat);
-		globals::d3d::context->ClearUnorderedAccessViewFloat(texWorldCachePreviousSH0->uav.get(), clearFloat);
-		globals::d3d::context->ClearUnorderedAccessViewFloat(texWorldCachePreviousSH1->uav.get(), clearFloat);
-		globals::d3d::context->ClearUnorderedAccessViewFloat(texWorldCachePreviousSH2->uav.get(), clearFloat);
+		for (auto* texture : { texWorldCacheSH0.get(), texWorldCacheSH1.get(), texWorldCacheSH2.get(),
+			texWorldCachePreviousSH0.get(), texWorldCachePreviousSH1.get(), texWorldCachePreviousSH2.get() })
+			context->ClearUnorderedAccessViewFloat(texture->uav.get(), clearFloat);
 	}
 
 	logger::debug("Loading noise texture...");
 	{
 		DirectX::ScratchImage image;
 		try {
-			std::filesystem::path path{ "Data\\Shaders\\HybridGI\\fast_2uges.dds" };
+			std::filesystem::path path{ "Data\\PIXL-Shaders\\HybridGI\\fast_2uges.dds" };
 
 			DX::ThrowIfFailed(LoadFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, image));
 		} catch (const DX::com_exception& e) {
@@ -1641,20 +1611,12 @@ void HybridGI::ClearShaderCache()
 {
 	// Public/framework shader-cache invalidation keeps its original semantics:
 	// source hot-reloads and device rebuilds must never depend on settings deltas.
-	prefilterDepthsCompute = nullptr;
-	reflectionDepthCompute = nullptr;
-	prefilterRadianceCompute = nullptr;
-	prefilterNormalCompute = nullptr;
-	radianceDisoccCompute = nullptr;
-	giCompute = nullptr;
-	blurCompute = nullptr;
-	blurAtrousCompute = nullptr;
-	upsampleCompute = nullptr;
-	worldCacheInjectCompute = nullptr;
-	worldCacheSelectCompute = nullptr;
-	worldCacheDecayCompute = nullptr;
-	hybridReflectionCompute = nullptr;
-	hybridReflectionDenoiseCompute = nullptr;
+	for (auto* shader : { &prefilterDepthsCompute, &reflectionDepthCompute,
+		&prefilterRadianceCompute, &prefilterNormalCompute, &radianceDisoccCompute,
+		&giCompute, &blurCompute, &blurAtrousCompute, &upsampleCompute,
+		&worldCacheInjectCompute, &worldCacheSelectCompute, &worldCacheDecayCompute,
+		&hybridReflectionCompute, &hybridReflectionDenoiseCompute })
+		*shader = nullptr;
 	CompileComputeShaders(kShaderAll);
 	queuedResetTemporalHistory = true;
 	queuedResetWorldHistory = true;
@@ -1720,7 +1682,7 @@ void HybridGI::CompileComputeShaders(std::uint32_t a_shaderMask)
 		std::vector<std::pair<const char*, const char*>> defines;
 	};
 
-	std::vector<ShaderCompileInfo> shaderInfos = {
+	std::array<ShaderCompileInfo, 14> shaderInfos{{
 		{ kShaderPrefilterDepth, &prefilterDepthsCompute, "prefilterDepths.cs.hlsl", { { "LINEAR_FILTER", "" } } },
 		{ kShaderPrefilterDepth, &reflectionDepthCompute, "prefilterDepths.cs.hlsl", { { "MIN_FILTER", "" } } },
 		{ kShaderPrefilterRadiance, &prefilterRadianceCompute, "prefilterRadiance.cs.hlsl", {} },
@@ -1735,7 +1697,7 @@ void HybridGI::CompileComputeShaders(std::uint32_t a_shaderMask)
 		{ kShaderWorldDecay, &worldCacheDecayCompute, "worldCacheDecay.cs.hlsl", {} },
 		{ kShaderReflection, &hybridReflectionCompute, "hybridReflection.cs.hlsl", {} },
 		{ kShaderReflectionDenoise, &hybridReflectionDenoiseCompute, "hybridReflectionDenoise.cs.hlsl", {} },
-	};
+	}};
 
 	for (auto& info : shaderInfos) {
 		if ((a_shaderMask & info.bit) == 0u)
@@ -1754,12 +1716,8 @@ void HybridGI::CompileComputeShaders(std::uint32_t a_shaderMask)
 		}
 		if (settings.EnableAdaptiveRayAllocation)
 			info.defines.push_back({ "ADAPTIVE_RAY_ALLOCATION", "" });
-	}
 
-	for (auto& info : shaderInfos) {
-		if ((a_shaderMask & info.bit) == 0u)
-			continue;
-		auto path = std::filesystem::path("Data\\Shaders\\HybridGI") / info.filename;
+		auto path = std::filesystem::path("Data\\PIXL-Shaders\\HybridGI") / info.filename;
 		if (auto rawPtr = reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(path.c_str(), info.defines, "cs_5_0")))
 			info.programPtr->attach(rawPtr);
 	}
@@ -2028,13 +1986,11 @@ void HybridGI::DrawHybridGI()
 
 	auto imageSpaceManager = globals::game::imageSpaceManager;
 	if (imageSpaceManager) {
-		auto& ssaoBlur = imageSpaceManager->GetRuntimeData().BSImagespaceShaderISSAOBlurH;
+		auto* ssaoParams = imageSpaceManager->GetRuntimeData().BSImagespaceShaderISSAOBlurH;
 		// Toggle vanilla SSAO only when Skyrim has materialized the image-space
 		// shader object.  The pointer can be recreated across display transitions.
-		if (auto* shader = ssaoBlur.get()) {
-			auto* enableSSAO = reinterpret_cast<bool*>(reinterpret_cast<uintptr_t>(shader) + 0x50LL);
-			*enableSSAO = settings.EnableVanillaSSAO;
-		}
+		if (ssaoParams)
+			ssaoParams->enableSAO = settings.EnableVanillaSSAO;
 	}
 	UpdateDiagnosticCapture();
 	const uint materialDebugMode = globals::pipeline::materialForge.settings.LegacyPhysicalDebugMode;
@@ -2147,26 +2103,16 @@ void HybridGI::DrawHybridGI()
 	auto clearWorldHistory = [&]() {
 		const UINT clearUint[4] = { 0, 0, 0, 0 };
 		const FLOAT clearFloat[4] = { 0.f, 0.f, 0.f, 0.f };
-		if (texWorldCacheMetadata && texWorldCacheMetadata->uav)
-			context->ClearUnorderedAccessViewUint(texWorldCacheMetadata->uav.get(), clearUint);
-		if (texWorldCacheNormal && texWorldCacheNormal->uav)
-			context->ClearUnorderedAccessViewUint(texWorldCacheNormal->uav.get(), clearUint);
-		if (texWorldCachePreviousMetadata && texWorldCachePreviousMetadata->uav)
-			context->ClearUnorderedAccessViewUint(texWorldCachePreviousMetadata->uav.get(), clearUint);
-		if (texWorldCachePreviousNormal && texWorldCachePreviousNormal->uav)
-			context->ClearUnorderedAccessViewUint(texWorldCachePreviousNormal->uav.get(), clearUint);
-		if (texWorldCacheSH0 && texWorldCacheSH0->uav)
-			context->ClearUnorderedAccessViewFloat(texWorldCacheSH0->uav.get(), clearFloat);
-		if (texWorldCacheSH1 && texWorldCacheSH1->uav)
-			context->ClearUnorderedAccessViewFloat(texWorldCacheSH1->uav.get(), clearFloat);
-		if (texWorldCacheSH2 && texWorldCacheSH2->uav)
-			context->ClearUnorderedAccessViewFloat(texWorldCacheSH2->uav.get(), clearFloat);
-		if (texWorldCachePreviousSH0 && texWorldCachePreviousSH0->uav)
-			context->ClearUnorderedAccessViewFloat(texWorldCachePreviousSH0->uav.get(), clearFloat);
-		if (texWorldCachePreviousSH1 && texWorldCachePreviousSH1->uav)
-			context->ClearUnorderedAccessViewFloat(texWorldCachePreviousSH1->uav.get(), clearFloat);
-		if (texWorldCachePreviousSH2 && texWorldCachePreviousSH2->uav)
-			context->ClearUnorderedAccessViewFloat(texWorldCachePreviousSH2->uav.get(), clearFloat);
+		for (auto* texture : { texWorldCacheMetadata.get(), texWorldCacheNormal.get(),
+			texWorldCachePreviousMetadata.get(), texWorldCachePreviousNormal.get() }) {
+			if (texture && texture->uav)
+				context->ClearUnorderedAccessViewUint(texture->uav.get(), clearUint);
+		}
+		for (auto* texture : { texWorldCacheSH0.get(), texWorldCacheSH1.get(), texWorldCacheSH2.get(),
+			texWorldCachePreviousSH0.get(), texWorldCachePreviousSH1.get(), texWorldCachePreviousSH2.get() }) {
+			if (texture && texture->uav)
+				context->ClearUnorderedAccessViewFloat(texture->uav.get(), clearFloat);
+		}
 		lastWorldCacheDecayClock = 0xffffffffu;
 		lastWorldCacheInjectionClock = 0xffffffffu;
 		worldCacheInjectionAccumulator = 0.0f;
@@ -2268,11 +2214,11 @@ void HybridGI::DrawHybridGI()
 		TracyD3D11Zone(globals::state->tracyCtx, "HybridGI - Radiance Disocc");
 
 		resetViews();
-		srvs.at(0) = rts[deferred->forwardRenderTargets[0]].SRV;
+		srvs.at(0) = REX::W32::AsReal(rts[deferred->forwardRenderTargets[0]].SRV);
 		srvs.at(1) = texWorkingDepth->srv.get();
-		srvs.at(2) = rts[NORMALROUGHNESS].SRV;
+		srvs.at(2) = REX::W32::AsReal(rts[NORMALROUGHNESS].SRV);
 		srvs.at(3) = texPrevGeo->srv.get();
-		srvs.at(4) = rts[RE::RENDER_TARGET::kMOTION_VECTOR].SRV;
+		srvs.at(4) = REX::W32::AsReal(rts[RE::RENDER_TARGET::kMOTION_VECTOR].SRV);
 		srvs.at(5) = texAccumFrames[lastFrameAccumTexIdx]->srv.get();
 		srvs.at(6) = texAo[inputAoTexIdx]->srv.get();
 		srvs.at(7) = texIlY[inputGITexIdx]->srv.get();
@@ -2305,11 +2251,8 @@ void HybridGI::DrawHybridGI()
 
 			resetViews();
 			srvs.at(0) = texRadianceTemp->srv.get();
-			uavs.at(0) = uavRadiance[0].get();  // Mip 0
-			uavs.at(1) = uavRadiance[1].get();  // Mip 1
-			uavs.at(2) = uavRadiance[2].get();  // Mip 2
-			uavs.at(3) = uavRadiance[3].get();  // Mip 3
-			uavs.at(4) = uavRadiance[4].get();  // Mip 4
+			for (std::size_t mip = 0; mip < std::size(uavRadiance); ++mip)
+				uavs.at(mip) = uavRadiance[mip].get();
 
 			context->CSSetShaderResources(0, 1, srvs.data());
 			context->CSSetUnorderedAccessViews(0, 5, uavs.data(), nullptr);
@@ -2331,12 +2274,9 @@ void HybridGI::DrawHybridGI()
 		TracyD3D11Zone(globals::state->tracyCtx, "HybridGI - Prefilter Normals");
 
 		resetViews();
-		srvs.at(0) = rts[NORMALROUGHNESS].SRV;
-		uavs.at(0) = uavNormal[0].get();
-		uavs.at(1) = uavNormal[1].get();
-		uavs.at(2) = uavNormal[2].get();
-		uavs.at(3) = uavNormal[3].get();
-		uavs.at(4) = uavNormal[4].get();
+		srvs.at(0) = REX::W32::AsReal(rts[NORMALROUGHNESS].SRV);
+		for (std::size_t mip = 0; mip < std::size(uavNormal); ++mip)
+			uavs.at(mip) = uavNormal[mip].get();
 
 		context->CSSetShaderResources(0, 1, srvs.data());
 		context->CSSetUnorderedAccessViews(0, 5, uavs.data(), nullptr);
@@ -2363,7 +2303,7 @@ void HybridGI::DrawHybridGI()
 				srvs.at(0) = texWorkingDepth->srv.get();
 				srvs.at(1) = texNormal->srv.get();
 				srvs.at(2) = texRadiance->srv.get();
-				srvs.at(3) = rts[ALBEDO].SRV;
+				srvs.at(3) = REX::W32::AsReal(rts[ALBEDO].SRV);
 				srvs.at(4) = texWorldCachePreviousMetadata->srv.get();
 				srvs.at(5) = texWorldCachePreviousSH0->srv.get();
 				srvs.at(6) = texWorldCachePreviousSH1->srv.get();
@@ -2429,7 +2369,7 @@ void HybridGI::DrawHybridGI()
 
 		resetViews();
 		srvs.at(0) = texWorkingDepth->srv.get();
-		srvs.at(1) = rts[NORMALROUGHNESS].SRV;
+		srvs.at(1) = REX::W32::AsReal(rts[NORMALROUGHNESS].SRV);
 		srvs.at(2) = texRadiance->srv.get();
 		srvs.at(3) = texNoise->srv.get();
 		srvs.at(4) = texAccumFrames[lastFrameAccumTexIdx]->srv.get();
@@ -2442,7 +2382,7 @@ void HybridGI::DrawHybridGI()
 		srvs.at(11) = worldCacheActive ? texWorldCacheSH1->srv.get() : nullptr;
 		srvs.at(12) = worldCacheActive ? texWorldCacheSH2->srv.get() : nullptr;
 		srvs.at(13) = worldCacheActive ? texWorldCacheNormal->srv.get() : nullptr;
-			srvs.at(14) = rts[REFLECTANCE].SRV;
+			srvs.at(14) = REX::W32::AsReal(rts[REFLECTANCE].SRV);
 			srvs.at(15) = texBentVisibility[inputBentTexIdx]->srv.get();
 			srvs.at(16) = texAo[inputAoTexIdx]->srv.get();
 
@@ -2474,11 +2414,11 @@ void HybridGI::DrawHybridGI()
 		TracyD3D11Zone(globals::state->tracyCtx, "HybridGI - Hybrid Reflections");
 		resetViews();
 		srvs.at(0) = texWorkingDepth->srv.get();
-		srvs.at(1) = rts[NORMALROUGHNESS].SRV;
+		srvs.at(1) = REX::W32::AsReal(rts[NORMALROUGHNESS].SRV);
 		srvs.at(2) = texRadiance->srv.get();
 		srvs.at(3) = texNoise->srv.get();
 		srvs.at(4) = texGiSpecular[inputSpecTexIdx]->srv.get();
-		srvs.at(5) = rts[REFLECTANCE].SRV;
+		srvs.at(5) = REX::W32::AsReal(rts[REFLECTANCE].SRV);
 		srvs.at(6) = worldCacheActive ? texWorldCacheMetadata->srv.get() : nullptr;
 		srvs.at(7) = worldCacheActive ? texWorldCacheSH0->srv.get() : nullptr;
 		srvs.at(8) = worldCacheActive ? texWorldCacheSH1->srv.get() : nullptr;
@@ -2507,7 +2447,7 @@ void HybridGI::DrawHybridGI()
 		resetViews();
 		srvs.at(0) = texGiSpecular[inputSpecTexIdx]->srv.get();
 		srvs.at(1) = texWorkingDepth->srv.get();
-		srvs.at(2) = rts[NORMALROUGHNESS].SRV;
+		srvs.at(2) = REX::W32::AsReal(rts[NORMALROUGHNESS].SRV);
 		uavs.at(0) = texGiSpecular[!inputSpecTexIdx]->uav.get();
 		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 		context->CSSetUnorderedAccessViews(0, 1, uavs.data(), nullptr);
@@ -2526,7 +2466,7 @@ void HybridGI::DrawHybridGI()
 		for (uint passIndex = 0; passIndex < passCount; ++passIndex) {
 			resetViews();
 			srvs.at(0) = texWorkingDepth->srv.get();
-			srvs.at(1) = rts[NORMALROUGHNESS].SRV;
+			srvs.at(1) = REX::W32::AsReal(rts[NORMALROUGHNESS].SRV);
 			srvs.at(2) = texAccumFrames[lastFrameAccumTexIdx]->srv.get();
 			srvs.at(3) = texIlY[inputGITexIdx]->srv.get();
 			srvs.at(4) = texIlCoCg[inputGITexIdx]->srv.get();
@@ -2558,7 +2498,7 @@ void HybridGI::DrawHybridGI()
 		srvs.at(4) = texGiSpecular[inputSpecTexIdx]->srv.get();
 		srvs.at(5) = texBentVisibility[inputBentTexIdx]->srv.get();
 		srvs.at(6) = texNormal->srv.get();
-		srvs.at(7) = rts[NORMALROUGHNESS].SRV;
+		srvs.at(7) = REX::W32::AsReal(rts[NORMALROUGHNESS].SRV);
 
 		uavs.at(0) = texAo[!inputAoTexIdx]->uav.get();
 		uavs.at(1) = texIlY[!inputGITexIdx]->uav.get();

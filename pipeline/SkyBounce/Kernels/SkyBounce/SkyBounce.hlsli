@@ -32,27 +32,35 @@ namespace SkyBounce
 		// exposed a camera-following strip where SkyBounce abruptly appeared.
 		// Evaluate the same scrolled coordinate used by Sample() and retire the
 		// contribution over a broad inner band so the finite volume is invisible.
+		if (any((asuint(positionMS) & 0x7f800000u) == 0x7f800000u))
+			return 0.0f;
 		float3 positionMSAdjusted = positionMS - SharedData::skyBounceSettings.PosOffset.xyz;
 		float3 uvw = positionMSAdjusted / ARRAY_SIZE + .5;
 		if (any(uvw <= 0.0f) || any(uvw >= 1.0f))
 			return 0.0f;
 		float3 dists = min(uvw, 1 - uvw);
 		float edgeDist = min(dists.x, min(dists.y, dists.z));
-		return smoothstep(0.0f, 0.18f, edgeDist);
+		float fade = saturate(edgeDist / 0.18f);
+		return fade * fade * fade * (fade * (fade * 6.0f - 15.0f) + 10.0f);
 	}
 
 	float MixDiffuse(float visibility)
 	{
-		return lerp(SharedData::skyBounceSettings.MinDiffuseVisibility, 1.0, visibility);
+		return lerp(saturate(SharedData::skyBounceSettings.MinDiffuseVisibility), 1.0, saturate(visibility));
 	}
 
 	float MixSpecular(float visibility)
 	{
-		return lerp(SharedData::skyBounceSettings.MinSpecularVisibility, 1.0, visibility);
+		return lerp(saturate(SharedData::skyBounceSettings.MinSpecularVisibility), 1.0, saturate(visibility));
 	}
 
 	float CosineLobeVisibility(sh2 skyBounceSH, float3 normal, float fadeOutFactor)
 	{
+		float normalLengthSq = dot(normal, normal);
+		normal = any((asuint(normal) & 0x7f800000u) == 0x7f800000u) ||
+			(asuint(normalLengthSq) & 0x7f800000u) == 0x7f800000u || normalLengthSq < EPSILON_LENGTH_SQ
+			? float3(0, 0, 1)
+			: normal * rsqrt(normalLengthSq);
 		float visibility = SphericalHarmonics::FuncProductIntegral(skyBounceSH, SphericalHarmonics::EvaluateCosineLobe(normal)) / Math::PI;
 		return lerp(1.0, saturate(visibility), fadeOutFactor);
 	}
@@ -70,7 +78,7 @@ namespace SkyBounce
 	float EvaluateSpecular(sh2 skyBounceSH, sh2 specularLobe, float fadeOutFactor = 1.0)
 	{
 		float visibility = SphericalHarmonics::FuncProductIntegral(skyBounceSH, specularLobe);
-		visibility = lerp(1.0, saturate(visibility), fadeOutFactor);
+		visibility = lerp(1.0, saturate(visibility), saturate(fadeOutFactor));
 		return MixSpecular(visibility);
 	}
 
@@ -103,14 +111,19 @@ namespace SkyBounce
 #endif
 	)
 		{
-			sh2 scaledUnitSH = UNIT_SH / 1e-10;
-			sh2 result = scaledUnitSH;
-
 	#if defined(SKY_BOUNCE_SHADOW_VIS)
 			shadowVisibility = 1.0;
 	#endif
 
-			if (!SharedData::InInterior) {
+			const sh2 skyOnly = float4(3.5449077e10f, 0.0f, 0.0f, 0.0f);
+			if (SharedData::InInterior || any((asuint(positionMS) & 0x7f800000u) == 0x7f800000u))
+				return skyOnly;
+
+				float normalLengthSq = dot(normalWS, normalWS);
+				normalWS = any((asuint(normalWS) & 0x7f800000u) == 0x7f800000u) ||
+					(asuint(normalLengthSq) & 0x7f800000u) == 0x7f800000u || normalLengthSq < EPSILON_LENGTH_SQ
+					? float3(0.0f, 0.0f, 1.0f)
+					: normalWS * rsqrt(normalLengthSq);
 				positionMS.xyz += normalWS * CELL_SIZE * 0.5;  // Receiver normal bias
 
 				float3 positionMSAdjusted = positionMS - SharedData::skyBounceSettings.PosOffset.xyz;
@@ -146,6 +159,8 @@ namespace SkyBounce
 									(i != 0 ? trilinearPos.x : trilinearInv.x) *
 									(j != 0 ? trilinearPos.y : trilinearInv.y) *
 									(k != 0 ? trilinearPos.z : trilinearInv.z);
+				if (triW <= EPSILON_WEIGHT_SUM)
+					continue;
 
 								uint3 cellTexID = (uint3(cellID) + arrayOrigin) & ARRAY_MASK;
 
@@ -153,10 +168,13 @@ namespace SkyBounce
 								// basic tangent checks
 								float3 tangentDelta = cellCentreMS - positionMSAdjusted;
 								float tangentInvLength = rsqrt(max(dot(tangentDelta, tangentDelta), EPSILON_LENGTH_SQ));
-								float tangentWeight = dot(tangentDelta, normalWS) * tangentInvLength * 0.5f + 0.5f;
+								float tangentWeight = saturate(dot(tangentDelta, normalWS) * tangentInvLength * 0.5f + 0.5f);
+								tangentWeight *= tangentWeight * (3.0f - 2.0f * tangentWeight);
 								float shW = triW * tangentWeight;
-								shSum = SphericalHarmonics::Add(shSum, SphericalHarmonics::Scale(SkyBounceProbeArray[cellTexID], shW));
-								shWsum += shW;
+				if (shW > EPSILON_WEIGHT_SUM) {
+					shSum = SphericalHarmonics::Add(shSum, SphericalHarmonics::Scale(SkyBounceProbeArray[cellTexID], shW));
+					shWsum += shW;
+				}
 
 	#if defined(SKY_BOUNCE_SHADOW_VIS)
 								shadowSum += ShadowVisibilityProbeArray[cellTexID] * triW;
@@ -166,19 +184,21 @@ namespace SkyBounce
 
 	#if defined(SKY_BOUNCE_SHADOW_VIS)
 					float fadeOut = GetFadeOutFactor(positionMS);
-					shadowVisibility = lerp(1.0, shadowSum / max(shadowWsum, EPSILON_WEIGHT_SUM), fadeOut);
+					shadowVisibility = lerp(1.0, saturate(shadowSum / max(shadowWsum, EPSILON_WEIGHT_SUM)), fadeOut);
 	#endif
-					result = SphericalHarmonics::Scale(shSum, rcp(shWsum + EPSILON_WEIGHT_SUM));
+				if (shWsum > EPSILON_WEIGHT_SUM)
+					return SphericalHarmonics::Scale(shSum, rcp(shWsum));
 				}
-			}
 
-			return result;
+			return skyOnly;
 	}
 
 	float GetSkyBounceDiffuse(sh2 skyBounceSH, float3 positionMS, float3 evalNormal, float vertexAO = 1.0)
 	{
 		if (SharedData::InInterior)
 			return 1.0;
+		if (any((asuint(positionMS) & 0x7f800000u) == 0x7f800000u))
+			return 1.0f;
 
 		float3 candidateNormal = float3(evalNormal.xy, max(0.0, evalNormal.z));
 		float3 biasedNormal = dot(candidateNormal, candidateNormal) > 1e-6
@@ -192,8 +212,9 @@ namespace SkyBounce
 
 		sh2 SampleNoBias(float3 positionMS)
 		{
-			sh2 scaledUnitSH = UNIT_SH / 1e-10;
-			sh2 result = scaledUnitSH;
+			const sh2 skyOnly = float4(3.5449077e10f, 0.0f, 0.0f, 0.0f);
+			if (any((asuint(positionMS) & 0x7f800000u) == 0x7f800000u))
+				return skyOnly;
 			float3 positionMSAdjusted = positionMS - SharedData::skyBounceSettings.PosOffset.xyz;
 			float3 uvw = positionMSAdjusted / ARRAY_SIZE + .5;
 
@@ -220,15 +241,18 @@ namespace SkyBounce
 						(i != 0 ? trilinearPos.x : trilinearInv.x) *
 						(j != 0 ? trilinearPos.y : trilinearInv.y) *
 						(k != 0 ? trilinearPos.z : trilinearInv.z);
+				if (w <= EPSILON_WEIGHT_SUM)
+					continue;
 
 					uint3 cellTexID = (uint3(cellID) + arrayOrigin) & ARRAY_MASK;
 					sum = SphericalHarmonics::Add(sum, SphericalHarmonics::Scale(SkyBounceProbeArray[cellTexID], w));
 					wsum += w;
 				}
-				result = SphericalHarmonics::Scale(sum, rcp(wsum + EPSILON_WEIGHT_SUM));
+			if (wsum > EPSILON_WEIGHT_SUM)
+				return SphericalHarmonics::Scale(sum, rcp(wsum));
 			}
 
-			return result;
+			return skyOnly;
 		}
 #endif
 }

@@ -859,7 +859,7 @@ ID3D11ComputeShader* FoliageOptimizer::GetCullCS()
 {
 	if (!cullCS && !cullCompileAttempted) {
 		cullCompileAttempted = true;
-		cullCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\FoliageOptimizer\\GrassCullingCS.hlsl", {}, "cs_5_0"));
+		cullCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\FoliageOptimizer\\GrassCullingCS.hlsl", {}, "cs_5_0"));
 		if (!cullCS)
 			logger::error("[GRASS OPTIMIZATIONS] cull CS load failed â€” feature disabled");
 	}
@@ -970,7 +970,7 @@ void FoliageOptimizer::Hooks::BSMultiStreamInstanceTriShape_OnVisible::thunk(RE:
 		auto& self = globals::pipeline::foliageOptimizer;
 
 		// Only queue one representative shape per frame for each bucket to skip redundant setup.
-		if (!self.bucketStore.ClaimQueueSlot(This, globals::game::graphicsState->frameCount))
+		if (!self.bucketStore.ClaimQueueSlot(This, globals::game::graphicsState->GetFrameCount()))
 			return;
 
 		// Skips redundant and costly frustum checks since they are now handled by the coarse slice cull and CS.
@@ -1003,7 +1003,7 @@ void FoliageOptimizer::Hooks::BSGrassShader_SetupGeometry::thunk(RE::BSShader* T
 {
 	auto& self = globals::pipeline::foliageOptimizer;
 
-	const auto frame = globals::game::graphicsState->frameCount;
+	const auto frame = globals::game::graphicsState->GetFrameCount();
 	if (self.lastFrame != frame) {
 		self.UpdateGrass();
 		self.lastFrame = frame;
@@ -1111,7 +1111,7 @@ void FoliageOptimizer::Hooks::DrawInstanceTriShape::thunk(RE::BSRenderPass* pass
 	}
 
 	const uint64_t descVal = *reinterpret_cast<uint64_t*>(&geometry->GetGeometryRuntimeData().vertexDesc);
-	const uint32_t frame = globals::game::graphicsState->frameCount;
+	const uint32_t frame = globals::game::graphicsState->GetFrameCount();
 
 	const uint64_t passKey = (static_cast<uint64_t>(pass->passEnum) << 32) | descriptor;
 
@@ -1209,8 +1209,8 @@ void FoliageOptimizer::Hooks::DrawInstanceTriShape::thunk(RE::BSRenderPass* pass
 		shadowState.vertexDesc = descVal;
 		shadowState.stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_VERTEX_DESC);
 	}
-	if (shadowState.topology != D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST) {
-		shadowState.topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+	if (shadowState.topology != REX::W32::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST) {
+		shadowState.topology = REX::W32::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 		shadowState.stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_PRIMITIVE_TOPO);
 	}
 	static REL::Relocation<void (*)(uint32_t)> SetDirtyStates{ REL::RelocationID(75580, 77386) };

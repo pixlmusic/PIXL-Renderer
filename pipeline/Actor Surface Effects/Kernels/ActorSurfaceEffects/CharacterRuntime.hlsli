@@ -45,8 +45,8 @@ namespace PIXLCharacterRuntime
 		SurfaceEvent ActorSurfaceEvents[MaximumSurfaceEvents];
 		// Clothing Wear extends the established actor payload after the original
 		// DialogueFocus/ActorSurface prefix. LANDSCAPE never declares this ABI.
-		float4 DamageState;      // severity, health fraction, reserved, enabled
-		float4 DamageParameters; // fabric tears, armor damage, actor seed, debug mode
+		float4 ReservedCharacterData0;
+		float4 ReservedCharacterData1;
 	};
 #endif
 }

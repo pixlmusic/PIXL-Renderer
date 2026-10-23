@@ -68,7 +68,7 @@ namespace
 		return originalGetModuleFileNameW ? originalGetModuleFileNameW(module, filename, size) : 0;
 	}
 
-	// DLSSNR 310.8 asks Windows for its own module path during NGX validation,
+	// DLSSNR asks Windows for its own module path during NGX validation,
 	// but expects the signed NGX core identity.  Patch only this runtime's import
 	// slot for the duration of the vendor call and restore it immediately.  If the
 	// scoped patch cannot be installed, PIXL disables the optional feature.
@@ -153,17 +153,12 @@ namespace
 			return std::filesystem::is_directory(explicitPath) ? explicitPath / kRuntimeName : explicitPath;
 
 		const auto dataPath = Util::PathHelpers::GetDataPath();
-		const std::array candidates{
-			dataPath / L"Shaders/ImageReconstruction/Streamline" / kRuntimeName,
-			dataPath / L"Shaders/Upscaling/Streamline" / kRuntimeName,
-			dataPath / L"Shaders/ImageReconstruction/StreamlineDX12" / kRuntimeName,
-		};
-		for (const auto& candidate : candidates) {
-			std::error_code error;
-			if (std::filesystem::is_regular_file(candidate, error))
-				return candidate;
-		}
-		return {};
+		// PIXL is self-contained. Resolve Neural Rendering only from its canonical
+		// PIXL-Shaders Streamline directory; stale Shaders/ copies must never be
+		// loaded implicitly because that can select an unrelated or outdated DLL.
+		const auto candidate = dataPath / L"PIXL-Shaders/ImageReconstruction/Streamline" / kRuntimeName;
+		std::error_code error;
+		return std::filesystem::is_regular_file(candidate, error) && !error ? candidate : std::filesystem::path{};
 	}
 }
 
@@ -189,11 +184,15 @@ bool NeuralRendering::Probe(const std::filesystem::path& explicitPath)
 		return false;
 	}
 	version_ = Util::GetFormattedVersion(*version);
-	// Feature 18 and its string parameter ABI are private and versioned.  Accept
-	// only the runtime this contract was validated against rather than guessing.
-	if (version->major() != 310 || version->minor() != 8) {
+	// Feature 18 and its string parameter ABI are private and versioned. Keep an
+	// explicit allowlist: 310.8.0 is the original validated contract and 310.9.16
+	// retains the same default model while adding the lightweight model. Do not
+	// infer compatibility for unreviewed patch/minor versions.
+	const bool supportedRuntime = version->major() == 310 &&
+		(version->minor() == 8 || (version->minor() == 9 && version->patch() == 16));
+	if (!supportedRuntime) {
 		status_ = Status::UnsupportedVersion;
-		detail_ = std::format("validated runtime is DLSSNR 310.8.x; found {}", version_);
+		detail_ = std::format("supported DLSSNR runtimes are 310.8.x and 310.9.16; found {}", version_);
 		return false;
 	}
 

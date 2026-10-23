@@ -21,7 +21,6 @@
 #include "Modules/InteriorDaylight.h"
 #include "Modules/GroundResponse.h"
 #include "Modules/ActorSurfaceEffects.h"
-#include "Modules/ClothDynamics.h"
 #include "Modules/DialogueFocus.h"
 #include "Modules/PulseProfiler.h"
 #include "Renderer/RenderPassScheduler.h"
@@ -312,8 +311,6 @@ void State::Setup()
 	// after every earlier BSLightingShader setup hook has completed.
 	if (globals::pipeline::actorSurfaceEffects.loaded)
 		globals::pipeline::actorSurfaceEffects.InstallLateHooks();
-	if (globals::pipeline::clothDynamics.loaded)
-		globals::pipeline::clothDynamics.InstallLateHooks();
 	globals::deferred->SetupResources();
 	auto& passScheduler = PIXL::Renderer::RenderPassScheduler::Get();
 	passScheduler.RegisterLegacyModulePasses(RenderModule::GetModuleList());
@@ -924,7 +921,7 @@ void State::SetupResources()
 
 	// Grab main texture to get resolution
 	D3D11_TEXTURE2D_DESC texDesc{};
-	renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].texture->GetDesc(&texDesc);
+		renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].texture->GetDesc(REX::W32::AsW32(&texDesc));
 
 	globals::d3d::context->QueryInterface(__uuidof(pPerf), reinterpret_cast<void**>(&pPerf));
 
@@ -1185,8 +1182,8 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 			const auto outputHeight = graphics ? graphics->screenHeight : 0u;
 			const auto renderSize = Util::ConvertToDynamic(float2{ static_cast<float>(outputWidth), static_cast<float>(outputHeight) });
 			auto* renderer = globals::game::renderer;
-			ID3D11ShaderResourceView* motionVectors = renderer ?
-				renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR].SRV : nullptr;
+				ID3D11ShaderResourceView* motionVectors = renderer ?
+					REX::W32::AsReal(renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR].SRV) : nullptr;
 			const auto* playerCamera = RE::PlayerCamera::GetSingleton();
 			const std::uint32_t cameraMode = playerCamera && playerCamera->IsInFirstPerson() ? 1u : 2u;
 			const auto& frame = globals::game::frameBufferCached;

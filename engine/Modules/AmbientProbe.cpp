@@ -133,14 +133,14 @@ void AmbientProbe::RegisterWeatherVariables()
 	auto* registry = WeatherVariables::GlobalWeatherRegistry::GetSingleton()
 	                     ->GetOrCreateFeatureRegistry(GetShortName());
 	// Toggle AmbientProbe for this weather (SH-based ambient replaces vanilla)
-	registry->RegisterVariable(std::make_shared<WeatherVariables::WeatherVariable<bool>>(
+	registry->RegisterVariable(std::make_shared<WeatherVariables::WeatherVariable<uint>>(
 		"EnableAmbientProbe",
 		"Enable AmbientProbe",
 		"Enable or disable SH-based ambient lighting for this weather",
-		(bool*)&settings.EnableAmbientProbe,
-		true,
-		[](const bool& from, const bool& to, float factor) {
-			return factor > 0.5f ? to : from;  // Switch at transition midpoint
+		&settings.EnableAmbientProbe,
+		1u,
+		[](const uint& from, const uint& to, float factor) {
+			return factor > 0.5f ? (to != 0u) : (from != 0u);  // Switch at transition midpoint
 		}));
 
 	// Intensity of environment AmbientProbe (from World Probes)
@@ -231,7 +231,7 @@ bool AmbientProbe::IsDisabledForCurrentScene() const
 
 void AmbientProbe::ReflectionsPrepass()
 {
-	if (loaded) {
+	if (loaded && globals::d3d::context) {
 		auto context = globals::d3d::context;
 
 		bool sceneDisabled = IsDisabledForCurrentScene();
@@ -270,6 +270,10 @@ void AmbientProbe::Prepass()
 	}
 
 	auto context = globals::d3d::context;
+	auto* renderer = globals::game::renderer;
+	auto* deferred = Deferred::GetSingleton();
+	if (!context || !renderer || !deferred || !deferred->linearSampler)
+		return;
 
 	auto& worldProbes = globals::pipeline::worldProbes;
 
@@ -283,12 +287,10 @@ void AmbientProbe::Prepass()
 
 	std::array<ID3D11ShaderResourceView*, 1> srvs = { (worldProbes.loaded && envTexture) ? envTexture->srv.get() : nullptr };
 	std::array<ID3D11UnorderedAccessView*, 1> uavs = { envIBLTexture->uav.get() };
-	std::array<ID3D11SamplerState*, 1> samplers = { Deferred::GetSingleton()->linearSampler };
+	std::array<ID3D11SamplerState*, 1> samplers = { deferred->linearSampler };
 
 	// AmbientProbe - Environment cubemap SH projection (skip for DALC-based modes that don't use EnvIBL)
 	if (settings.DALCMode < 2) {
-		samplers[0] = Deferred::GetSingleton()->linearSampler;
-
 		context->CSSetSamplers(0, (uint)samplers.size(), samplers.data());
 		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 		context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
@@ -304,9 +306,8 @@ void AmbientProbe::Prepass()
 
 	// AmbientProbe with sky (use game's native reflections cubemap directly)
 	{
-		auto renderer = globals::game::renderer;
 		auto& reflections = renderer->GetRendererData().cubemapRenderTargets[RE::RENDER_TARGETS_CUBEMAP::kREFLECTIONS];
-		srvs.at(0) = reflections.SRV;
+		srvs.at(0) = REX::W32::AsReal(reflections.SRV);
 		uavs.at(0) = skyIBLTexture->uav.get();
 
 		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
@@ -386,7 +387,7 @@ void AmbientProbe::SetupResources()
 	{
 		DirectX::ScratchImage image;
 		try {
-			std::filesystem::path path = "Data\\Shaders\\AmbientProbe\\DiffuseAmbientProbe.dds";
+			std::filesystem::path path = "Data\\PIXL-Shaders\\AmbientProbe\\DiffuseAmbientProbe.dds";
 
 			DX::ThrowIfFailed(LoadFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, image));
 		} catch (const DX::com_exception& e) {
@@ -422,7 +423,7 @@ void AmbientProbe::SetupResources()
 	{
 		DirectX::ScratchImage image;
 		try {
-			std::filesystem::path path = "Data\\Shaders\\AmbientProbe\\SpecAmbientProbe.dds";
+			std::filesystem::path path = "Data\\PIXL-Shaders\\AmbientProbe\\SpecAmbientProbe.dds";
 
 			DX::ThrowIfFailed(LoadFromDDSFile(path.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, image));
 		} catch (const DX::com_exception& e) {
@@ -471,7 +472,7 @@ ID3D11ComputeShader* AmbientProbe::GetDiffuseAmbientCS()
 		defines.push_back({ "WORLD_PROBES", nullptr });
 	if (!diffuseIBLCS && !diffuseAmbientCompileAttempted) {
 		diffuseAmbientCompileAttempted = true;
-		diffuseIBLCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\AmbientProbe\\DiffuseAmbientProbeCS.hlsl", defines, "cs_5_0"));
+		diffuseIBLCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\AmbientProbe\\DiffuseAmbientProbeCS.hlsl", defines, "cs_5_0"));
 		if (!diffuseIBLCS)
 			logger::error("Ambient Probe compute shader is unavailable; projection will remain disabled until the shader cache is reloaded");
 	}

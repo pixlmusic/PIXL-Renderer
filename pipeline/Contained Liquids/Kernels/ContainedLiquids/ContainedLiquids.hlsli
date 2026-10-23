@@ -9,6 +9,12 @@
 // Independent PIXL implementation. Native camera-relative positions, Skyrim +Z up.
 namespace ContainedLiquids
 {
+	float OpticalSmootherStep(float value)
+	{
+		float t = saturate(value);
+		return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+	}
+
     struct DrawData {
         float4 center, axisX, axisY, axisZ, plane, optics, crop, dynamics;
         float4 profile0, profile1, profile2, profile3, detail, appearance;
@@ -21,6 +27,7 @@ namespace ContainedLiquids
     {
         float2 p=clamp(pixel-d.crop.xy-0.5f,0.0f.xx,d.crop.zw-2.0f);
         int2 q=int2(floor(p)); float2 f=frac(p);
+        f = f * f * f * (f * (f * 6.0f.xx - 15.0f.xx) + 10.0f.xx);
         return lerp(lerp(SceneCrop.Load(int3(q,0)).rgb,SceneCrop.Load(int3(q+int2(1,0),0)).rgb,f.x),
             lerp(SceneCrop.Load(int3(q+int2(0,1),0)).rgb,SceneCrop.Load(int3(q+1,0)).rgb,f.x),f.y);
     }
@@ -38,7 +45,9 @@ namespace ContainedLiquids
         float coordinate=saturate((z+1.0f)*0.5f)*15.0f;
         int lower=(int)floor(coordinate);
         int upper=min(lower+1,15);
-        return lerp(ProfileRadiusAtIndex(lower,d),ProfileRadiusAtIndex(upper,d),frac(coordinate));
+		float blend = frac(coordinate);
+		blend = OpticalSmootherStep(blend);
+		return lerp(ProfileRadiusAtIndex(lower,d),ProfileRadiusAtIndex(upper,d),blend);
     }
 
     float ProfileRadiusAtIndex(int index,DrawData d)
@@ -61,10 +70,14 @@ namespace ContainedLiquids
     float3 ProfileNormal(float3 samplePosition, DrawData d)
     {
         float radius=max(length(samplePosition.xy),1e-4f);
-        float dz=0.025f;
-        float slope=(ProfileRadius(clamp(samplePosition.z+dz,-1.0f,1.0f),d)-
-            ProfileRadius(clamp(samplePosition.z-dz,-1.0f,1.0f),d))/(2.0f*dz);
-        return normalize(float3(samplePosition.xy/radius,-slope));
+		float dz=0.025f;
+		float nearSlope=(ProfileRadius(clamp(samplePosition.z+dz,-1.0f,1.0f),d)-
+			ProfileRadius(clamp(samplePosition.z-dz,-1.0f,1.0f),d))/(2.0f*dz);
+		float farDz=dz*2.0f;
+		float farSlope=(ProfileRadius(clamp(samplePosition.z+farDz,-1.0f,1.0f),d)-
+			ProfileRadius(clamp(samplePosition.z-farDz,-1.0f,1.0f),d))/(2.0f*farDz);
+		float3 normalVector=float3(samplePosition.xy/radius,-lerp(nearSlope,farSlope,0.35f));
+		return normalVector*rsqrt(max(dot(normalVector,normalVector),1.0e-8f));
     }
 
     void AddProfileInterval(float lower,float upper,inout bool found,
@@ -207,10 +220,15 @@ namespace ContainedLiquids
                 cos(dot(surfaceLocal.xy,float2(-3.8f,9.1f))-d.dynamics.x*6.7f));
             float2 fineWaves=float2(cos(dot(surfaceLocal.xy,float2(17.0f,-5.0f))-d.dynamics.x*8.1f),
                 cos(dot(surfaceLocal.xy,float2(4.0f,15.0f))+d.dynamics.x*7.3f));
-            float2 ripple=(waves+fineWaves*0.28f)*(0.008f+d.dynamics.y*0.045f)/max(d.appearance.w,0.6f);
+			float2 capillary=float2(cos(dot(surfaceLocal.xy,float2(27.0f,11.0f))+d.dynamics.x*10.7f),
+				cos(dot(surfaceLocal.xy,float2(-13.0f,25.0f))-d.dynamics.x*9.9f));
+			float viscosity=max(d.appearance.w,0.6f);
+			float2 ripple=(waves+fineWaves*0.28f+capillary*0.09f)*
+				(0.008f+d.dynamics.y*0.045f)/viscosity;
             n=normalize(n+d.axisX.xyz*ripple.x+d.axisY.xyz*ripple.y);
             float wallRadius=max(ProfileRadius(surfaceLocal.z,d),0.02f);
-            meniscus=smoothstep(0.72f,0.98f,length(surfaceLocal.xy)/wallRadius);
+			float meniscusStart=lerp(0.76f,0.68f,saturate((viscosity-0.6f)*0.35f));
+			meniscus=OpticalSmootherStep((length(surfaceLocal.xy)/wallRadius-meniscusStart)/max(0.985f-meniscusStart,1.0e-4f));
             n=normalize(lerp(n,profileNormal,meniscus*0.22f));
         }
         if (d.optics.z==2) {bottle=surface?float3(0.1f,1,0.1f):float3(0.1f,0.05f,0.1f);alpha=1;return;}
@@ -245,7 +263,8 @@ namespace ContainedLiquids
         float3 background=max(SampleCrop(pixel+offset,d),0);
         float3 absorption=max(d.opticalColor.rgb,0.001f.xxx);
         float3 liquidTint=max(d.liquidColor.rgb,0.0f.xxx);
-        float3 transmission=exp(-absorption*d.optics.x*thickness);
+		float opticalDepth=min(max(d.optics.x,0.0f)*thickness,32.0f);
+		float3 transmission=exp(-absorption*opticalDepth);
         // Keep the direct/ambient inputs, but also retain a small contribution
         // from the already-lit authored shell. This captures nearby point-light
         // and emissive responses that are not represented by the directional
@@ -283,8 +302,8 @@ namespace ContainedLiquids
         // Light travelling from liquid toward air can exceed the critical angle.
         // Reinforce reflection only in that bounded grazing region.
         float criticalCos=sqrt(saturate(1.0f-1.0f/(liquidIOR*liquidIOR)));
-        float tir=surface?1.0f-smoothstep(max(criticalCos-0.10f,0.0f),min(criticalCos+0.03f,1.0f),
-            saturate(abs(dot(n,-ray)))):0.0f;
+		float tir=surface?1.0f-OpticalSmootherStep((saturate(abs(dot(n,-ray)))-max(criticalCos-0.10f,0.0f))/
+		    max(min(criticalCos+0.03f,1.0f)-max(criticalCos-0.10f,0.0f),1.0e-4f)):0.0f;
         liquid+=tir*max(d.detail.y,0.0f)*(max(ambient,0.0f)*0.12f+originalBottle*0.06f);
 
         // Cheap single-scatter approximation: light arriving from behind the
@@ -407,7 +426,7 @@ namespace ContainedLiquids
             float3 softMeniscus=SampleCrop(pixel+offset*1.35f,d);
             liquid=lerp(liquid,lerp(background,softMeniscus,0.5f),meniscus*0.16f);
         }
-        float coverage=smoothstep(0.01f,0.18f,thickness)*d.dynamics.w;
+		float coverage=OpticalSmootherStep((thickness-0.01f)/0.17f)*d.dynamics.w;
         // Keep the authored glass as the dominant outer coat. The liquid and
         // refraction sit behind it; replacing most of this response makes
         // wine/beer bottles read like opaque tinted plastic.

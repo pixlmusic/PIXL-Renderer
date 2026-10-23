@@ -2,11 +2,11 @@
 param([string]$ShaderRoot='')
 $ErrorActionPreference='Stop'
 $repository=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$stage=Join-Path $repository 'build\contained-liquids-shader-tests\Shaders'
+$stage=Join-Path $repository 'build\contained-liquids-shader-tests\PIXL-Shaders'
 if (-not $ShaderRoot) {
     Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
-    Copy-Item -Path (Join-Path $repository 'distribution\Shaders\*') -Destination $stage -Recurse -Force
+    Copy-Item -Path (Join-Path $repository 'distribution\PIXL-Shaders\*') -Destination $stage -Recurse -Force
     Get-ChildItem -LiteralPath (Join-Path $repository 'pipeline') -Directory | ForEach-Object {
         $descriptor=Join-Path $_.FullName 'Module.ini'
         $kernels=Join-Path $_.FullName 'Kernels'

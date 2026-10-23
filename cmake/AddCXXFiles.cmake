@@ -47,8 +47,8 @@ function(add_cxx_files TARGET)
 		CONFIGURE_DEPENDS
 		"pipeline/*/Kernels/*.hlsl"
 		"pipeline/*/Kernels/*.hlsli"
-		"distribution/Shaders/*.hlsl"
-		"distribution/Shaders/*.hlsli"
+		"distribution/PIXL-Shaders/*.hlsl"
+		"distribution/PIXL-Shaders/*.hlsli"
 	)
 
 	set(HLSL_FILES ${HLSL_FILES} PARENT_SCOPE)

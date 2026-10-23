@@ -44,7 +44,7 @@ rendering executable as described by the upstream project:
 - `version.dll`
 - `dlssg_sm86.ini`
 
-PIXL's separate `Data/Shaders/ImageReconstruction/StreamlineDX12` runtime directory must also contain the matching
+PIXL's separate `Data/PIXL-Shaders/ImageReconstruction/StreamlineDX12` runtime directory must also contain the matching
 Streamline files (`sl.interposer.dll`, `sl.common.dll`, `sl.dlss_g.dll`, and
 the Reflex/PCL plugins) and `nvngx_dlssg.dll`. All five Streamline DLLs must
 have matching versions. The tested package is the official NVIDIA 2.10.3

@@ -96,6 +96,13 @@ void SpawnCS(uint3 dispatchID : SV_DispatchThreadID)
 		return;
 	SpawnCommand command = SpawnCommands[dispatchID.x];
 	if (command.Slot < ParticleCapacity) {
+		if (!all(isfinite(float4(command.Value.Position, command.Value.Age))) ||
+			!all(isfinite(float4(command.Value.Velocity, command.Value.Lifetime))) ||
+			!all(isfinite(float4(command.Value.Acceleration, command.Value.Drag))) ||
+			!all(isfinite(command.Value.ColorEmission)) ||
+			!isfinite(command.Value.Size) || command.Value.Size <= 0.0f ||
+			command.Value.Lifetime <= 0.0f)
+			return;
 		Particle resident = ParticleState[command.Slot];
 		// Preserve living ice when the ring wraps. The CPU compacts duplicate
 		// slots before this pass, so each thread owns its candidate slot.
@@ -113,13 +120,16 @@ StructuredBuffer<ReactiveImpulse> ParticleImpulses : register(t2);
 float3 SafeDirection(float3 value, float3 fallback)
 {
 	float lengthSq = dot(value, value);
-	return lengthSq > 1.0e-8f && all(isfinite(value)) ? value * rsqrt(lengthSq) : fallback;
+	return lengthSq > 1.0e-8f && all(isfinite(value)) && isfinite(lengthSq) ? value * rsqrt(lengthSq) : fallback;
 }
 
 float ImpulseEnvelope(ReactiveImpulse impulse, float3 position, out float3 forceDirection)
 {
 	forceDirection = 0.0f;
-	if (impulse.Active == 0u || impulse.Duration <= 1.0e-4f || impulse.Age >= impulse.Duration)
+	if (impulse.Active == 0u || !all(isfinite(impulse.Position)) || !all(isfinite(impulse.Direction)) ||
+		!isfinite(impulse.Radius) || !isfinite(impulse.Duration) || !isfinite(impulse.Age) ||
+		!isfinite(impulse.PreviousAge) || !isfinite(impulse.VerticalInfluence) ||
+		impulse.Radius <= 1.0e-4f || impulse.Duration <= 1.0e-4f || impulse.Age >= impulse.Duration)
 		return 0.0f;
 	float3 offset = position - impulse.Position;
 	float distanceToOrigin = length(offset);
@@ -138,7 +148,7 @@ float ImpulseEnvelope(ReactiveImpulse impulse, float3 position, out float3 force
 		float3 radial = SafeDirection(offset, SafeDirection(impulse.Direction, float3(1, 0, 0)));
 		forceDirection = SafeDirection(lerp(radial, impulse.Direction, 0.72f) +
 			float3(0, 0, impulse.VerticalInfluence * 0.65f), radial);
-		return wave * decay * impulse.Strength;
+		return wave * decay * (isfinite(impulse.Strength) ? impulse.Strength : 0.0f);
 	}
 	float radialFalloff = pow(saturate(1.0f - distanceToOrigin / impulse.Radius), max(impulse.Falloff, 0.25f));
 	float3 radialDirection = SafeDirection(offset, float3(0, 0, 1));
@@ -146,7 +156,7 @@ float ImpulseEnvelope(ReactiveImpulse impulse, float3 position, out float3 force
 		? SafeDirection(lerp(radialDirection, impulse.Direction, 0.78f) +
 			float3(0, 0, impulse.VerticalInfluence * 0.35f), radialDirection)
 		: SafeDirection(radialDirection + float3(0, 0, impulse.VerticalInfluence), radialDirection);
-	return radialFalloff * decay * impulse.Strength;
+	return radialFalloff * decay * (isfinite(impulse.Strength) ? impulse.Strength : 0.0f);
 }
 
 [numthreads(64, 1, 1)]
@@ -157,6 +167,9 @@ void SimulateCS(uint3 dispatchID : SV_DispatchThreadID)
 	Particle particle = ParticleState[dispatchID.x];
 	if (!all(isfinite(float4(particle.Position, particle.Age))) ||
 		!all(isfinite(float4(particle.Velocity, particle.Lifetime))) ||
+		!all(isfinite(float4(particle.Acceleration, particle.Drag))) ||
+		!all(isfinite(float4(particle.ColorEmission.rgb, particle.Size))) ||
+		!all(isfinite(float4(particle.Rotation, particle.AngularVelocity, particle.Restitution, particle.Friction))) ||
 		particle.Lifetime <= 0.0f || particle.Age >= particle.Lifetime)
 	{
 		particle.Age = max(particle.Lifetime, 0.0f);
@@ -164,7 +177,7 @@ void SimulateCS(uint3 dispatchID : SV_DispatchThreadID)
 		return;
 	}
 
-	float dt = clamp(DeltaTime, 0.0f, 1.0f / 15.0f);
+	float dt = isfinite(DeltaTime) ? clamp(DeltaTime, 0.0f, 1.0f / 15.0f) : 0.0f;
 	particle.Age += dt;
 	if (particle.Age >= particle.Lifetime)
 	{
@@ -196,6 +209,9 @@ void SimulateCS(uint3 dispatchID : SV_DispatchThreadID)
 	bool initialStaffJet = (particle.Flags & 256u) != 0u && particle.BounceCount == 0u && particle.Age < 0.5f;
 	particle.Velocity += particle.Acceleration * dt * (initialStaffJet ? 0.15f : 1.0f);
 	particle.Velocity *= exp2(-max(particle.Drag, 0.0f) * dt * 1.442695f);
+	float velocitySq = dot(particle.Velocity, particle.Velocity);
+	if (velocitySq > 16777216.0f)
+		particle.Velocity *= 4096.0f * rsqrt(velocitySq);
 	float3 previousPosition = particle.Position;
 	particle.Position += particle.Velocity * dt;
 	particle.Rotation += particle.AngularVelocity * dt;
@@ -329,6 +345,8 @@ RWTexture2D<uint> ParticleMask : register(u0);
 
 uint EncodeParticle(float intensity, float3 color, uint type, bool additive, bool dynamic)
 {
+	intensity = isfinite(intensity) ? max(intensity, 0.0f) : 0.0f;
+	color = all(isfinite(color)) ? max(color, 0.0f) : 0.0f.xxx;
 	uint encodedIntensity = (uint)round(saturate(sqrt(max(intensity, 0.0f) / 4.0f)) * 511.0f);
 	uint3 encodedColor = (uint3)round(saturate(color) * 63.0f);
 	return (encodedIntensity << 23u) | (encodedColor.r << 17u) |
@@ -527,6 +545,8 @@ void CompositeCS(uint3 dispatchID : SV_DispatchThreadID)
 		return;
 
 	float4 scene = SceneColor[dispatchID.xy];
+	if (!all(isfinite(scene)))
+		scene = 0.0f.xxxx;
 	if (DebugMode == 3u)
 	{
 		float rawDepth = CompositeDepth.Load(int3(dispatchID.xy, 0));

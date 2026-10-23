@@ -169,13 +169,13 @@ struct MaterialLayers : RenderModule
 		float DetailDominantTerrainMinWeight = 0.65f;
 		uint DetailQuality = 2;  // 0 off, 1 albedo, 2 albedo+normal+roughness
 
-		// c15 — terrain source interpretation / frequency rejection
+		// c15 â€” terrain source interpretation / frequency rejection
 		float TerrainSyntheticPolarity = -1.0f;
 		float TerrainSourceMipBias = 1.25f;
 		float TerrainHeightDeadZone = 0.025f;
 		float TerrainAlphaAssist = 0.90f;
 
-		// c16 — uniform fallback scale + hardware depth
+		// c16 â€” uniform fallback scale + hardware depth
 		float TerrainAlphaEvidenceThreshold = 0.012f;
 		float TerrainSyntheticScaleFloor = 1.0f;
 		float TerrainVirtualDepthStrength = 1.0f;
@@ -187,59 +187,59 @@ struct MaterialLayers : RenderModule
 		uint EnableTerrainVirtualDepth = 1;
 		uint TerrainHeightDebugMode = 0;
 
-		// c18 — relief shaping
+		// c18 â€” relief shaping
 		float TerrainReliefGamma = 0.85f;
 		float TerrainSyntheticGain = 1.75f;
 		float ObjectVirtualDepthStrength = 0.0f;
 		float ObjectVirtualDepthMaxWorld = 4.0f;
 
-		// c19-c26 — CSPOM transport. CurvedSurfaceMapping remains the authoritative owner.
-		uint CSPOMEnabled = 0;
-		uint CSPOMQuality = 2;
-		uint CSPOMCurvedSurface = 1;
-		uint CSPOMSilhouetteClipping = 1;
+		// c19-c26 â€” reserved retired transport; retain offsets for cached shader ABI compatibility.
+		uint RetiredReliefEnabled = 0;
+		uint RetiredReliefQuality = 2;
+		uint RetiredReliefCurvedSurface = 1;
+		uint RetiredReliefSilhouetteClipping = 1;
 
-		uint CSPOMSelfOcclusion = 1;
-		uint CSPOMSelfShadow = 1;
-		uint CSPOMDepthWrite = 1;
-		uint CSPOMDebugMode = 0;
+		uint RetiredReliefSelfOcclusion = 1;
+		uint RetiredReliefSelfShadow = 1;
+		uint RetiredReliefDepthWrite = 1;
+		uint RetiredReliefDebugMode = 0;
 
-		float CSPOMDepth = 1.0f;
-		float CSPOMHeightBias = 0.0f;
-		float CSPOMCurvatureStrength = 0.65f;
-		float CSPOMSilhouetteStrength = 0.75f;
+		float RetiredReliefDepth = 1.0f;
+		float RetiredReliefHeightBias = 0.0f;
+		float RetiredReliefCurvatureStrength = 0.65f;
+		float RetiredReliefSilhouetteStrength = 0.75f;
 
-		float CSPOMFullQualityDistance = 480.0f;
-		float CSPOMMaxDistance = 1536.0f;
-		float CSPOMMaxTexelShift = 18.0f;
-		float CSPOMNormalStrength = 0.55f;
+		float RetiredReliefFullQualityDistance = 480.0f;
+		float RetiredReliefMaxDistance = 1536.0f;
+		float RetiredReliefMaxTexelShift = 18.0f;
+		float RetiredReliefNormalStrength = 0.55f;
 
-		uint CSPOMMinSteps = 8;
-		uint CSPOMMaxSteps = 28;
-		uint CSPOMBinarySteps = 4;
-		uint CSPOMShadowSteps = 6;
+		uint RetiredReliefMinSteps = 8;
+		uint RetiredReliefMaxSteps = 28;
+		uint RetiredReliefBinarySteps = 4;
+		uint RetiredReliefShadowSteps = 6;
 
-		uint CSPOMStaticOpaque = 1;
-		uint CSPOMTrees = 1;
-		uint CSPOMTerrain = 0;
-		uint CSPOMPad0 = 0;
+		uint RetiredReliefStaticOpaque = 1;
+		uint RetiredReliefTrees = 1;
+		uint RetiredReliefTerrain = 0;
+		uint RetiredReliefPad0 = 0;
 
-		uint CSPOMPad1 = 0;
-		uint CSPOMPad2 = 0;
-		uint CSPOMPad3 = 0;
-		uint CSPOMPad4 = 0;
+		uint RetiredReliefPad1 = 0;
+		uint RetiredReliefPad2 = 0;
+		uint RetiredReliefPad3 = 0;
+		uint RetiredReliefPad4 = 0;
 
-		float CSPOMOcclusionStrength = 0.42f;
-		float CSPOMShadowStrength = 0.55f;
-		float CSPOMGrazingProtection = 0.78f;
-		float CSPOMPad5 = 0.0f;
+		float RetiredReliefOcclusionStrength = 0.42f;
+		float RetiredReliefShadowStrength = 0.55f;
+		float RetiredReliefGrazingProtection = 0.78f;
+		float RetiredReliefPad5 = 0.0f;
 	};
 	STATIC_ASSERT_ALIGNAS_16(TuningSettings);
 	static_assert(sizeof(TuningSettings) == 432, "MaterialLayers::TuningSettings must match PS b9 v4.");
 	static_assert(offsetof(TuningSettings, ObjectVirtualDepthStrength) == 296);
 	static_assert(offsetof(TuningSettings, ObjectVirtualDepthMaxWorld) == 300);
-	static_assert(offsetof(TuningSettings, CSPOMEnabled) == 304);
-	static_assert(offsetof(TuningSettings, CSPOMOcclusionStrength) == 416);
+	static_assert(offsetof(TuningSettings, RetiredReliefEnabled) == 304);
+	static_assert(offsetof(TuningSettings, RetiredReliefOcclusionStrength) == 416);
 
 	TuningSettings tuningSettings;
 	ConstantBuffer* tuningCB = nullptr;

@@ -56,10 +56,11 @@ void NaturalLighting::SetExtLightData(RE::NiLight* niLight, const RE::TESObjectL
 		runtimeData->flags.set(RadiantGrid::LightFlags::InverseSquare);
 	if (ligh->data.flags.any(static_cast<RE::TES_LIGHT_FLAGS>(ISLCommon::TES_LIGHT_FLAGS_EXT::kLinear)))
 		runtimeData->flags.set(RadiantGrid::LightFlags::Linear);
-	runtimeData->cutoffOverride = std::clamp(ligh->data.fallofExponent, 0.01f, 1.f);
+	const float authoredCutoff = ligh->data.fallofExponent;
+	runtimeData->cutoffOverride = std::isfinite(authoredCutoff) ? std::clamp(authoredCutoff, 0.01f, 1.0f) : 1.0f;
 	runtimeData->lighFormId = ligh->formID;
 	const float size = ligh->data.fov >= 50.0f ? std::numbers::sqrt2_v<float> : ligh->data.fov;
-	runtimeData->size = std::clamp(size, 0.01f, 50.0f);
+	runtimeData->size = std::isfinite(size) ? std::clamp(size, 0.01f, 50.0f) : std::numbers::sqrt2_v<float>;
 }
 
 void NaturalLighting::ProcessLight(RadiantGrid::LightData& light, RE::BSLight* bsLight, RE::NiLight* niLight) const
@@ -94,6 +95,8 @@ void NaturalLighting::ProcessLight(RadiantGrid::LightData& light, RE::BSLight* b
 		// light.color *= runtimeData->fade;
 		light.fade = runtimeData->fade;
 	}
+	if (!std::isfinite(light.fade))
+		light.fade = 0.0f;
 	// Match the actual hand caster light, never asset names or all practicals.
 	// Keep the source softer nearby and retire it over a wider useful radius.
 	if (IsPlayerCastingLight(bsLight)) {
@@ -156,7 +159,7 @@ float NaturalLighting::BSLight_GetLuminance::thunk(RE::BSLight* bsLight, RE::NiP
 	const float sourceAttenuation = ScaledUnitsSq / std::max(dist * dist + ScaledUnitsSq * size * size / 2.0f, 1.0f);
 	const float attenuation = handLight ? sourceAttenuation * SmoothStep(0.0f, radius * 0.35f, radius - dist) : GetAttenuation(dist, radius, size);
 	const float luminance = (runtimeData->diffuse.red + runtimeData->diffuse.green + runtimeData->diffuse.blue) * runtimeData->fade * (handLight ? 2.6f : 4.0f) * attenuation * (1.0f / 3.0f);
-	bsLight->luminance = luminance;
+	bsLight->luminance = std::isfinite(luminance) ? luminance : 0.0f;
 
-	return luminance;
+	return bsLight->luminance;
 }

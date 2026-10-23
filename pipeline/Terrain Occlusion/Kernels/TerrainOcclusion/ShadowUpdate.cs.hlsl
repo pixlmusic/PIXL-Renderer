@@ -12,10 +12,18 @@ cbuffer ShadowUpdateCB : register(b0)
 	float2 ZRange : packoffset(c2.z);
 }
 
+float TerrainOcclusionSmootherStep(float value)
+{
+	float t = saturate(value);
+	return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+}
+
 float GetInterpolatedHeight(float2 pxCoord, bool isVertical)
 {
 	uint2 dims;
 	TexHeight.GetDimensions(dims.x, dims.y);
+	if (any(dims == 0u))
+		return 0.0f;
 
 	// oob is fine
 	int2 lerpPxCoordA = int2(pxCoord - .5 * float2(isVertical, !isVertical));
@@ -28,11 +36,13 @@ float GetInterpolatedHeight(float2 pxCoord, bool isVertical)
 	// normalize
 	heightA = lerp(PosRange.x, PosRange.y, heightA);
 	heightB = lerp(PosRange.x, PosRange.y, heightB);
-	heightA = (heightA - ZRange.x) / (ZRange.y - ZRange.x);
-	heightB = (heightB - ZRange.x) / (ZRange.y - ZRange.x);
+	float zRange = ZRange.y - ZRange.x;
+	float safeZRange = abs(zRange) > 1.0e-6f ? zRange : 1.0f;
+	heightA = (heightA - ZRange.x) / safeZRange;
+	heightB = (heightB - ZRange.x) / safeZRange;
 
 	if (inBoundA && inBoundB)
-		return lerp(heightA, heightB, frac((isVertical ? pxCoord.x : pxCoord.y) - .5));
+		return lerp(heightA, heightB, TerrainOcclusionSmootherStep(frac((isVertical ? pxCoord.x : pxCoord.y) - .5)));
 	else if (!inBoundA)
 		return heightB;
 	else
@@ -43,6 +53,8 @@ float2 GetInterpolatedHeightRW(float2 pxCoord, bool isVertical)
 {
 	uint2 dims;
 	RWTexShadowHeights.GetDimensions(dims.x, dims.y);
+	if (any(dims == 0u))
+		return 0.0f.xx;
 
 	int2 lerpPxCoordA = int2(pxCoord - .5 * float2(isVertical, !isVertical));
 	int2 lerpPxCoordB = int2(pxCoord + .5 * float2(isVertical, !isVertical));
@@ -52,7 +64,7 @@ float2 GetInterpolatedHeightRW(float2 pxCoord, bool isVertical)
 	float2 heightB = RWTexShadowHeights[clamp(lerpPxCoordB, 0, int2(dims) - 1)];
 
 	if (inBoundA && inBoundB)
-		return lerp(heightA, heightB, frac((isVertical ? pxCoord.x : pxCoord.y) - .5));
+		return lerp(heightA, heightB, TerrainOcclusionSmootherStep(frac((isVertical ? pxCoord.x : pxCoord.y) - .5)));
 	else if (!inBoundA)
 		return heightB;
 	else

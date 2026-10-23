@@ -10,6 +10,8 @@ RWTexture2D<float3> BloomOut : register(u0);
 float3 DecodeBloomScene(uint2 pixel)
 {
     float3 scene = max(SceneTex.Load(int3(pixel, 0)).rgb, 0.0f);
+	if (!all(isfinite(scene)))
+		return 0.0f;
     float3 linearScene = isSceneLinear > 0.5f ? scene : Color::GammaToLinearSafe(scene);
     if (applyAutoHDR > 0.5f && isSceneLinear <= 0.5f)
         linearScene = DisplayMapping::PumboAutoHDR(linearScene, SharedData::HDRData.z, SharedData::HDRData.y, 2.25f, 1.0f);
@@ -26,6 +28,10 @@ void main(uint2 dispatchID : SV_DispatchThreadID)
 
     uint sceneWidth, sceneHeight;
     SceneTex.GetDimensions(sceneWidth, sceneHeight);
+	if (sceneWidth == 0u || sceneHeight == 0u) {
+		BloomOut[dispatchID] = 0.0f;
+		return;
+	}
     uint2 sceneDimensions = uint2(sceneWidth, sceneHeight);
     uint2 base = dispatchID * 2u;
     // Bloom is exposure-relative only while PIXL Physical Camera owns exposure.
@@ -36,6 +42,7 @@ void main(uint2 dispatchID : SV_DispatchThreadID)
     float exposure = physicalCameraEnabled > 0.5f
         ? max(ExposureTex.Load(int3(0, 0, 0)), 1e-5f)
         : 1.0f;
+	exposure = isfinite(exposure) ? clamp(exposure, 1.0e-5f, 65504.0f) : 1.0f;
 
     float3 sum = 0.0f;
     float weightSum = 0.0f;
@@ -47,7 +54,8 @@ void main(uint2 dispatchID : SV_DispatchThreadID)
         for (uint x = 0u; x < 2u; ++x) {
             uint2 p = min(base + uint2(x, y), sceneDimensions - 1u);
             float3 color = DecodeBloomScene(p) * exposure;
-			float luminance = PixlLuminance(color);
+			float luminance = max(PixlLuminance(color), 0.0f);
+			luminance = isfinite(luminance) ? luminance : 0.0f;
 			// Karis average suppresses isolated sub-pixel fireflies while retaining
 			// coherent emissive surfaces and bright practical light sources.
             float karis = rcp(1.0f + 0.65f * luminance);
@@ -59,7 +67,7 @@ void main(uint2 dispatchID : SV_DispatchThreadID)
     }
 
     float3 average = sum / max(weightSum, 1e-4f);
-    float threshold = max(bloomThreshold, 0.0f);
+    float threshold = isfinite(bloomThreshold) ? clamp(bloomThreshold, 0.0f, 65504.0f) : 1.0f;
     float knee = max(threshold * 0.35f, 0.05f);
     float luminance = PixlLuminance(average);
 	// Quadratic soft knee: continuous in value and slope, unlike the broad halo
@@ -70,6 +78,8 @@ void main(uint2 dispatchID : SV_DispatchThreadID)
 
 	float rawAverageLuminance = rawLuminanceSum * 0.25f;
 	float coherence = saturate(rawAverageLuminance / max(maximumLuminance, 1e-4f) * 3.0f);
+	coherence = coherence * coherence * (3.0f - 2.0f * coherence);
 	float fireflyGuard = lerp(0.72f, 1.0f, coherence);
-    BloomOut[dispatchID] = average * (contribution / max(luminance, 1e-4f)) * fireflyGuard;
+    float3 bloom = average * (contribution / max(luminance, 1e-4f)) * fireflyGuard;
+	BloomOut[dispatchID] = all(isfinite(bloom)) ? max(bloom, 0.0f) : 0.0f;
 }

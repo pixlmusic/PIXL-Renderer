@@ -61,13 +61,13 @@ auto MakeMetricColumn(const auto& theme, auto valueGetter, auto colorGetter, aut
 	return [theme, valueGetter, colorGetter, formatter, legend, cellLegend](const DrawCallRow& row, int) {
 		using ValueType = decltype(valueGetter(row));
 		if constexpr (std::is_same_v<ValueType, std::optional<float>>) {
-			if (!valueGetter(row).has_value()) {
+			const auto value = valueGetter(row);
+			if (!value.has_value()) {
 				ImGui::TextDisabled("-");
 				return;
 			}
-			float value = *valueGetter(row);
-			ImVec4 color = colorGetter(theme, value, row);
-			std::string valueStr = formatter(value, row);
+			ImVec4 color = colorGetter(theme, *value, row);
+			std::string valueStr = formatter(*value, row);
 			ImGui::PushStyleColor(ImGuiCol_Text, color);
 			ImGui::Text("%s", valueStr.c_str());
 			ImGui::PopStyleColor();
@@ -265,6 +265,23 @@ void PulseProfiler::LoadSettings(json& j)
 		// Fallback to defaults if JSON is invalid
 		this->settings = PulseProfiler::Settings{};
 	}
+	this->settings.FrameHistorySize = std::clamp(
+		this->settings.FrameHistorySize,
+		this->settings.kMinFrameHistorySize,
+		this->settings.kMaxFrameHistorySize);
+	this->settings.UpdateInterval = std::clamp(
+		std::isfinite(this->settings.UpdateInterval) ? this->settings.UpdateInterval : 0.25f,
+		0.05f, PulseProfiler::Settings::kMaxUpdateInterval);
+	this->settings.TextSize = std::clamp(
+		std::isfinite(this->settings.TextSize) ? this->settings.TextSize : 1.0f,
+		0.8f, 1.2f);
+	this->settings.BackgroundOpacity = std::clamp(
+		std::isfinite(this->settings.BackgroundOpacity) ? this->settings.BackgroundOpacity : 0.8f,
+		0.35f, 1.0f);
+	if (!std::isfinite(this->settings.Position.x) || !std::isfinite(this->settings.Position.y)) {
+		this->settings.Position = {};
+		this->settings.PositionSet = false;
+	}
 	// Ensure history buffers match loaded size
 	this->state.frameTimeHistory.Resize(this->settings.FrameHistorySize);
 	this->state.postFGFrameTimeHistory.Resize(this->settings.FrameHistorySize);
@@ -301,9 +318,16 @@ void PulseProfiler::DrawOverlay()
 	if (!globals::state || !menu || !menu->overlayVisible || !ImGui::GetCurrentContext() || !this->settings.ShowInOverlay)
 		return;
 
-	auto [mainRows, summaryRows] = this->BuildDrawCallRows();
-	std::erase_if(mainRows, [](const DrawCallRow& row) { return !row.enabled || row.frameTime <= 0.0f; });
-	std::ranges::sort(mainRows, std::greater{}, &DrawCallRow::frameTime);
+	std::vector<DrawCallRow> mainRows;
+	std::vector<DrawCallRow> summaryRows;
+	const bool includeABRows = menu->GetSettings().DeveloperMode;
+	if (this->settings.ShowDrawCalls || includeABRows) {
+		auto rows = this->BuildDrawCallRows();
+		mainRows = std::move(rows.first);
+		summaryRows = std::move(rows.second);
+		std::erase_if(mainRows, [](const DrawCallRow& row) { return !row.enabled || row.frameTime <= 0.0f; });
+		std::ranges::sort(mainRows, std::greater{}, &DrawCallRow::frameTime);
+	}
 
 	struct PipelinePassRow
 	{
@@ -314,10 +338,11 @@ void PulseProfiler::DrawOverlay()
 	};
 
 	std::vector<PipelinePassRow> pipelinePasses;
-	pipelinePasses.reserve(globals::profiler ? globals::profiler->GetResults().size() : 0);
+	if (this->settings.ShowCSPasses && globals::profiler)
+		pipelinePasses.reserve(globals::profiler->GetResults().size());
 	float pixlTime = 0.0f;
 	float pixlAverage = 0.0f;
-	if (globals::profiler) {
+	if (this->settings.ShowCSPasses && globals::profiler) {
 		for (const auto& result : globals::profiler->GetResults()) {
 			if (!result.valid || result.avgMs <= 0.0f)
 				continue;
@@ -2242,13 +2267,13 @@ void PulseProfiler::UpdateGraphValues()
 
 	if (state.isFrameGenerationActive) {
 		// Get frametime directly from the Frame Generation system
-		float fgDeltaTime = globals::pipeline::imageReconstruction.GetFrameGenerationFrameTime();
+		const float fgDeltaTime = globals::pipeline::imageReconstruction.GetFrameGenerationFrameTime();
 
-		// Check if FSR frame generation is active (FSR doesn't provide timing data)
-		bool isFrameGenActive = globals::pipeline::imageReconstruction.IsFrameGenerationActive();
-		if (fgDeltaTime > 0.0f && !isFrameGenActive) {
+		// A valid measured presentation interval takes priority over the estimated
+		// multiplier for every active frame-generation provider.
+		if (std::isfinite(fgDeltaTime) && fgDeltaTime > 0.0f) {
 			state.postFGFrameTimeMs = fgDeltaTime * 1000.0f;
-			state.postFGFps = 1000.0f / state.postFGFrameTimeMs;
+			state.postFGFps = 1000.0f / std::max(state.postFGFrameTimeMs, 1.0e-4f);
 		} else {
 			// Fallback if FG time is not available
 			state.postFGFrameTimeMs = state.frameTimeMs / Settings::kFrameGenerationMultiplier;

@@ -14,7 +14,7 @@ if (-not $Fxc -or -not (Test-Path -LiteralPath $Fxc -PathType Leaf)) {
 
 $output = Join-Path $repo ('build\visibility-shader-tests-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $output | Out-Null
-$includeRoot = Join-Path $repo 'distribution\Shaders'
+$includeRoot = Join-Path $repo 'distribution\PIXL-Shaders'
 $sources = @(
     (Join-Path $repo 'pipeline\Foliage Optimizer\Kernels\FoliageOptimizer\GrassHiZCS.hlsl'),
     (Join-Path $repo 'pipeline\Foliage Optimizer\Kernels\FoliageOptimizer\GrassCullingCS.hlsl')

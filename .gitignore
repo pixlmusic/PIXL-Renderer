@@ -1,4 +1,4 @@
-# Generated build, package, and test output.
+# Local build and release output.
 /build/
 /bin/
 /dist/
@@ -25,28 +25,31 @@
 *.ipdb
 *.pch
 *.idb
-*.log
-*.dmp
-*.mdmp
-*.etl
 *.pixlbin
 *.vsp
 *.vspx
 *.diagsession
 
-# Local game data, checkpoints, experiments, and read-only references.
+# Local game installs, experiments, references, and developer-only material.
 /Data/
+/_REFERENCE/
 /PIXL_AUTONOMOUS/
 /PIXL_Preset_Experiments/
+/PIXL-Surfing/
 /checkpoints/
 /backups/
-/_REFERENCE/
 /Screenshots/
+/docs/release_polish/
+/docs/BREAKING_WAVE_REFERENCE.md
+/docs/OCEAN*.md
 /tools/GeneratePixlPresetExperiments.ps1
 /tools/PixDiTEnhance/
 /tools/Discord/
+/tools/DeployPIXLSurfingAddon.ps1
+/tools/OceanGeometryValidation.h
+/tools/TestOcean*.cpp
 
-# Machine-specific instructions and configuration.
+# Private local instructions and machine-specific configuration.
 /AGENTS.md
 /AI-INSTRUCTIONS.md
 /PIXL_ACTIVE_STATE.md
@@ -56,11 +59,15 @@
 /PIXL_RELEASE_STATE.md
 /START_CODEX_ACTIVE_DEVELOPMENT.md
 /PRIVATE_COMPONENTS.md
-CMakeUserPresets.json
-shadertoolsconfig.json
-compile_commands.json
+/CMakeUserPresets.json
+/shadertoolsconfig.json
+/compile_commands.json
 
-# Editor state and operating-system metadata.
+# Logs, crash dumps, editor state, and operating-system metadata.
+*.log
+*.dmp
+*.mdmp
+*.etl
 .idea/
 .vscode/
 .vs*/
@@ -70,7 +77,7 @@ compile_commands.json
 **/Thumbs.db
 **/Desktop.ini
 
-# Local deployment backups and accidental root-level runtime mirrors.
+# Local deployment helpers, backups, temporary files, and archives.
 /PIXLRenderer.dll
 /Lighting.hlsl
 /WindowLife.hlsli
@@ -79,8 +86,6 @@ compile_commands.json
 /DeployPIXL.bat
 /build/deployment-backups/
 /build/release-staging/
-
-# Temporary files, local archives, and Vortex metadata.
 *.tmp
 *.temp
 *.bak
@@ -92,7 +97,7 @@ __folder_managed_by_vortex
 *.7z
 /dist-*.sha256
 
-# Python environments and locally downloaded model/compiler artifacts.
+# Locally downloaded models and toolchains.
 **/__pycache__/
 *.py[cod]
 /.venv/
@@ -105,7 +110,11 @@ __folder_managed_by_vortex
 *.safetensors
 /extern/DirectXShaderCompiler/
 
-# Optional neural-rendering runtime files are installed separately.
+# Optional neural-rendering runtime is installed separately.
 nvngx_dlssnr.dll
 dlssnr.dll
 nr.dll
+
+# Local release-polish report generators.
+/tools/WriteReleasePolishFileMatrix.ps1
+/tools/WriteReleasePolishModuleReview.ps1

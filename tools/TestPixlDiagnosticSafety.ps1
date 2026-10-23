@@ -4,7 +4,7 @@ $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $vc = (Resolve-Path -LiteralPath $VcVars).Path
 $output = Join-Path $repo ('build\diagnostic-tests-' + [Guid]::NewGuid().ToString('N'))
-$shaderRoot = Join-Path $output 'Shaders'
+$shaderRoot = Join-Path $output 'PIXL-Shaders'
 New-Item -ItemType Directory -Path (Join-Path $shaderRoot 'PIXL\Modules') -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $shaderRoot 'LegacyModule') | Out-Null
 $outside = Join-Path $output 'Outside'
@@ -53,7 +53,7 @@ bool IEquals(const std::string& a, const std::string& b) { return _stricmp(a.c_s
 std::string WStringToString(const std::filesystem::path& path) { return path.string(); }
 namespace PathHelpers {
 std::filesystem::path root;
-std::filesystem::path GetShadersPath() { return root; }
+std::filesystem::path GetPIXLShadersPath() { return root; }
 std::filesystem::path GetOverridesPath() { return root.parent_path() / "Overrides"; }
 std::filesystem::path GetModuleDescriptorPath(const std::string& name) { return root / "PIXL" / "Modules" / (name + ".ini"); }
 std::filesystem::path GetModuleKernelPath(const std::string& name) { return root / name; }
@@ -92,7 +92,7 @@ int main(int argc, char** argv) {
     assert(SanitizeFileName(" test/invalid:*? ") == "test_invalid___");
     assert(SanitizeFileName("  ").empty());
     for (const auto* valid : {"LegacyModule", "WaterOptics", "Test_Module-2"}) assert(IsModuleIdentifier(valid));
-    for (const auto* invalid : {"", ".", "..", "../Shaders", "C:\\data", "A/B", "A:B", "A ", "A."}) assert(!IsModuleIdentifier(invalid));
+    for (const auto* invalid : {"", ".", "..", "../PIXL-Shaders", "C:\\data", "A/B", "A:B", "A ", "A."}) assert(!IsModuleIdentifier(invalid));
     assert(!IsModuleIdentifier(std::string("A\0B", 3)));
     assert(std::filesystem::path("..ini").stem() == "."); // Real malformed INI case.
     FeatureIssueInfo issue;

@@ -3,7 +3,7 @@ param()
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $pattern = 'CameraPosAdjust|CameraPreviousPosAdjust|CameraPosition|WorldPosition|worldPosition|positionWS|PreviousWorldPosition|PrevCameraPosition|ViewProj|PosOffset|OcclusionTransform'
-$rows = @(& rg --json -n $pattern engine distribution/Shaders pipeline -g '*.cpp' -g '*.h' -g '*.hpp' -g '*.hlsl' -g '*.hlsli' | ForEach-Object {
+$rows = @(& rg --json -n $pattern engine distribution/PIXL-Shaders pipeline -g '*.cpp' -g '*.h' -g '*.hpp' -g '*.hlsl' -g '*.hlsli' | ForEach-Object {
     $entry = $_ | ConvertFrom-Json
     if ($entry.type -ne 'match') { return }
     $path = $entry.data.path.text.Replace('\','/')

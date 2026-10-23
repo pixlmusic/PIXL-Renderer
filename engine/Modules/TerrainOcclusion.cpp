@@ -2,6 +2,8 @@
 
 #include <DirectXTex.h>
 #include <pystring/pystring.h>
+#include <limits>
+#include <cmath>
 
 #include "I18n/I18n.h"
 #include "State.h"
@@ -12,6 +14,35 @@
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	TerrainOcclusion::Settings,
 	EnableTerrainShadow)
+
+float TerrainOcclusion::OceanHeightfield::Sample(float worldX, float worldY) const noexcept
+{
+	if (!std::isfinite(worldX) || !std::isfinite(worldY))
+		return std::numeric_limits<float>::quiet_NaN();
+	if (!width || !height || encodedHeight.size() != static_cast<std::size_t>(width) * height)
+		return std::numeric_limits<float>::quiet_NaN();
+	const float spanX = metadata.pos1.x - metadata.pos0.x;
+	const float spanY = metadata.pos1.y - metadata.pos0.y;
+	if (!std::isfinite(spanX) || !std::isfinite(spanY) || std::abs(spanX) < 1.0f || std::abs(spanY) < 1.0f)
+		return std::numeric_limits<float>::quiet_NaN();
+	const float u = (worldX - metadata.pos0.x) / spanX;
+	const float v = (worldY - metadata.pos0.y) / spanY;
+	if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f)
+		return std::numeric_limits<float>::quiet_NaN();
+	const float px = std::clamp(u * width - 0.5f, 0.0f, static_cast<float>(width - 1));
+	const float py = std::clamp(v * height - 0.5f, 0.0f, static_cast<float>(height - 1));
+	const auto x0 = static_cast<std::uint32_t>(px);
+	const auto y0 = static_cast<std::uint32_t>(py);
+	const auto x1 = std::min(x0 + 1, width - 1);
+	const auto y1 = std::min(y0 + 1, height - 1);
+	const float fx = px - x0;
+	const float fy = py - y0;
+	auto at = [&](std::uint32_t x, std::uint32_t y) { return encodedHeight[static_cast<std::size_t>(y) * width + x]; };
+	const float encoded = std::lerp(std::lerp(at(x0, y0), at(x1, y0), fx),
+		std::lerp(at(x0, y1), at(x1, y1), fx), fy);
+	return std::clamp(std::lerp(metadata.pos0.z, metadata.pos1.z, encoded),
+		metadata.zRange.x, metadata.zRange.y);
+}
 
 void TerrainOcclusion::LoadSettings(json& o_json)
 {
@@ -80,6 +111,12 @@ void TerrainOcclusion::ParseHeightmapPath(std::filesystem::path p, bool xlodgen_
 	logger::debug("Found dds: {}", filename.string());
 
 	auto splitstr = pystring::split(filename.stem().string(), ".");
+	// Shipped xLODGen maps also live in textures/heightmaps. The filename,
+	// not its installation directory, determines which encoding to parse.
+	if (splitstr.size() >= 3 && splitstr[1] == "Terrain" && splitstr[2] == "HeightMap")
+		xlodgen_style = true;
+	else if (splitstr.size() >= 2 && splitstr[1] == "HeightMap")
+		xlodgen_style = false;
 	if (splitstr.size() != (xlodgen_style ? 9 : 10)) {
 		logger::debug("{} has incorrect number ({}) of fields", filename.string(), splitstr.size());
 		return;
@@ -127,8 +164,11 @@ void TerrainOcclusion::ParseHeightmapPath(std::filesystem::path p, bool xlodgen_
 		logger::debug("{} has unknown type ({})", filename.string(), splitstr[1]);
 }
 
-void TerrainOcclusion::SetupResources()
+void TerrainOcclusion::EnsureHeightmapCatalog()
 {
+	if (heightmapCatalogLoaded)
+		return;
+	heightmapCatalogLoaded = true;
 	logger::debug("Listing xLODGen height maps...");
 	{
 		std::filesystem::path texture_dir{ L"Data\\textures\\Terrain\\" };
@@ -151,6 +191,11 @@ void TerrainOcclusion::SetupResources()
 			ParseHeightmapPath(dir_entry.path(), false);
 	}
 
+	}
+
+void TerrainOcclusion::SetupResources()
+{
+	EnsureHeightmapCatalog();
 	logger::debug("Creating constant buffers...");
 	{
 		shadowUpdateCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<ShadowUpdateCB>(), "TerrainOcclusion::UpdateCB");
@@ -163,7 +208,7 @@ void TerrainOcclusion::CompileComputeShaders()
 {
 	logger::debug("Compiling shaders...");
 	{
-		auto program_ptr = reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\TerrainOcclusion\\ShadowUpdate.cs.hlsl", {}, "cs_5_0"));
+		auto program_ptr = reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\TerrainOcclusion\\ShadowUpdate.cs.hlsl", {}, "cs_5_0"));
 		if (program_ptr)
 			shadowUpdateProgram.attach(program_ptr);
 	}
@@ -187,6 +232,11 @@ TerrainOcclusion::PerFrame TerrainOcclusion::GetCommonBufferData()
 
 	if (isHeightmapReady) {
 		auto invScale = cachedHeightmap->pos1 - cachedHeightmap->pos0;
+		if (!std::isfinite(invScale.x) || !std::isfinite(invScale.y) || !std::isfinite(invScale.z) ||
+			std::abs(invScale.x) < 1.0f || std::abs(invScale.y) < 1.0f || std::abs(invScale.z) < 1.0f) {
+			data.EnableTerrainShadow = 0;
+			return data;
+		}
 		data.Scale = float3(1.f, 1.f, 1.f) / invScale;
 		data.Offset = -cachedHeightmap->pos0 * float2{ data.Scale.x, data.Scale.y };
 		data.ZRange = cachedHeightmap->zRange;
@@ -232,6 +282,61 @@ void TerrainOcclusion::LoadHeightmap()
 			return;
 		}
 
+		// The same authored heightmap used by the water domain shader is kept
+		// as a compact CPU snapshot for batched, nonblocking gameplay queries.
+		std::shared_ptr<OceanHeightfield> heightfield;
+		if (const auto* source = image.GetImage(0, 0, 0)) {
+			DirectX::ScratchImage converted;
+			const DirectX::Image* level = nullptr;
+			HRESULT cpuDecodeResult = DirectX::Convert(*source, DXGI_FORMAT_R32_FLOAT,
+				DirectX::TEX_FILTER_DEFAULT, 0.0f, converted);
+			if (SUCCEEDED(cpuDecodeResult))
+				level = converted.GetImage(0, 0, 0);
+			// BC4 terrain heightmaps are common in xLODGen output. DirectXTex's
+			// generic Convert path does not reliably expand BC4 to scalar float;
+			// decode the channel explicitly before publishing the CPU query field.
+			DirectX::ScratchImage decompressed;
+			DirectX::ScratchImage decodedFloat;
+			if (!level && DirectX::IsCompressed(source->format)) {
+				cpuDecodeResult = DirectX::Decompress(*source, DXGI_FORMAT_R8G8B8A8_UNORM,
+					decompressed);
+				if (SUCCEEDED(cpuDecodeResult)) {
+					const auto* rgba = decompressed.GetImage(0, 0, 0);
+					if (rgba && rgba->width && rgba->height) {
+						if (SUCCEEDED(DirectX::Convert(*rgba, DXGI_FORMAT_R32_FLOAT,
+							DirectX::TEX_FILTER_DEFAULT, 0.0f, decodedFloat)))
+							level = decodedFloat.GetImage(0, 0, 0);
+						else
+							cpuDecodeResult = E_FAIL;
+					}
+				}
+			}
+			if (level && level->width && level->height) {
+				heightfield = std::make_shared<OceanHeightfield>();
+				heightfield->metadata = target_heightmap;
+				heightfield->worldspaceFormID = worldspace->GetFormID();
+				heightfield->width = static_cast<std::uint32_t>(std::min<std::size_t>(level->width, 2048));
+				heightfield->height = static_cast<std::uint32_t>(std::min<std::size_t>(level->height, 2048));
+				heightfield->encodedHeight.resize(static_cast<std::size_t>(heightfield->width) * heightfield->height);
+				for (std::size_t y = 0; y < heightfield->height; ++y) {
+					const std::size_t sourceY = std::min(level->height - 1,
+						(y * level->height + heightfield->height / 2) / heightfield->height);
+					const auto* sourceRow = reinterpret_cast<const float*>(level->pixels + sourceY * level->rowPitch);
+					for (std::size_t x = 0; x < heightfield->width; ++x) {
+						const std::size_t sourceX = std::min(level->width - 1,
+							(x * level->width + heightfield->width / 2) / heightfield->width);
+						const float encoded = sourceRow[sourceX];
+						heightfield->encodedHeight[y * heightfield->width + x] =
+							std::isfinite(encoded) ? std::clamp(encoded, 0.0f, 1.0f) : 0.0f;
+					}
+				}
+			} else {
+				logger::error("[PIXL Ocean Dynamics] CPU terrain heightmap decode failed for '{}' (format {}, HRESULT 0x{:08X}); GPU terrain shadows remain available, but shoreline gameplay queries are disabled",
+				target_heightmap.filename, static_cast<unsigned>(source->format),
+				static_cast<std::uint32_t>(cpuDecodeResult));
+			}
+		}
+
 		ID3D11Resource* pResource = nullptr;
 		try {
 			DX::ThrowIfFailed(CreateTexture(device,
@@ -254,6 +359,16 @@ void TerrainOcclusion::LoadHeightmap()
 		texHeightMap->CreateSRV(srvDesc);
 
 		cachedHeightmap = &heightmaps[worldspace_name];
+		if (!heightfield) {
+			// Do not leave an older world's CPU map active when a new GPU map was
+			// loaded successfully but its CPU representation could not be decoded.
+			oceanHeightfield.store({}, std::memory_order_release);
+		} else {
+			logger::info("[PIXL Ocean Dynamics] CPU terrain query heightfield ready for '{}' ({}x{}, world {:08X})",
+				target_heightmap.filename, heightfield->width, heightfield->height,
+				heightfield->worldspaceFormID);
+			oceanHeightfield.store(std::move(heightfield), std::memory_order_release);
+		}
 	}
 
 	shadowUpdateIdx = 0;
@@ -319,6 +434,14 @@ void TerrainOcclusion::UpdateShadow()
 	constexpr uint logUpdateLength = std::bit_width(128u) - 1;  // integer log2, https://stackoverflow.com/questions/994593/how-to-do-an-integer-log2-in-c
 
 	auto context = globals::d3d::context;
+	if (!context || !texHeightMap || !texShadowHeight || !texShadowHeight->uav ||
+		!shadowUpdateCB || !shadowUpdateProgram || !cachedHeightmap)
+		return;
+	const float3 mapSpan = cachedHeightmap->pos1 - cachedHeightmap->pos0;
+	const float zSpan = cachedHeightmap->zRange.y - cachedHeightmap->zRange.x;
+	if (!std::isfinite(mapSpan.x) || !std::isfinite(mapSpan.y) || !std::isfinite(zSpan) ||
+		std::abs(mapSpan.x) < 1.0f || std::abs(mapSpan.y) < 1.0f || std::abs(zSpan) < 1.0f)
+		return;
 
 	if (texShadowHeight) {
 		std::array<ID3D11ShaderResourceView*, 1> srvs = { nullptr };
@@ -326,9 +449,12 @@ void TerrainOcclusion::UpdateShadow()
 		context->CSSetShaderResources(60, (uint)srvs.size(), srvs.data());
 	}
 
-	auto accumulator = *globals::game::currentAccumulator.get();
+	const auto accumulatorAddress = globals::game::currentAccumulator.get();
+	if (!accumulatorAddress || !*accumulatorAddress)
+		return;
+	auto accumulator = *accumulatorAddress;
 	auto shadowSceneNode = accumulator->GetRuntimeData().activeShadowSceneNode;
-	if (!shadowSceneNode)
+	if (!shadowSceneNode || !shadowSceneNode->GetRuntimeData().sunLight)
 		return;
 	auto sunLight = skyrim_cast<RE::NiDirectionalLight*>(shadowSceneNode->GetRuntimeData().sunLight->light.get());
 	if (!sunLight)
@@ -355,6 +481,14 @@ void TerrainOcclusion::UpdateShadow()
 		float3 dirLightPxDir = dirLightDir / invScale;
 		dirLightPxDir.x *= width;
 		dirLightPxDir.y *= height;
+		const float planarDirection = std::max(std::abs(dirLightPxDir.x), std::abs(dirLightPxDir.y));
+		if (!std::isfinite(planarDirection) || !std::isfinite(dirLightDir.z) || planarDirection < 1.0e-6f) {
+			// At the zenith there is no terrain horizon to cast a long shadow.
+			const float clearHeight[4]{};
+			context->ClearUnorderedAccessViewFloat(texShadowHeight->uav.get(), clearHeight);
+			shadowUpdateIdx = 0;
+			return;
+		}
 
 		float stepMult;
 		if (abs(dirLightPxDir.x) >= abs(dirLightPxDir.y)) {

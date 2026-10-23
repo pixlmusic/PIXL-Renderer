@@ -54,11 +54,14 @@ namespace Util
 
 	void RefreshScreenScale(HWND hwnd, float bufferWidth, float bufferHeight)
 	{
+		if (!std::isfinite(bufferWidth) || !std::isfinite(bufferHeight) || bufferWidth <= 0.0f || bufferHeight <= 0.0f)
+			return;
 		RECT rect{};
 		if (!GetClientRect(hwnd, &rect) || rect.right <= 0 || rect.bottom <= 0)
 			return;
 
-		if (rect.right == g_lastWindowWidth && rect.bottom == g_lastWindowHeight)
+		if (rect.right == g_lastWindowWidth && rect.bottom == g_lastWindowHeight &&
+			bufferWidth == g_displaySize.x && bufferHeight == g_displaySize.y)
 			return;
 
 		g_displaySize.x = bufferWidth;
@@ -91,9 +94,9 @@ namespace Util
 		previousFont(nullptr)
 	{
 		hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled);
+		if (hovered)
+			hovered = ImGui::BeginTooltip();
 		if (hovered) {
-			ImGui::BeginTooltip();
-			ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
 			// Apply Subtext font for consistent tooltip styling
 			if (auto* menu = globals::menu) {
 				if (auto* subtextFont = menu->GetFont(Menu::FontRole::Subtext)) {
@@ -101,6 +104,9 @@ namespace Util
 					ImGui::PushFont(subtextFont, subtextFont->LegacySize);
 				}
 			}
+			const float availableWidth = std::max(1.0f,
+				ImGui::GetMainViewport()->WorkSize.x - 2.0f * ImGui::GetStyle().WindowPadding.x);
+			ImGui::PushTextWrapPos(std::min(ImGui::GetFontSize() * 35.0f, availableWidth));
 		}
 	}
 

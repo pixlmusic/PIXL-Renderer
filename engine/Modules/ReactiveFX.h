@@ -74,7 +74,7 @@ struct ReactiveFX : RenderModule
 
 	struct Settings
 	{
-		bool Enabled = false;
+		bool Enabled = true;
 		std::uint32_t Quality = 2;
 		float MaximumDistance = 12000.0f;
 		float ParticleIntensity = 1.0f;
@@ -83,7 +83,7 @@ struct ReactiveFX : RenderModule
 		bool EnableVegetationResponse = true;
 		bool EnableHeroDebris = false;
 		bool EnableSecondaryImpacts = false;
-		bool FrostPressureTest = true;
+		bool FrostPressureTest = false;
 		std::uint32_t DebugMode = 0;
 	};
 

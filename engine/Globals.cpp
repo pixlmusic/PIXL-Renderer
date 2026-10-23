@@ -9,7 +9,6 @@
 #include "Modules/FurShells.h"
 #include "Modules/GroundResponse.h"
 #include "Modules/ActorSurfaceEffects.h"
-#include "Modules/ClothDynamics.h"
 #include "Modules/FoliageDynamics.h"
 #include "Modules/FoliageOptimizer.h"
 #include "Modules/CameraSuite.h"
@@ -29,7 +28,6 @@
 #include "Modules/SkinOptics.h"
 #include "Modules/WindowLife.h"
 #include "Modules/ContainedLiquids.h"
-#include "Modules/CurvedSurfaceMapping.h"
 #include "Modules/DistantLife.h"
 #include "Modules/ReactiveFX.h"
 #include "Modules/Microclimates.h"
@@ -46,6 +44,7 @@
 #include "Modules/LightVolumes.h"
 #include "Modules/VolumeOcclusion.h"
 #include "Modules/WaterOptics.h"
+#include "Modules/OceanDynamics.h"
 #include "Modules/RainResponse.h"
 #include "Menu.h"
 #include "SceneSettingsManager.h"
@@ -72,7 +71,6 @@ namespace globals
 		MaterialLayers materialLayers{};
 		GroundResponse groundResponse{};
 		ActorSurfaceEffects actorSurfaceEffects{};
-		ClothDynamics clothDynamics{};
 		FoliageDynamics foliageDynamics{};
 		FoliageOptimizer foliageOptimizer{};
 		AmbientProbe ambientProbe{};
@@ -96,6 +94,7 @@ namespace globals
 		Waterbody waterbody{};
 		LightVolumes lightVolumes{};
 		WaterOptics waterOptics{};
+		OceanDynamics oceanDynamics{};
 		PulseProfiler pulseProfiler{};
 		RainResponse rainResponse{};
 		ThinSurface thinSurface{};
@@ -107,7 +106,6 @@ namespace globals
 		SkinOptics skinOptics{};
 		WindowLife windowLife{};
 		ContainedLiquids containedLiquids{};
-		CurvedSurfaceMapping curvedSurfaceMapping{};
 		DistantLife distantLife{};
 		ReactiveFX reactiveFX{};
 		Microclimates microclimates{};

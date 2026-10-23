@@ -604,6 +604,12 @@ public:
 		settingCustomHotkey = false;
 		customHotkeyTarget = nullptr;
 	}
+	void CancelAllHotkeyCapture()
+	{
+		CancelCustomHotkeyCapture();
+		settingToggleKey = settingSkipCompilationKey = settingsEffectsToggle = false;
+		settingOverlayToggleKey = settingShaderBlockPrevKey = settingShaderBlockNextKey = settingScreenshotKey = false;
+	}
 	[[nodiscard]] bool IsCustomHotkeyCaptureFor(const std::vector<InputCombo>& target) const
 	{
 		return settingCustomHotkey && customHotkeyTarget == &target;

@@ -5033,13 +5033,15 @@ void GroundResponse::Update()
 			} else {
 				// Preserve WeatherSnowMeltRate as the user-facing base rate. The
 				// semantic warmth proxy only nudges it, avoiding fictional precision.
+				// Once snowfall has stopped, settle the accumulated visual layer at a
+				// visible pace instead of leaving a storm's full blanket for minutes.
 				const float thermalMeltScale = settings.EnableEnvironmentalSurfaceState
 					? std::lerp(0.55f, 1.30f, surfaceThermalState)
 					: 1.0f;
 				weatherSnowRaiseState -=
 					perFrameData.TimeDelta *
 					std::clamp(settings.WeatherSnowMeltRate, 0.0f, 0.25f) *
-					thermalMeltScale;
+					thermalMeltScale * 3.0f;
 			}
 			weatherSnowRaiseState =
 				std::clamp(weatherSnowRaiseState, 0.0f, maximumRaise);
@@ -5400,6 +5402,10 @@ void GroundResponse::EarlyPrepass()
 
 void GroundResponse::LoadSettings(json& o_json)
 {
+	if (!o_json.is_object()) {
+		RestoreDefaultSettings();
+		return;
+	}
 	settings = o_json;
 	if constexpr (!ENABLE_EXPERIMENTAL_DERIVED_TERRAIN_SURFACE) {
 		// Keep the persisted/debug state truthful while the derived terrain cache is
@@ -5418,14 +5424,18 @@ void GroundResponse::LoadSettings(json& o_json)
 	settings.MudReceiverForms = o_json.value("MudReceiverForms", std::vector<std::string>{});
 	settings.NoMarksForms = o_json.value("NoMarksForms", std::vector<std::string>{});
 	settings.SnowBlockerForms = o_json.value("SnowBlockerForms", std::vector<std::string>{});
+	const Settings defaults{};
+	auto finiteRange = [](float value, float fallback, float low, float high) {
+		return std::isfinite(value) ? std::clamp(value, low, high) : fallback;
+	};
 	settings.WeatherSnowMaximumRaise =
-		std::clamp(settings.WeatherSnowMaximumRaise, 0.0f, 24.0f);
+		finiteRange(settings.WeatherSnowMaximumRaise, defaults.WeatherSnowMaximumRaise, 0.0f, 24.0f);
 	settings.WeatherSnowAccumulationRate =
-		std::clamp(settings.WeatherSnowAccumulationRate, 0.0f, 0.25f);
+		finiteRange(settings.WeatherSnowAccumulationRate, defaults.WeatherSnowAccumulationRate, 0.0f, 0.25f);
 	settings.WeatherSnowMeltRate =
-		std::clamp(settings.WeatherSnowMeltRate, 0.0f, 0.25f);
+		finiteRange(settings.WeatherSnowMeltRate, defaults.WeatherSnowMeltRate, 0.0f, 0.25f);
 	weatherSnowRaiseState =
-		std::clamp(weatherSnowRaiseState, 0.0f, settings.WeatherSnowMaximumRaise);
+		finiteRange(weatherSnowRaiseState, 0.0f, 0.0f, settings.WeatherSnowMaximumRaise);
 
 	g_groundResistanceSettings.EnableMovementResistance =
 		o_json.value("EnableMovementResistance", true);
@@ -5509,8 +5519,8 @@ void GroundResponse::LoadSettings(json& o_json)
 	// Settings can be edited outside the PIXL UI. Keep persisted values inside
 	// the same release-tested envelope used by the user-facing controls before
 	// they participate in tessellation, scan scheduling, or gameplay resistance.
-	settings.SnowMaximumDepth = std::clamp(settings.SnowMaximumDepth, 2.0f, 40.0f);
-	settings.SnowSurfaceThickness = std::clamp(settings.SnowSurfaceThickness, 2.0f, 24.0f);
+	settings.SnowMaximumDepth = finiteRange(settings.SnowMaximumDepth, defaults.SnowMaximumDepth, 2.0f, 40.0f);
+	settings.SnowSurfaceThickness = finiteRange(settings.SnowSurfaceThickness, defaults.SnowSurfaceThickness, 2.0f, 24.0f);
 	settings.GeometryRenderDistance = std::clamp(settings.GeometryRenderDistance, 384.0f, 4096.0f);
 	settings.GeometryFadeStart = std::clamp(settings.GeometryFadeStart, 256.0f, settings.GeometryRenderDistance);
 	settings.GeometryMinimumSlopeZ = std::clamp(settings.GeometryMinimumSlopeZ, 0.20f, 0.90f);
@@ -5523,8 +5533,8 @@ void GroundResponse::LoadSettings(json& o_json)
 		3200.0f);
 	settings.SnowCoverageThreshold = std::clamp(settings.SnowCoverageThreshold, 0.0f, 0.40f);
 	settings.SnowCoverageFeather = std::clamp(settings.SnowCoverageFeather, 0.02f, 0.50f);
-	settings.MudMaximumDepth = std::clamp(settings.MudMaximumDepth, 2.0f, 48.0f);
-	settings.GroundNormalStrength = std::clamp(settings.GroundNormalStrength, 0.0f, 2.5f);
+	settings.MudMaximumDepth = finiteRange(settings.MudMaximumDepth, defaults.MudMaximumDepth, 2.0f, 48.0f);
+	settings.GroundNormalStrength = finiteRange(settings.GroundNormalStrength, defaults.GroundNormalStrength, 0.0f, 2.5f);
 	settings.SnowCompactionDarkening = std::clamp(settings.SnowCompactionDarkening, 0.0f, 0.65f);
 	settings.MudDarkening = std::clamp(settings.MudDarkening, 0.0f, 1.50f);
 	settings.MudRoughness = std::clamp(settings.MudRoughness, 0.08f, 0.80f);
@@ -6739,7 +6749,7 @@ void GroundResponse::SetupResources()
 	// material and converted losslessly to PNG for WIC/runtime portability. Ignore
 	// embedded colour-space metadata because its channels are treated as linear
 	// microsurface data, not display colour.
-	constexpr auto snowMicroPath = L"Data\\Shaders\\GroundResponse\\SnowMicro.png";
+	constexpr auto snowMicroPath = L"Data\\PIXL-Shaders\\GroundResponse\\SnowMicro.png";
 	const HRESULT snowMicroResult = DirectX::CreateWICTextureFromFileEx(
 		globals::d3d::device,
 		snowMicroPath,
@@ -7175,7 +7185,7 @@ ID3D11ComputeShader* GroundResponse::GetCollisionUpdateCS()
 {
 	if (!collisionUpdateCS) {
 		logger::debug("Compiling CollisionUpdateCS");
-		collisionUpdateCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\GroundResponse\\CollisionUpdateCS.hlsl", {}, "cs_5_0"));
+		collisionUpdateCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\GroundResponse\\CollisionUpdateCS.hlsl", {}, "cs_5_0"));
 	}
 	return collisionUpdateCS;
 }
@@ -7185,7 +7195,7 @@ ID3D11ComputeShader* GroundResponse::GetSurfaceDeformationUpdateCS()
 	if (!surfaceDeformationUpdateCS) {
 		surfaceDeformationUpdateCS = static_cast<ID3D11ComputeShader*>(
 			Util::CompileShader(
-				L"Data\\Shaders\\GroundResponse\\SurfaceDeformationUpdateCS.hlsl",
+				L"Data\\PIXL-Shaders\\GroundResponse\\SurfaceDeformationUpdateCS.hlsl",
 				{},
 				"cs_5_0"));
 	}
@@ -7205,7 +7215,7 @@ ID3D11HullShader* GroundResponse::GetTerrainSurfaceHS(bool a_counterClockwise)
 				: std::vector<std::pair<const char*, const char*>>{};
 		shader = static_cast<ID3D11HullShader*>(
 			Util::CompileShader(
-				L"Data\\Shaders\\GroundResponse\\TerrainSurface.hlsl",
+				L"Data\\PIXL-Shaders\\GroundResponse\\TerrainSurface.hlsl",
 				defines,
 				"hs_5_0",
 				"HSMain"));
@@ -7219,7 +7229,7 @@ ID3D11DomainShader* GroundResponse::GetTerrainSurfaceDS()
 		logger::debug("Compiling GroundResponse TerrainSurface DS");
 		terrainSurfaceDS = static_cast<ID3D11DomainShader*>(
 			Util::CompileShader(
-				L"Data\\Shaders\\GroundResponse\\TerrainSurface.hlsl",
+				L"Data\\PIXL-Shaders\\GroundResponse\\TerrainSurface.hlsl",
 				{},
 				"ds_5_0",
 				"DSMain"));
@@ -8009,7 +8019,7 @@ void GroundResponse::TerrainPassShaderHacks()
 		auto& grMainDepth =
 			grRenderer->GetDepthStencilData().depthStencils[
 				RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-		grMainDSV = grMainDepth.views[0];
+		grMainDSV = REX::W32::AsReal(grMainDepth.views[0]);
 	}
 
 	if (grMainDSV && g_savedGroundResponseDSV != grMainDSV) {
@@ -8595,7 +8605,7 @@ ID3D11ComputeShader* GroundResponse::GetSurfaceDerivedUpdateCS()
 	if (!surfaceDerivedUpdateCS) {
 		surfaceDerivedUpdateCS = static_cast<ID3D11ComputeShader*>(
 			Util::CompileShader(
-				L"Data\\Shaders\\GroundResponse\\SurfaceDerivedUpdateCS.hlsl",
+				L"Data\\PIXL-Shaders\\GroundResponse\\SurfaceDerivedUpdateCS.hlsl",
 				{},
 				"cs_5_0"));
 	}
@@ -8607,7 +8617,7 @@ ID3D11ComputeShader* GroundResponse::GetGroundMarkUpdateCS()
 	if (!groundMarkUpdateCS) {
 		groundMarkUpdateCS = static_cast<ID3D11ComputeShader*>(
 			Util::CompileShader(
-				L"Data\\Shaders\\GroundResponse\\GroundMarkUpdateCS.hlsl",
+				L"Data\\PIXL-Shaders\\GroundResponse\\GroundMarkUpdateCS.hlsl",
 				{},
 				"cs_5_0"));
 	}

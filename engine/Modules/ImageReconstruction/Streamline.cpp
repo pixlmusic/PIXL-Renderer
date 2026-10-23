@@ -665,7 +665,7 @@ void Streamline::SetDLSSOptions(sl::ViewportHandle p_viewport, uint32_t width)
 		auto renderer = globals::game::renderer;
 		auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
 		D3D11_TEXTURE2D_DESC mainDesc;
-		static_cast<ID3D11Texture2D*>(main.texture)->GetDesc(&mainDesc);
+		REX::W32::AsReal(main.texture)->GetDesc(&mainDesc);
 		bool isHDR = mainDesc.Format != DXGI_FORMAT_R8G8B8A8_UNORM;
 		dlssOptions.colorBuffersHDR = isHDR ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 	}
@@ -823,7 +823,7 @@ bool Streamline::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_r
 
 	return EvaluateDLSS(viewport,
 		a_upscalingTexture, colorOut,
-		depthTexture.texture, a_motionVectors, a_reactiveMask, a_transparencyCompositionMask,
+		REX::W32::AsReal(depthTexture.texture), a_motionVectors, a_reactiveMask, a_transparencyCompositionMask,
 		extentIn, extentOut, (uint)screenSize.x, resetHistory);
 }
 

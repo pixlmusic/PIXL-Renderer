@@ -3,7 +3,6 @@
 #include "Utils/D3D.h"
 #include "State.h"
 #include "HybridGI.h"
-#include "CurvedSurfaceMapping.h"
 
 #define I18N_KEY_PREFIX "feature.material_layers."
 
@@ -266,7 +265,7 @@ void MaterialLayers::ResolveEffectsDepth(ID3D11ShaderResourceView* depth, ID3D11
 	try {
 		if (!effectsDepthCS)
 			effectsDepthCS.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
-				L"Data\\Shaders\\MaterialLayers\\EffectsDepth.hlsl", {}, "cs_5_0")));
+				L"Data\\PIXL-Shaders\\MaterialLayers\\EffectsDepth.hlsl", {}, "cs_5_0")));
 		if (!effectsDepthCS)
 			throw std::runtime_error("effects-depth shader unavailable");
 		winrt::com_ptr<ID3D11Resource> resource;
@@ -274,6 +273,8 @@ void MaterialLayers::ResolveEffectsDepth(ID3D11ShaderResourceView* depth, ID3D11
 		auto texture = resource.as<ID3D11Texture2D>();
 		D3D11_TEXTURE2D_DESC desc{};
 		texture->GetDesc(&desc);
+		if (!desc.Width || !desc.Height)
+			return;
 		D3D11_TEXTURE2D_DESC current{};
 		if (effectsDepth)
 			effectsDepth->GetDesc(&current);
@@ -331,34 +332,33 @@ void MaterialLayers::Prepass()
 		return;
 
 	try {
-		// CSPOM owns its configuration; b9 is only the collision-free GPU transport.
-		const auto& cspom = globals::pipeline::curvedSurfaceMapping.settings;
-		tuningSettings.CSPOMEnabled = cspom.Enabled ? 1u : 0u;
-		tuningSettings.CSPOMQuality = cspom.Quality;
-		tuningSettings.CSPOMCurvedSurface = cspom.CurvedSurface ? 1u : 0u;
-		tuningSettings.CSPOMSilhouetteClipping = cspom.SilhouetteClipping ? 1u : 0u;
-		tuningSettings.CSPOMSelfOcclusion = cspom.SelfOcclusion ? 1u : 0u;
-		tuningSettings.CSPOMSelfShadow = cspom.SelfShadow ? 1u : 0u;
-		tuningSettings.CSPOMDepthWrite = cspom.DepthWrite ? 1u : 0u;
-		tuningSettings.CSPOMDebugMode = cspom.DebugMode;
-		tuningSettings.CSPOMDepth = cspom.Depth;
-		tuningSettings.CSPOMHeightBias = cspom.HeightBias;
-		tuningSettings.CSPOMCurvatureStrength = cspom.CurvatureStrength;
-		tuningSettings.CSPOMSilhouetteStrength = cspom.SilhouetteStrength;
-		tuningSettings.CSPOMFullQualityDistance = cspom.FullQualityDistance;
-		tuningSettings.CSPOMMaxDistance = cspom.MaxDistance;
-		tuningSettings.CSPOMMaxTexelShift = cspom.MaxTexelShift;
-		tuningSettings.CSPOMNormalStrength = cspom.NormalStrength;
-		tuningSettings.CSPOMMinSteps = cspom.MinSteps;
-		tuningSettings.CSPOMMaxSteps = cspom.MaxSteps;
-		tuningSettings.CSPOMBinarySteps = cspom.BinarySteps;
-		tuningSettings.CSPOMShadowSteps = cspom.ShadowSteps;
-		tuningSettings.CSPOMStaticOpaque = cspom.StaticOpaque ? 1u : 0u;
-		tuningSettings.CSPOMTrees = cspom.Trees ? 1u : 0u;
-		tuningSettings.CSPOMTerrain = cspom.Terrain ? 1u : 0u;
-		tuningSettings.CSPOMOcclusionStrength = cspom.OcclusionStrength;
-		tuningSettings.CSPOMShadowStrength = cspom.ShadowStrength;
-		tuningSettings.CSPOMGrazingProtection = cspom.GrazingProtection;
+		// Retired RetiredRelief transport is held neutral to preserve the established b9 ABI.
+		tuningSettings.RetiredReliefEnabled = 0u;
+		tuningSettings.RetiredReliefQuality = 0u;
+		tuningSettings.RetiredReliefCurvedSurface = 0u;
+		tuningSettings.RetiredReliefSilhouetteClipping = 0u;
+		tuningSettings.RetiredReliefSelfOcclusion = 0u;
+		tuningSettings.RetiredReliefSelfShadow = 0u;
+		tuningSettings.RetiredReliefDepthWrite = 0u;
+		tuningSettings.RetiredReliefDebugMode = 0u;
+		tuningSettings.RetiredReliefDepth = 1.0f;
+		tuningSettings.RetiredReliefHeightBias = 0.0f;
+		tuningSettings.RetiredReliefCurvatureStrength = 0.0f;
+		tuningSettings.RetiredReliefSilhouetteStrength = 0.0f;
+		tuningSettings.RetiredReliefFullQualityDistance = 0.0f;
+		tuningSettings.RetiredReliefMaxDistance = 0.0f;
+		tuningSettings.RetiredReliefMaxTexelShift = 0.0f;
+		tuningSettings.RetiredReliefNormalStrength = 0.0f;
+		tuningSettings.RetiredReliefMinSteps = 0u;
+		tuningSettings.RetiredReliefMaxSteps = 0u;
+		tuningSettings.RetiredReliefBinarySteps = 0u;
+		tuningSettings.RetiredReliefShadowSteps = 0u;
+		tuningSettings.RetiredReliefStaticOpaque = 0u;
+		tuningSettings.RetiredReliefTrees = 0u;
+		tuningSettings.RetiredReliefTerrain = 0u;
+		tuningSettings.RetiredReliefOcclusionStrength = 0.0f;
+		tuningSettings.RetiredReliefShadowStrength = 0.0f;
+		tuningSettings.RetiredReliefGrazingProtection = 0.0f;
 		// Signature/version are runtime guards for stale/unbound shader state.
 		tuningSettings.Magic = TuningMagic;
 		tuningSettings.Version = TuningVersion;
@@ -426,7 +426,7 @@ void MaterialLayers::DrawSettings()
 			ImGui::SliderFloat("Object Auto-POM Depth", &tuningSettings.ObjectAutoHeightScale, 0.001f, 0.080f, "%.4f", ImGuiSliderFlags_AlwaysClamp);
 			if (auto _tt = Util::HoverTooltipWrapper())
 				ImGui::TextWrapped("Scales synthetic relief when a material has no usable authored height. Higher values improve depth on ordinary texture replacers but cost more and can exaggerate noisy albedo.");
-			ImGui::SliderFloat("Object Max Texel Shift", &tuningSettings.ObjectMaxTexelShift, 1.0f, 64.0f, "%.1f texels", ImGuiSliderFlags_AlwaysClamp);
+			ImGui::SliderFloat("Object Max Texel Shift", &tuningSettings.ObjectMaxTexelShift, 1.0f, 16.0f, "%.1f texels", ImGuiSliderFlags_AlwaysClamp);
 			if (auto _tt = Util::HoverTooltipWrapper())
 				ImGui::TextWrapped("Maximum visible UV displacement. Raise this together with depth when the effect appears capped; lower it if silhouettes stretch at grazing angles.");
 			ImGui::SliderFloat("Object Grazing Protection", &tuningSettings.ObjectGrazingProtection, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
@@ -565,7 +565,10 @@ void MaterialLayers::DrawSettings()
 
 void MaterialLayers::LoadSettings(json& o_json)
 {
-	settings = o_json;
+	settings = o_json.is_object() ? o_json.get<Settings>() : Settings{};
+	tuningSettings = {};
+	if (!o_json.is_object())
+		return;
 	if (const auto it = o_json.find("PIXL Tuning"); it != o_json.end() && it->is_object())
 		tuningSettings = it->get<TuningSettings>();
 

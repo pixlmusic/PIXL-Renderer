@@ -23,6 +23,8 @@ float3 GetPositionVS(float2 texcoord, float depth)
 	// frusta while the camera rotates, causing whole 64-pixel lighting cells to
 	// pop on and off.
 	float4 homogenousLocation = mul(FrameBuffer::CameraProjInverse, clipSpaceLocation);
+	if (!isfinite(homogenousLocation.w) || abs(homogenousLocation.w) < 1.0e-6f)
+		return 0.0f.xxx;
 	return homogenousLocation.xyz / homogenousLocation.w;
 }
 
@@ -37,7 +39,8 @@ float3 IntersectionZPlane(float3 B, float z_dist)
 	float3 normal = float3(0.0, 0.0, -1.0);
 	float3 d = B;
 	//Computing the intersection length for the line and the plane
-	float t = z_dist / d.z;  //dot(normal, d);
+	float safeZ = abs(d.z) > 1.0e-6f ? d.z : (d.z < 0.0f ? -1.0e-6f : 1.0e-6f);
+	float t = z_dist / safeZ;  //dot(normal, d);
 
 	//Computing the actual xyz position of the point along the line
 	float3 result = t * d;
@@ -52,6 +55,8 @@ float3 IntersectionZPlane(float3 B, float z_dist)
 	uint clusterIndex = groupId.x +
 	                    groupId.y * ClusterSize.x +
 	                    groupId.z * (ClusterSize.x * ClusterSize.y);
+	if (any(ClusterSize.xyz == 0u) || groupId.x >= ClusterSize.x || groupId.y >= ClusterSize.y || groupId.z >= ClusterSize.z)
+		return;
 
 	float2 clusterSize = rcp(float2(ClusterSize.x, ClusterSize.y));
 
@@ -60,8 +65,11 @@ float3 IntersectionZPlane(float3 B, float z_dist)
 	float3 maxPointVS = GetPositionVS(texcoordMax, 1.0f);
 	float3 minPointVS = GetPositionVS(texcoordMin, 1.0f);
 
-	float clusterNear = LightsNear * pow(abs(LightsFar / LightsNear), groupId.z / float(ClusterSize.z));
-	float clusterFar = LightsNear * pow(abs(LightsFar / LightsNear), (groupId.z + 1) / float(ClusterSize.z));
+	float safeNear = max(abs(LightsNear), 1.0e-4f);
+	float safeFar = max(abs(LightsFar), safeNear + 1.0e-3f);
+	float layerExponent = log2(safeFar / safeNear) / float(ClusterSize.z);
+	float clusterNear = safeNear * exp2(layerExponent * groupId.z);
+	float clusterFar = safeNear * exp2(layerExponent * (groupId.z + 1u));
 
 	float3 minPointNear = IntersectionZPlane(minPointVS, clusterNear);
 	float3 minPointFar = IntersectionZPlane(minPointVS, clusterFar);

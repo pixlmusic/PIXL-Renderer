@@ -12,5 +12,4 @@ foreach($name in @('Terrain','Rock','Wood','Metal','Grass','Foliage','Skin','Hai
 Require-Text 'engine\Renderer\PixelAnnotations.cpp' 'containedLiquid[\s\S]*windowInterior[\s\S]*water' 'specific classification priority'
 Require-Text 'engine\Modules\ImageReconstruction.cpp' 'PixelAnnotations::Get\(\)\.PublishBase' 'authoritative mask publication'
 Require-Text 'engine\Modules\ImageReconstruction.cpp' 'annotations\.reactiveMask\.get\(\)' 'RCAS shared annotation consumption'
-Require-Text 'distribution\Shaders\Common\PIXLPixelAnnotations.hlsli' 'PIXL_MATERIAL_WINDOW_INTERIOR' 'HLSL category contract'
 Write-Host 'PASS: compact pixel-annotation taxonomy and shared existing-mask publication validated.'

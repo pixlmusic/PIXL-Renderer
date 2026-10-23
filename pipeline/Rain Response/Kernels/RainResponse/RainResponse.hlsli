@@ -44,14 +44,17 @@ namespace RainResponse
 	}
 
 	// xyz - ripple normal, w - splotches
-	float4 GetRainDrops(float3 worldPos, float t, float3 normal, float rippleStrengthModifier = 1.0, float2 flowOffset = float2(0.0, 0.0))
+	float4 GetRainDrops(float3 worldPos, float t, float3 normal, float rippleStrengthModifier = 1.0, float2 flowOffset = float2(0.0, 0.0), float footprint = 0.0f)
 	{
 		// Apply flow offset to world position for flow-aware ripple positioning
 		worldPos.xy += flowOffset;
 
 		// Precompute constants
 		float uintToFloat = rcp(4294967295.0);
-		float rippleBreadthRcp = rcp(max(SharedData::rainResponseSettings.RippleBreadth, 1e-4f));
+		float authoredBreadth = max(SharedData::rainResponseSettings.RippleBreadth, 1e-4f);
+		float filteredBreadth = max(authoredBreadth, min(max(footprint, 0.0f), 1.0f));
+		float rippleBreadthRcp = rcp(filteredBreadth);
+		float rippleVisibility = saturate(authoredBreadth / max(footprint, authoredBreadth));
 		float intervalRcp = SharedData::rainResponseSettings.RaindropIntervalRcp;
 		float lifetimeRcp = SharedData::rainResponseSettings.RippleLifetimeRcp;
 
@@ -78,9 +81,9 @@ namespace RainResponse
 
 				// Calculate splashes
 				if (SharedData::rainResponseSettings.EnableSplashes) {
-					float residual = t * intervalRcp / SharedData::rainResponseSettings.SplashesLifetime + tOffset + worldPos.z * 0.001;
-					uint timestep = uint(residual);
-					residual -= timestep;
+					float residual = t * intervalRcp / max(SharedData::rainResponseSettings.SplashesLifetime, 1e-4f) + tOffset + worldPos.z * 0.001;
+					uint timestep = asuint(int(floor(residual)));
+					residual = frac(residual);
 
 					uint3 hash = Random::pcg3d(uint3(asuint(gridCurr), timestep));
 					float3 floatHash = float3(hash) * uintToFloat;
@@ -91,8 +94,10 @@ namespace RainResponse
 						float dropRadius = lerp(SharedData::rainResponseSettings.SplashesMinRadius,
 							SharedData::rainResponseSettings.SplashesMaxRadius,
 							float(Random::iqint3(hash.yz)) * uintToFloat);
-						if (distSqr < dropRadius * dropRadius) {
-							wetness = max(wetness, RainFade(residual));
+						float splashWidth = max(min(footprint, max(dropRadius, 1e-4f)), 1e-4f);
+						if (distSqr < (dropRadius + splashWidth) * (dropRadius + splashWidth)) {
+							float coverage = 1.0f - smoothstep(max(0.0f, dropRadius - splashWidth), dropRadius + splashWidth, sqrt(distSqr));
+							wetness = max(wetness, RainFade(residual) * coverage);
 
 							// A real impact should read for a few reconstructed frames, not just as
 							// a dark wet splotch. Phase 2 widens the young-impact window and steepens
@@ -104,7 +109,7 @@ namespace RainResponse
 								float crownBand = 1.0f - saturate(abs(radius01 - 0.58f) * 3.2f);
 								float centreKick = 1.0f - saturate(radius01 * 2.4f);
 								float2 radial = -vec2Centre * rsqrt(distSqr);
-								float crownStrength = (crownBand * 0.72f + centreKick * 0.18f) * splashKick;
+								float crownStrength = (crownBand * 0.72f + centreKick * 0.18f) * splashKick * coverage * saturate(dropRadius / max(footprint, 1e-4f));
 								float3 splashNormal = normalize(float3(radial * crownStrength, 1.0f));
 								rippleNormal = ReorientNormal(splashNormal, rippleNormal);
 							}
@@ -115,8 +120,8 @@ namespace RainResponse
 				// Calculate ripples
 				if (SharedData::rainResponseSettings.EnableRipples) {
 					float residual = t * intervalRcp + tOffset + worldPos.z * 0.001;
-					uint timestep = uint(residual);
-					residual -= timestep;
+					uint timestep = asuint(int(floor(residual)));
+					residual = frac(residual);
 
 					uint3 hash = Random::pcg3d(uint3(asuint(gridCurr), timestep));
 					float3 floatHash = float3(hash) * uintToFloat;
@@ -133,11 +138,11 @@ namespace RainResponse
 
 							float rippleRadius = SharedData::rainResponseSettings.RippleRadius * sizeVariation;
 							float rippleR = lerp(0.0, rippleRadius, rippleT);
-							float rippleInnerRadius = rippleR - SharedData::rainResponseSettings.RippleBreadth;
+							float rippleInnerRadius = rippleR - 0.5f * (authoredBreadth + filteredBreadth);
 
 							float bandLerp = (sqrt(distSqr) - rippleInnerRadius) * rippleBreadthRcp;
 							if (bandLerp > 0.0 && bandLerp < 1.0) {
-								float rippleStrength = SharedData::rainResponseSettings.RippleStrength * rippleStrengthModifier;
+								float rippleStrength = SharedData::rainResponseSettings.RippleStrength * rippleStrengthModifier * rippleVisibility;
 								float deriv = (bandLerp < 0.5 ? SmoothstepDeriv(bandLerp * 2.0) : -SmoothstepDeriv(2.0 - bandLerp * 2.0)) *
 								              lerp(rippleStrength, 0.0, rippleT * rippleT);
 

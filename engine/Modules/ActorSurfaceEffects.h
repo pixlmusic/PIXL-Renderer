@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Buffer.h"
-#include "Modules/ClothDynamicsState.h"
 
 #include <cstdint>
 #include <memory>
@@ -111,11 +110,6 @@ struct ActorSurfaceEffects : RenderModule
 
 	/** Binds a combined DialogueFocus + surface-effect character payload. */
 	void BindLightingGeometry(RE::BSRenderPass* a_pass);
-
-	/** Publishes same-frame actor damage for the next character draw binding. */
-	void SetClothingDamage(std::uint32_t a_formID, const ClothingDamageState& a_damage);
-	/** Clears same-frame damage without touching persistent surface lobes. */
-	void ClearClothingDamage();
 
 	/** Applies the Characters quality contract without changing artistic controls. */
 	void ApplyQualityTier(std::uint32_t a_quality);

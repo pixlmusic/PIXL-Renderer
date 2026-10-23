@@ -63,6 +63,12 @@ cbuffer CullBucket : register(b1)
     float _pad2;
 };
 
+float GrassSmootherStep(float value)
+{
+	float t = saturate(value);
+	return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+}
+
 ByteAddressBuffer Instances : register(t0);
 StructuredBuffer<float4> Origins : register(t1);
 // Scene-depth max pyramid; see GrassHiZCS.hlsl.
@@ -139,6 +145,8 @@ float WindScalar(float basis, float timer)
 
     const float4 og = Origins[idx];
     const float3 world = float3(localXY, localZ) + og.xyz;
+	if (!all(isfinite(world)) || !isfinite(og.w))
+		return;
 
     // Buffer offsets change when earlier cells are compacted. Seed stochastic density/LOD
     // decisions from immutable packed transform/origin data so surviving grass stays stable.
@@ -149,22 +157,26 @@ float WindScalar(float basis, float timer)
     const uint2 rand = Random::pcg2d(uint2(stableSeed, stableSeed ^ 0xA511E9B3u));
 
     const float3 dv = world - FrameBuffer::CameraPosAdjust.xyz;
-    const float distSq = dot(dv, dv);
+	const float distSq = dot(dv, dv);
+	if (!isfinite(distSq))
+		return;
 
-    const float dist = sqrt(distSq);
+	const float dist = sqrt(max(distSq, 1.0e-8f));
 
     // Ramp the mesh-cost bias in beyond CostBiasStartDist.
-    const float costRamp = saturate((dist - CostBiasStartDist) / max(CostBiasStartDist, 1e-4));
+    const float costRamp = GrassSmootherStep((dist - CostBiasStartDist) / max(CostBiasStartDist, 1e-4));
     const float effCostBias = MeshCostBias * costRamp;
 
     const float dScale = lerp(1.0, DistScale, effCostBias);
-    const float effMaxDistSq = MaxDistSq * dScale * dScale;
+	const float effMaxDistSq = max(MaxDistSq, 0.0f) * dScale * dScale;
     if (distSq > effMaxDistSq)
         return;
 
     // Conservatively approximate the vertex shader's ScaleMask-based size variation.
     const float sizeVariance = f16tof32(raw1.z >> 16);
-    const float instanceRadius = ModelRadius * (1.0 + max(sizeVariance, 0.0));
+	const float instanceRadius = max(ModelRadius, 0.0f) * clamp(1.0f + max(sizeVariance, 0.0f), 0.25f, 8.0f);
+	if (instanceRadius <= 1.0e-4f)
+		return;
 
 	[unroll]
     for (uint p = 0; p < 6; ++p)
@@ -180,7 +192,7 @@ float WindScalar(float basis, float timer)
     if (projPx < effMinPx)
         return;
 
-    if (HiZEnabled > 0.5)
+	if (HiZEnabled > 0.5 && all(HiZSize >= 1.0f) && HiZMipCount >= 1.0f && HiZTexelPixels > 0.0f)
     {
         // Transform the model-space bounding-sphere center into instance space.
         const float3 rot0 = float3(f16tof32(raw0.z & 0xFFFF), f16tof32(raw0.z >> 16), f16tof32(raw0.w & 0xFFFF));
@@ -254,16 +266,16 @@ float WindScalar(float basis, float timer)
         const float h = RandFloat(rand.x);
         if (h > keep + LODFadeBand)
             return;
-        lodFade = saturate((keep + LODFadeBand - h) / LODFadeBand);
+		lodFade = GrassSmootherStep((keep + max(LODFadeBand, 1.0e-4f) - h) / max(LODFadeBand, 1.0e-4f));
     }
 
     const float maxDist = sqrt(effMaxDistSq);
     const float edgeStart = maxDist * EdgeFadeStart;
-    const float edgeFade = saturate((maxDist - dist) / max(maxDist - edgeStart, 1e-4));
+	const float edgeFade = GrassSmootherStep((maxDist - dist) / max(maxDist - edgeStart, 1e-4));
 
     // Alpha parameters are Skyrim world distances, so keep this fade in world space.
-    const float distFade = 1.0 - saturate((dist - AlphaParam1) / max(AlphaParam2, 1e-4));
-    const float spawnFade = saturate((FadeNow - og.w) * FadeInTimeRcp);
+	const float distFade = 1.0 - GrassSmootherStep((dist - AlphaParam1) / max(AlphaParam2, 1e-4));
+	const float spawnFade = GrassSmootherStep((FadeNow - og.w) * FadeInTimeRcp);
 
     const float fade = distFade * spawnFade * lodFade * edgeFade;
     if (fade <= InvisibleFadeCull)

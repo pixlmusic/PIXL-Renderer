@@ -27,9 +27,10 @@ infrastructure; file-local notices remain authoritative.
 | Module or contribution | Provenance summary |
 |---|---|
 | WindowLife | PIXL-specific module and extensions |
+| Volumetric Clouds | PIXL-specific weather-driven DX11 cloud implementation and shader |
+| Ocean Dynamics | PIXL-specific experimental DX11 spectral-ocean implementation; informed by published wave theory and Crest's MIT-licensed tile/LOD organization. The current module is marked unreleased. |
 | DistantLife | PIXL-specific module |
 | Contained Liquids | PIXL-specific module |
-| Curved Surface Mapping | PIXL-specific module |
 | Reactive FX | PIXL-specific experimental module and event/VFX framework |
 | Render Origin | PIXL-specific renderer service and integrations |
 | Ground Response snow/mud terrain deformation | PIXL contribution; grass collision remains upstream-derived |
@@ -46,6 +47,13 @@ project by qtuna (Iwillbewarlock). PIXL's implementation uses its own existing
 Water Optics resources and renderer interfaces; CausticLight source, binaries,
 assets, and plugin hooks are not redistributed by PIXL. The reference project's
 copyright and licence remain with its authors.
+
+The camera-snapped ocean tile layout is an independent DirectX 11 port of the
+geometry organization used by Crest Ocean System (MIT License), including a
+4x4 tile level with 12-tile outer LOD rings. Crest's Unity runtime, shaders,
+assets, and verbatim source are not redistributed. The upstream reference is
+available at https://github.com/wave-harmonic/crest. Ocean Dynamics also draws
+on published spectral-wave theory; its implementation is original PIXL code.
 
 This attribution does not restrict GPL-covered redistribution, forking, or
 modification. Files containing Community Shaders or third-party material retain

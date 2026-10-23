@@ -5,22 +5,37 @@ namespace MaterialDetail
 {
 	float Luminance(float3 color)
 	{
+		if (!all(isfinite(color)))
+			return 0.0f;
 		return dot(max(color, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
 	}
 
 	float GetMipLevel(float2 coords, Texture2D<float4> tex)
 	{
-		float2 dims;
-		tex.GetDimensions(dims.x, dims.y);
+		if (!all(isfinite(coords)))
+			return 1e6f;
+		uint width, height;
+		tex.GetDimensions(width, height);
+		if (width == 0 || height == 0)
+			return 1e6f;
+		float2 dims = float2(width, height);
 		float2 uvTexels = coords * dims;
 		float2 dxSize = ddx(uvTexels);
 		float2 dySize = ddy(uvTexels);
-		return max(0.5f * log2(max(max(dot(dxSize, dxSize), dot(dySize, dySize)), 1e-8f)), 0.0f);
+		if (!all(isfinite(dxSize)) || !all(isfinite(dySize)))
+			return 1e6f;
+		float majorFootprint = max(dot(dxSize, dxSize), dot(dySize, dySize));
+		float minorFootprint = min(dot(dxSize, dxSize), dot(dySize, dySize));
+		float stableFootprint = lerp(majorFootprint, sqrt(max(majorFootprint * minorFootprint, 1e-8f)), 0.18f);
+		if (!isfinite(stableFootprint))
+			return 1e6f;
+		return max(0.5f * log2(max(stableFootprint, 1e-8f)), 0.0f);
 	}
 
 	float Visibility(float distance, float mipLevel, float materialStrength)
 	{
-		if (!MaterialLayersTuning::DetailReconstructionEnabled())
+		if (!MaterialLayersTuning::DetailReconstructionEnabled() ||
+			!isfinite(distance) || !isfinite(mipLevel) || !isfinite(materialStrength))
 			return 0.0f;
 
 		float distanceFade =
@@ -29,7 +44,7 @@ namespace MaterialDetail
 				MaterialLayersTuning::DetailFadeEnd(),
 				abs(distance));
 		float maxMip = MaterialLayersTuning::DetailMaxMip();
-		float mipFade = 1.0f - smoothstep(max(maxMip - 1.5f, 0.0f), maxMip, mipLevel);
+		float mipFade = 1.0f - smoothstep(max(maxMip - 1.75f, 0.0f), maxMip + 0.25f, max(mipLevel, 0.0f));
 
 		// Anti-shimmer progressively suppresses recovered detail as the footprint
 		// grows. At zero the feature follows only the explicit mip/distance fades.
@@ -48,12 +63,20 @@ namespace MaterialDetail
 
 	float3 ReconstructAlbedo(float3 fineColor, float3 coarseColor, float visibility)
 	{
+		if (!all(isfinite(fineColor)))
+			return all(isfinite(coarseColor)) ? saturate(coarseColor) : 0.0f.xxx;
+		if (!all(isfinite(coarseColor)))
+			return saturate(fineColor);
+		uint visibilityExponent = asuint(visibility) & 0x7f800000u;
+		visibility = visibilityExponent != 0x7f800000u ? saturate(visibility) : 0.0f;
 		// Recover luminance structure preferentially. Full RGB amplification turns
 		// low-resolution colour noise and compression blocks into false painted
 		// detail, especially on old vanilla textures.
 		float3 residual = fineColor - coarseColor;
 		float lumaResidual = Luminance(fineColor) - Luminance(coarseColor);
 		float3 chromaResidual = residual - lumaResidual.xxx;
+		float chromaLength = length(chromaResidual);
+		chromaResidual *= min(1.0f, 0.10f / max(chromaLength, 1e-4f));
 		float residualLimit = lerp(
 			0.035f,
 			0.16f,
@@ -75,8 +98,9 @@ namespace MaterialDetail
 		float3 fine = fineEncoded * 2.0f - 1.0f;
 		float3 coarse = coarseEncoded * 2.0f - 1.0f;
 		float2 delta = fine.xy - coarse.xy;
+		float tangentConfidence = smoothstep(0.08f, 0.42f, fine.z);
 		float2 xy = fine.xy + delta *
-			(visibility * MaterialLayersTuning::DetailNormalStrength());
+			(visibility * MaterialLayersTuning::DetailNormalStrength() * tangentConfidence);
 
 		float xyLenSq = dot(xy, xy);
 		if (xyLenSq > 0.9025f)
@@ -101,6 +125,7 @@ namespace MaterialDetail
 		float cavity = saturate(-lumaResidual * 4.0f);
 		float ridge = saturate(lumaResidual * 4.0f);
 		float signedDelta = cavity * 0.18f - ridge * 0.055f;
+		signedDelta *= 1.0f - smoothstep(0.82f, 1.0f, chromaMagnitude);
 		return signedDelta *
 			lerp(0.20f, 1.0f, lumaConfidence) *
 			visibility *

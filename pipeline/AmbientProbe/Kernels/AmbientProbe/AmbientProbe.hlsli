@@ -23,6 +23,19 @@ namespace AmbientProbe
 	TextureCube<float4> StaticSpecularProbeTexture : register(t79);
 #endif
 
+	bool IsFiniteColor(float3 value)
+	{
+		return !any((asuint(value) & 0x7f800000u) == 0x7f800000u);
+	}
+
+	float3 SafeProbeDirection(float3 direction)
+	{
+		float lengthSq = dot(direction, direction);
+		if (!IsFiniteColor(direction) || (asuint(lengthSq) & 0x7f800000u) == 0x7f800000u || lengthSq < 1.0e-8f)
+			return float3(0.0f, 0.0f, 1.0f);
+		return direction * rsqrt(lengthSq);
+	}
+
 	// ============================================================================
 	// Low-level SH sampling (raw, no user settings applied)
 	// ============================================================================
@@ -30,25 +43,29 @@ namespace AmbientProbe
 	/// Get Env AmbientProbe color from environment cubemap SH (without sky)
 	float3 GetEnvironmentAmbient(float3 rayDir)
 	{
+		rayDir = SafeProbeDirection(rayDir);
 		sh2 shR = EnvironmentProbeTexture.Load(int3(0, 0, 0));
 		sh2 shG = EnvironmentProbeTexture.Load(int3(1, 0, 0));
 		sh2 shB = EnvironmentProbeTexture.Load(int3(2, 0, 0));
 		float colorR = SphericalHarmonics::SHHallucinateZH3Irradiance(shR, rayDir);
 		float colorG = SphericalHarmonics::SHHallucinateZH3Irradiance(shG, rayDir);
 		float colorB = SphericalHarmonics::SHHallucinateZH3Irradiance(shB, rayDir);
-		return max(float3(colorR, colorG, colorB) / Math::PI, 0.0f.xxx);
+		float3 irradiance = float3(colorR, colorG, colorB) / Math::PI;
+		return all(isfinite(irradiance)) ? max(irradiance, 0.0f.xxx) : 0.0f.xxx;
 	}
 
 	/// Get Sky-only AmbientProbe color from game's native reflections cubemap SH
 	float3 GetSkyAmbient(float3 rayDir)
 	{
+		rayDir = SafeProbeDirection(rayDir);
 		sh2 shR = SkyProbeTexture.Load(int3(0, 0, 0));
 		sh2 shG = SkyProbeTexture.Load(int3(1, 0, 0));
 		sh2 shB = SkyProbeTexture.Load(int3(2, 0, 0));
 		float colorR = SphericalHarmonics::SHHallucinateZH3Irradiance(shR, rayDir);
 		float colorG = SphericalHarmonics::SHHallucinateZH3Irradiance(shG, rayDir);
 		float colorB = SphericalHarmonics::SHHallucinateZH3Irradiance(shB, rayDir);
-		return max(float3(colorR, colorG, colorB) / Math::PI, 0.0f.xxx);
+		float3 irradiance = float3(colorR, colorG, colorB) / Math::PI;
+		return all(isfinite(irradiance)) ? max(irradiance, 0.0f.xxx) : 0.0f.xxx;
 	}
 
 	// ============================================================================
@@ -59,6 +76,7 @@ namespace AmbientProbe
 	float3 GetAmbientRatio()
 	{
 		float3 dalc0 = Color::Ambient(SharedData::GetAmbient(0.f));
+		dalc0 = IsFiniteColor(dalc0) ? max(dalc0, 0.0f.xxx) : 0.0f.xxx;
 
 		sh2 iblSHR = EnvironmentProbeTexture.Load(int3(0, 0, 0));
 		sh2 iblSHG = EnvironmentProbeTexture.Load(int3(1, 0, 0));
@@ -68,6 +86,7 @@ namespace AmbientProbe
 		float colorG = SphericalHarmonics::SHHallucinateZH3Irradiance(iblSHG, float3(0, 0, 0));
 		float colorB = SphericalHarmonics::SHHallucinateZH3Irradiance(iblSHB, float3(0, 0, 0));
 		float3 ibl0 = float3(colorR, colorG, colorB) / Math::PI;
+		ibl0 = IsFiniteColor(ibl0) ? max(ibl0, 0.0f.xxx) : 0.0f.xxx;
 
 		if (SharedData::ambientProbeSettings.DALCMode == 1) {
 			float3 ratio = dalc0 / max(ibl0, 0.001);
@@ -131,6 +150,8 @@ namespace AmbientProbe
 			linSky = GetSkyAmbientColor(rayDir);
 		}
 		float3 ambient = max(linEnv + linSky, 0.0f.xxx);
+		if (!IsFiniteColor(ambient))
+			ambient = IsFiniteColor(vanillaDALC) ? max(vanillaDALC, 0.0f.xxx) : 0.0f.xxx;
 		if (SharedData::InInterior) {
 			// Bound indoor probe energy below Skyrim's native ambient baseline.
 			float vanillaLuminance = Color::RGBToLuminance(max(vanillaDALC, 0.0f.xxx));
@@ -146,6 +167,7 @@ namespace AmbientProbe
 	/// (mode 3 dims both DALC and sky; modes 0-2 dim only the sky contribution).
 	float3 GetDiffuseAmbientOccluded(float3 vanillaDALC, float3 rayDir, float visibility)
 	{
+		visibility = saturate(visibility);
 		float3 linEnv, linSky;
 		if (SharedData::ambientProbeSettings.DALCMode == 3) {
 			linEnv = vanillaDALC * SharedData::ambientProbeSettings.DALCAmount * visibility;
@@ -158,6 +180,8 @@ namespace AmbientProbe
 			linSky = GetSkyAmbientColor(rayDir) * visibility;
 		}
 		float3 ambient = max(linEnv + linSky, 0.0f.xxx);
+		if (!IsFiniteColor(ambient))
+			ambient = IsFiniteColor(vanillaDALC) ? max(vanillaDALC, 0.0f.xxx) : 0.0f.xxx;
 		if (SharedData::InInterior) {
 			float vanillaLuminance = Color::RGBToLuminance(max(vanillaDALC, 0.0f.xxx));
 			float ambientLuminance = Color::RGBToLuminance(ambient);
@@ -200,7 +224,7 @@ namespace AmbientProbe
 				iblColor = fogColor;
 			}
 		}
-		return lerp(fogColor, iblColor, SharedData::ambientProbeSettings.FogAmount);
+		return lerp(fogColor, iblColor, saturate(SharedData::ambientProbeSettings.FogAmount));
 	}
 }
 

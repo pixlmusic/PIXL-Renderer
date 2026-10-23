@@ -3,7 +3,7 @@
 ## PIXL contribution scope
 
 Git history supports PIXL-specific attribution for WindowLife, DistantLife,
-Contained Liquids, Curved Surface Mapping, Render Origin, Director camera-path
+Contained Liquids, Render Origin, Director camera-path
 work, CameraSuite physical-camera/DOF additions, and the snow/mud terrain part
 of Ground Response. Some of those systems connect through upstream-derived
 infrastructure and therefore remain mixed works at repository level.
@@ -62,7 +62,7 @@ them under the renderer's GPL.
   colour mapping, spherical-harmonics code, rain/splash references, and other
   adapted snippets retain their in-file credits and licence notices.
 - The base shader bundle contains MIT-licensed material credited to Ilya
-  Perapechka; its licence is `distribution/Shaders/LICENSE`.
+  Perapechka; its licence is `distribution/PIXL-Shaders/LICENSE`.
 
 ## Fonts
 

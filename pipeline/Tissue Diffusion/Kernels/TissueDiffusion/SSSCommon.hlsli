@@ -9,6 +9,12 @@
 #define SSS_SCATTER_MODE_POST 1
 #define SSS_SCATTER_MODE_PRE_POST 2
 
+float SSSSmootherStep(float value)
+{
+	float t = saturate(value);
+	return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+}
+
 // -----------------------------------------------------------------------------
 // Mask channel contract (Texture2D<float4> MaskTexture, t2)
 //
@@ -70,7 +76,7 @@ float SSSGetHumanBlend(float4 mask)
 // smear their different diffusion profiles into one another at silhouettes.
 float SSSGetProfileAgreement(float4 centerMask, float4 sampleMask)
 {
-	return 1.0f - smoothstep(0.05f, 0.5f, abs(SSSGetHumanBlend(centerMask) - SSSGetHumanBlend(sampleMask)));
+	return 1.0f - SSSSmootherStep((abs(SSSGetHumanBlend(centerMask) - SSSGetHumanBlend(sampleMask)) - 0.05f) / 0.45f);
 }
 
 // Per-component safe divide: colorSum / weightSum, but any channel whose weight

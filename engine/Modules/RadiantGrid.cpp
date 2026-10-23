@@ -115,8 +115,8 @@ void RadiantGrid::SetupResources()
 
 	{
 		std::vector<std::pair<const char*, const char*>> clusterDefines;
-		clusterBuildingCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\RadiantGrid\\ClusterBuildingCS.hlsl", clusterDefines, "cs_5_0");
-		clusterCullingCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\RadiantGrid\\ClusterCullingCS.hlsl", clusterDefines, "cs_5_0");
+		clusterBuildingCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\PIXL-Shaders\\RadiantGrid\\ClusterBuildingCS.hlsl", clusterDefines, "cs_5_0");
+		clusterCullingCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\PIXL-Shaders\\RadiantGrid\\ClusterCullingCS.hlsl", clusterDefines, "cs_5_0");
 
 		lightBuildingCB = new ConstantBuffer(ConstantBufferDesc<LightBuildingCB>());
 		lightCullingCB = new ConstantBuffer(ConstantBufferDesc<LightCullingCB>());
@@ -274,6 +274,15 @@ void RadiantGrid::BSLightingShader_SetupGeometry_Before(RE::BSRenderPass* a_pass
 
 	strictLightDataTemp.NumStrictLights = 0;
 	strictLightDataTemp.ShadowBitMask = 0;
+
+	// 1.7.104 changed BSLightingShader::SetupGeometry's internal point-light
+	// call site, so the binary call hook is intentionally not installed there.
+	// RADIANT_GRID lighting replaces Skyrim's local-light loop and consumes this
+	// buffer for portal-strict interior lights; collect the same render-pass data
+	// from the stable SetupGeometry vfunc wrapper instead.
+	if (REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_104) {
+		BSLightingShader_SetupGeometry_GeometrySetupConstantPointLights(a_pass);
+	}
 
 	strictLightDataTemp.RoomIndex = -1;
 	if (!roomNodes.empty()) {
@@ -466,8 +475,8 @@ void RadiantGrid::ClearShaderCache()
 		clusterCullingCS = nullptr;
 	}
 	std::vector<std::pair<const char*, const char*>> clusterDefines;
-	clusterBuildingCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\RadiantGrid\\ClusterBuildingCS.hlsl", clusterDefines, "cs_5_0");
-	clusterCullingCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\RadiantGrid\\ClusterCullingCS.hlsl", clusterDefines, "cs_5_0");
+	clusterBuildingCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\PIXL-Shaders\\RadiantGrid\\ClusterBuildingCS.hlsl", clusterDefines, "cs_5_0");
+	clusterCullingCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\PIXL-Shaders\\RadiantGrid\\ClusterCullingCS.hlsl", clusterDefines, "cs_5_0");
 }
 
 void RadiantGrid::UpdateLights()
@@ -540,6 +549,10 @@ void RadiantGrid::UpdateLights()
 					}
 
 					light.fade *= bsLight->lodDimmer;
+					if (light.lightFlags.any(LightFlags::Disabled) ||
+						!std::isfinite(light.fade) || !std::isfinite(light.radius) ||
+						!std::isfinite(light.color.x) || !std::isfinite(light.color.y) || !std::isfinite(light.color.z))
+						return;
 
 					if (!IsGlobalLight(bsLight)) {
 						// List of BSMultiBoundRooms affected by a light
@@ -548,7 +561,8 @@ void RadiantGrid::UpdateLights()
 						}
 						// List of BSPortals affected by a light
 						for (const auto& portalPtr : bsLight->portals) {
-							addRoom(portalPtr->portalSharedNode.get(), light);
+							if (portalPtr)
+								addRoom(portalPtr->portalSharedNode.get(), light);
 						}
 						light.lightFlags.set(LightFlags::PortalStrict);
 					}
@@ -563,6 +577,10 @@ void RadiantGrid::UpdateLights()
 					// Check for inactive shadow light
 					if (light.shadowMaskIndex != 255) {
 						SetLightPosition(light, niLight->world.translate);
+						if (!std::isfinite(light.positionWS.data.x) ||
+							!std::isfinite(light.positionWS.data.y) ||
+							!std::isfinite(light.positionWS.data.z))
+							return;
 
 						if ((light.color.x + light.color.y + light.color.z) * light.fade > 1e-4 && light.radius > 1e-4) {
 							lightsData.push_back(light);

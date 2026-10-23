@@ -9,7 +9,6 @@
 #define MATERIAL_LAYERS_HLSLI
 
 #include "MaterialLayers/MaterialLayersTuning.hlsli"
-#include "CSPOM/CSPOM.hlsli"
 #include "MaterialLayers/MaterialDetail.hlsli"
 
 #if defined(LANDSCAPE)

@@ -73,8 +73,8 @@ foreach ($path in @(
     "pipeline\Hybrid GI\Kernels\HybridGI\gi.cs.hlsl",
     "pipeline\Camera Suite\Kernels\CameraSuite\BloomUpsampleCS.hlsl",
 	"pipeline\Terrain Field\Assets\Plugin\PIXL-TerrainField.esp",
-    "distribution\Shaders\Lighting.hlsl",
-    "distribution\Shaders\Water.hlsl",
+    "distribution\PIXL-Shaders\Lighting.hlsl",
+    "distribution\PIXL-Shaders\Water.hlsl",
     "distribution\Interface\PIXLRenderer\Visuals\Brand\PIXL-Mark.png",
     "distribution\Interface\PIXLRenderer\Visuals\Tuner\PIXL-Renderer Button.png",
     "distribution\Interface\PIXLRenderer\Visuals\Tuner\Lighting.png",
@@ -199,12 +199,12 @@ if (-not $registryMatch.Success) {
     }
 }
 
-# Keep every literal runtime Data/Shaders reference backed by a staged source
+# Keep every literal runtime Data/PIXL-Shaders reference backed by a staged source
 # asset. This catches incomplete renames before they can become scene-specific
 # null resources (for example, an exterior-only shader or probe texture).
 $availableRuntimeAssets = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 $shippingAssetSources = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
-$distributionShaderRoot = Join-Path $repo "distribution\Shaders"
+$distributionShaderRoot = Join-Path $repo "distribution\PIXL-Shaders"
 if (Test-Path -LiteralPath $distributionShaderRoot -PathType Container) {
     $distributionShaderPrefix = $distributionShaderRoot.TrimEnd('\') + '\'
     Get-ChildItem -LiteralPath $distributionShaderRoot -Recurse -File | ForEach-Object {
@@ -240,11 +240,15 @@ Get-ChildItem -LiteralPath (Join-Path $repo "pipeline") -Directory | ForEach-Obj
 }
 
 $runtimeAssetRefs = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-$runtimeAssetPattern = 'Data(?:\\\\|/)Shaders(?:\\\\|/)([^"\r\n]+\.(?:hlsl|hlsli|dds|png|cube|lut|tga))'
+$legacyRuntimeShaderPattern = 'Data(?:\\\\|/)Shaders(?:\\\\|/)'
+$runtimeAssetPattern = 'Data(?:\\\\|/)PIXL-Shaders(?:\\\\|/)([^"\r\n]+\.(?:hlsl|hlsli|dds|png|cube|lut|tga))'
 Get-ChildItem -LiteralPath (Join-Path $repo "engine") -Recurse -File | Where-Object {
     $_.Extension -in @('.cpp','.h')
 } | ForEach-Object {
     $sourceText = Get-Content -LiteralPath $_.FullName -Raw
+    if ([regex]::IsMatch($sourceText, $legacyRuntimeShaderPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+        Add-Error "Runtime source still refers to the shared Data\Shaders tree: $($_.FullName)"
+    }
     foreach ($match in [regex]::Matches($sourceText, $runtimeAssetPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
         $assetRef = $match.Groups[1].Value -replace '\\\\','\' -replace '/','\'
         # Formatted paths such as "{}.hlsl" are validated by their owning
@@ -254,7 +258,7 @@ Get-ChildItem -LiteralPath (Join-Path $repo "engine") -Recurse -File | Where-Obj
 }
 foreach ($assetRef in $runtimeAssetRefs) {
     if (-not $availableRuntimeAssets.Contains($assetRef)) {
-        Add-Error "Runtime shader asset has no staging source: Shaders\$assetRef"
+        Add-Error "Runtime shader asset has no staging source: PIXL-Shaders\$assetRef"
     }
 }
 
@@ -377,19 +381,19 @@ if ($PackageDirectory) {
             "SKSE\Plugins\PIXL\Interface\Visuals\Tuner\Character.png",
             "SKSE\Plugins\PIXL\Interface\Visuals\Tuner\Camera.png",
             "SKSE\Plugins\PIXL\Interface\QualityPreviews\README.txt",
-            "Shaders\PIXL\Modules\HybridGI.ini",
-			"Shaders\AmbientProbe\DiffuseAmbientProbeCS.hlsl",
-			"Shaders\AmbientProbe\DiffuseAmbientProbe.dds",
-			"Shaders\AmbientProbe\SpecAmbientProbe.dds",
-            "Shaders\CameraSuite\BloomUpsampleCS.hlsl",
-            "Shaders\HybridGI\gi.cs.hlsl",
-            "Shaders\Lighting.hlsl",
-            "Shaders\Water.hlsl",
+            "PIXL-Shaders\PIXL\Modules\HybridGI.ini",
+			"PIXL-Shaders\AmbientProbe\DiffuseAmbientProbeCS.hlsl",
+			"PIXL-Shaders\AmbientProbe\DiffuseAmbientProbe.dds",
+			"PIXL-Shaders\AmbientProbe\SpecAmbientProbe.dds",
+            "PIXL-Shaders\CameraSuite\BloomUpsampleCS.hlsl",
+            "PIXL-Shaders\HybridGI\gi.cs.hlsl",
+            "PIXL-Shaders\Lighting.hlsl",
+            "PIXL-Shaders\Water.hlsl",
             "PIXL-RENDERER.manifest.json"
         )) { Require-PackageFile $package $file }
 
         foreach ($assetRef in $runtimeAssetRefs) {
-            Require-PackageFile $package ("Shaders\" + $assetRef)
+            Require-PackageFile $package ("PIXL-Shaders\" + $assetRef)
         }
 
         # These files are copied verbatim by StagePixlRendererStandalone. Do not
@@ -420,7 +424,7 @@ if ($PackageDirectory) {
         # A manifest proves self-consistency, not that this is the current
         # authoritative source. Verify every shipping shader/vendor asset too.
         foreach ($asset in $shippingAssetSources.GetEnumerator()) {
-            $stagedPath = Join-Path $package ("Shaders\" + $asset.Key)
+            $stagedPath = Join-Path $package ("PIXL-Shaders\" + $asset.Key)
             if (-not (Test-Path -LiteralPath $stagedPath -PathType Leaf)) {
                 Add-Error "Shipping shader asset not staged: $($asset.Key)"
             } elseif ((Get-FileHash -LiteralPath $asset.Value).Hash -ne (Get-FileHash -LiteralPath $stagedPath).Hash) {
@@ -428,7 +432,7 @@ if ($PackageDirectory) {
             }
         }
 
-        $packageModuleRoot = Join-Path $package "Shaders\PIXL\Modules"
+        $packageModuleRoot = Join-Path $package "PIXL-Shaders\PIXL\Modules"
         $packagedModuleIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         Get-ChildItem -LiteralPath $packageModuleRoot -File -Filter "*.ini" | ForEach-Object {
             $null = $packagedModuleIds.Add($_.BaseName)
@@ -440,10 +444,13 @@ if ($PackageDirectory) {
             if (-not $activeDescriptorIds.Contains($id)) { Add-Error "Non-shipping module descriptor was staged: $id" }
         }
 
-        # Validate the assembled package, not just the repository union. The
-        # one known retired include is exempt ONLY in its exact disabled guard;
-        # an unguarded use still fails. This is not a shader compiler substitute.
-        $packageShaderRoot = Join-Path $package "Shaders"
+        # Validate the assembled package, not just the repository union.
+        # Retired shader paths must not leave unresolved guarded includes behind.
+        # This is not a shader compiler substitute.
+        if (Test-Path -LiteralPath (Join-Path $package 'Shaders')) {
+            Add-Error 'Package contains a shared top-level Shaders directory instead of using PIXL-Shaders exclusively.'
+        }
+        $packageShaderRoot = Join-Path $package "PIXL-Shaders"
         $packageShaderAssets = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         Get-ChildItem -LiteralPath $packageShaderRoot -Recurse -File | ForEach-Object {
             $null = $packageShaderAssets.Add($_.FullName.Substring($packageShaderRoot.Length + 1))
@@ -452,10 +459,6 @@ if ($PackageDirectory) {
             $_.Extension -in @('.hlsl', '.hlsli')
         } | ForEach-Object {
             $shaderText = Get-Content -LiteralPath $_.FullName -Raw
-            if ($_.Name -eq 'Lighting.hlsl' -and $retiredDescriptorIds.Contains('HairReconstruction')) {
-                $shaderText = [regex]::Replace($shaderText,
-                    '(?m)^#if defined\(HAIR_RECONSTRUCTION\)\r?\n#\s*include "HairReconstruction/HairReconstruction\.hlsli"\r?\n#endif\r?$', '')
-            }
             foreach ($match in [regex]::Matches($shaderText, $includePattern)) {
                 $include = $match.Groups[1].Value.Replace('/', '\')
                 while ($include.Contains('\\')) { $include = $include.Replace('\\', '\') }

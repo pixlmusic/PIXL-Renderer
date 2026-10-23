@@ -111,18 +111,22 @@ namespace
 		int tier,
 		const char* description)
 	{
-		if (!ImGui::IsItemHovered())
+		if (!ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
 			return;
 
-		ImGui::BeginTooltip();
-		ImGui::PushTextWrapPos(PIXLUI::Ref(520.0f));
+		if (!ImGui::BeginTooltip())
+			return;
+		const auto available = ImGui::GetMainViewport()->WorkSize;
+		const float maxWidth = std::max(1.0f, available.x - ImGui::GetStyle().WindowPadding.x * 2.0f - PIXLUI::Ref(24.0f));
+		ImGui::PushTextWrapPos(std::min(PIXLUI::Ref(520.0f), maxWidth));
 		if (description)
 			ImGui::TextWrapped("%s", description);
 
 		if (auto* texture = GetQualityPreviewTexture(assetKey, tier);
 			texture && texture->srv && texture->size.x > 0.0f && texture->size.y > 0.0f) {
 			ImGui::Dummy(ImVec2(0.0f, PIXLUI::Ref(4.0f)));
-			const float width = PIXLUI::Ref(500.0f);
+			const float width = std::min({ PIXLUI::Ref(500.0f), maxWidth,
+				std::max(1.0f, available.y * 0.6f) * texture->size.x / texture->size.y });
 			const float height = width * texture->size.y / texture->size.x;
 			ImGui::Image(texture->srv.get(), ImVec2(width, height));
 		}
@@ -220,7 +224,7 @@ namespace
 	bool NeuralRuntimeFilePresent()
 	{
 		std::error_code error;
-		const std::filesystem::path path = L"Data/Shaders/ImageReconstruction/Streamline/nvngx_dlssnr.dll";
+		const std::filesystem::path path = L"Data/PIXL-Shaders/ImageReconstruction/Streamline/nvngx_dlssnr.dll";
 		return std::filesystem::is_regular_file(path, error) && !error &&
 			std::filesystem::file_size(path, error) > 0 && !error;
 	}
@@ -296,7 +300,7 @@ namespace
 		}
 		ImGui::EndChild();
 		ImGui::Separator();
-		ImGui::TextWrapped("Skyrim Special Edition / Data / Shaders / ImageReconstruction / Streamline / nvngx_dlssnr.dll");
+		ImGui::TextWrapped("Skyrim Special Edition / Data / PIXL-Shaders / ImageReconstruction / Streamline / nvngx_dlssnr.dll");
 		if (ImGui::Button("I'VE COPIED IT - CHECK FILE")) {
 			found = NeuralRuntimeFilePresent();
 			checked = true;

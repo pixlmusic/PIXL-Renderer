@@ -18,24 +18,25 @@ performance or visuals.
 
 ## Deployment and shader ownership
 
-PIXL is packaged as a normal **Data** mod. The archive contains individual PIXL
-files under `SKSE`, `Shaders`, and `Interface`; it does not require replacing or
-merging the entire Skyrim `Data\Shaders` directory. Keep Community Shaders and
-other engine-level shader renderers disabled for this release. If a mod manager
-reports a conflict, resolve only the named PIXL feature files and follow the
-priority guidance below rather than allowing a blanket shader-folder override.
+PIXL is packaged as a normal **Data** mod. The archive contains PIXL-owned
+shader files under PIXL-Shaders, separate from Skyrim's Shaders directory,
+plus files under SKSE and Interface. Installation leaves the existing
+Data\Shaders tree untouched. Keep Community Shaders and other engine-level
+shader renderers disabled because their runtime hooks overlap with PIXL. Resolve
+conflicts inside PIXL-Shaders only between PIXL versions or explicitly installed
+PIXL add-ons.
 
 Vortex and Mod Organizer 2 are the supported virtual-install paths. In Vortex,
 deploy PIXL after any mod that supplies a file PIXL is intentionally replacing.
 In MO2, put PIXL lower in the left pane so it wins those specific conflicts.
 Avoid NMM's legacy virtual-install/symlink mode for PIXL: `.symlink` placeholder
-files can leave shader assets unavailable to Skyrim even when the mod appears
+files can leave shader assets unavailable to PIXL even when the mod appears
 installed. Use a real extraction, Vortex, or MO2 and verify that the files exist
-under the active Skyrim `Data` view before launching SKSE.
+under `Data\PIXL-Shaders` in the active Skyrim `Data` view before launching SKSE.
 
 After changing priority or reinstalling a conflicting shader provider, close
 Skyrim and redeploy PIXL, then allow the shader cache to rebuild. Do not copy a
-second PIXL `Shaders` folder over the package or mix files from another PIXL
+second PIXL `PIXL-Shaders` folder over the package or mix files from another PIXL
 version.
 
 ## Optional integrations

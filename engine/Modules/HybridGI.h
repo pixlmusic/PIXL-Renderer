@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Buffer.h"
+#include "RenderModule.h"
 #include "Renderer/RendererMetadata.h"
 
 #include <cstddef>
@@ -8,6 +9,8 @@
 #include <atomic>
 #include <filesystem>
 #include <string>
+#include <string_view>
+#include <tuple>
 #include <vector>
 
 struct HybridGI : RenderModule
@@ -16,18 +19,17 @@ private:
 	static constexpr std::string_view MOD_ID = "130375";
 
 public:
-	virtual inline std::string GetName() override { return "Hybrid GI"; }
-	virtual std::string GetDisplayName() override { return "PIXL Radiance Weave"; }
-	virtual inline std::string GetShortName() override { return "HybridGI"; }
-	virtual inline std::string GetModuleSupportLink() override { return MakeNexusModURL(MOD_ID); }
-	virtual std::string_view GetCategory() const override { return ModuleGroups::kLighting; }
+	std::string GetName() override { return "Hybrid GI"; }
+	std::string GetDisplayName() override { return "PIXL Radiance Weave"; }
+	std::string GetShortName() override { return "HybridGI"; }
+	std::string GetModuleSupportLink() override { return MakeNexusModURL(MOD_ID); }
+	std::string_view GetCategory() const override { return ModuleGroups::kLighting; }
 
 	/** @brief Returns a localized description and list of key features for the UI summary panel. */
-	virtual std::pair<std::string, std::vector<std::string>> GetModuleSummary() override
+	std::pair<std::string, std::vector<std::string>> GetModuleSummary() override
 	{
-		std::string desc = T("feature.hybrid_gi.pixl_description",
-			"PIXL Radiance Weave combines high-detail screen-space indirect lighting with a persistent world-space irradiance cache for more stable lighting while the camera moves.");
-		return { desc,
+		return { T("feature.hybrid_gi.pixl_description",
+			"PIXL Radiance Weave combines high-detail screen-space indirect lighting with a persistent world-space irradiance cache for more stable lighting while the camera moves."),
 			{ T("feature.hybrid_gi.pixl_key_feature_1", "Screen-space diffuse and specular indirect lighting"),
 				T("feature.hybrid_gi.pixl_key_feature_2", "Persistent two-cascade world irradiance cache"),
 				T("feature.hybrid_gi.pixl_key_feature_3", "Secondary bounce and directional occlusion"),
@@ -36,19 +38,19 @@ public:
 	}
 
 	/** @brief Resets all settings to their default values and flags shaders for recompilation. */
-	virtual void RestoreDefaultSettings() override;
+	void RestoreDefaultSettings() override;
 	/** @brief Draws the user-facing PIXL Hybrid GI panel with presets, lighting, world cache, reflections, stability, advanced tuning and diagnostics. */
-	virtual void DrawSettings() override;
+	void DrawSettings() override;
 
-	virtual void LoadSettings(json& o_json) override;
-	virtual void SaveSettings(json& o_json) override;
+	void LoadSettings(json& o_json) override;
+	void SaveSettings(json& o_json) override;
 
 	/** @brief Registers the loading-screen listener that resets temporal history. */
-	virtual void PostPostLoad() override;
+	void PostPostLoad() override;
 	/** @brief Creates GPU textures, samplers, constant buffers, and compiles compute shaders. */
-	virtual void SetupResources() override;
+	void SetupResources() override;
 	/** @brief Releases and recompiles all HybridGI compute shaders. */
-	virtual void ClearShaderCache() override;
+	void ClearShaderCache() override;
 	/** @brief Compiles all HybridGI compute shaders with current resolution and feature defines. */
 	void CompileComputeShaders(std::uint32_t a_shaderMask = 0xffffffffu);
 	/** @brief Checks whether all required compute shaders and the noise texture loaded successfully. */
@@ -78,7 +80,7 @@ public:
 	class MenuOpenCloseEventHandler : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
 	{
 	public:
-		virtual RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* a_event,
+		RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* a_event,
 			RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override;
 		static bool Register();
 	};
@@ -331,7 +333,7 @@ public:
 	eastl::unique_ptr<Texture2D> texWorldCachePreviousNormal = nullptr;
 
 	/** @brief Returns AO, diffuse SH Y/CoCg, hybrid reflection and bent-normal visibility SRVs. */
-	inline auto GetOutputTextures()
+	auto GetOutputTextures()
 	{
 		return (loaded && settings.Enabled && ShadersOK()) ?
 		           std::make_tuple(

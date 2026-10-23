@@ -23,7 +23,7 @@ namespace PIXLWorldWind
 	{
 		float2 i = floor(p);
 		float2 f = frac(p);
-		float2 u = f * f * (3.0f - 2.0f * f);
+		float2 u = f * f * f * (f * (f * 6.0f - 15.0f) + 10.0f);
 		float a = Hash12(i);
 		float b = Hash12(i + float2(1.0f, 0.0f));
 		float c = Hash12(i + float2(0.0f, 1.0f));

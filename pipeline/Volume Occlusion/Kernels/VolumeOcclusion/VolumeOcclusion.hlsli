@@ -6,6 +6,12 @@
 
 namespace VolumeOcclusion
 {
+	float ShadowSmootherStep(float value)
+	{
+		float t = saturate(value);
+		return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+	}
+
 	#ifndef USE_PIXL_VOLUME_OCCLUSION
 	#	define USE_PIXL_VOLUME_OCCLUSION 1
 	#endif
@@ -19,6 +25,10 @@ namespace VolumeOcclusion
 	// moments.x = mean(z), moments.y = mean(z^2)
 	float ComputeVSM(float2 moments, float depth)
 	{
+		moments = all(isfinite(moments)) ? moments : float2(1.0f, 1.0f);
+		depth = isfinite(depth) ? saturate(depth) : 1.0f;
+		moments.x = saturate(moments.x);
+		moments.y = max(moments.y, moments.x * moments.x);
 		float variance = max(moments.y - moments.x * moments.x, VSM_MIN_VARIANCE);
 	#if USE_PIXL_VOLUME_OCCLUSION
 		// Depth-scaled receiver uncertainty suppresses VSM acne after the shadow
@@ -29,7 +39,7 @@ namespace VolumeOcclusion
 		float pMax = variance / (variance + d * d);
 		float lit = (depth <= moments.x) ? 1.0f : pMax;
 	#if USE_PIXL_VOLUME_OCCLUSION
-		return smoothstep(0.02f, 1.0f, lit);
+		return ShadowSmootherStep((lit - 0.02f) / 0.98f);
 	#else
 		return lit;
 	#endif
@@ -38,6 +48,7 @@ namespace VolumeOcclusion
 	// Reduces light bleeding by remapping shadow values below a threshold to zero
 	float ReduceBleeding(float shadow, float amount)
 	{
+		amount = clamp(amount, 0.0f, 0.99f);
 		return saturate((shadow - amount) / (1.0 - amount));
 	}
 
@@ -54,6 +65,9 @@ namespace VolumeOcclusion
 		float shadow = 0.0;
 		firstSample = 1.0;
 
+		sampleCount = clamp(sampleCount, 1u, 64u);
+		rcpSampleCount = rcp((float)sampleCount);
+		noise = frac(noise);
 		[loop] for (uint k = 0; k < sampleCount; k++)
 		{
 			float t = (float(k) + noise) * rcpSampleCount;
@@ -93,13 +107,14 @@ namespace VolumeOcclusion
 		}
 
 		// Reduce over distance
-		float fade = saturate(shadowMapDepth / directionalShadowLightData.EndSplitDistances.y);
+		float fade = saturate(shadowMapDepth / max(directionalShadowLightData.EndSplitDistances.y, 1.0e-3f));
 
 		uint sampleCount = max(1, ceil(float(baseSampleCount) * (1.0 - fade)));
 		float rcpSampleCount = rcp(sampleCount);
 
 		// Compute cascade blend factor
-		float cascadeSelect = saturate((shadowMapDepth - directionalShadowLightData.StartSplitDistances.y) / (directionalShadowLightData.EndSplitDistances.x - directionalShadowLightData.StartSplitDistances.y));
+		float cascadeSelect = saturate((shadowMapDepth - directionalShadowLightData.StartSplitDistances.y) /
+			max(directionalShadowLightData.EndSplitDistances.x - directionalShadowLightData.StartSplitDistances.y, 1.0e-3f));
 
 		// Determine which cascade(s) to sample
 		uint primaryCascade = uint(cascadeSelect);
@@ -126,13 +141,16 @@ namespace VolumeOcclusion
 
 			float secondaryFirstSample;
 			float shadowBlend = SampleVSMCascade3D(secondaryCascade, noise, sampleCount, rcpSampleCount, startLS, endLS, secondaryFirstSample);
-			float blendFactor = smoothstep(0, 1, cascadeSelect);
+			float blendFactor = ShadowSmootherStep(cascadeSelect);
 			shadow = lerp(shadow, shadowBlend, blendFactor);
 			surfaceShadow = lerp(surfaceShadow, secondaryFirstSample, blendFactor);
 		}
 
 		// Apply distance fade
-		float fadeFactor = 1.0 - pow(fade * fade, 8);
+		float fade2 = fade * fade;
+		float fade4 = fade2 * fade2;
+		float fade8 = fade4 * fade4;
+		float fadeFactor = 1.0f - fade8 * fade8;
 		surfaceShadow = lerp(1.0, surfaceShadow, fadeFactor);
 		return lerp(1.0, shadow, fadeFactor);
 	}
@@ -159,13 +177,14 @@ namespace VolumeOcclusion
 		}
 
 		// Reduce over distance
-		float fade = saturate(shadowMapDepth / directionalShadowLightData.EndSplitDistances.y);
+		float fade = saturate(shadowMapDepth / max(directionalShadowLightData.EndSplitDistances.y, 1.0e-3f));
 
 		// Cascade projections are world-space; position comes in camera-relative.
 		float3 positionWS = position + FrameBuffer::CameraPosAdjust.xyz;
 
 		// Compute cascade blend factor
-		float cascadeSelect = saturate((shadowMapDepth - directionalShadowLightData.StartSplitDistances.y) / (directionalShadowLightData.EndSplitDistances.x - directionalShadowLightData.StartSplitDistances.y));
+		float cascadeSelect = saturate((shadowMapDepth - directionalShadowLightData.StartSplitDistances.y) /
+			max(directionalShadowLightData.EndSplitDistances.x - directionalShadowLightData.StartSplitDistances.y, 1.0e-3f));
 
 		// Determine which cascade(s) to sample
 		uint primaryCascade = uint(cascadeSelect);
@@ -185,11 +204,14 @@ namespace VolumeOcclusion
 			positionLS = mul(directionalShadowLightData.ShadowProj[secondaryCascade], float4(positionWS, 1)).xyz;
 
 			float shadowBlend = SampleVSMCascade2D(secondaryCascade, positionLS);
-			shadow = lerp(shadow, shadowBlend, smoothstep(0, 1, cascadeSelect));
+			shadow = lerp(shadow, shadowBlend, ShadowSmootherStep(cascadeSelect));
 		}
 
 		// Apply distance fade
-		float fadeFactor = 1.0 - pow(fade * fade, 8);
+		float fade2 = fade * fade;
+		float fade4 = fade2 * fade2;
+		float fade8 = fade4 * fade4;
+		float fadeFactor = 1.0f - fade8 * fade8;
 		detailedShadow = lerp(1.0, ReduceBleeding(shadow, VSM_BLEEDING_REDUCTION), fadeFactor);
 		return lerp(1.0, shadow, fadeFactor);
 	}

@@ -27,7 +27,7 @@
     Git ref to treat as "before". Default: merge-base of HEAD and origin/dev.
 
 .PARAMETER IncludeDir
-    Shader include root passed to fxc /I. Default: distribution/Shaders.
+    Shader include root passed to fxc /I. Default: distribution/PIXL-Shaders.
 
 .PARAMETER Permutations
     Optional explicit permutation list; each entry is a space-separated define set,
@@ -40,17 +40,17 @@
     fxc target profile. Default: auto (cs_5_0 for *CS.hlsl, else ps_5_0).
 
 .EXAMPLE
-    pwsh tools/verify-shader-refactor.ps1 distribution/Shaders/ISTemporalAA.hlsl
+    pwsh tools/verify-shader-refactor.ps1 distribution/PIXL-Shaders/ISTemporalAA.hlsl
 
 .EXAMPLE
-    pwsh tools/verify-shader-refactor.ps1 distribution/Shaders/Foo.hlsl -BaseRef HEAD~1
+    pwsh tools/verify-shader-refactor.ps1 distribution/PIXL-Shaders/Foo.hlsl -BaseRef HEAD~1
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0)]
     [string]$Shader,
     [string]$BaseRef,
-    [string]$IncludeDir = "distribution/Shaders",
+    [string]$IncludeDir = "distribution/PIXL-Shaders",
     [string[]]$Permutations,
     [string]$Entry = "main",
     [string]$Profile,

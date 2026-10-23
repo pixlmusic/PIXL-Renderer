@@ -1,6 +1,6 @@
 # PIXL Renderer v1.0 architecture
 
-PIXL Renderer is shipped as one renderer, not a collection of separately installed shader add-ons. The inherited feature short names and `Shaders/Features/*.ini` files remain compatibility adapters: Skyrim's hook discovery, saved settings, shader defines, register bindings, and material providers depend on those stable identities.
+PIXL Renderer is shipped as one renderer, not a collection of separately installed shader add-ons. Stable module short names and `PIXL-Shaders/PIXL/Modules/*.ini` descriptors identify the integrated runtime features used by the hook discovery, saved settings, shader defines, register bindings, and material providers.
 
 ## Unified source map
 
@@ -8,7 +8,7 @@ PIXL Renderer is shipped as one renderer, not a collection of separately install
 PIXL-Renderer-Engine/
 |-- engine/        C++ renderer, hooks, modules, GUI, runtime services
 |-- pipeline/      module descriptors, kernels, and module-owned assets
-|-- distribution/ tracked runtime template and shared Skyrim shaders
+|-- distribution/ tracked runtime template and shared PIXL shaders
 |-- installer/     FOMOD metadata and installer artwork
 |-- include/       external public headers
 |-- extern/        pinned third-party source dependencies
@@ -23,9 +23,9 @@ PIXL-Renderer-Engine/
 - `engine/Modules/` contains runtime hook adapters and module-specific resource lifetimes.
 - `engine/Hooks`, `engine/Runtime`, `engine/Utils`, and the root-level engine coordinators own shared SKSE, DX11, lifecycle, and utility infrastructure. Code belongs here only when multiple renderer modules depend on it.
 - `engine/Menu/` contains the Essentials, Advanced, and Developer presentation layers.
-- `distribution/Shaders/Common/` is the shared physical shading ABI and BRDF library.
-- `distribution/Shaders/` contains Skyrim entry-point overrides whose names and signatures must remain unchanged.
-- `pipeline/*/Kernels/` is the authoring location for integrated subsystem shaders. Packaging merges every module into one `Data/Shaders` tree.
+- `distribution/PIXL-Shaders/Common/` is the shared physical shading ABI and BRDF library.
+- `distribution/PIXL-Shaders/` contains Skyrim entry-point overrides whose names and signatures must remain unchanged.
+- `pipeline/*/Kernels/` is the authoring location for integrated subsystem shaders. Packaging merges every module into one `Data/PIXL-Shaders` tree.
 - `distribution/SKSE/Plugins/PIXLRenderer/` owns settings, the tested preset, theme, and translations.
 - `installer/` owns FOMOD metadata and installer presentation assets.
 - `tools/` contains portable build, validation, packaging, and source-export tooling. Personal deployment or service-administration scripts are not public repository content.
@@ -41,13 +41,13 @@ PIXL-Renderer-Engine/
 | Release staging | `dist/` through `tools/StagePixlRendererStandalone.ps1` | Generated, ignored, manifest-backed package content. Only runtime files and deliberate user/legal documents are admitted. |
 | Deployment | Game roots supplied through `PIXL_SKYRIM_ROOT_1/2/3` | Local operation outside the source tree. Paths are environment configuration and are never committed. |
 
-The existing directory names are runtime contracts in several places. Shader includes, module descriptors, package overlays, and Skyrim resource lookup all depend on them. Structural cleanup therefore preserves these stable roots instead of creating parallel `src/`, `modules/`, or `shaders/` trees.
+`Data/PIXL-Shaders` is PIXL's exclusive runtime shader and shader-asset root. `distribution/PIXL-Shaders` is its tracked runtime template, and packaging overlays module kernels into that same tree. The renderer does not scan or fall back to Skyrim's `Data/Shaders`; that existing directory remains untouched and may contain files owned by Skyrim or other mods.
 
 ## Adding a renderer module
 
 1. Put the C++ owner and lifetime code in `engine/Modules/<ModuleName>.h/.cpp`. Put reusable renderer infrastructure in `engine/Renderer/` only when it serves more than one module.
 2. Add `pipeline/<Display Name>/Module.ini` with the stable runtime ID. Place shader sources below `pipeline/<Display Name>/Kernels/<RuntimeId>/` so the existing compiler and staging discovery can find them.
-3. Use `distribution/Shaders/Common/` for genuinely shared shader ABI and math. Keep module-only helpers with that module.
+3. Use `distribution/PIXL-Shaders/Common/` for genuinely shared shader ABI and math. Keep module-only helpers with that module.
 4. Add module controls through the established `engine/Menu/` framework and keep settings in the module's authoritative C++ settings structure and descriptor.
 5. Add portable validation under `tools/`; generated test output must stay below `build/`.
 6. Run the canonical `PIXL-Audit` target. It verifies module registration, descriptors, shader dependencies, runtime assets, repository hygiene, and package contents.

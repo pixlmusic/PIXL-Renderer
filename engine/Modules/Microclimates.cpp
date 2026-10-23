@@ -91,7 +91,7 @@ void Microclimates::SetupResources()
 	if (runtime->updateShader)
 		runtime->updateShader->Release();
 	runtime->updateShader = static_cast<ID3D11ComputeShader*>(
-		Util::CompileShader(L"Data\\Shaders\\Microclimates\\MicroclimateFieldCS.hlsl", {}, "cs_5_0"));
+		Util::CompileShader(L"Data\\PIXL-Shaders\\Microclimates\\MicroclimateFieldCS.hlsl", {}, "cs_5_0"));
 	if (!runtime->updateShader) {
 		settings.Enable = false;
 		loaded = false;
@@ -196,6 +196,11 @@ void Microclimates::UpdateField()
 		return;
 	}
 	const auto playerPosition = player->GetPosition();
+	if (!std::isfinite(playerPosition.x) || !std::isfinite(playerPosition.y) ||
+		!std::isfinite(playerPosition.z)) {
+		runtime->historyValid = false;
+		return;
+	}
 	const auto contextID = GetWorldContext();
 	const bool worldChanged = contextID != runtime->worldContext;
 	runtime->worldContext = contextID;
@@ -228,7 +233,9 @@ void Microclimates::UpdateField()
 	} else if (!settings.debugEmitter) {
 		runtime->emitterAnchored = false;
 	}
-	const float dt = globals::game::deltaTime ? std::clamp(*globals::game::deltaTime, 0.0f, 0.1f) : 1.0f / 60.0f;
+	const float dt = globals::game::deltaTime
+		? FiniteClamp(*globals::game::deltaTime, 1.0f / 60.0f, 0.0f, 0.1f)
+		: 1.0f / 60.0f;
 	runtime->accumulator = std::min(runtime->accumulator + dt, 0.5f);
 	if (settings.freezeSimulation && runtime->historyValid)
 		return;

@@ -35,14 +35,14 @@ namespace PhysicalMaterial::DX11
 		auto* sourceView = texture.rendererTexture->resourceView;
 		std::unique_lock lock(mutex_);
 		if (const auto current = textures_.find(textureID);
-			current != textures_.end() && current->second.get() == sourceView) {
+			current != textures_.end() && current->second.get() == REX::W32::AsReal(sourceView)) {
 			return;
 		}
 		if (!textures_.contains(textureID) && textures_.size() >= MaxRetainedTextureViews) {
 			return;
 		}
 		winrt::com_ptr<ID3D11ShaderResourceView> retained;
-		retained.copy_from(sourceView);
+		retained.copy_from(REX::W32::AsReal(sourceView));
 		textures_.insert_or_assign(textureID, std::move(retained));
 		generation_++;
 	}

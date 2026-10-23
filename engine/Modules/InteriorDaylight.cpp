@@ -26,9 +26,7 @@ void InteriorDaylight::DrawSettings()
 							  "Will prevent most light leaking through unmasked/unprepared interiors at a small performance cost. "));
 	}
 	if (ImGui::SliderFloat(T(TKEY("interior_shadow_distance"), "Interior Shadow Distance"), &settings.InteriorShadowDistance, 1000.0f, 8000.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp)) {
-		*gInteriorShadowDistance = settings.InteriorShadowDistance;
-		auto tes = RE::TES::GetSingleton();
-		SetShadowDistance(tes && tes->interiorCell);
+		ApplyShadowDistance();
 	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T(TKEY("interior_shadow_distance_tooltip"),
@@ -40,6 +38,10 @@ void InteriorDaylight::DrawSettings()
 void InteriorDaylight::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	if (!std::isfinite(settings.InteriorShadowDistance))
+		settings.InteriorShadowDistance = 5000.0f;
+	settings.InteriorShadowDistance = std::clamp(settings.InteriorShadowDistance, 1000.0f, 8000.0f);
+	ApplyShadowDistance();
 }
 
 void InteriorDaylight::SaveSettings(json& o_json)
@@ -50,6 +52,7 @@ void InteriorDaylight::SaveSettings(json& o_json)
 void InteriorDaylight::RestoreDefaultSettings()
 {
 	settings = {};
+	ApplyShadowDistance();
 }
 
 void InteriorDaylight::PostPostLoad()
@@ -71,6 +74,8 @@ void InteriorDaylight::PostPostLoad()
 
 	gShadowDistance = reinterpret_cast<float*>(REL::RelocationID(528314, 415263).address());
 	gInteriorShadowDistance = reinterpret_cast<float*>(REL::RelocationID(513755, 391724).address());
+	if (gInteriorShadowDistance && std::isfinite(settings.InteriorShadowDistance))
+		*gInteriorShadowDistance = std::clamp(settings.InteriorShadowDistance, 1000.0f, 8000.0f);
 
 	// Patches BSShadowDirectionalLight::SetFrameCamera to read the correct shadow distance value in interior cells
 	const std::uintptr_t address = REL::RelocationID(101499, 108496).address() + REL::Relocate(0xD62, 0xE6C);
@@ -84,7 +89,8 @@ void InteriorDaylight::PostPostLoad()
 
 void InteriorDaylight::EarlyPrepass()
 {
-	isInteriorWithSun = IsInteriorWithSun(RE::TES::GetSingleton()->interiorCell);
+	const auto* tes = RE::TES::GetSingleton();
+	isInteriorWithSun = tes && IsInteriorWithSun(tes->interiorCell);
 }
 
 inline bool InteriorDaylight::IsInteriorWithSun(const RE::TESObjectCELL* cell)
@@ -104,6 +110,8 @@ inline bool InteriorDaylight::IsInteriorWithSun(const RE::TESObjectCELL* cell)
 
 RE::TESWorldSpace* InteriorDaylight::GetWorldSpace::thunk(RE::TES* tes)
 {
+	if (!tes)
+		return func(tes);
 	if (const auto cell = tes->interiorCell)
 		return IsInteriorWithSun(cell) ? enableInteriorDaylight : disableInteriorDaylight;
 	return func(tes);
@@ -124,10 +132,11 @@ RE::TESWorldSpace* InteriorDaylight::disableInteriorDaylight = [] {
 void InteriorDaylight::DirShadowLightCulling::thunk(RE::BSShadowDirectionalLight* dirLight, RE::BSTArray<RE::BSTArray<RE::NiPointer<RE::NiAVObject>>>& jobArrays, RE::BSTArray<RE::NiPointer<RE::NiAVObject>>& nodes)
 {
 	auto& singleton = globals::pipeline::interiorDaylight;
-	const auto cell = RE::TES::GetSingleton()->interiorCell;
+	const auto* tes = RE::TES::GetSingleton();
+	const auto cell = tes ? tes->interiorCell : nullptr;
 	auto* passedJobArrays = &jobArrays;
 
-	if (cell && singleton.isInteriorWithSun) {
+	if (cell && dirLight && singleton.isInteriorWithSun) {
 		const auto* loadedData = cell->GetRuntimeData().loadedData;
 		const auto portalGraph = loadedData ? loadedData->portalGraph : nullptr;
 		if (portalGraph) {
@@ -172,6 +181,11 @@ void InteriorDaylight::ClearArrays()
 
 void InteriorDaylight::PopulateReplacementJobArrays(RE::TESObjectCELL* cell, const RE::NiPointer<RE::BSPortalGraph>& portalGraph, const RE::BSShadowDirectionalLight* dirLight, RE::BSTArray<RE::BSTArray<RE::NiPointer<RE::NiAVObject>>>& jobArrays)
 {
+	const auto* player = RE::PlayerCharacter::GetSingleton();
+	if (!cell || !portalGraph || !dirLight || !player) {
+		ClearArrays();
+		return;
+	}
 	if (cell != currentCell) {
 		InitialiseOnNewCell(portalGraph);
 		currentCell = cell;
@@ -201,9 +215,14 @@ void InteriorDaylight::PopulateReplacementJobArrays(RE::TESObjectCELL* cell, con
 		}
 	}
 
-	const auto playerPos = RE::PlayerCharacter::GetSingleton()->GetPosition();
+	const auto playerPos = player->GetPosition();
 	auto lightDir = -dirLight->GetShadowDirectionalLightRuntimeData().sunVector;
-	lightDir.Unitize();
+	const float lightLength = lightDir.Length();
+	if (!std::isfinite(lightLength) || lightLength <= 1.0e-4f) {
+		arraysCleared = false;
+		return;
+	}
+	lightDir /= lightLength;
 
 	// Add extra rooms and portals that are in the direction of the sun
 	for (const auto& object : currentCellRoomsAndPortals) {
@@ -221,12 +240,14 @@ void InteriorDaylight::InitialiseOnNewCell(const RE::NiPointer<RE::BSPortalGraph
 {
 	currentCellRoomsAndPortals.clear();
 
-	if (const auto portalSharedNode = portalGraph->portalSharedNode) {
-		for (const auto room : portalGraph->rooms)
+	for (const auto& room : portalGraph->rooms) {
+		if (room)
 			currentCellRoomsAndPortals.push_back(room);
-
+	}
+	if (const auto portalSharedNode = portalGraph->portalSharedNode) {
 		for (auto child : portalGraph->portalSharedNode->GetChildren())
-			currentCellRoomsAndPortals.push_back(child);
+			if (child)
+				currentCellRoomsAndPortals.push_back(child);
 	}
 }
 
@@ -234,9 +255,13 @@ bool InteriorDaylight::IsInSunDirectionAndWithinShadowDistance(const RE::NiPoint
 {
 	const float radius = object->worldBound.radius;
 	const auto diff = object->worldBound.center - playerPos;
-	const float distance = diff.Length();
+	const float distanceSquared = diff.Dot(diff);
 	const float projection = lightDir.Dot(diff);
-	return projection >= -radius && (distance - radius) <= *gShadowDistance;
+	if (!std::isfinite(radius) || radius < 0.0f || !std::isfinite(distanceSquared) || !std::isfinite(projection))
+		return false;
+	const float shadowDistance = gShadowDistance && std::isfinite(*gShadowDistance) ? std::max(*gShadowDistance, 0.0f) : 0.0f;
+	const float maxDistance = shadowDistance + radius;
+	return projection >= -radius && distanceSquared <= maxDistance * maxDistance;
 }
 
 void InteriorDaylight::SetShadowDistance(bool inInterior)
@@ -244,5 +269,14 @@ void InteriorDaylight::SetShadowDistance(bool inInterior)
 	using func_t = decltype(SetShadowDistance);
 	static REL::Relocation<func_t> func{ REL::RelocationID(98978, 105631).address() };
 	func(inInterior);
+}
+
+void InteriorDaylight::ApplyShadowDistance()
+{
+	if (!gInteriorShadowDistance)
+		return;
+	*gInteriorShadowDistance = settings.InteriorShadowDistance;
+	const auto* tes = RE::TES::GetSingleton();
+	SetShadowDistance(tes && tes->interiorCell);
 }
 #undef I18N_KEY_PREFIX

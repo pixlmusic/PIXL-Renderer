@@ -49,9 +49,9 @@ function Add-SourceFile([string]$RelativePath, [string]$FilePath, [string]$Origi
     $sourceMap[$relative] = $entry
 }
 
-$distributionRoot = Join-Path $sourceRootPath 'distribution\Shaders'
+$distributionRoot = Join-Path $sourceRootPath 'distribution\PIXL-Shaders'
 Get-ChildItem -LiteralPath $distributionRoot -File -Recurse | Sort-Object FullName | ForEach-Object {
-    Add-SourceFile (Get-RelativePath $distributionRoot $_.FullName) $_.FullName 'distribution/Shaders'
+    Add-SourceFile (Get-RelativePath $distributionRoot $_.FullName) $_.FullName 'distribution/PIXL-Shaders'
 }
 
 Get-ChildItem -LiteralPath (Join-Path $sourceRootPath 'pipeline') -Directory | Sort-Object Name | ForEach-Object {

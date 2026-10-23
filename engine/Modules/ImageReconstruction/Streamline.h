@@ -24,7 +24,7 @@
 class Streamline
 {
 public:
-	static constexpr const wchar_t* PluginDir = L"Data\\Shaders\\ImageReconstruction\\Streamline";
+	static constexpr const wchar_t* PluginDir = L"Data\\PIXL-Shaders\\ImageReconstruction\\Streamline";
 	sl::RenderAPI renderAPI = sl::RenderAPI::eD3D11;
 	std::wstring pluginDir = PluginDir;
 	std::string instanceTag = "DX11";

@@ -2,13 +2,16 @@
 param(
     [string]$ArchivePath = "",
     [string]$AllowedOutputRoot = "",
+    [string]$ProductVersion = "1.0.8",
     [switch]$IncludeWorkingTree
 )
 
 $ErrorActionPreference = "Stop"
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $allowedRoot = [IO.Path]::GetFullPath($(if ($AllowedOutputRoot) { $AllowedOutputRoot } else { Join-Path $sourceRoot "dist" }))
-if (-not $ArchivePath) { $ArchivePath = Join-Path $allowedRoot "PIXL-Renderer-1.0.5-Source.zip" }
+if ($ProductVersion -notmatch '^\d+\.\d+\.\d+(?:r\d+)?$') { throw "Invalid source product version: $ProductVersion" }
+$sourcePrefix = "PIXL-Renderer-$ProductVersion-Source/"
+if (-not $ArchivePath) { $ArchivePath = Join-Path $allowedRoot "PIXL-Renderer-$ProductVersion-Source.zip" }
 $archive = [IO.Path]::GetFullPath($ArchivePath)
 
 if (-not $archive.StartsWith($allowedRoot.TrimEnd('\') + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
@@ -44,7 +47,7 @@ if ($allowedPatchedSubmodule.Count -ne 0) {
 
 New-Item -ItemType Directory -Path (Split-Path -Parent $archive) -Force | Out-Null
 if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
-& git -C $sourceRoot archive --format=zip --prefix="PIXL-Renderer-1.0.5-Source/" --output=$archive $commit
+& git -C $sourceRoot archive --format=zip --prefix=$sourcePrefix --output=$archive $commit
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $archive)) {
     throw "git archive failed"
 }
@@ -56,7 +59,7 @@ if ($IncludeWorkingTree) {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $snapshot = [IO.Compression.ZipFile]::Open($archive, [IO.Compression.ZipArchiveMode]::Update)
     try {
-        $snapshotPrefix = 'PIXL-Renderer-1.0.5-Source/'
+        $snapshotPrefix = $sourcePrefix
         foreach ($entry in @($snapshot.Entries)) {
             $relative = $entry.FullName.Substring($snapshotPrefix.Length)
             $local = Join-Path $sourceRoot $relative
@@ -88,7 +91,7 @@ try {
     $zip.Dispose()
 }
 
-$prefix = "PIXL-Renderer-1.0.5-Source/"
+$prefix = $sourcePrefix
 $required = @(
     "CMakeLists.txt",
     "README.md",
@@ -102,7 +105,7 @@ $required = @(
     "SOURCE_DEPENDENCIES.md",
     "distribution/SOURCE-AND-CREDITS.md",
     "engine/XSEPlugin.cpp",
-    "distribution/Shaders/Lighting.hlsl",
+    "distribution/PIXL-Shaders/Lighting.hlsl",
     "pipeline/WindowLife/Kernels/WindowLife/WindowLife.hlsli",
     "cmake/patches/FidelityFX-DX11-Short-Output.patch"
 )

@@ -30,11 +30,12 @@ float3 SafeNormalizeReflection(float3 v, float3 fallback)
 
 void BuildBasis(float3 n, out float3 t, out float3 b)
 {
+    n = SafeNormalizeReflection(n, float3(0, 0, 1));
     float signZ = n.z >= 0.0f ? 1.0f : -1.0f;
     float a = -1.0f / (signZ + n.z);
     float xy = n.x * n.y * a;
-    t = normalize(float3(1.0f + signZ * n.x * n.x * a, signZ * xy, -signZ * n.x));
-    b = normalize(float3(xy, signZ + n.y * n.y * a, -n.y));
+    t = SafeNormalizeReflection(float3(1.0f + signZ * n.x * n.x * a, signZ * xy, -signZ * n.x), float3(1, 0, 0));
+    b = SafeNormalizeReflection(float3(xy, signZ + n.y * n.y * a, -n.y), float3(0, 1, 0));
 }
 
 float SmithGGXG1(float ndotx, float alpha)
@@ -112,10 +113,10 @@ inline bool ReadReflectionVoxelCascade(float3 queryWS, float3 receiverWS, float3
         if (valid) {
             uint surface = srcWorldNormal.Load(int3(coord, 0));
 			float confidence = UnpackWorldConfidence(surface) * ageFade;
-            occupancy = UnpackWorldOccupancy(surface) * confidence;
+			occupancy = saturate(UnpackWorldOccupancy(surface) * confidence);
 
-            float3 sourceToReceiver = normalize(receiverWS - queryWS);
             float3 sourceNormal = UnpackWorldNormal(surface);
+            float3 sourceToReceiver = SafeNormalizeReflection(receiverWS - queryWS, sourceNormal);
             float sourceFacingSigned = dot(sourceNormal, sourceToReceiver);
             float sourceGate = smoothstep(-0.05f, 0.15f, sourceFacingSigned);
             float leakWeight = lerp(1.0f, sourceGate, saturate(WorldCacheLeakReduction));
@@ -170,6 +171,8 @@ inline float3 TraceWorldFallback(float3 positionWS, float3 directionWS, float3 c
 {
     confidence = 0.0f;
     float3 result = 0.0f;
+    roughness = saturate(roughness);
+    directionWS = SafeNormalizeReflection(directionWS, float3(0, 0, 1));
     if (WorldCacheEnabled != 0u && WorldCacheReflectionEnabled != 0u) {
         uint receiverCascade = WorldCacheCascade(positionWS, cameraWS);
         float baseStep = WorldCacheCellSize(receiverCascade);
@@ -184,6 +187,7 @@ inline float3 TraceWorldFallback(float3 positionWS, float3 directionWS, float3 c
             if (ReadReflectionVoxel(query, positionWS, cameraWS, sampleRadiance, occupancy)) {
                 float attenuation = rcp(1.0f + distance / max(WorldCacheRadius, 1.0f));
                 float w = occupancy * transmittance * attenuation;
+                sampleRadiance = all(isfinite(sampleRadiance)) ? max(sampleRadiance, 0.0f) : 0.0f;
                 result += sampleRadiance * w;
                 weightSum += w;
                 transmittance *= 1.0f - occupancy;
@@ -419,7 +423,7 @@ void main(uint2 dtid : SV_DispatchThreadID)
 	[branch] if (fallbackPotential > 1e-3f && WorldCacheEnabled != 0u && WorldCacheReflectionEnabled != 0u) {
         float3 positionWS = ViewToWorldPosition(P, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
         float3 cameraWS = ViewToWorldPosition(0.0f, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
-        float3 directionWS = normalize(ViewToWorldVector(L, FrameBuffer::CameraViewInverse));
+        float3 directionWS = SafeNormalizeReflection(ViewToWorldVector(L, FrameBuffer::CameraViewInverse), float3(0, 0, 1));
         worldRadiance = TraceWorldFallback(positionWS, directionWS, cameraWS, roughness, worldConfidence);
     }
     float worldBlend = fallbackPotential * worldConfidence;

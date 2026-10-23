@@ -3,6 +3,9 @@
 #include "I18n/I18n.h"
 #include "ReactiveFX.h"
 
+#include <algorithm>
+#include <cmath>
+
 #define I18N_KEY_PREFIX "feature.foliage_dynamics."
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
@@ -63,13 +66,13 @@ void FoliageDynamics::SetupResources()
 		logger::info(
 			"[FoliageDynamics] Creating grass tuning CB: struct={} bytes, D3D ByteWidth={} bytes",
 			sizeof(TuningSettings), desc.ByteWidth);
-		tuningCB = new ConstantBuffer(desc, "FoliageDynamics::TuningCB");
+		tuningCB = std::make_unique<ConstantBuffer>(desc, "FoliageDynamics::TuningCB");
 	} catch (const std::exception& e) {
 		logger::error("[FoliageDynamics] Grass tuning CB creation failed: {}", e.what());
-		tuningCB = nullptr;
+		tuningCB.reset();
 	} catch (...) {
 		logger::error("[FoliageDynamics] Grass tuning CB creation failed with unknown exception");
-		tuningCB = nullptr;
+		tuningCB.reset();
 	}
 }
 
@@ -96,12 +99,10 @@ void FoliageDynamics::Prepass()
 		BindGrassTuning();
 	} catch (const std::exception& e) {
 		logger::error("[FoliageDynamics] b13 grass tuning upload/bind failed: {}", e.what());
-		delete tuningCB;
-		tuningCB = nullptr;
+		tuningCB.reset();
 	} catch (...) {
 		logger::error("[FoliageDynamics] b13 grass tuning upload/bind failed with unknown exception");
-		delete tuningCB;
-		tuningCB = nullptr;
+		tuningCB.reset();
 	}
 }
 
@@ -304,6 +305,10 @@ void FoliageDynamics::DrawSettings()
 void FoliageDynamics::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	const Settings defaults{};
+	auto finiteClamp = [](float value, float fallback, float low, float high) {
+		return std::clamp(std::isfinite(value) ? value : fallback, low, high);
+	};
 	// Legacy presets omit the extension. Reloading one must not retain grass
 	// material overrides from whichever configuration was loaded previously.
 	tuningSettings = {};
@@ -322,12 +327,12 @@ void FoliageDynamics::LoadSettings(json& o_json)
 	settings.EnableEnhancedWind = settings.EnableEnhancedWind ? 1u : 0u;
 	settings.LeafTransmission = std::clamp(settings.LeafTransmission, 0.0f, 2.0f);
 	settings.LeafDiffuseWrap = std::clamp(settings.LeafDiffuseWrap, 0.0f, 1.0f);
-	settings.WindStrength = std::clamp(settings.WindStrength, 0.0f, 2.0f);
-	settings.GustStrength = std::clamp(settings.GustStrength, 0.0f, 1.5f);
-	settings.FlutterStrength = std::clamp(settings.FlutterStrength, 0.0f, 1.0f);
-	settings.WindSpatialScale = std::clamp(settings.WindSpatialScale, 0.25f, 3.0f);
-	settings.GustSpeed = std::clamp(settings.GustSpeed, 0.25f, 2.5f);
-	settings.FlutterSpeed = std::clamp(settings.FlutterSpeed, 0.25f, 3.0f);
+	settings.WindStrength = finiteClamp(settings.WindStrength, defaults.WindStrength, 0.0f, 2.0f);
+	settings.GustStrength = finiteClamp(settings.GustStrength, defaults.GustStrength, 0.0f, 1.5f);
+	settings.FlutterStrength = finiteClamp(settings.FlutterStrength, defaults.FlutterStrength, 0.0f, 1.0f);
+	settings.WindSpatialScale = finiteClamp(settings.WindSpatialScale, defaults.WindSpatialScale, 0.25f, 3.0f);
+	settings.GustSpeed = finiteClamp(settings.GustSpeed, defaults.GustSpeed, 0.25f, 2.5f);
+	settings.FlutterSpeed = finiteClamp(settings.FlutterSpeed, defaults.FlutterSpeed, 0.25f, 3.0f);
 	settings.SpecularAA = std::clamp(settings.SpecularAA, 0.0f, 1.5f);
 	settings.ComplexGrassMode = std::min(settings.ComplexGrassMode, 3u);
 

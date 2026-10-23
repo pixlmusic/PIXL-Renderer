@@ -15,8 +15,8 @@ namespace PipelineHealth
 	struct FeatureFileInfo
 	{
 		std::string featureName;             // Short name of the feature
-		std::string deployedFolderPath;      // Path to deployed shader folder (Data/Shaders/FeatureName/)
-		std::string iniPath;                 // Path to the INI file (Data/Shaders/PIXL/Modules/FeatureName.ini)
+		std::string deployedFolderPath;      // Path to deployed shader folder (Data/PIXL-Shaders/FeatureName/)
+		std::string iniPath;                 // Path to the INI file (Data/PIXL-Shaders/PIXL/Modules/FeatureName.ini)
 		std::vector<std::string> hlslFiles;  // List of HLSL files for this feature
 		bool hasDeployedFolder{ false };     // Whether the deployed shader folder exists
 		bool hasINI{ false };                // Whether INI file exists in deployed location
@@ -40,7 +40,7 @@ namespace PipelineHealth
 		std::string replacementFeature;         // What feature replaced it (short name)
 		std::string userMessage;                // Guidance message for user
 		REL::Version removedInVersion;          // PIXL build when it was removed (for obsolete features)
-		bool modifiedShaderDirectory{ false };  // Whether this obsolete feature modified the live Data/Shaders/ tree directly
+		bool modifiedShaderDirectory{ false };  // Whether this obsolete feature modified the live Data/PIXL-Shaders/ tree directly
 		FeatureFileInfo fileInfo;               // Detailed file information
 
 		// Version mismatch specific information
@@ -169,7 +169,7 @@ namespace PipelineHealth
 	/**
 	 * Scan for orphaned feature INI files that are not in the active feature list
 	 *
-	 * This function scans the Data/Shaders/PIXL/Modules/ directory for INI files that
+	 * This function scans the Data/PIXL-Shaders/PIXL/Modules/ directory for INI files that
 	 * correspond to features not currently in the active feature list (e.g., obsolete
 	 * features, unknown features). It identifies whether
 	 * these orphaned INI files are known obsolete features or completely unknown features

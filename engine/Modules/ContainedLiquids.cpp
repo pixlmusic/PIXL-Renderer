@@ -311,7 +311,7 @@ namespace {
 
 void ContainedLiquids::LoadSettings(json& j)
 {
-    settings = j;
+    settings = j.is_object() ? j.get<Settings>() : Settings{};
     settings.Fill=Safe(settings.Fill,0.02f,0.98f,0.70f);
     settings.SloshStrength=Safe(settings.SloshStrength,0,2,1.40f);
     settings.Damping=Safe(settings.Damping,0.25f,0.95f,0.25f);
@@ -717,10 +717,10 @@ void ContainedLiquids::ReplayAfterDeferred()
     ID3D11RenderTargetView* forward[4]{};
     for (int i=0;i<4;++i) {
         auto id=shadow.renderTargets[i];
-        if (id!=RE::RENDER_TARGET::kNONE) forward[i]=renderer->GetRuntimeData().renderTargets[id].RTV;
+        if (id!=RE::RENDER_TARGET::kNONE) forward[i]=REX::W32::AsReal(renderer->GetRuntimeData().renderTargets[id].RTV);
     }
     auto* depth=renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN].views[0];
-    ctx->OMSetRenderTargets(4,forward,depth);
+    ctx->OMSetRenderTargets(4,forward,REX::W32::AsReal(depth));
     replaying=true;
     const auto count=pendingCount;
     // Passes belong to this frame's live accumulator, as in TerrainSeam replay.

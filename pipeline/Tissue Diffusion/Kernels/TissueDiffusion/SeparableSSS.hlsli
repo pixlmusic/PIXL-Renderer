@@ -185,7 +185,7 @@ float4 SSSSBlurCS(
 		color = lerp(color, colorM.rgb, s * s);
 	#if USE_PIXL_STABLE_SSS
 		float3 sampleNormal = GBuffer::DecodeNormal(NormalTexture.SampleLevel(PointSampler, sampleCoord, 0).xy);
-		float edgeRejection = smoothstep(0.15f, 0.85f, dot(centerNormal, sampleNormal));
+		float edgeRejection = SSSSmootherStep((dot(centerNormal, sampleNormal) - 0.15f) / 0.70f);
 		color = lerp(colorM.rgb, color, edgeRejection);
 	#endif
 
@@ -196,7 +196,7 @@ float4 SSSSBlurCS(
 	// Apply coverage as contribution strength only once, in the final vertical pass;
 	// the physical profile radius remains stable across antialiased mask edges.
 #if !defined(HORIZONTAL)
-	colorBlurred.rgb = lerp(colorM.rgb, colorBlurred.rgb, saturate(sssAmount));
+	colorBlurred.rgb = lerp(colorM.rgb, colorBlurred.rgb, SSSSmootherStep(sssAmount));
 #endif
 	colorBlurred.rgb = max(0.0f, colorBlurred.rgb);
 	return colorBlurred;

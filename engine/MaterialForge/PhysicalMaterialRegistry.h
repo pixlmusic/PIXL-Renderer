@@ -32,6 +32,7 @@ namespace PhysicalMaterial
 	[[nodiscard]] float ClassifyAutomaticFur(
 		const RE::BSLightingShaderMaterialBase& material,
 		std::string_view meshPath = {});
+	[[nodiscard]] bool IsFurExcluded(const RE::BSLightingShaderMaterialBase& material, std::string_view geometryName);
 
 	/**
 	 * @brief Returns conservative path/material evidence for ordinary Skyrim hair.

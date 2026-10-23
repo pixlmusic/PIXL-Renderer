@@ -1,7 +1,6 @@
 #include "ActorSurfaceEffects.h"
 
 #include "Globals.h"
-#include "Modules/ClothDynamics.h"
 #include "Modules/DialogueFocus.h"
 #include "Modules/RainResponse.h"
 #include "State.h"
@@ -159,8 +158,8 @@ namespace
 		float4 SnowAppearance{};     // linear snow tint rgb, material strength
 
 		std::array<ActorSurfaceGPUEvent, kMaximumGPUEvents> Events{};
-		float4 DamageState{};        // severity, health fraction, reserved, enabled
-		float4 DamageParameters{};   // fabric tears, armor damage, actor seed, debug mode
+		float4 ReservedCharacterData0{};
+		float4 ReservedCharacterData1{};
 	};
 	static_assert(offsetof(CharacterRuntimeGPUData, Magic) == sizeof(DialogueFocus::GPUData));
 	static_assert(sizeof(CharacterRuntimeGPUData) == 1360, "CharacterRuntimeGPUData must match CharacterRuntime.hlsli");
@@ -200,7 +199,6 @@ namespace
 		float lastInteractionSeconds = 0.0f;
 		float lastVisibleSeconds = 0.0f;
 		bool prepared = false;
-		std::uint32_t damageFrame = 0;
 		CharacterRuntimeGPUData preparedData{};
 	};
 
@@ -291,9 +289,6 @@ namespace
 struct ActorSurfaceEffects::Runtime
 {
 	std::unordered_map<std::uint32_t, std::unique_ptr<ActorEffectState>> actors{};
-	std::unordered_map<std::uint32_t, ClothingDamageState> clothingDamage{};
-	std::unordered_map<std::uint32_t, std::unique_ptr<ConstantBuffer>> damageOnlyBuffers{};
-	std::unordered_map<std::uint32_t, std::uint32_t> damageOnlyBufferFrames{};
 	std::unordered_map<const RE::NiAVObject*, std::uint32_t> activeSkeletonOwners{};
 	std::unique_ptr<ConstantBuffer> neutralBuffer{};
 	std::unique_ptr<ConstantBuffer> dialogueOnlyBuffer{};
@@ -609,9 +604,6 @@ void ActorSurfaceEffects::Reset()
 	if (!settings.Enable) {
 		std::scoped_lock lock(runtime->mutex);
 		runtime->actors.clear();
-		runtime->clothingDamage.clear();
-		runtime->damageOnlyBuffers.clear();
-		runtime->damageOnlyBufferFrames.clear();
 		return;
 	}
 
@@ -629,7 +621,6 @@ void ActorSurfaceEffects::Reset()
 	const float persistenceScale = std::lerp(2.25f, 0.24f, Saturate(settings.Persistence));
 
 	std::scoped_lock lock(runtime->mutex);
-	runtime->clothingDamage.clear();
 	runtime->elapsedSeconds += dt;
 	for (auto actorIt = runtime->actors.begin(); actorIt != runtime->actors.end();) {
 		ActorEffectState& state = *actorIt->second;
@@ -704,7 +695,6 @@ void ActorSurfaceEffects::Reset()
 				[](const LocalEffectLobe& a_lobe) { return a_lobe.TotalAmount() <= kEventEpsilon; }),
 			state.lobes.end());
 		state.prepared = false;
-		state.damageFrame = 0;
 
 		const float unloadedAge = runtime->elapsedSeconds - state.lastInteractionSeconds;
 		if (state.lobes.empty() || (!actorAvailable && unloadedAge > 15.0f)) {
@@ -895,68 +885,7 @@ void ActorSurfaceEffects::BindLightingGeometry(RE::BSRenderPass* a_pass)
 			buffer = found->second->constantBuffer->CB();
 		}
 	}
-	const auto damage = runtime->clothingDamage.find(actorFormID);
-	if (damage != runtime->clothingDamage.end()) {
-		if (found != runtime->actors.end() && found->second->prepared && found->second->constantBuffer) {
-			// A skinned actor can issue many geometry draws. Update its payload once
-			// per published health frame, not once per draw.
-			if (found->second->damageFrame != damage->second.frame) {
-				found->second->preparedData.DamageState = damage->second.Damage;
-				found->second->preparedData.DamageParameters = damage->second.Parameters;
-				found->second->constantBuffer->Update(found->second->preparedData);
-				found->second->damageFrame = damage->second.frame;
-			}
-			buffer = found->second->constantBuffer->CB();
-		} else {
-			// Wear does not need an independent b13 ABI. Build a full neutral
-			// character payload only for actors that have no Actor Surface lobe,
-			// preserving DialogueFocus's prefix and all existing surface defaults.
-			if (!runtime->damageOnlyBuffers.contains(actorFormID) && runtime->damageOnlyBuffers.size() >= 64u) {
-				// Damage-only actors do not own persistent surface state. Keep this
-				// fallback pool bounded across cell/equipment churn.
-				runtime->damageOnlyBufferFrames.erase(runtime->damageOnlyBuffers.begin()->first);
-				runtime->damageOnlyBuffers.erase(runtime->damageOnlyBuffers.begin());
-			}
-			auto& damageBuffer = runtime->damageOnlyBuffers[actorFormID];
-			if (!damageBuffer)
-				damageBuffer = std::make_unique<ConstantBuffer>(
-					ConstantBufferDesc<CharacterRuntimeGPUData>(),
-					"ActorSurfaceEffects::DamageCharacterRuntime");
-			if (runtime->damageOnlyBufferFrames[actorFormID] != damage->second.frame) {
-				CharacterRuntimeGPUData damageData{};
-				if (actor && actorFormID == DialogueFocus::GetSingleton().GetFocusedFormID())
-					DialogueFocus::GetSingleton().BuildGPUDataForActor(actor, damageData.Dialogue);
-				damageData.DamageState = damage->second.Damage;
-				damageData.DamageParameters = damage->second.Parameters;
-				damageBuffer->Update(damageData);
-				runtime->damageOnlyBufferFrames[actorFormID] = damage->second.frame;
-			}
-			buffer = damageBuffer->CB();
-		}
-	} else if (found != runtime->actors.end() && found->second->damageFrame != 0u) {
-			// Clear last frame's damage payload when no current actor state is present.
-			found->second->preparedData.DamageState = {};
-			found->second->preparedData.DamageParameters = {};
-			found->second->constantBuffer->Update(found->second->preparedData);
-		found->second->damageFrame = 0u;
-	}
 	globals::d3d::context->PSSetConstantBuffers(13, 1, &buffer);
-}
-
-void ActorSurfaceEffects::SetClothingDamage(std::uint32_t a_formID, const ClothingDamageState& a_damage)
-{
-	if (!runtime || a_formID == 0u || a_damage.actorFormID != a_formID)
-		return;
-	std::scoped_lock lock(runtime->mutex);
-	runtime->clothingDamage.insert_or_assign(a_formID, a_damage);
-}
-
-void ActorSurfaceEffects::ClearClothingDamage()
-{
-	if (!runtime)
-		return;
-	std::scoped_lock lock(runtime->mutex);
-	runtime->clothingDamage.clear();
 }
 
 void ActorSurfaceEffects::ApplyQualityTier(std::uint32_t a_quality)
@@ -1028,22 +957,29 @@ void ActorSurfaceEffects::DrawSettings()
 
 void ActorSurfaceEffects::LoadSettings(json& a_json)
 {
+	if (!a_json.is_object()) {
+		settings = {};
+		return;
+	}
+	auto finiteRange = [](float value, float fallback, float low, float high) {
+		return std::isfinite(value) ? std::clamp(value, low, high) : fallback;
+	};
 	settings.Enable = a_json.value("Enable", true);
 	settings.EnableSnow = a_json.value("EnableSnow", true);
 	settings.EnableMud = a_json.value("EnableMud", true);
 	settings.EffectQuality = std::clamp(a_json.value("EffectQuality", 2u), 0u, 3u);
 	if (a_json.value("QualityContractVersion", 1u) < 2u && settings.EffectQuality == 3u)
 		settings.EffectQuality = 2u;
-	settings.Persistence = Saturate(a_json.value("Persistence", 0.68f));
-	settings.AccumulationStrength = std::clamp(a_json.value("AccumulationStrength", 1.0f), 0.0f, 2.0f);
-	settings.SnowMeltRate = std::clamp(a_json.value("SnowMeltRate", 0.010f), 0.001f, 0.05f);
-	settings.MudDryRate = std::clamp(a_json.value("MudDryRate", 0.007f), 0.001f, 0.04f);
-	settings.DryMudFadeRate = std::clamp(a_json.value("DryMudFadeRate", 0.0025f), 0.0005f, 0.02f);
-	settings.WetnessDryRate = std::clamp(a_json.value("WetnessDryRate", 0.014f), 0.001f, 0.06f);
+	settings.Persistence = finiteRange(a_json.value("Persistence", 0.68f), 0.68f, 0.0f, 1.0f);
+	settings.AccumulationStrength = finiteRange(a_json.value("AccumulationStrength", 1.0f), 1.0f, 0.0f, 2.0f);
+	settings.SnowMeltRate = finiteRange(a_json.value("SnowMeltRate", 0.010f), 0.010f, 0.001f, 0.05f);
+	settings.MudDryRate = finiteRange(a_json.value("MudDryRate", 0.007f), 0.007f, 0.001f, 0.04f);
+	settings.DryMudFadeRate = finiteRange(a_json.value("DryMudFadeRate", 0.0025f), 0.0025f, 0.0005f, 0.02f);
+	settings.WetnessDryRate = finiteRange(a_json.value("WetnessDryRate", 0.014f), 0.014f, 0.001f, 0.06f);
 	settings.MaximumAffectedNPCs = std::clamp(a_json.value("MaximumAffectedNPCs", 24u), 1u, 64u);
-	settings.EffectDistance = std::clamp(a_json.value("EffectDistance", 3200.0f), 800.0f, 8000.0f);
-	settings.MaskSoftness = std::clamp(a_json.value("MaskSoftness", 0.24f), 0.04f, 0.55f);
-	settings.EdgeBreakup = std::clamp(a_json.value("EdgeBreakup", 0.16f), 0.0f, 0.40f);
+	settings.EffectDistance = finiteRange(a_json.value("EffectDistance", 3200.0f), 3200.0f, 800.0f, 8000.0f);
+	settings.MaskSoftness = finiteRange(a_json.value("MaskSoftness", 0.24f), 0.24f, 0.04f, 0.55f);
+	settings.EdgeBreakup = finiteRange(a_json.value("EdgeBreakup", 0.16f), 0.16f, 0.0f, 0.40f);
 	settings.Debug = DebugView::Off;
 }
 

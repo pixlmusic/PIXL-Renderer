@@ -37,7 +37,7 @@ ID3D11VertexShader* TerrainSeam::GetTerrainVertexShader()
 {
 	if (!terrainVertexShader) {
 		logger::debug("Compiling Utility.hlsl");
-		terrainVertexShader = (ID3D11VertexShader*)Util::CompileShader(L"Data\\Shaders\\Utility.hlsl", { { "RENDER_DEPTH", "" } }, "vs_5_0");
+		terrainVertexShader = (ID3D11VertexShader*)Util::CompileShader(L"Data\\PIXL-Shaders\\Utility.hlsl", { { "RENDER_DEPTH", "" } }, "vs_5_0");
 	}
 	return terrainVertexShader;
 }
@@ -46,7 +46,7 @@ ID3D11VertexShader* TerrainSeam::GetTerrainOffsetVertexShader()
 {
 	if (!terrainOffsetVertexShader) {
 		logger::debug("Compiling Utility.hlsl");
-		terrainOffsetVertexShader = (ID3D11VertexShader*)Util::CompileShader(L"Data\\Shaders\\Utility.hlsl", { { "RENDER_DEPTH", "" }, { "OFFSET_DEPTH", "" } }, "vs_5_0");
+		terrainOffsetVertexShader = (ID3D11VertexShader*)Util::CompileShader(L"Data\\PIXL-Shaders\\Utility.hlsl", { { "RENDER_DEPTH", "" }, { "OFFSET_DEPTH", "" } }, "vs_5_0");
 	}
 	return terrainOffsetVertexShader;
 }
@@ -55,7 +55,7 @@ ID3D11ComputeShader* TerrainSeam::GetDepthBlendShader()
 {
 	if (!depthBlendShader) {
 		logger::debug("Compiling DepthBlend.hlsl");
-		depthBlendShader = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\Shaders\\TerrainSeam\\DepthBlend.hlsl", {}, "cs_5_0");
+		depthBlendShader = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\PIXL-Shaders\\TerrainSeam\\DepthBlend.hlsl", {}, "cs_5_0");
 	}
 	return depthBlendShader;
 }
@@ -78,36 +78,36 @@ void TerrainSeam::SetupResources()
 
 	{
 		D3D11_TEXTURE2D_DESC texDesc;
-		mainDepth.texture->GetDesc(&texDesc);
+		mainDepth.texture->GetDesc(REX::W32::AsW32(&texDesc));
 		DX::ThrowIfFailed(device->CreateTexture2D(&texDesc, NULL, &terrainDepth.texture));
 		Util::SetResourceName(terrainDepth.texture, "TerrainSeam::TerrainDepth");
 
 		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
-		mainDepth.depthSRV->GetDesc(&srvDesc);
+		mainDepth.depthSRV->GetDesc(REX::W32::AsW32(&srvDesc));
 		DX::ThrowIfFailed(device->CreateShaderResourceView(terrainDepth.texture, &srvDesc, &terrainDepth.depthSRV));
 		Util::SetResourceName(terrainDepth.depthSRV, "TerrainSeam::TerrainDepth SRV");
 
 		D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc;
-		mainDepth.views[0]->GetDesc(&dsvDesc);
+		mainDepth.views[0]->GetDesc(REX::W32::AsW32(&dsvDesc));
 		DX::ThrowIfFailed(device->CreateDepthStencilView(terrainDepth.texture, &dsvDesc, &terrainDepth.views[0]));
 		Util::SetResourceName(terrainDepth.views[0], "TerrainSeam::TerrainDepth DSV");
 	}
 
 	{
 		D3D11_TEXTURE2D_DESC texDesc{};
-		main.texture->GetDesc(&texDesc);
+		main.texture->GetDesc(REX::W32::AsW32(&texDesc));
 		texDesc.Format = DXGI_FORMAT_R32_FLOAT;
 		texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
 
 		blendedDepthTexture = new Texture2D(texDesc, "TerrainSeam::BlendedDepth");
 
 		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-		main.SRV->GetDesc(&srvDesc);
+		main.SRV->GetDesc(REX::W32::AsW32(&srvDesc));
 		srvDesc.Format = texDesc.Format;
 		blendedDepthTexture->CreateSRV(srvDesc);
 
 		D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-		main.UAV->GetDesc(&uavDesc);
+		main.UAV->GetDesc(REX::W32::AsW32(&uavDesc));
 		uavDesc.Format = texDesc.Format;
 		blendedDepthTexture->CreateUAV(uavDesc);
 
@@ -119,10 +119,10 @@ void TerrainSeam::SetupResources()
 		blendedDepthTexture16->CreateSRV(srvDesc);
 		blendedDepthTexture16->CreateUAV(uavDesc);
 
-		depthSRVBackup = mainDepth.depthSRV;
+		depthSRVBackup = REX::W32::AsReal(mainDepth.depthSRV);
 
 		auto& zPrepassCopy = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
-		prepassSRVBackup = zPrepassCopy.depthSRV;
+		prepassSRVBackup = REX::W32::AsReal(zPrepassCopy.depthSRV);
 	}
 
 	{
@@ -134,6 +134,14 @@ void TerrainSeam::SetupResources()
 		DX::ThrowIfFailed(device->CreateDepthStencilState(&depthStencilDesc, &terrainDepthStencilState));
 		Util::SetResourceName(terrainDepthStencilState, "TerrainSeam::DepthStencilState");
 	}
+}
+
+bool TerrainSeam::ResourcesReady() const
+{
+	return blendedDepthTexture && blendedDepthTexture->srv && blendedDepthTexture->uav &&
+		blendedDepthTexture16 && blendedDepthTexture16->srv && blendedDepthTexture16->uav && terrainDepthStencilState &&
+		terrainDepth.texture && terrainDepth.depthSRV && terrainDepth.views[0] &&
+		depthSRVBackup && prepassSRVBackup;
 }
 
 void TerrainSeam::PostPostLoad()
@@ -156,7 +164,7 @@ void TerrainSeam::TerrainShaderHacks()
 		auto renderer = globals::game::renderer;
 		auto context = globals::d3d::context;
 		if (renderAltTerrain) {
-			auto dsv = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN].views[0];
+			auto* dsv = REX::W32::AsReal(renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN].views[0]);
 			context->OMSetRenderTargets(0, nullptr, dsv);
 			context->VSSetShader(GetTerrainOffsetVertexShader(), NULL, NULL);
 		} else {
@@ -240,7 +248,7 @@ void TerrainSeam::BlendPrepassDepths()
 	auto renderer = globals::game::renderer;
 	auto& mainDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 
-	context->CopyResource(terrainDepth.texture, mainDepth.texture);
+	context->CopyResource(terrainDepth.texture, REX::W32::AsReal(mainDepth.texture));
 
 	if (globals::state->frameAnnotations)
 		globals::state->EndPerfEvent();
@@ -269,6 +277,10 @@ void TerrainSeam::Hooks::Main_RenderDepth::thunk(bool a1, bool a2)
 	auto& singleton = globals::pipeline::terrainSeam;
 	auto shaderCache = globals::shaderCache;
 	auto renderer = globals::game::renderer;
+	if (!renderer || !globals::game::graphicsState) {
+		func(a1, a2);
+		return;
+	}
 
 	auto& mainDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 	auto& zPrepassCopy = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
@@ -277,9 +289,9 @@ void TerrainSeam::Hooks::Main_RenderDepth::thunk(bool a1, bool a2)
 
 	singleton.eyePosition = Util::GetEyePosition();
 
-	if (shaderCache->IsEnabled() && singleton.settings.Enabled) {
-		mainDepth.depthSRV = singleton.blendedDepthTexture->srv.get();
-		zPrepassCopy.depthSRV = singleton.blendedDepthTexture->srv.get();
+	if (shaderCache && shaderCache->IsEnabled() && singleton.settings.Enabled && singleton.ResourcesReady()) {
+		mainDepth.depthSRV = REX::W32::AsW32(singleton.blendedDepthTexture->srv.get());
+		zPrepassCopy.depthSRV = REX::W32::AsW32(singleton.blendedDepthTexture->srv.get());
 
 		singleton.renderDepth = true;
 		singleton.ResetDepth();
@@ -298,8 +310,10 @@ void TerrainSeam::Hooks::Main_RenderDepth::thunk(bool a1, bool a2)
 
 		singleton.BlendPrepassDepths();
 	} else {
-		mainDepth.depthSRV = singleton.depthSRVBackup;
-		zPrepassCopy.depthSRV = singleton.prepassSRVBackup;
+		if (singleton.depthSRVBackup)
+			mainDepth.depthSRV = REX::W32::AsW32(singleton.depthSRVBackup);
+		if (singleton.prepassSRVBackup)
+			zPrepassCopy.depthSRV = REX::W32::AsW32(singleton.prepassSRVBackup);
 
 		{
 			ZoneScopedN("Terrain Depth - Game Render");
@@ -313,7 +327,7 @@ void TerrainSeam::Hooks::BSBatchRenderer__RenderPassImmediately::thunk(RE::BSRen
 	auto& singleton = globals::pipeline::terrainSeam;
 	auto shaderCache = globals::shaderCache;
 
-	if (shaderCache->IsEnabled() && singleton.settings.Enabled) {
+	if (shaderCache && shaderCache->IsEnabled() && singleton.settings.Enabled && singleton.ResourcesReady() && a_pass) {
 		if (singleton.renderDepth) {
 			// Entering or exiting terrain depth section
 			bool inTerrain = a_pass->shaderProperty && a_pass->shaderProperty->flags.all(RE::BSShaderProperty::EShaderPropertyFlag::kMultiTextureLandscape);
@@ -364,17 +378,21 @@ void TerrainSeam::RenderTerrainSeamPasses()
 {
 	ZoneScoped;
 
-	if (!settings.Enabled) {
+	if (!settings.Enabled || !ResourcesReady() || !globals::d3d::context || !globals::game::shadowState || !globals::game::stateUpdateFlags) {
 		renderDepth = false;
 		renderTerrainDepth = false;
 		renderAltTerrain = false;
 		terrainRenderPasses.clear();
 		renderPasses.clear();
 		auto renderer = globals::game::renderer;
-		auto& mainDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-		auto& zPrepassCopy = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
-		mainDepth.depthSRV = depthSRVBackup;
-		zPrepassCopy.depthSRV = prepassSRVBackup;
+		if (renderer) {
+			auto& mainDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+			auto& zPrepassCopy = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
+			if (depthSRVBackup)
+				mainDepth.depthSRV = REX::W32::AsW32(depthSRVBackup);
+			if (prepassSRVBackup)
+				zPrepassCopy.depthSRV = REX::W32::AsW32(prepassSRVBackup);
+		}
 		return;
 	}
 
@@ -443,6 +461,6 @@ void TerrainSeam::RenderTerrainSeamPasses()
 	}
 
 	auto& mainDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-	mainDepth.depthSRV = depthSRVBackup;
+	mainDepth.depthSRV = REX::W32::AsW32(depthSRVBackup);
 }
 #undef I18N_KEY_PREFIX

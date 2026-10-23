@@ -38,12 +38,6 @@
 		float3 viewDirTS = normalize(mul(tbn, viewDir));
 		float viewZ = abs(viewDirTS.z);
 #if defined(LANDSCAPE)
-		float cspomWeight = CSPOM::Weight(distance, viewZ, mipLevels[0]);
-#else
-		float cspomWeight = CSPOM::Weight(distance, viewZ, mipLevel);
-#endif
-		float cspomCurvature = cspomWeight > 0.0f ? CSPOM::CurvatureMetric(tbn) : 0.0f;
-#if defined(LANDSCAPE)
 		viewDirTS.xy /= max(viewZ * 0.7f + 0.3f + params[0].FlattenAmount, 0.08f);
 #else
 		viewDirTS.xy /= max(viewZ * 0.7f + 0.3f + params.FlattenAmount, 0.08f);
@@ -85,11 +79,17 @@
 		// a conservative authored floor; this branch is only reached after the
 		// caller has confirmed a real authored displacement path.
 		float scale = max(params.HeightScale, 0.30f);
+		// Complex Material height is packed into an environment-mask alpha
+		// channel and is commonly steeper/noisier than a dedicated PBR height map.
+		// Keep its near-field relief gentler to reduce small alpha-edge popping;
+		// PBR and legacy authored maps retain the established gain.
+		float authoredDepthGain = channel == 3u
+			? min(PIXL_AUTHORED_POM_DEPTH_GAIN, 1.20f)
+			: PIXL_AUTHORED_POM_DEPTH_GAIN;
 		float maxHeight =
-			0.1f * scale * PIXL_AUTHORED_POM_DEPTH_GAIN *
+			0.1f * scale * authoredDepthGain *
 			MaterialLayersTuning::ObjectAuthoredDepthScale();
 #endif
-		maxHeight *= lerp(1.0f, clamp(PIXL_CSPOM_Depth, 0.05f, 2.5f), cspomWeight);
 
 		// POM is most vulnerable to silhouette stretching when the tangent-space
 		// view ray approaches the surface plane. Apply a nonlinear safety factor,
@@ -120,7 +120,6 @@
 			abs(viewDirTS.xy * maxHeight) * sampledDims;
 		float objectShift = max(projectedTexelShift.x, projectedTexelShift.y);
 		float objectShiftLimit = MaterialLayersTuning::ObjectMaxTexelShift();
-		objectShiftLimit = lerp(objectShiftLimit, min(objectShiftLimit, max(PIXL_CSPOM_MaxTexelShift, 2.0f)), cspomWeight);
 		if (objectShift > objectShiftLimit)
 			maxHeight *= objectShiftLimit / max(objectShift, 1e-5f);
 #endif
@@ -148,10 +147,6 @@
 			uint maxSteps = MaterialLayersTuning::ObjectMaxSteps();
 			uint nearSteps = min(MaterialLayersTuning::ObjectNearSteps(), maxSteps);
 #endif
-			if (cspomWeight > 0.0f) {
-				maxSteps = max(maxSteps, clamp(PIXL_CSPOM_MaxSteps, 4u, 32u));
-				nearSteps = max(nearSteps, min(clamp(PIXL_CSPOM_MinSteps, 4u, 20u), maxSteps));
-			}
 #if defined(LANDSCAPE)
 			maxSteps = max(4u, min(maxSteps, 64u));
 #else
@@ -189,11 +184,6 @@
 			scaleCap = max(4u, (scaleCap + 2u) & ~3u);
 			numSteps = min(maxSteps, min(max(numSteps, nearSteps), scaleCap));
 			numSteps = max(4u, (numSteps + 2u) & ~3u);
-#if defined(LANDSCAPE)
-			numSteps = cspomWeight > 0.0f ? CSPOM::StepCount(distance, viewZ, projectedTexelShift, numSteps) : numSteps;
-#else
-			numSteps = cspomWeight > 0.0f ? CSPOM::StepCount(distance, viewZ, objectShift, numSteps) : numSteps;
-#endif
 			numSteps = min(numSteps, 40u);
 			numSteps = max(4u, (numSteps + 3u) & ~3u);
 
@@ -232,15 +222,6 @@
 
 				currHeight = AdjustDisplacementNormalized(currHeight, params);
 #endif
-				if (cspomWeight > 0.0f) {
-					float4 curve;
-					curve.x = CSPOM::CurvatureBias(cspomCurvature, currentOffset[0].xy - coords, currentBound.x);
-					curve.y = CSPOM::CurvatureBias(cspomCurvature, currentOffset[0].zw - coords, currentBound.y);
-					curve.z = CSPOM::CurvatureBias(cspomCurvature, currentOffset[1].xy - coords, currentBound.z);
-					curve.w = CSPOM::CurvatureBias(cspomCurvature, currentOffset[1].zw - coords, currentBound.w);
-					currHeight = saturate(currHeight + (PIXL_CSPOM_HeightBias.xxxx - curve) * cspomWeight);
-				}
-
 				bool4 testResult = currHeight >= currentBound;
 				[branch] if (any(testResult))
 				{
@@ -285,8 +266,6 @@
 #else
 						uint refineSteps = MaterialLayersTuning::ObjectRefinementSteps();
 #endif
-						if (cspomWeight > 0.0f)
-							refineSteps = CSPOM::RefinementSteps(refineSteps);
 						refineSteps = max(4u, refineSteps);
 						refineSteps = (refineSteps + 3u) & ~3u;
 						numSteps = refineSteps;
@@ -325,10 +304,6 @@
 			float offset = (1.0 - parallaxAmount) * -maxHeight + minHeight;
 			pixelOffset = saturate(lerp(parallaxAmount, 0.5, nearBlendToFar));
 			resultCoords = lerp(viewDirTS.xy * offset + coords.xy, coords, nearBlendToFar);
-#if !defined(LANDSCAPE)
-			if (cspomWeight > 0.0f)
-				resultCoords = CSPOM::GuardSilhouette(coords, resultCoords, sampledDims, cspomWeight);
-#endif
 		} else {
 #if defined(LANDSCAPE)
 			weights[0] = input.LandBlendWeights1.x;
@@ -488,8 +463,6 @@
 		float3 viewDirTS = normalize(mul(tbn, viewDir));
 		float viewZ = abs(viewDirTS.z);
 		float obliqueness = saturate(1.0f - viewZ);
-		float cspomWeight = CSPOM::Weight(distance, viewZ, mipLevel);
-		float cspomCurvature = cspomWeight > 0.0f ? CSPOM::CurvatureMetric(tbn) : 0.0f;
 
 		// The old broad grazing multiplier erased much of Auto-POM at ordinary
 		// oblique views.  The ray already shrinks toward normal incidence, so keep
@@ -531,7 +504,6 @@
 			fineColor, structuralColor, referenceColor,
 			normalActivity, normalDirectionTS, structuralGradient);
 		float strength = untrustedStrength * structuralConfidence;
-		strength *= lerp(1.0f, clamp(PIXL_CSPOM_Depth, 0.05f, 2.5f), cspomWeight);
 		if (strength <= 1e-5f)
 			return coords;
 
@@ -555,23 +527,16 @@
 			return coords;
 
 		float shiftLimit = MaterialLayersTuning::ObjectMaxTexelShift();
-		shiftLimit = lerp(shiftLimit, min(shiftLimit, max(PIXL_CSPOM_MaxTexelShift, 2.0f)), cspomWeight);
 		if (maxVisibleShift > shiftLimit)
 			totalOffset *= shiftLimit / max(maxVisibleShift, 1e-5f);
 
 		uint nearSteps = MaterialLayersTuning::ObjectNearSteps();
 		uint maxSteps = MaterialLayersTuning::ObjectMaxSteps();
-		if (cspomWeight > 0.0f) {
-			maxSteps = max(maxSteps, clamp(PIXL_CSPOM_MaxSteps, 4u, 32u));
-			nearSteps = max(nearSteps, min(clamp(PIXL_CSPOM_MinSteps, 4u, 20u), maxSteps));
-		}
 		float marchDemand = smoothstep(0.06f, 0.82f, obliqueness);
 		float shiftDemand = saturate(maxVisibleShift / max(shiftLimit, 1.0f));
 		float stepQuality = max(marchDemand, shiftDemand * 0.85f);
 		uint numSteps = (uint)round(
 			lerp((float)nearSteps, (float)maxSteps, stepQuality));
-		if (cspomWeight > 0.0f)
-			numSteps = CSPOM::StepCount(distance, viewZ, maxVisibleShift, numSteps);
 		numSteps = max(1u, min(numSteps, min(maxSteps, 40u)));
 
 		float layerStep = rcp((float)numSteps);
@@ -586,7 +551,6 @@
 		float currentLayer = 0.0f;
 		float currentHeight = AutoParallaxHeightFromLuma(
 			AutoParallaxLuminance(currentColor), referenceLuma, structuralConfidence);
-		currentHeight = saturate(currentHeight + PIXL_CSPOM_HeightBias * cspomWeight);
 		float2 previousUV = currentUV;
 		float previousLayer = currentLayer;
 		float previousHeight = currentHeight;
@@ -603,15 +567,12 @@
 			currentUV -= deltaUV;
 			currentLayer += layerStep;
 			currentHeight = SampleAutoParallaxHeight(tex, texSampler, currentUV, sourceMip, referenceLuma, structuralConfidence);
-			currentHeight = saturate(currentHeight +
-				(PIXL_CSPOM_HeightBias - CSPOM::CurvatureBias(cspomCurvature, currentUV - coords, currentLayer)) * cspomWeight);
+			currentHeight = saturate(currentHeight);
 		}
 
 		// v3.14 exposed Object Refinement Steps but synthetic Auto-POM only did
 		// one secant interpolation.  Refine the actual crossing first.
 		uint refineSteps = min(MaterialLayersTuning::ObjectRefinementSteps(), 12u);
-		if (cspomWeight > 0.0f)
-			refineSteps = min(CSPOM::RefinementSteps(refineSteps), 12u);
 		[loop] for (uint refineIndex = 0u; refineIndex < 12u; ++refineIndex)
 		{
 			if (refineIndex >= refineSteps)
@@ -621,8 +582,7 @@
 			float midLayer = (previousLayer + currentLayer) * 0.5f;
 			float midHeight = SampleAutoParallaxHeight(
 				tex, texSampler, midUV, sourceMip, referenceLuma, structuralConfidence);
-			midHeight = saturate(midHeight +
-				(PIXL_CSPOM_HeightBias - CSPOM::CurvatureBias(cspomCurvature, midUV - coords, midLayer)) * cspomWeight);
+			midHeight = saturate(midHeight);
 
 			if (midLayer < midHeight)
 			{
@@ -646,8 +606,6 @@
 
 		float visibleStrength = strength * incidenceFade;
 		float2 finalUV = lerp(coords, refinedUV, incidenceFade);
-		if (cspomWeight > 0.0f)
-			finalUV = CSPOM::GuardSilhouette(coords, finalUV, mipTextureDims, cspomWeight);
 		float finalHeight = lerp(previousHeight, currentHeight, intersection);
 
 		pixelOffset = saturate(lerp(previousLayer, currentLayer, intersection));
@@ -693,13 +651,12 @@
 		float lightGate = smoothstep(0.08f, 0.22f, L.z);
 
 		// Never let reconstructed vanilla height remove most of a direct light.
-		return 1.0f - saturate(occlusion * lightGate * CSPOM::ShadowStrength(MaterialLayersTuning::ObjectShadowStrength()));
+		return 1.0f - saturate(occlusion * lightGate * MaterialLayersTuning::ObjectShadowStrength());
 	}
 
 	// https://advances.realtimerendering.com/s2006/Tatarchuk-POM.pdf
 	float GetParallaxSoftShadowMultiplier(float2 coords, float mipLevel, float3 L, float sh0, Texture2D<float4> tex, SamplerState texSampler, uint channel, float quality, float noise, DisplacementParams params)
 	{
-		quality = CSPOM::ShadowQuality(quality);
 		float shadowMultiplier = 1.0f;
 		[branch] if (quality > 0.0f && L.z > 0.03f)
 		{
@@ -738,7 +695,7 @@
 
 			shadowMultiplier = 1.0f - saturate(
 				occlusion * coherence * grazingGate * qualityScale *
-				min(CSPOM::ShadowStrength(MaterialLayersTuning::ObjectShadowStrength()), 1.5f));
+				min(MaterialLayersTuning::ObjectShadowStrength(), 1.5f));
 		}
 		return shadowMultiplier;
 	}

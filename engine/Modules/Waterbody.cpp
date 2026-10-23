@@ -1,4 +1,5 @@
 #include "Waterbody.h"
+#include "Modules/OceanDynamics.h"
 
 #include "I18n/I18n.h"
 #include "Menu.h"
@@ -13,6 +14,9 @@
 #include "RE/P/PlayerCharacter.h"
 
 #include <imgui_internal.h>
+#include <imgui_stdlib.h>
+#include <algorithm>
+#include <cmath>
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	Waterbody::Settings,
@@ -186,7 +190,7 @@ void Waterbody::DrawOverlay()
 
 	if (waterCache->IsBuildRunning()) {
 		auto progressTitle = T(TKEY("generating_water_cache"), "Generating Water Cache:");
-		auto percent = static_cast<float>(snapshot.completed) / static_cast<float>(snapshot.total);
+		auto percent = snapshot.total ? std::clamp(static_cast<float>(snapshot.completed) / static_cast<float>(snapshot.total), 0.0f, 1.0f) : 0.0f;
 		auto progressOverlay = fmt::format("{}/{} ({:2.1f}%)", snapshot.completed, snapshot.total, 100 * percent);
 
 		ImGui::SetNextWindowPos(ImVec2(pos, pos + vOffset));
@@ -246,22 +250,19 @@ void Waterbody::DataLoaded()
 	waterMesh = RE::NiPointer(waterShape);
 	logger::debug("[Waterbody] Water mesh loaded");
 
-	if (const auto error = RE::BSModelDB::Demand("meshes\\water\\optimisedwatermesh.nif", nif, args); error != RE::BSResource::ErrorCode::kNone) {
-		LogMeshLoadFailure(error, "meshes\\water\\OptimisedWaterMesh.nif");
-		fail("Failed to load optimised water mesh");
-		return;
+	const auto optimisedError = RE::BSModelDB::Demand("meshes\\water\\optimisedwatermesh.nif", nif, args);
+	if (optimisedError == RE::BSResource::ErrorCode::kNone && nif && !nif->GetChildren().empty()) {
+		if (const auto node = nif->GetChildren().front()->AsNode(); node && !node->GetChildren().empty())
+			optimisedWaterMesh = RE::NiPointer(node->GetChildren().front()->AsTriShape());
 	}
-	if (!nif || nif->GetChildren().empty() || !nif->GetChildren().front()->AsNode() || nif->GetChildren().front()->AsNode()->GetChildren().empty()) {
-		fail("Invalid optimised water mesh hierarchy");
-		return;
+	if (!optimisedWaterMesh) {
+		if (optimisedError != RE::BSResource::ErrorCode::kNone)
+			LogMeshLoadFailure(optimisedError, "meshes\\water\\OptimisedWaterMesh.nif");
+		logger::warn("[Waterbody] Optimised mesh unavailable; using the validated standard water mesh");
+		optimisedWaterMesh = waterMesh;
+	} else {
+		logger::debug("[Waterbody] Optimised water mesh loaded");
 	}
-	const auto optimisedWaterShape = nif->GetChildren().front()->AsNode()->GetChildren().front()->AsTriShape();
-	if (!optimisedWaterShape) {
-		fail("Optimised water mesh does not contain valid TriShape");
-		return;
-	}
-	optimisedWaterMesh = RE::NiPointer(optimisedWaterShape);
-	logger::debug("[Waterbody] Optimised water mesh loaded");
 	if (!DisableVanillaWaterLOD()) {
 		fail("Could not disable vanilla water LOD");
 		return;
@@ -486,11 +487,19 @@ void Waterbody::PostPostLoad()
 
 	stl::detour_thunk<BGSTerrainBlock_Detach>(REL::RelocationID(30936, 31739));
 
-	stl::detour_thunk<BGSTerrainNode_UpdateWaterMeshSubVisibility>(REL::RelocationID(31059, 31846));
+	if (REL::Module::get().version() < SKSE::RUNTIME_SSE_1_7_104) {
+		stl::detour_thunk<BGSTerrainNode_UpdateWaterMeshSubVisibility>(REL::RelocationID(31059, 31846));
+	} else {
+		// Address Library format 5 for 1.7.104 has no AE entry for this function.
+		// Leave the native terrain water visibility routine in place rather than
+		// asking CommonLib to resolve a missing relocation and abort plugin load.
+		logger::warn("[Waterbody] Native terrain water visibility hook unavailable on runtime {}; keeping Skyrim's implementation", REL::Module::get().version().string());
+	}
 
 	stl::detour_thunk<TESWaterSystem_UpdateDisplacementMeshPosition>(REL::RelocationID(31384, 32175));
 
 	stl::write_vfunc<0x6, BSWaterShader_SetupGeometry>(RE::VTABLE_BSWaterShader[0]);
+	stl::write_vfunc<0x3, BSWaterShader_RestoreTechnique>(RE::VTABLE_BSWaterShader[0]);
 
 	gWaterLOD = reinterpret_cast<RE::NiNode**>(REL::RelocationID(516171, 402322).address());
 	gFlowMapSize = reinterpret_cast<int32_t*>(REL::RelocationID(527644, 414596).address());
@@ -502,6 +511,17 @@ void Waterbody::PostPostLoad()
 	logger::info("[Waterbody] Installed hooks");
 }
 
+void Waterbody::BSWaterShader_RestoreTechnique::thunk(RE::BSShader* shader, std::uint32_t technique)
+{
+	// Draw connected crests and spray after the complete native water batch.
+	// Drawing after its first tile allowed subsequent water tiles to paint over
+	// particles because spray deliberately does not write the scene depth.
+	auto& ocean = globals::pipeline::oceanDynamics;
+	if (ocean.HasOceanSprayDrawPending())
+		ocean.DrawOceanSpray(globals::d3d::context);
+	func(shader, technique);
+}
+
 void Waterbody::TESWaterSystem_InitializeWater_SetWaterShaderMaterialParams::thunk(RE::TESWaterForm* form, RE::BSWaterShaderMaterial* material)
 {
 	// The game prefills the material and hashes its contents, it uses this hash to check if there is an existing identical material and swaps
@@ -510,9 +530,13 @@ void Waterbody::TESWaterSystem_InitializeWater_SetWaterShaderMaterialParams::thu
 	// having their textures swapped out.
 	// This func hash the texture names and temporarily stashes them in a ptr slot, this is added to the hash in ComputeCRC and zeroed back out again
 	func(form, material);
+	if (!form || !material)
+		return;
 
 	uint32_t hash = 2166136261u;
 	auto addStrToHash = [&](const char* str) {
+		if (!str)
+			return;
 		for (auto p = reinterpret_cast<const unsigned char*>(str); *p; ++p) {
 			hash ^= *p;
 			hash *= 16777619u;
@@ -529,6 +553,8 @@ void Waterbody::TESWaterSystem_InitializeWater_SetWaterShaderMaterialParams::thu
 
 int32_t Waterbody::BSWaterShaderMaterial_ComputeCRC32::thunk(RE::BSWaterShaderMaterial* material, uint32_t srcHash)
 {
+	if (!material)
+		return func(material, srcHash);
 	srcHash ^= static_cast<uint32_t>(reinterpret_cast<uint64_t>(material->normalTexture1.get())) + (srcHash << 6) + (srcHash >> 2);
 	constexpr auto zero = static_cast<uintptr_t>(0);
 	std::memcpy(&material->normalTexture1, &zero, sizeof(uintptr_t));
@@ -559,10 +585,19 @@ void Waterbody::UpdateWaterLODCull() const
 
 void Waterbody::TES_SetWorldSpace::thunk(RE::TES* tes, RE::TESWorldSpace* worldSpace, bool isExterior)
 {
-	func(tes, worldSpace, isExterior);
-
 	auto& singleton = globals::pipeline::waterbody;
+	const bool exterior = worldSpace && isExterior;
+	const bool contextChanged = singleton.activeWorldSpace.load(std::memory_order_acquire) !=
+		(exterior ? worldSpace : nullptr) ||
+		singleton.exteriorWorldspaceActive.load(std::memory_order_acquire) != exterior;
+	func(tes, worldSpace, isExterior);
+	// The engine may reassert the same world during exterior cell streaming.
+	// That must not discard terrain/history and briefly restore coarse shore depth.
+	if (contextChanged)
+		globals::pipeline::oceanDynamics.OnWorldspaceChanged();
+
 	singleton.exteriorWorldspaceActive.store(worldSpace && isExterior, std::memory_order_release);
+	singleton.activeWorldSpace.store(worldSpace && isExterior ? worldSpace : nullptr, std::memory_order_release);
 	if (singleton.IsWaterDataReady())
 		singleton.waterCache->SetCurrentWorldSpace(worldSpace);
 	singleton.UpdateWaterLODCull();
@@ -571,9 +606,11 @@ void Waterbody::TES_SetWorldSpace::thunk(RE::TES* tes, RE::TESWorldSpace* worldS
 void Waterbody::TES_DestroySkyCell::thunk(RE::TES* tes)
 {
 	func(tes);
+	globals::pipeline::oceanDynamics.OnWorldspaceChanged();
 
 	auto& singleton = globals::pipeline::waterbody;
 	singleton.exteriorWorldspaceActive.store(false, std::memory_order_release);
+	singleton.activeWorldSpace.store(nullptr, std::memory_order_release);
 	if (singleton.IsWaterDataReady())
 		singleton.waterCache->SetCurrentWorldSpace(nullptr);
 	singleton.UpdateWaterLODCull();
@@ -627,7 +664,11 @@ void Waterbody::BGSTerrainNode_UpdateWaterMeshSubVisibility::thunk(const RE::BGS
 void Waterbody::BGSTerrainBlock_Attach::thunk(RE::BGSTerrainBlock* block)
 {
 	const auto waterSystem = RE::TESWaterSystem::GetSingleton();
-	const auto& singleton = globals::pipeline::waterbody;
+	auto& singleton = globals::pipeline::waterbody;
+	if (!waterSystem) {
+		func(block);
+		return;
+	}
 
 	std::vector<std::pair<RE::BSTriShape*, const WaterCache::Instruction*>> built;
 	bool attaching = false;
@@ -645,6 +686,11 @@ void Waterbody::BGSTerrainBlock_Attach::thunk(RE::BGSTerrainBlock* block)
 		water->UpdateUpwardPass(updateData);
 
 		const auto node = block->node;
+		if (!node || !node->manager || !node->manager->worldSpace) {
+			block->chunk->AttachChild(water.get(), true);
+			func(block);
+			return;
+		}
 		const auto lodLevel = node->GetLODLevel();
 		const auto worldSpace = block->node->manager->worldSpace;
 
@@ -692,7 +738,10 @@ void Waterbody::BGSTerrainBlock_Attach::thunk(RE::BGSTerrainBlock* block)
 			RE::NiCloningProcess cloningProcess;
 
 			const auto targetShape = lodLevel > 4 || singleton.settings.UseOptimisedMeshes ? singleton.optimisedWaterMesh : singleton.waterMesh;
-			RE::BSTriShape* shape = targetShape->CreateClone(cloningProcess)->AsTriShape();
+			const auto clone = targetShape ? targetShape->CreateClone(cloningProcess) : nullptr;
+			RE::BSTriShape* shape = clone ? clone->AsTriShape() : nullptr;
+			if (!shape)
+				continue;
 
 			const auto posX = (instruction.x - node->baseCellX) * 4096.0f + instruction.size * 2048.0f;
 			const auto posY = (instruction.y - node->baseCellY) * 4096.0f + instruction.size * 2048.0f;
@@ -700,6 +749,8 @@ void Waterbody::BGSTerrainBlock_Attach::thunk(RE::BGSTerrainBlock* block)
 			shape->local.translate = { posX, posY, instruction.waterHeight };
 
 			water->AttachChild(shape, true);
+			singleton.RegisterWaterForm(shape, instruction.form.id,
+				(instruction.flags & WaterCache::Instruction::kOpenOcean) != 0);
 			built.emplace_back(shape, &instruction);
 
 			block->waterAttached = true;
@@ -783,6 +834,8 @@ void Waterbody::BGSTerrainBlock_Detach::thunk(RE::BGSTerrainBlock* block)
 		// Drop generated child tiles before parking the reusable water node
 		auto count = water->GetChildren().size();
 		while (count > 0) {
+			auto* child = water->GetChildren()[count - 1].get();
+			globals::pipeline::waterbody.UnregisterWaterForm(child ? child->AsGeometry() : nullptr);
 			water->DetachChildAt(--count);
 		}
 
@@ -830,6 +883,74 @@ void Waterbody::BSWaterShader_SetupGeometry::thunk(RE::BSShader* waterShader, RE
 	}
 
 	func(waterShader, pass);
+	const auto* geometry = pass ? pass->geometry : nullptr;
+	globals::pipeline::oceanDynamics.BindWaterGeometryResources(geometry, singleton.IsOpenOceanTile(geometry));
+}
+
+bool Waterbody::GetOpenOceanHeight(const RE::TESWorldSpace* worldspace,
+	float worldX, float worldY, float& height) const
+{
+	if (!waterCache || !worldspace || !std::isfinite(worldX) || !std::isfinite(worldY))
+		return false;
+	const auto x = static_cast<std::int32_t>(std::floor(worldX / 4096.0f));
+	const auto y = static_cast<std::int32_t>(std::floor(worldY / 4096.0f));
+	if (!waterCache->GetOpenOceanCellHeight(worldspace, x, y, height) || !std::isfinite(height))
+		return false;
+	return true;
+}
+
+bool Waterbody::IsOpenOceanTile(const RE::BSGeometry* geometry) const
+{
+	if (!geometry)
+		return false;
+	{
+		std::shared_lock lock(waterFormMutex);
+		const auto found = openOceanByGeometry.find(geometry);
+		if (found != openOceanByGeometry.end())
+			return found->second;
+	}
+
+	// PIXL-managed distant tiles carry an explicit flag above. The close water
+	// surface is owned by Skyrim and has no Waterbody registration, so resolve
+	// its current cell against the same generated cache before rejecting it.
+	if (!waterCache || !IsExteriorWorldspaceActive())
+		return false;
+	auto* worldSpace = activeWorldSpace.load(std::memory_order_acquire);
+	if (!worldSpace)
+		return false;
+	const auto& position = geometry->world.translate;
+	if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
+		std::fabs(position.x) > 1.0e8f || std::fabs(position.y) > 1.0e8f)
+		return false;
+	int32_t cellX = 0;
+	int32_t cellY = 0;
+	Util::WorldToCell(position, cellX, cellY);
+	const bool openOcean = waterCache->IsOpenOceanCell(worldSpace, cellX, cellY);
+	if (openOcean) {
+		static std::atomic_bool loggedLiveOceanWater = false;
+		if (!loggedLiveOceanWater.exchange(true, std::memory_order_relaxed)) {
+			const auto editorID = worldSpace->GetFormEditorID();
+			logger::info("[Waterbody] [Ocean] Live Skyrim water geometry classified from cell {},{} in {}",
+				cellX, cellY, editorID ? editorID : "(unnamed worldspace)");
+		}
+	}
+	return openOcean;
+}
+
+void Waterbody::RegisterWaterForm(RE::BSGeometry* geometry, RE::FormID formID, bool openOcean)
+{
+	if (!geometry || !formID)
+		return;
+	std::unique_lock lock(waterFormMutex);
+	openOceanByGeometry.insert_or_assign(geometry, openOcean);
+}
+
+void Waterbody::UnregisterWaterForm(RE::BSGeometry* geometry)
+{
+	if (!geometry)
+		return;
+	std::unique_lock lock(waterFormMutex);
+	openOceanByGeometry.erase(geometry);
 }
 
 void Waterbody::TESWaterSystem_UpdateDisplacementMeshPosition::thunk(RE::TESWaterSystem* waterSystem)

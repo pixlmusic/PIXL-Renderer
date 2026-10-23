@@ -3,6 +3,7 @@
 #include "MaterialForge/BSLightingShaderMaterialPBR.h"
 #include "MaterialForge/BSLightingShaderMaterialPBRLandscape.h"
 #include "MaterialForge/DX11TextureResolver.h"
+#include "MaterialForge/FurEligibility.h"
 
 #include <RE/B/BSLightingShaderMaterialEnvmap.h>
 #include <RE/B/BSLightingShaderMaterialGlowmap.h>
@@ -225,8 +226,15 @@ namespace
 	}
 }
 
+
 namespace PhysicalMaterial
 {
+	bool IsFurExcluded(const RE::BSLightingShaderMaterialBase& material, std::string_view geometryName)
+	{
+		if (IsNonFurAnatomy(geometryName)) return true;
+		const char* textureName = material.diffuseTexture ? material.diffuseTexture->name.c_str() : nullptr;
+		return textureName && IsNonFurAnatomy(ResourceLeaf(textureName));
+	}
 	float ClassifyAutomaticFur(
 		const RE::BSLightingShaderMaterialBase& material,
 		std::string_view meshPath)
@@ -234,6 +242,9 @@ namespace PhysicalMaterial
 		const std::string diffusePath = material.diffuseTexture
 			? NormalizeResourceName(*material.diffuseTexture)
 			: std::string{};
+		const auto separator = meshPath.find_first_of("\\/");
+		if (IsNonFurAnatomy(ResourceLeaf(diffusePath)) || IsNonFurAnatomy(meshPath.substr(0, separator)))
+			return 0.0f;
 		return ClassifyFurEvidence(diffusePath, meshPath);
 	}
 

@@ -33,13 +33,19 @@ namespace
 		return sample.r == 0 && sample.g == 0 && sample.b == 0 && sample.a == 0;
 	}
 
-	bool IsPIXLFlowmapCache(const std::filesystem::path& path)
+	bool HasFlowmapCachePrefix(const std::filesystem::path& path, std::wstring_view prefix)
 	{
 		if (path.extension() != L".dds")
 			return false;
 
 		const auto name = path.filename().wstring();
-		return name.starts_with(FLOWMAP_CACHE_PREFIX) || name.starts_with(LEGACY_FLOWMAP_CACHE_PREFIX);
+		return name.size() > prefix.size() && name.starts_with(prefix) && name[prefix.size()] == L'.';
+	}
+
+	bool IsPIXLFlowmapCache(const std::filesystem::path& path)
+	{
+		return HasFlowmapCachePrefix(path, FLOWMAP_CACHE_PREFIX) ||
+			HasFlowmapCachePrefix(path, LEGACY_FLOWMAP_CACHE_PREFIX);
 	}
 
 	FlowPixel BlendFlowSamples(std::span<const FlowPixel* const> samples, bool includeEmptyCoverage)
@@ -257,8 +263,7 @@ bool Flowmap::LoadFlowmap()
 				continue;
 			}
 
-			const std::wstring name = entry.path().filename().wstring();
-			if (name.starts_with(FLOWMAP_CACHE_PREFIX)) {
+			if (HasFlowmapCachePrefix(entry.path(), FLOWMAP_CACHE_PREFIX)) {
 				file = entry;
 				break;
 			}

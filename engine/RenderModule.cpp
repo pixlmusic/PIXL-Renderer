@@ -9,7 +9,6 @@
 #include "Modules/ThinSurface.h"
 #include "Modules/GroundResponse.h"
 #include "Modules/ActorSurfaceEffects.h"
-#include "Modules/ClothDynamics.h"
 #include "Modules/FoliageDynamics.h"
 #include "Modules/FoliageOptimizer.h"
 #include "Modules/CameraSuite.h"
@@ -29,7 +28,6 @@
 #include "Modules/SkinOptics.h"
 #include "Modules/WindowLife.h"
 #include "Modules/ContainedLiquids.h"
-#include "Modules/CurvedSurfaceMapping.h"
 #include "Modules/DistantLife.h"
 #include "Modules/ReactiveFX.h"
 #include "Modules/Microclimates.h"
@@ -46,6 +44,7 @@
 #include "Modules/LightVolumes.h"
 #include "Modules/VolumeOcclusion.h"
 #include "Modules/WaterOptics.h"
+#include "Modules/OceanDynamics.h"
 #include "Modules/RainResponse.h"
 #include "I18n/I18n.h"
 #include "Menu.h"
@@ -62,7 +61,7 @@ void RenderModule::Load(json& o_json)
 	ModuleRules::InvalidateConstraintCache();
 	// Retired experiments remain registered only for cache migration and ABI
 	// compatibility. Old INIs/settings must not reactivate their hooks or UI.
-	if (GetShortName() == "ClothDynamics" || GetShortName() == "Microclimates") {
+	if (GetShortName() == "Microclimates") {
 		loaded = false;
 		return;
 	}
@@ -70,7 +69,7 @@ void RenderModule::Load(json& o_json)
 	auto ini_filename = std::format("{}.ini", GetShortName());
 	std::wstring ini_filename_w;
 	std::ranges::copy(ini_filename, std::back_inserter(ini_filename_w));
-	auto ini_path = L"Data\\Shaders\\PIXL\\Modules\\" + ini_filename_w;
+	auto ini_path = L"Data\\PIXL-Shaders\\PIXL\\Modules\\" + ini_filename_w;
 
 	CSimpleIniA ini;
 	ini.SetUnicode();
@@ -244,7 +243,6 @@ const std::vector<RenderModule*>& RenderModule::GetModuleList()
 		&globals::pipeline::foliageDynamics,
 		&globals::pipeline::foliageOptimizer,
 		&globals::pipeline::groundResponse,
-		&globals::pipeline::clothDynamics,
 		&globals::pipeline::actorSurfaceEffects,
 		&globals::pipeline::contactShadows,
 		&globals::pipeline::materialLayers,
@@ -253,6 +251,7 @@ const std::vector<RenderModule*>& RenderModule::GetModuleList()
 		&globals::pipeline::worldProbes,
 		&globals::pipeline::skyVeil,
 		&globals::pipeline::waterOptics,
+		&globals::pipeline::oceanDynamics,
 		&globals::pipeline::pulseProfiler,
 		&globals::pipeline::tissueDiffusion,
 		&globals::pipeline::terrainOcclusion,
@@ -286,7 +285,6 @@ const std::vector<RenderModule*>& RenderModule::GetModuleList()
 		// WindowLife chains after SkinOptics; ContainedLiquids owns separate final slots.
 		&globals::pipeline::windowLife,
 		&globals::pipeline::containedLiquids,
-		&globals::pipeline::curvedSurfaceMapping,
 		&globals::pipeline::distantLife,
 		&globals::pipeline::reactiveFX
 	};

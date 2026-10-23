@@ -30,7 +30,7 @@ namespace PIXLRendererPage
 		"CAMERA"
 	};
 
-	inline constexpr std::array<Placement, 36> Placements{ {
+	inline constexpr std::array<Placement, 37> Placements{ {
 		{ "HybridGI", CategoryOrder[0], "INDIRECT LIGHT & REFLECTIONS", "Lighting controls are real time. Resolution and pipeline toggles automatically rebuild the affected compute shaders." },
 		{ "WorldProbes", CategoryOrder[0], "INDIRECT LIGHT & REFLECTIONS", "Environment probes update automatically with the scene. Probe-authoring tools are available only in Developer Mode." },
 		{ "SkyBounce", CategoryOrder[0], "INDIRECT LIGHT & REFLECTIONS", "Visibility controls are real time; zenith changes automatically queue a safe probe refresh." },
@@ -58,6 +58,7 @@ namespace PIXLRendererPage
 		{ "TerrainOcclusion", CategoryOrder[1], "LAND & VEGETATION", "Terrain-shadow participation updates in real time; heightfield data refreshes automatically as exterior cells change." },
 		{ "Waterbody", CategoryOrder[1], "WATER & WEATHER", "Optimised mesh selection applies when water caches are rebuilt; manual cache tools are Developer Mode actions." },
 		{ "WaterOptics", CategoryOrder[1], "WATER & WEATHER", "Reflection and caustic tuning is real time. Initial shader integration or module boot-state changes require a restart." },
+		{ "OceanDynamics", CategoryOrder[1], "WATER & WEATHER", "Experimental ocean waves use the generated shoreline cache. Geometry changes require the ocean shader permutations and a game restart." },
 		{ "RainResponse", CategoryOrder[1], "WATER & WEATHER", "Weather, material wetness, ripple and splash controls update in real time." },
 		{ "SkinOptics", CategoryOrder[2], "SKIN", "SkinOptics optical controls update in real time; texture reload actions explicitly refresh authored detail assets." },
 		{ "TissueDiffusion", CategoryOrder[2], "SKIN", "Diffusion controls update in real time. Burley sample-count changes rebuild the sampling kernel." },
@@ -104,7 +105,7 @@ namespace PIXLRendererPage
 			Name{ "FoliageOptimizer", "FOLIAGE OPTIMIZER" },
 			Name{ "TerrainField", "TERRAIN DATA" }, Name{ "TerrainSeam", "TERRAIN BLEND" },
 			Name{ "TerrainOcclusion", "TERRAIN SHADOW" }, Name{ "Waterbody", "WATER GEOMETRY" },
-			Name{ "WaterOptics", "WATER OPTICS" }, Name{ "RainResponse", "WET SURFACES" }, Name{ "PixelCapture", "PIXL DIRECTOR" },
+			Name{ "WaterOptics", "WATER OPTICS" }, Name{ "OceanDynamics", "OCEAN DYNAMICS" }, Name{ "RainResponse", "WET SURFACES" }, Name{ "PixelCapture", "PIXL DIRECTOR" },
 			Name{ "CameraSuite", "DISPLAY & CAMERA" }, Name{ "ImageReconstruction", "IMAGE RECONSTRUCTION" }
 		};
 		for (const auto& name : names)

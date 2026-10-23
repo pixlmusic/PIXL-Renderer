@@ -43,6 +43,7 @@ public:
 
 	/** @brief Creates GPU resources including depth textures, blended depth buffers, and stencil states. */
 	virtual void SetupResources() override;
+	bool ResourcesReady() const;
 
 	/** @brief Returns the terrain depth vertex shader, compiling on first use. */
 	ID3D11VertexShader* GetTerrainVertexShader();
@@ -90,7 +91,12 @@ public:
 	Texture2D* blendedDepthTexture = nullptr;
 	Texture2D* blendedDepthTexture16 = nullptr;
 
-	RE::BSGraphics::DepthStencilData terrainDepth;
+	struct TerrainDepthResources
+	{
+		ID3D11Texture2D* texture = nullptr;
+		ID3D11ShaderResourceView* depthSRV = nullptr;
+		ID3D11DepthStencilView* views[1]{};
+	} terrainDepth;
 
 	ID3D11DepthStencilState* terrainDepthStencilState = nullptr;
 

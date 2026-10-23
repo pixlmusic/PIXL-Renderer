@@ -13,6 +13,12 @@ struct DistantEmitter
 	float Distance;
 };
 
+float DistantSmootherStep(float edge0, float edge1, float value)
+{
+	float t = saturate((value - edge0) / max(edge1 - edge0, 1.0e-5f));
+	return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+}
+
 StructuredBuffer<DistantEmitter> Emitters : register(t0);
 Texture2D<float> SceneDepth : register(t1);
 RWTexture2D<uint> OpticalMask : register(u0);
@@ -61,6 +67,8 @@ void BuildMaskCS(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
 	DistantEmitter emitter = Emitters[groupID.x];
 	if (!all(isfinite(float4(emitter.Position, emitter.Distance))) || emitter.Distance <= 0.0f)
 		return;
+	if (!isfinite(emitter.Radius) || emitter.Radius <= 0.0f || !all(isfinite(emitter.Color)))
+		return;
 
 	// Emitters are uploaded in Skyrim's native camera-relative coordinate space,
 	// which is the direct input contract of the engine view-projection matrix.
@@ -77,7 +85,9 @@ void BuildMaskCS(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
 	float sourceDepth = SharedData::GetScreenDepth(ndc.z);
 	if (!isfinite(sourceDepth) || sourceDepth <= 0.0f)
 		return;
-	float distanceT = saturate((emitter.Distance - MinimumDistance) / max(MaximumDistance - MinimumDistance, 1.0f));
+	float minimumDistance = max(MinimumDistance, 0.0f);
+	float maximumDistance = max(MaximumDistance, minimumDistance + 1.0f);
+	float distanceT = saturate((emitter.Distance - minimumDistance) / (maximumDistance - minimumDistance));
 	float projectedRadius = emitter.Radius / max(sourceDepth, 1.0f) * RenderSize.y * 0.04f;
 	// Keep far lights legible as soft optical sources before atmospheric
 	// extinction takes over. The cap remains bounded so this is not a bloom pass.
@@ -106,18 +116,22 @@ void BuildMaskCS(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
 			return;
 	}
 
-	float transitionWidth = max(256.0f, (MaximumDistance - MinimumDistance) * 0.12f);
-	float nearFade = smoothstep(MinimumDistance, MinimumDistance + transitionWidth, emitter.Distance);
-	float farFade = 1.0f - smoothstep(MaximumDistance * 0.90f, MaximumDistance, emitter.Distance);
+	float transitionWidth = max(256.0f, (maximumDistance - minimumDistance) * 0.12f);
+	float nearFade = DistantSmootherStep(minimumDistance, minimumDistance + transitionWidth, emitter.Distance);
+	float farFade = 1.0f - DistantSmootherStep(maximumDistance * 0.90f, maximumDistance, emitter.Distance);
 	// Preserve a faint optical signal at Skyrim's far LOD. The former extinction
 	// left less than 0.1% energy at 200k units, making the extended range moot.
 	float atmosphere = lerp(1.0f, exp(-emitter.Distance * 0.000012f), saturate(AtmosphericAttenuation));
 	float radialFalloff = lerp(2.8f, 1.18f, distanceT);
 	float radial = exp2(-radialFalloff * radius2 / max(radiusPixels * radiusPixels, 1.0f));
+	float normalizedRadius = radius2 / max(radiusPixels * radiusPixels, 1.0f);
+	radial *= 1.0f - DistantSmootherStep(0.72f, 1.0f, normalizedRadius);
 	float authoredStrength = max(0.20f, saturate(emitter.Radius / 640.0f));
-	float distanceDim = lerp(1.0f, 0.38f, smoothstep(0.10f, 1.0f, distanceT));
+	float distanceDim = lerp(1.0f, 0.38f, DistantSmootherStep(0.10f, 1.0f, distanceT));
 	float intensity = radial * nearFade * farFade * atmosphere * authoredStrength * GlobalIntensity * distanceDim;
 	float3 color = max(emitter.Color, 0.015f.xxx);
+	float colorPeak = max(color.r, max(color.g, color.b));
+	color /= max(colorPeak, 1.0f);
 	if (DebugMode == 1u) {
 		intensity = radius2 <= 2.0f ? 1.0f : 0.0f;
 		color = float3(0.1f, 1.0f, 0.2f);
@@ -148,7 +162,8 @@ float3 ReconstructCompositePosition(uint2 pixel, float depth)
 
 float4 EvaluateFarFieldActivity(uint2 pixel, float sceneDepth)
 {
-	if ((FarFieldActivity == 0u && FarFieldSmoke == 0u) || sceneDepth >= 0.999999f)
+	if ((FarFieldActivity == 0u && FarFieldSmoke == 0u) || !isfinite(sceneDepth) ||
+		sceneDepth <= 0.0f || sceneDepth >= 0.999999f)
 		return 0.0f.xxxx;
 
 	float3 centre = ReconstructCompositePosition(pixel, sceneDepth);
@@ -161,7 +176,8 @@ float4 EvaluateFarFieldActivity(uint2 pixel, float sceneDepth)
 	uint2 upPixel = pixel - uint2(0u, pixel.y > 0u ? 1u : 0u);
 	float leftDepth = CompositeDepth.Load(int3(leftPixel, 0));
 	float upDepth = CompositeDepth.Load(int3(upPixel, 0));
-	if (leftDepth >= 0.999999f || upDepth >= 0.999999f)
+	if (!isfinite(leftDepth) || !isfinite(upDepth) || leftDepth <= 0.0f || upDepth <= 0.0f ||
+		leftDepth >= 0.999999f || upDepth >= 0.999999f)
 		return 0.0f;
 	float3 left = ReconstructCompositePosition(leftPixel, leftDepth);
 	float3 up = ReconstructCompositePosition(upPixel, upDepth);
@@ -202,7 +218,7 @@ float4 EvaluateFarFieldActivity(uint2 pixel, float sceneDepth)
 	float pointDistance = length(local);
 	float distanceT = saturate((viewDistance - farStart) / max(MaximumDistance - farStart, 1.0f));
 	float bokehScale = lerp(0.85f, 1.65f, distanceT);
-	float footprint = 1.0f - smoothstep(0.012f * bokehScale, 0.070f * bokehScale, pointDistance);
+	float footprint = 1.0f - DistantSmootherStep(0.012f * bokehScale, 0.070f * bokehScale, pointDistance);
 	footprint = pow(saturate(footprint), lerp(1.25f, 0.72f, distanceT));
 	float pulse = lerp(0.86f, 0.58f + 0.42f * sin(SharedData::Timer * (0.10f + seed * 0.07f) + seed * 13.0f), traveller);
 	float distanceDim = lerp(1.0f, 0.30f, distanceT);

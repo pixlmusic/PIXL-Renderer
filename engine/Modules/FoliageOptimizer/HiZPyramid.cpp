@@ -38,7 +38,7 @@ ID3D11ShaderResourceView* HiZPyramid::GetSourceDepthSRV()
 	// post-Z-prepass copy is therefore the only ownership-safe conservative depth
 	// source; never borrow a transient reconstruction or terrain replay view.
 	if (auto* renderer = globals::game::renderer)
-		return renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY].depthSRV;
+		return REX::W32::AsReal(renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY].depthSRV);
 	return nullptr;
 }
 
@@ -47,7 +47,7 @@ ID3D11ShaderResourceView* HiZPyramid::GetLiveDepthSRV()
 	auto* renderer = globals::game::renderer;
 	if (!renderer)
 		return nullptr;
-	return renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN].depthSRV;
+	return REX::W32::AsReal(renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN].depthSRV);
 }
 
 bool HiZPyramid::CreateTexture(ID3D11Device* device, uint32_t dstW, uint32_t dstH)
@@ -164,7 +164,7 @@ bool HiZPyramid::Build(ID3D11Device* device, ID3D11DeviceContext* ctx)
 	if (!baseCS && !baseCompileAttempted) {
 		baseCompileAttempted = true;
 		baseCS = static_cast<ID3D11ComputeShader*>(
-			Util::CompileShader(L"Data\\Shaders\\FoliageOptimizer\\GrassHiZCS.hlsl", {}, "cs_5_0"));
+			Util::CompileShader(L"Data\\PIXL-Shaders\\FoliageOptimizer\\GrassHiZCS.hlsl", {}, "cs_5_0"));
 		if (!baseCS) {
 			logger::error("[GRASS OPTIMIZATIONS] HiZ CS load failed â€” occlusion culling disabled");
 			return false;
@@ -176,7 +176,7 @@ bool HiZPyramid::Build(ID3D11Device* device, ID3D11DeviceContext* ctx)
 	if (!spdCS && !spdCompileAttempted) {
 		spdCompileAttempted = true;
 		spdCS = static_cast<ID3D11ComputeShader*>(
-			Util::CompileShader(L"Data\\Shaders\\FoliageOptimizer\\SPD\\SPD.hlsl", {}, "cs_5_0"));
+			Util::CompileShader(L"Data\\PIXL-Shaders\\FoliageOptimizer\\SPD\\SPD.hlsl", {}, "cs_5_0"));
 		if (!spdCS)
 			logger::error("[GRASS OPTIMIZATIONS] SPD load failed â€” large instances will not be occlusion culled");
 	}

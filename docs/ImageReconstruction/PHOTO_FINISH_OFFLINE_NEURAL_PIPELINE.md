@@ -40,7 +40,7 @@ The same high-value controls are available in the Insert quick panel through num
 
 ## Resolution contract
 
-Feature 18 remains at the vendor-validated display output extent. A prior attempt to invent an independent smaller output extent was rejected by the installed 310.8 runtime with `0xBAD00005`, so PIXL does not advertise a fake transformer-resolution selector.
+Feature 18 remains at the vendor-validated display output extent. A prior attempt to invent an independent smaller output extent was rejected by the 310.8 runtime with `0xBAD00005`, so PIXL does not advertise a fake transformer-resolution selector.
 
 Photo Finish increases quality in two supported domains instead:
 

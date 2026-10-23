@@ -16,6 +16,11 @@ namespace WorldProbes
 	TextureCube<float3> EnvReflectionsTexture : register(t30);
 	TextureCube<float3> EnvTexture : register(t31);
 
+	float3 SafeProbeSample(float3 sampleColor)
+	{
+		return any((asuint(sampleColor) & 0x7f800000u) == 0x7f800000u) ? 0.0f.xxx : max(sampleColor, 0.0f.xxx);
+	}
+
 #if !defined(WATER)
 
 #	if defined(SKY_BOUNCE)
@@ -27,15 +32,24 @@ namespace WorldProbes
 #	if defined(DEFERRED)
 		return 1.0;
 #	else
+		float n2 = dot(N, N);
+		float v2 = dot(V, V);
+		N = any((asuint(N) & 0x7f800000u) == 0x7f800000u) ||
+			(asuint(n2) & 0x7f800000u) == 0x7f800000u || n2 <= 1.0e-8f ? float3(0, 0, 1) : N * rsqrt(n2);
+		V = any((asuint(V) & 0x7f800000u) == 0x7f800000u) ||
+			(asuint(v2) & 0x7f800000u) == 0x7f800000u || v2 <= 1.0e-8f ? N : V * rsqrt(v2);
+		roughness = (asuint(roughness) & 0x7f800000u) == 0x7f800000u ? 1.0f : saturate(roughness);
 		float3 R = reflect(-V, N);
 
-		float level = roughness * 7.0;
+		float level = saturate(roughness * (1.15f - 0.15f * roughness)) * 7.0f;
 
 		float3 finalIrradiance = 0;
 
 		float directionalAmbientColorSpecular = Color::RGBToLuminance(Color::Ambient(
-													max(0, SharedData::GetAmbient(R)))) *
-		                                        Color::ReflectionNormalisationScale;
+			max(0, SharedData::GetAmbient(R)))) * Color::ReflectionNormalisationScale;
+		directionalAmbientColorSpecular = (asuint(directionalAmbientColorSpecular) & 0x7f800000u) == 0x7f800000u
+			? 0.0f
+			: max(directionalAmbientColorSpecular, 0.0f);
 
 #		if defined(AMBIENT_PROBE) && defined(LIGHTING)
 		const bool inWorld = (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::InWorld);
@@ -57,8 +71,7 @@ namespace WorldProbes
 
 #		if defined(AMBIENT_PROBE)
 		if (SharedData::ambientProbeSettings.EnableAmbientProbe) {
-			float3 envSample = EnvTexture.SampleLevel(SampColorSampler, R, level);
-			float3 fullSample = EnvReflectionsTexture.SampleLevel(SampColorSampler, R, level);
+			float3 envSample = SafeProbeSample(EnvTexture.SampleLevel(SampColorSampler, R, level));
 			float3 envSpecular = 0.0;
 			float3 skySpecular = 0.0;
 
@@ -66,7 +79,10 @@ namespace WorldProbes
 				// Mode 2/3: DALC-normalized env scaled by DALCAmount + sky overlay
 				float envLum = Color::RGBToLuminance(EnvTexture.SampleLevel(SampColorSampler, R, 15));
 				envSpecular = Color::IrradianceToLinear((envSample / max(envLum, 0.001)) * directionalAmbientColorSpecular) * SharedData::ambientProbeSettings.DALCAmount;
-				skySpecular = Color::IrradianceToLinear(max(0, fullSample - envSample)) * SharedData::ambientProbeSettings.SkyProbeScale;
+				if (SharedData::ambientProbeSettings.SkyProbeScale > 0.0f) {
+					float3 fullSample = SafeProbeSample(EnvReflectionsTexture.SampleLevel(SampColorSampler, R, level));
+					skySpecular = Color::IrradianceToLinear(max(0, fullSample - envSample)) * SharedData::ambientProbeSettings.SkyProbeScale;
+				}
 #			if defined(SKY_BOUNCE)
 				envSpecular *= (SharedData::ambientProbeSettings.DALCMode == 3) ? skyBounceVisibility : 1.0;
 				skySpecular *= skyBounceSpecular;
@@ -75,7 +91,10 @@ namespace WorldProbes
 				// Mode 0/1: AmbientProbe ratio-based
 				float3 ratio = AmbientProbe::GetAmbientRatio();
 				envSpecular = Color::IrradianceToLinear(envSample * ratio) * SharedData::ambientProbeSettings.EnvironmentProbeScale;
-				skySpecular = Color::IrradianceToLinear(max(0, fullSample - envSample)) * SharedData::ambientProbeSettings.SkyProbeScale;
+				if (SharedData::ambientProbeSettings.SkyProbeScale > 0.0f) {
+					float3 fullSample = SafeProbeSample(EnvReflectionsTexture.SampleLevel(SampColorSampler, R, level));
+					skySpecular = Color::IrradianceToLinear(max(0, fullSample - envSample)) * SharedData::ambientProbeSettings.SkyProbeScale;
+				}
 #			if defined(SKY_BOUNCE)
 				skySpecular *= skyBounceSpecular;
 #			endif
@@ -138,7 +157,7 @@ namespace WorldProbes
 			finalIrradiance *= sqrt(saturate(SharedData::ambientProbeSettings.InteriorAmbientScale));
 #	endif
 
-		return finalIrradiance;
+		return all(isfinite(finalIrradiance)) ? max(finalIrradiance, 0.0f) : 0.0f;
 #	endif
 	}
 #endif  // !WATER

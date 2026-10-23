@@ -14,7 +14,10 @@ namespace RainResponse
 	float3 SafeNormalizePrecipitation(float3 value, float3 fallback)
 	{
 		float lengthSq = dot(value, value);
-		return lengthSq > 1e-8f ? value * rsqrt(lengthSq) : fallback;
+		return any((asuint(value) & 0x7f800000u) == 0x7f800000u) ||
+			(asuint(lengthSq) & 0x7f800000u) == 0x7f800000u || lengthSq <= 1e-8f
+			? fallback
+			: value * rsqrt(lengthSq);
 	}
 
 	float RainHash12(float2 p)
@@ -28,7 +31,7 @@ namespace RainResponse
 	{
 		float2 i = floor(p);
 		float2 f = frac(p);
-		float2 u = f * f * (3.0f - 2.0f * f);
+		float2 u = f * f * f * (f * (f * 6.0f - 15.0f) + 10.0f);
 
 		float a = RainHash12(i + float2(0.0f, 0.0f));
 		float b = RainHash12(i + float2(1.0f, 0.0f));
@@ -56,7 +59,8 @@ namespace RainResponse
 		// lateral tendency.  Prefer it so PIXL follows custom weather motion.
 		float2 lateral = authoredVelocity.xy;
 		float lateralSq = dot(lateral, lateral);
-		if (lateralSq > 1e-5f)
+		if (!any((asuint(lateral) & 0x7f800000u) == 0x7f800000u) &&
+			(asuint(lateralSq) & 0x7f800000u) != 0x7f800000u && lateralSq > 1e-5f)
 			return lateral * rsqrt(lateralSq);
 
 		// Calm/vertical rain still needs a stable direction for rare gust sheets.
@@ -77,7 +81,7 @@ namespace RainResponse
 	RainParticleDynamics EvaluateRainParticleDynamics(float3 cameraRelativePosition, float3 authoredVelocity)
 	{
 		RainParticleDynamics result;
-		result.velocity = authoredVelocity;
+		result.velocity = all(isfinite(authoredVelocity)) ? authoredVelocity : float3(0, 0, -1);
 		result.clump = 1.0f;
 		result.gust = 0.0f;
 		result.slope = 0.0f;
@@ -91,7 +95,9 @@ namespace RainResponse
 			return result;
 
 		float3 absolutePosition = cameraRelativePosition + FrameBuffer::CameraPosAdjust.xyz;
-		float2 travelDir = GetRainTravelDirection(authoredVelocity);
+		if (any((asuint(absolutePosition) & 0x7f800000u) == 0x7f800000u))
+			return result;
+		float2 travelDir = GetRainTravelDirection(result.velocity);
 		float2 crossDir = float2(-travelDir.y, travelDir.x);
 
 		float clumpSize = max(SharedData::rainResponseSettings.RainClumpSize, 128.0f);
@@ -109,6 +115,7 @@ namespace RainResponse
 		rotatedFieldUV * float2(0.43f, 1.17f) + 31.7f);
 	float densityField = saturate(
 		densityNoise * 0.57f + breakupNoise * 0.18f + curtainNoise * 0.25f);
+	densityField = densityField * densityField * (3.0f - 2.0f * densityField);
 
 		// Dense bands are allowed to become a little stronger than 1 while gaps
 		// retain enough primary precipitation to avoid obvious particle popping.
@@ -142,9 +149,10 @@ namespace RainResponse
 			max(SharedData::rainResponseSettings.RainGustStrength, 0.0f);
 		result.gust = saturate(gust);
 
-		float authoredSpeed = max(length(authoredVelocity), 1e-3f);
+		float authoredSpeed = clamp(length(result.velocity), 1e-3f, 4096.0f);
 		float crossBias = (variationHash * 2.0f - 1.0f) * 0.38f;
-		float2 gustDir = normalize(travelDir + crossDir * crossBias);
+		float2 gustVector = travelDir + crossDir * crossBias;
+		float2 gustDir = gustVector * rsqrt(max(dot(gustVector, gustVector), 1.0e-6f));
 		result.velocity.xy += gustDir * authoredSpeed * gust * 0.92f;
 
 		// Passed to the PS for the second, sheared copy of the active weather
@@ -156,13 +164,16 @@ namespace RainResponse
 
 	float GetRainDistanceWeight(float viewDistance)
 	{
+		if ((asuint(viewDistance) & 0x7f800000u) == 0x7f800000u)
+			return 0.0f;
 		float depthStart = max(SharedData::rainResponseSettings.RainDepthStart, 0.0f);
 		float depthEnd = max(SharedData::rainResponseSettings.RainDepthEnd, depthStart + 1.0f);
 		float d = max(viewDistance, 0.0f);
 
 		float mid = smoothstep(depthStart * 0.28f, depthEnd * 0.50f, d);
 		float far = smoothstep(depthStart * 0.58f, depthEnd * 0.94f, d);
-		return saturate(mid * 0.70f + far * far * 0.72f);
+		float weight = saturate(mid * 0.70f + far * far * 0.72f);
+		return weight * weight * (3.0f - 2.0f * weight);
 	}
 
 	float GetRainDistanceVisibility(float viewDistance)
@@ -194,7 +205,8 @@ namespace RainResponse
 		// Fine authored rain often uses very low alpha. Enhance those texels only
 		// after a real source footprint exists; flooring transparent card pixels
 		// creates pale rectangular rain blocks with some weather textures.
-		float authored = saturate(sourceAlpha);
+		float authored = (asuint(sourceAlpha) & 0x7f800000u) == 0x7f800000u ? 0.0f : saturate(sourceAlpha);
+		clump = (asuint(clump) & 0x7f800000u) == 0x7f800000u ? 1.0f : max(clump, 0.0f);
 		float authoredCoverage = smoothstep(0.012f, 0.16f, authored);
 		float distanceResponse = lerp(0.22f, 1.0f, weight);
 		float floorStrength = saturate(0.12f + boost * 0.40f);

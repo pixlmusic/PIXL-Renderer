@@ -45,7 +45,7 @@ int wmain(int argc, wchar_t** argv) {
     prefs.logLevel = sl::LogLevel::eVerbose; prefs.logMessageCallback = Log;
     HMODULE dx11Module{};
     PFun_slSetD3DDevice* bind11{};
-    const auto dx11Path = (game / L"Data/Shaders/ImageReconstruction/Streamline").wstring();
+    const auto dx11Path = (game / L"Data/PIXL-Shaders/ImageReconstruction/Streamline").wstring();
     const wchar_t* dx11Paths[] = { dx11Path.c_str() };
     sl::Feature dx11Features[] = { sl::kFeatureDLSS, sl::kFeatureReflex, sl::kFeaturePCL };
     if (argc == 4) {

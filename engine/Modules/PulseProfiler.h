@@ -4,6 +4,7 @@
 #include "OverlayFeature.h"
 #include "PulseProfiler/ABTesting/ABTestAggregator.h"
 #include "Utils/PerfUtils.h"
+#include <algorithm>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <unordered_map>
@@ -97,6 +98,7 @@ public:
 
 	void Resize(size_t newSize)
 	{
+		newSize = std::max<size_t>(1, newSize);
 		if (data.size() == newSize)
 			return;
 		data.resize(newSize);

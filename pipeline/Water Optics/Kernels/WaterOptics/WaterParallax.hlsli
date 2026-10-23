@@ -6,12 +6,16 @@ namespace WaterOptics
 
 	float2 SafeParallaxDirection(float3 viewDirection)
 	{
+		float lengthSq = dot(viewDirection, viewDirection);
+		viewDirection = lengthSq > 1.0e-8f ? viewDirection * rsqrt(lengthSq) : float3(0, 0, -1);
 		float safeZ = -max(abs(viewDirection.z), 0.075);
-		return viewDirection.xy / safeZ;
+		return clamp(viewDirection.xy / safeZ, -12.0f.xx, 12.0f.xx);
 	}
 
 	float ResolveParallaxIntersection(float prevBound, float prevHeight, float currBound, float currHeight)
 	{
+		if (!all(isfinite(float4(prevBound, prevHeight, currBound, currHeight))))
+			return saturate(currBound);
 		float delta2 = prevBound - prevHeight;
 		float delta1 = currBound - currHeight;
 		float denominator = delta2 - delta1;
@@ -30,8 +34,9 @@ namespace WaterOptics
 		float2 actualTextureDims;
 		tex.GetDimensions(actualTextureDims.x, actualTextureDims.y);
 
-		// Use hardcoded 512x512 for mip calculation
-		float2 textureDims = float2(512.0, 512.0);
+		// Use each axis of the bound normal map so rectangular replacements
+		// receive the same footprint and avoid oversharpened distant waves.
+		float2 textureDims = max(actualTextureDims, 1.0f.xx);
 
 		float2 texCoordsPerSize = coords * textureDims;
 
@@ -47,12 +52,8 @@ namespace WaterOptics
 		// Compute the current mip level  (* 0.5 is effectively computing a square root before )
 		float mipLevel = max(0.5 * log2(max(minTexCoordDelta, 1e-8f)), 0);
 
-		// Offset mip level to sample as if texture were 512x512
-		float mipOffset = log2(max(actualTextureDims.x, 1.0f) / 512.0);
-
-		mipLevel = max(mipLevel + mipOffset, 0.0);
-
 		// Stochastic mip selection: use screen noise to select between adjacent mip levels
+		screenNoise = frac(abs(screenNoise));
 		mipLevel = floor(mipLevel) + (screenNoise < frac(mipLevel) ? 1.0 : 0.0);
 
 		return mipLevel;
@@ -64,14 +65,15 @@ namespace WaterOptics
 		heights.x = Normals01Tex.SampleLevel(Normals01Sampler, input.TexCoord1.xy + currentOffset * normalScalesRcp.x, mipLevels.x).w;
 		heights.y = Normals02Tex.SampleLevel(Normals02Sampler, input.TexCoord1.zw + currentOffset * normalScalesRcp.y, mipLevels.y).w;
 		heights.z = Normals03Tex.SampleLevel(Normals03Sampler, input.TexCoord2.xy + currentOffset * normalScalesRcp.z, mipLevels.z).w;
-		heights = 1.0 - heights;
-		heights *= NormalsAmplitude.xyz;
-		return heights.x + heights.y + heights.z;
+		heights = saturate(1.0 - heights);
+		heights *= max(NormalsAmplitude.xyz, 0.0f);
+		return saturate(heights.x + heights.y + heights.z);
 	}
 
 	float2 GetParallaxOffset(PS_INPUT input, float3 normalScalesRcp)
 	{
-		float3 viewDirection = normalize(input.WPosition.xyz);
+		float viewLengthSq = dot(input.WPosition.xyz, input.WPosition.xyz);
+		float3 viewDirection = viewLengthSq > 1.0e-8f ? input.WPosition.xyz * rsqrt(viewLengthSq) : float3(0, 0, -1);
 	#if USE_PIXL_STABLE_WATER_PARALLAX
 		if (-viewDirection.z < 0.075)
 			return 0.0.xx;
@@ -170,7 +172,8 @@ namespace WaterOptics
 			PS_INPUT offsetInput = input;
 			offsetInput.TexCoord3.xy = input.TexCoord3.xy + currBound * parallaxDir;
 
-			float2 cellBlend = 0.5 + -(-0.5 + abs(frac(offsetInput.TexCoord2.zw * (64 * flowmapDims)) * 2 - 1));
+			float2 cellBlend = 1.0f - abs(frac(offsetInput.TexCoord2.zw * (64 * flowmapDims)) * 2.0f - 1.0f);
+			cellBlend = cellBlend * cellBlend * (3.0f.xx - 2.0f * cellBlend);
 			currHeight = 1.0 - GetFlowmapBlendedHeight(offsetInput, cellBlend, uvShiftPx, 0);
 		}
 

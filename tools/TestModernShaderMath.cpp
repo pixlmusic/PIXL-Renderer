@@ -31,9 +31,9 @@ int wmain(int argc, wchar_t** argv) {
     try {
 
         const std::filesystem::path root = argc == 2 ? std::filesystem::path(argv[1]) : std::filesystem::current_path();
-        const auto pixl = Read(root / "distribution/Shaders/Common/BRDF.hlsli");
+        const auto pixl = Read(root / "distribution/PIXL-Shaders/Common/BRDF.hlsli");
         const auto fog = Read(root / "pipeline/Atmosphere/Kernels/Atmosphere/VolumetricFogIntegrationCS.hlsl");
-        std::string shader = Read(root / "distribution/Shaders/Common/Math.hlsli") + "\n";
+        std::string shader = Read(root / "distribution/PIXL-Shaders/Common/Math.hlsli") + "\n";
         for (const char* name : {"D_GGX", "Vis_SmithJointApprox", "Vis_SmithJoint"}) shader += Function(pixl, name) + "\n";
         shader += Function(fog, "HomogeneousScatteringWeight");
         shader += R"(

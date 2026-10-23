@@ -879,7 +879,7 @@ void DX12SwapChain::CreateSharedResources()
 	// Create depth buffer
 	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
 	D3D11_TEXTURE2D_DESC texDesc{};
-	main.texture->GetDesc(&texDesc);
+	main.texture->GetDesc(REX::W32::AsW32(&texDesc));
 	texDesc.Format = DXGI_FORMAT_R32_FLOAT;
 	depthBufferShared12 = std::make_unique<WrappedResource>(texDesc, d3d11Device.get(), d3d12Device.get());
 	neuralGuides = {};
@@ -890,7 +890,7 @@ void DX12SwapChain::CreateSharedResources()
 
 	// Create motion vector buffer
 	auto& motionVector = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
-	motionVector.texture->GetDesc(&texDesc);
+	motionVector.texture->GetDesc(REX::W32::AsW32(&texDesc));
 	motionVectorBufferShared12 = std::make_unique<WrappedResource>(texDesc, d3d11Device.get(), d3d12Device.get());
 	if (globals::pipeline::imageReconstruction.neuralRenderingProvisionedAtBoot)
 		neuralMotionVectorBufferShared12 = std::make_unique<WrappedResource>(texDesc, d3d11Device.get(), d3d12Device.get());

@@ -10,6 +10,12 @@
 
 namespace SkinOptics
 {
+	float SkinSmootherStep(float edge0, float edge1, float value)
+	{
+		float t = saturate((value - edge0) / max(edge1 - edge0, 1.0e-5f));
+		return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+	}
+
 	#ifndef USE_PIXL_SKIN_OPTICS
 	#	define USE_PIXL_SKIN_OPTICS 1
 	#endif
@@ -21,6 +27,7 @@ namespace SkinOptics
 	// curvature and over-broadening the oil lobes.
 	float CalculateCurvature(float3 N, float3 worldPosition)
 	{
+		N *= rsqrt(max(dot(N, N), 1e-8f));
 		const float3 dNdx = ddx(N);
 		const float3 dNdy = ddy(N);
 		const float3 dPdx = ddx(worldPosition);
@@ -28,7 +35,7 @@ namespace SkinOptics
 
 		const float normalGradientSq = dot(dNdx, dNdx) + dot(dNdy, dNdy);
 		const float positionGradientSq = dot(dPdx, dPdx) + dot(dPdy, dPdy);
-		return saturate(sqrt(normalGradientSq / max(positionGradientSq, 1e-6f)));
+		return saturate(sqrt(max(normalGradientSq, 0.0f) / max(positionGradientSq, 1e-6f)));
 	}
 
 #if defined(PSHADER)
@@ -49,6 +56,7 @@ namespace SkinOptics
 		float3 light,
 		float3 view,
 		float authoredThickness,
+		float3 authoredSubsurfaceColor,
 		float macroCurvature)
 	{
 		/**
@@ -79,8 +87,8 @@ namespace SkinOptics
 		const float curvatureResponse = saturate(macroCurvature * 4.0f);
 		const float curvatureThinFeature =
 			curvatureResponse * (1.0f - 0.35f * thickness);
-		const float effectiveThickness =
-			thickness * lerp(1.0f, 0.82f, curvatureThinFeature);
+		const float effectiveThickness = clamp(
+			thickness * lerp(1.0f, 0.82f, curvatureThinFeature), 0.0f, 1.0f);
 		float d = scale * effectiveThickness;
 
 		/**
@@ -96,6 +104,18 @@ namespace SkinOptics
 		                 float3(0.358, 0.004, 0.0) * exp(dd / 1.99) +
 		                 float3(0.078, 0.0, 0.0) * exp(dd / 7.41);
 
+		// The Skyrim soft-light map carries an authored RGB subsurface tint. Use it
+		// for hue while leaving transmission strength to the analytic profile and
+		// albedo. A missing/black map falls back to neutral instead of suppressing SSS.
+		const float3 authoredColor = max(authoredSubsurfaceColor, 0.0f.xxx);
+		const float authoredColorPeak = max(authoredColor.r, max(authoredColor.g, authoredColor.b));
+		const float authoredLuminance = dot(authoredColor, float3(0.2126f, 0.7152f, 0.0722f));
+		const float3 authoredTint = authoredColor / max(authoredLuminance, 1e-4f);
+		const float authoredTintWeight =
+			0.30f * SkinSmootherStep(0.01f, 0.06f, authoredColorPeak);
+		float3 tint = lerp(1.0f.xxx, min(authoredTint, 2.0f.xxx), authoredTintWeight);
+		profile *= tint / max(dot(tint, float3(0.2126f, 0.7152f, 0.0722f)), 1e-3f);
+
 		/**
 		* Using the profile, we finally approximate the transmitted lighting from
 		* the back of the object:
@@ -104,7 +124,7 @@ namespace SkinOptics
 		// The former constant 0.3 floor added red energy even on front-lit cheeks and
 		// was a major source of the waxy look. A gentle grazing lift keeps thin ears and
 		// nostrils readable without turning the entire face translucent.
-		const float backLight = smoothstep(-0.10f, 0.65f, dot(light, -worldNormal));
+		const float backLight = SkinSmootherStep(-0.10f, 0.65f, dot(light, -worldNormal));
 		const float viewGrazing = 1.0f - saturate(abs(dot(worldNormal, view)));
 		return profile * backLight * lerp(0.78f, 1.10f, viewGrazing * viewGrazing);
 	}
@@ -118,7 +138,8 @@ namespace SkinOptics
 		float lobe0 = BRDF::D_GGX(Lobe0Roughness, NdotH) * BRDF::Vis_SmithJointApprox(Lobe0Roughness, NdotV, NdotL);
 		float lobe1 = BRDF::D_GGX(Lobe1Roughness, NdotH) * BRDF::Vis_SmithJointApprox(Lobe1Roughness, NdotV, NdotL);
 		F = BRDF::F_Schlick(saturate(SpecularColor), VdotH);
-		return lerp(lobe0, lobe1, LobeMix) * F;
+		float mixedLobe = lerp(lobe0, lobe1, LobeMix);
+		return min(mixedLobe, max(lobe0, lobe1)) * F;
 	#else
 		float D = lerp(BRDF::D_GGX(Lobe0Roughness, NdotH), BRDF::D_GGX(Lobe1Roughness, NdotH), LobeMix);
 		float G = BRDF::Vis_SmithJointApprox(AverageRoughness, NdotV, NdotL);
@@ -178,7 +199,7 @@ namespace SkinOptics
 			// a small head-on contribution avoids a hard terminator, while moving most
 			// of the energy to the rim restores pore contrast and removes the clay-like
 			// flatness seen on broad cheek and forehead lighting.
-			float fuzzGrazing = lerp(0.30f, 1.0f, smoothstep(0.05f, 0.82f, 1.0f - NdotV));
+			float fuzzGrazing = lerp(0.30f, 1.0f, SkinSmootherStep(0.05f, 0.82f, 1.0f - NdotV));
 			float fuzzWeight = saturate(material.FuzzWeight) * fuzzGrazing *
 				(1.0f - curvatureResponse * 0.25f);
 			float3 layerTransmission = 1.0f.xxx - fuzzF * fuzzWeight;
@@ -186,24 +207,20 @@ namespace SkinOptics
 			lightingOutput.specular = lightingOutput.specular * layerTransmission + fuzzSpecular * fuzzWeight;
 		}
 
-		float3 sssTransmittance = SSSSTransmittance(
-									  SharedData::skinOpticsData.sssParams.x,
-									  SharedData::skinOpticsData.sssParams.y,
-									  N,
-									  L,
-									  V,
-									  material.Thickness,
-									  material.Curvature) *
-		                          SharedData::skinOpticsData.sssParams.w;
-		// Detailed and soft shadow terms describe the same visibility path. Multiplying
-		// both squared local-light shadows and over-darkened directional transmission.
-		const float transmissionVisibility = min(
-			saturate(context.detailedShadow),
-			saturate(context.softShadow));
-		const float3 visibleIncidentLight = incidentLight * transmissionVisibility;
-		lightingOutput.transmission = min(
-			sssTransmittance * visibleIncidentLight * saturate(material.BaseColor),
-			visibleIncidentLight);
+		if (SharedData::skinOpticsData.sssParams.w > 0.0f) {
+			float3 sssTransmittance = SSSSTransmittance(
+				SharedData::skinOpticsData.sssParams.x,
+				SharedData::skinOpticsData.sssParams.y,
+				N, L, V, material.Thickness, material.SubsurfaceColor,
+				material.Curvature) * SharedData::skinOpticsData.sssParams.w;
+			// Detailed and soft shadow terms describe the same visibility path.
+			const float transmissionVisibility = min(
+				saturate(context.detailedShadow), saturate(context.softShadow));
+			const float3 visibleIncidentLight = incidentLight * transmissionVisibility;
+			lightingOutput.transmission = min(
+				sssTransmittance * visibleIncidentLight * saturate(material.BaseColor),
+				visibleIncidentLight);
+		}
 	}
 
 	void SkinIndirectLobeWeights(
@@ -246,7 +263,7 @@ namespace SkinOptics
 		if (material.FuzzWeight > 0.0f) {
 			const float grazing = 1.0f - NdotV;
 			const float fuzzGrazing = lerp(0.30f, 1.0f,
-				smoothstep(0.05f, 0.82f, 1.0f - NdotV));
+				SkinSmootherStep(0.05f, 0.82f, 1.0f - NdotV));
 			const float fuzzWeight = saturate(material.FuzzWeight) * fuzzGrazing *
 				(1.0f - curvatureResponse * 0.25f);
 			const float3 fuzzF = BRDF::F_Schlick(saturate(material.FuzzColor), NdotV);
@@ -323,7 +340,7 @@ namespace SkinOptics
 		float waterWet = 0.0f;
 		float waterLevel = skinPerGeometry.z + skinPerGeometry.w;
 
-		waterWet = skinPerGeometry.y * (1 - smoothstep(waterLevel - 2.5f, waterLevel + 2.5f, z));
+		waterWet = skinPerGeometry.y * (1 - SkinSmootherStep(waterLevel - 2.5f, waterLevel + 2.5f, z));
 
 		float sweatWet = skinPerGeometry.x;
 #if !defined(SKIN)

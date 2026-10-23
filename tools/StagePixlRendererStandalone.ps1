@@ -10,7 +10,7 @@ param(
     [string]$AllowedOutputRoot = "",
     [ValidateSet("LIVE-TEST", "RELEASE-CANDIDATE", "RELEASE")]
     [string]$Channel = "LIVE-TEST",
-    [ValidateSet("", "r2")]
+    [ValidateSet("", "r2", "r3")]
     [string]$PackageRevision = "",
     [string]$ProductVersion = "",
     [ValidateRange(0, 9)]
@@ -130,8 +130,8 @@ if ($Channel -eq 'RELEASE' -and ($SkipPipelineLibrary -or [string]::IsNullOrWhit
 $dll = Join-Path $BuildDirectory "PIXLRenderer.dll"
 $required = @(
     $dll,
-    (Join-Path $sourceRoot "distribution\Shaders"),
-    (Join-Path $sourceRoot "distribution\Shaders\Common\Color.hlsli"),
+    (Join-Path $sourceRoot "distribution\PIXL-Shaders"),
+    (Join-Path $sourceRoot "distribution\PIXL-Shaders\Common\Color.hlsli"),
     (Join-Path $sourceRoot "pipeline\Camera Suite\Kernels\CameraSuite\HDROutputCS.hlsl"),
     (Join-Path $sourceRoot "pipeline\Camera Suite\Kernels\CameraSuite\DOFCoCCS.hlsl"),
     (Join-Path $sourceRoot "pipeline\Camera Suite\Kernels\CameraSuite\DOFBlurCS.hlsl"),
@@ -167,7 +167,7 @@ function Assert-NoticeSet([string]$Root) {
 Remove-PackageItem $output
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 
-$shaderRoot = Join-Path $output "Shaders"
+$shaderRoot = Join-Path $output "PIXL-Shaders"
 $moduleCatalog = Join-Path $shaderRoot "PIXL\Modules"
 $pluginRoot = Join-Path $output "SKSE\Plugins\PIXL"
 $configRoot = Join-Path $pluginRoot "Config"
@@ -176,7 +176,17 @@ $interfaceRoot = Join-Path $pluginRoot "Interface"
 New-Item -ItemType Directory -Path $shaderRoot,$moduleCatalog,$configRoot,$profileRoot,$interfaceRoot -Force | Out-Null
 
 # One closed shader pipeline: Skyrim entry points plus every integrated PIXL kernel.
-Copy-Tree (Join-Path $sourceRoot "distribution\Shaders") $shaderRoot
+Copy-Tree (Join-Path $sourceRoot "distribution\PIXL-Shaders") $shaderRoot
+if ($Channel -ne 'LIVE-TEST') {
+    # Experimental modules stay available in local live-test packages, but are
+    # not part of the public 1.0.8 installer until their release gate is lifted.
+    # Water.hlsl still uses the shared wave-band math, so retain that include
+    # while excluding only the ocean-only spray and breaker entry points.
+    foreach ($experimentalShader in @('OceanSpray.hlsl', 'OceanBreakers.hlsl')) {
+        $path = Join-Path $shaderRoot ('OceanDynamics\' + $experimentalShader)
+        if (Test-Path -LiteralPath $path) { Remove-PackageItem $path }
+    }
+}
 Get-ChildItem -LiteralPath (Join-Path $sourceRoot "pipeline") -Directory | Sort-Object Name | ForEach-Object {
     # Empty directories are not modules. Local development can leave one
     # behind after an experimental module is removed, while Git correctly has
@@ -191,6 +201,10 @@ Get-ChildItem -LiteralPath (Join-Path $sourceRoot "pipeline") -Directory | Sort-
     # Preserve the shipping boundary: retired source and descriptors are not
     # runtime payloads. Guarded historical includes are checked by the audit.
     if ($descriptorText -match '(?im)^\s*Pipeline\s*=\s*Retired\s*$') {
+        return
+    }
+    if ($Channel -ne 'LIVE-TEST' -and $descriptorText -match '(?im)^\s*Unreleased\s*=\s*(true|1|yes|on)\s*$') {
+        Write-Host "Omitting unreleased module from $Channel package: $($_.Name)" -ForegroundColor DarkGray
         return
     }
     $idMatch = [regex]::Match($descriptorText, '(?m)^\s*Id\s*=\s*([^\r\n]+?)\s*$')
@@ -331,6 +345,13 @@ foreach ($document in @("COPYING", "EXCEPTIONS.md", "NOTICE.md", "ATTRIBUTION.md
     Copy-Item -LiteralPath $documentSource -Destination $documentationRoot -Force
 }
 Assert-NoticeSet $output
+
+# PIXL owns a private runtime shader namespace. Packaging an old top-level
+# Shaders tree would reintroduce file conflicts with Skyrim and other mods.
+if (-not (Test-Path -LiteralPath $shaderRoot -PathType Container) -or
+	(Test-Path -LiteralPath (Join-Path $output 'Shaders'))) {
+	throw 'Package must contain PIXL-Shaders and must not contain a top-level Shaders directory.'
+}
 
 # Every vendor DLL must remain next to a licence/notice file in the package.
 # This catches accidental staging changes without asserting that a proprietary

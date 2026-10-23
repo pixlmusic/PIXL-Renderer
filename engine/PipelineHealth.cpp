@@ -23,7 +23,7 @@ namespace PipelineHealth
 	// Destructive diagnostics accept only the exact reconstructed module target,
 	// never a cached arbitrary path or a junction redirect. Fail closed on errors.
 	static bool IsExpectedModulePath(const std::string& path, const std::filesystem::path& expected,
-		const std::filesystem::path& allowedRoot = Util::PathHelpers::GetShadersPath())
+		const std::filesystem::path& allowedRoot = Util::PathHelpers::GetPIXLShadersPath())
 	{
 		try {
 			const auto actualPath = std::filesystem::absolute(path).lexically_normal();
@@ -495,12 +495,12 @@ namespace PipelineHealth
 			ImGui::Text("%s", T("menu.issues.open_features_folder_tooltip", "Opens the Features folder containing INI files for manual review."));
 		}
 		ImGui::SameLine();
-		if (ImGui::Button(T("menu.issues.open_shaders_directory", "Open Shaders Directory"))) {
-			std::filesystem::path shadersPath = Util::PathHelpers::GetShadersRealPath();
+		if (ImGui::Button(T("menu.issues.open_shaders_directory", "Open PIXL-Shaders Folder"))) {
+			std::filesystem::path shadersPath = Util::PathHelpers::GetPIXLShadersRealPath();
 			ShellExecuteA(NULL, "open", shadersPath.string().c_str(), NULL, NULL, SW_SHOWNORMAL);
 		}
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T("menu.issues.open_shaders_tooltip", "Opens the main Shaders directory to view individual feature shader folders."));
+			ImGui::Text("%s", T("menu.issues.open_shaders_tooltip", "Opens PIXL's isolated shader folder to view individual feature assets."));
 		}
 
 		std::filesystem::path logPath = Util::PathHelpers::GetLogPath();
@@ -529,7 +529,7 @@ namespace PipelineHealth
 		// Cleanup guidance
 		ImGui::TextColored(theme.Palette.Text, "%s", T("menu.issues.general_actions", "General Actions:"));
 		ImGui::BulletText("%s", T("menu.issues.use_open_features_folder", "Use 'Open Features Folder' to manually review INI files"));
-		ImGui::BulletText("%s", T("menu.issues.use_open_shaders_directory", "Use 'Open Shaders Directory' to check for orphaned shader folders"));
+		ImGui::BulletText("%s", T("menu.issues.use_open_shaders_directory", "Use 'Open PIXL-Shaders Folder' to check for orphaned shader folders"));
 		ImGui::BulletText("%s", T("menu.issues.use_open_logs", "Use 'Open Logs' to manually review the logs"));
 		ImGui::BulletText("%s", T("menu.issues.use_clear_issue_list", "Use 'Clear Issue List' to refresh after manual cleanup"));
 		// All categorized pointers must be finished before the backing vector moves.
@@ -801,7 +801,7 @@ namespace PipelineHealth
 					ImGui::Spacing();
 					ImGui::TextColored(theme.StatusPalette.Warning, "%s", T("menu.issues.compilation_persist_warning", "If compilation issues persist after deletion:"));
 					ImGui::BulletText("%s", T("menu.issues.uninstall_via_mod_manager", "Completely uninstall the feature via your mod manager"));
-					ImGui::BulletText("%s", T("menu.issues.check_modified_files", "Check for modified files in Data/Shaders/ (not in feature subfolders)"));
+					ImGui::BulletText("%s", T("menu.issues.check_modified_files", "Check for modified files in Data/PIXL-Shaders/ (not in feature subfolders)"));
 					ImGui::BulletText("%s", T("menu.issues.reinstall_cs", "Consider reinstalling PIXL Renderer if issues persist"));
 					ImGui::Spacing();
 					ImGui::Separator();

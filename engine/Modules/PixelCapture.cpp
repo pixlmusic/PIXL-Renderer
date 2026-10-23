@@ -32,6 +32,18 @@
 
 namespace
 {
+	float FiniteCaptureOr(float value, float fallback) noexcept
+	{
+		return std::isfinite(value) ? value : fallback;
+	}
+
+	float2 SafeCaptureJitter(float2 jitter) noexcept
+	{
+		if (!std::isfinite(jitter.x) || !std::isfinite(jitter.y))
+			return { 0.0f, 0.0f };
+		return { std::clamp(jitter.x, -2.0f, 2.0f), std::clamp(jitter.y, -2.0f, 2.0f) };
+	}
+
 	// Capture names are intentionally independent of Skyrim and legacy renderer
 	// naming.  Keep the counter process-local, then skip any existing files so
 	// repeated launches never overwrite an earlier PIXL photograph.
@@ -403,7 +415,7 @@ namespace
 		winrt::com_ptr<ID3D11Texture2D>& holder)
 	{
 		if (slot.texture) {
-			return slot.texture;
+				return REX::W32::AsReal(slot.texture);
 		}
 		auto resolveFromView = [&](ID3D11View* view) -> ID3D11Texture2D* {
 			if (!view) {
@@ -419,10 +431,10 @@ namespace
 			}
 			return holder.get();
 		};
-		if (auto* tex = resolveFromView(slot.SRV)) {
+			if (auto* tex = resolveFromView(REX::W32::AsReal(slot.SRV))) {
 			return tex;
 		}
-		return resolveFromView(slot.RTV);
+			return resolveFromView(REX::W32::AsReal(slot.RTV));
 	}
 
 	// Returns the texture that was presented to the display (post-ApplyHDR).
@@ -514,7 +526,7 @@ namespace
 
 		auto& slot = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kFRAMEBUFFER];
 		src.texture = ResolveSlotTexture(slot, holder);
-		src.srv = slot.SRV;
+		src.srv = REX::W32::AsReal(slot.SRV);
 		src.needsPreviewCache = true;
 		src.description = "kFRAMEBUFFER";
 		return src;
@@ -846,9 +858,9 @@ namespace
 				return false;
 			}
 
-			const float2 jitter = sampleIndex < jitterOffsets.size()
+			const float2 jitter = SafeCaptureJitter(sampleIndex < jitterOffsets.size()
 				? jitterOffsets[sampleIndex]
-				: float2{ 0.0f, 0.0f };
+				: float2{ 0.0f, 0.0f });
 
 			for (size_t y = 0; y < height; ++y) {
 				auto* dst =
@@ -877,9 +889,16 @@ namespace
 					const size_t srcBase0 = x0 * 4u;
 					const size_t srcBase1 = x1 * 4u;
 					for (size_t channel = 0; channel < 4u; ++channel) {
-						const float top = std::lerp(row0[srcBase0 + channel], row0[srcBase1 + channel], tx);
-						const float bottom = std::lerp(row1[srcBase0 + channel], row1[srcBase1 + channel], tx);
-						dst[dstBase + channel] += std::lerp(top, bottom, ty);
+						const float fallback = FiniteCaptureOr(row0[srcBase0 + channel], 0.0f);
+						const float c00 = FiniteCaptureOr(row0[srcBase0 + channel], fallback);
+						const float c10 = FiniteCaptureOr(row0[srcBase1 + channel], fallback);
+						const float c01 = FiniteCaptureOr(row1[srcBase0 + channel], fallback);
+						const float c11 = FiniteCaptureOr(row1[srcBase1 + channel], fallback);
+						const float top = std::lerp(c00, c10, tx);
+						const float bottom = std::lerp(c01, c11, tx);
+						const float value = std::lerp(top, bottom, ty);
+						if (std::isfinite(value))
+							dst[dstBase + channel] += value;
 					}
 				}
 			}
@@ -906,8 +925,7 @@ namespace
 					 width) *
 					 4u;
 				 ++x) {
-				row[x] *=
-					invCount;
+				row[x] = FiniteCaptureOr(row[x] * invCount, 0.0f);
 			}
 		}
 
@@ -938,9 +956,9 @@ namespace
 				const DirectX::Image* src = floatImage.GetImage(0, 0, 0);
 				if (!src)
 					return false;
-				const float2 jitter = sampleIndex < jitterOffsets.size()
+				const float2 jitter = SafeCaptureJitter(sampleIndex < jitterOffsets.size()
 					? jitterOffsets[sampleIndex]
-					: float2{ 0.0f, 0.0f };
+					: float2{ 0.0f, 0.0f });
 
 				for (size_t y = 0; y < height; ++y) {
 					const auto* meanRow = reinterpret_cast<const float*>(
@@ -1119,9 +1137,9 @@ namespace
 			if (!src || src->width != width || src->height != height)
 				return false;
 
-			const float2 jitter = sampleIndex < jitterOffsets.size()
+			const float2 jitter = SafeCaptureJitter(sampleIndex < jitterOffsets.size()
 				? jitterOffsets[sampleIndex]
-				: float2{ 0.0f, 0.0f };
+				: float2{ 0.0f, 0.0f });
 
 			for (size_t y = 0; y < height; ++y) {
 				const auto* srcRow = reinterpret_cast<const float*>(
@@ -1131,17 +1149,20 @@ namespace
 					const float r = srcRow[srcBase + 0u];
 					const float g = srcRow[srcBase + 1u];
 					const float b = srcRow[srcBase + 2u];
+					if (!std::isfinite(r) || !std::isfinite(g) || !std::isfinite(b))
+						continue;
 					const float sampleLum = r * 0.2126f + g * 0.7152f + b * 0.0722f;
-					const float meanLum = nativeLumaAt(
+					if (!std::isfinite(sampleLum))
+						continue;
+					const float meanLum = FiniteCaptureOr(nativeLumaAt(
 						static_cast<float>(x) + jitter.x,
-						static_cast<float>(y) + jitter.y);
+						static_cast<float>(y) + jitter.y), sampleLum);
 					const float normalizedDelta =
 						std::abs(sampleLum - meanLum) /
 						(0.035f + std::abs(meanLum) * 0.20f);
-					const float temporalWeight = std::clamp(
+					const float temporalWeight = std::clamp(FiniteCaptureOr(
 						1.0f / (1.0f + normalizedDelta * normalizedDelta * 1.8f),
-						0.12f,
-						1.0f);
+						1.0f), 0.12f, 1.0f);
 
 					// Positive projection jitter moves geometry toward negative screen X/Y;
 					// map the captured pixel back by +jitter onto the unjittered lattice.
@@ -1185,10 +1206,15 @@ namespace
 				output.GetPixels() + y * outImage->rowPitch);
 			for (size_t x = 0; x < outWidth; ++x) {
 				const size_t base = x * 4u;
-				const float weight = std::max(row[base + 3u], 1.0e-6f);
-				row[base + 0u] = std::max(0.0f, row[base + 0u] / weight);
-				row[base + 1u] = std::max(0.0f, row[base + 1u] / weight);
-				row[base + 2u] = std::max(0.0f, row[base + 2u] / weight);
+				const float weight = std::max(FiniteCaptureOr(row[base + 3u], kPriorWeight), 1.0e-6f);
+				const size_t nativeX = std::min(x / outputScale, static_cast<size_t>(native->width - 1u));
+				const size_t nativeY = std::min(y / outputScale, static_cast<size_t>(native->height - 1u));
+				const auto* nativeRow = reinterpret_cast<const float*>(native->pixels + nativeY * native->rowPitch);
+				for (size_t channel = 0; channel < 3u; ++channel) {
+					const float fallback = FiniteCaptureOr(nativeRow[nativeX * 4u + channel], 0.0f);
+					row[base + channel] = std::max(0.0f,
+						FiniteCaptureOr(row[base + channel] / weight, fallback));
+				}
 				row[base + 3u] = 1.0f;
 			}
 		}
@@ -2014,6 +2040,8 @@ void PixelCapture::LoadSettings(json& a_json)
 		sdrUsePng = a_json["SdrUsePng"];
 	if (a_json.contains("CopyToClipboard"))
 		copyToClipboard = a_json["CopyToClipboard"];
+	if (screenshotPath.empty() || screenshotPath.size() > 1024u)
+		screenshotPath = "Screenshots";
 
 	if (a_json.contains("PhotoFinishEnabled"))
 		photoFinishEnabled = a_json["PhotoFinishEnabled"];
@@ -2050,6 +2078,7 @@ void PixelCapture::LoadSettings(json& a_json)
 				a_json["PhotoFinishDetailStrength"],
 				0.0f,
 				1.0f);
+	photoFinishDetailStrength = std::isfinite(photoFinishDetailStrength) ? photoFinishDetailStrength : 0.35f;
 	if (a_json.contains("PhotoFinishNeuralEnabled"))
 		photoFinishNeuralEnabled = a_json["PhotoFinishNeuralEnabled"];
 	if (a_json.contains("PhotoFinishRenderScaleMode"))
@@ -2091,6 +2120,8 @@ void PixelCapture::LoadSettings(json& a_json)
 				a_json["PhotoLensDofHighlightBoost"],
 				0.0f,
 				0.5f);
+	photoLensDofStrength = std::isfinite(photoLensDofStrength) ? photoLensDofStrength : 0.62f;
+	photoLensDofHighlightBoost = std::isfinite(photoLensDofHighlightBoost) ? photoLensDofHighlightBoost : 0.12f;
 
 	if (a_json.contains("PhotoFinishMotionEnabled"))
 		photoFinishMotionEnabled =
@@ -2109,6 +2140,8 @@ void PixelCapture::LoadSettings(json& a_json)
 				a_json["PhotoFinishMotionAngleDegrees"],
 				-180.0f,
 				180.0f);
+	photoFinishMotionStrength = std::isfinite(photoFinishMotionStrength) ? photoFinishMotionStrength : 0.18f;
+	photoFinishMotionAngleDegrees = std::isfinite(photoFinishMotionAngleDegrees) ? photoFinishMotionAngleDegrees : 0.0f;
 	if (a_json.contains("PhotoWatermarkEnabled"))
 		photoWatermarkEnabled = a_json["PhotoWatermarkEnabled"];
 
@@ -2135,6 +2168,12 @@ void PixelCapture::LoadSettings(json& a_json)
 			preset.motionStrength = std::clamp(source.value("MotionStrength", 0.18f), 0.0f, 1.0f);
 			preset.motionAngleDegrees = std::clamp(source.value("MotionAngleDegrees", 0.0f), -180.0f, 180.0f);
 			preset.neuralPhotoEnabled = source.value("NeuralPhotoEnabled", false);
+			if (!std::isfinite(preset.lookOpacity) || !std::isfinite(preset.exposure) ||
+				!std::isfinite(preset.contrast) || !std::isfinite(preset.saturation) ||
+				!std::isfinite(preset.highlightProtection) || !std::isfinite(preset.shadowDetail) ||
+				!std::isfinite(preset.bloomStrength) || !std::isfinite(preset.fieldOfView) ||
+				!std::isfinite(preset.motionStrength) || !std::isfinite(preset.motionAngleDegrees))
+				preset = DirectorPhotoPreset{};
 		}
 	}
 

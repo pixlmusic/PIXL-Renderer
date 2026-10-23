@@ -48,8 +48,13 @@ float SampleMinDepthWideGather(float2 uv)
 
 float SampleEdgeAwareDepth(float2 uv)
 {
+	if (!all(isfinite(uv)))
+		return 1.0f;
 	float filteredDepth = DepthTex.SampleLevel(LinearSampler, uv, 0);
 	float4 depthQuad = DepthTex.GatherRed(LinearSampler, uv);
+	if (!isfinite(filteredDepth) || !all(isfinite(depthQuad)))
+		return 1.0f;
+	depthQuad = saturate(depthQuad);
 	float minimumDepth = Min4(depthQuad);
 	float maximumDepth = max(max(depthQuad.x, depthQuad.y), max(depthQuad.z, depthQuad.w));
 
@@ -72,6 +77,8 @@ float SampleEdgeAwareDepth(float2 uv)
 	// continuous terrain still receives smooth interpolation.
 	uint width, height;
 	DepthTex.GetDimensions(width, height);
+	if (width == 0u || height == 0u)
+		return saturate(filteredDepth);
 	uint2 nearestPixel = min(uint2(saturate(uv) * float2(width, height)), uint2(width, height) - 1u);
 	return DepthTex.Load(int3(nearestPixel, 0));
 }
@@ -83,7 +90,8 @@ PS_OUTPUT main(PS_INPUT input)
 	float2 originalUV = FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(input.TexCoord);
 
 	// Remove jitter offset to get the correct sampling coordinates
-	float2 uv = originalUV - (jitter * SharedData::BufferDim.zw);
+	float2 safeJitter = all(isfinite(jitter)) ? clamp(jitter, -2.0f.xx, 2.0f.xx) : 0.0f.xx;
+	float2 uv = originalUV - (safeJitter * SharedData::BufferDim.zw);
 
 	// Clamp within dynamic-resolution bounds.
 	uv = FrameBuffer::ClampDynamicResolutionAdjustedScreenPosition(uv, input.TexCoord);
@@ -91,7 +99,8 @@ PS_OUTPUT main(PS_INPUT input)
 	// Refraction normals are continuous and may use linear filtering. Depth uses
 	// edge-aware reconstruction so DLSS/FSR silhouettes remain categorical.
 	psout.RefractionNormals = RefractionNormals.SampleLevel(LinearSampler, uv, 0);
-	psout.Depth = SampleEdgeAwareDepth(uv);
+	psout.RefractionNormals = all(isfinite(psout.RefractionNormals)) ? psout.RefractionNormals : float4(0.5f, 0.5f, 0.0f, 0.0f);
+	psout.Depth = saturate(SampleEdgeAwareDepth(uv));
 
 	psout.SAOCameraZ = psout.Depth;
 

@@ -377,15 +377,15 @@ bool ReactiveFX::EnsureShaders()
 	shaderCompilationAttempted = true;
 
 	spawnCS.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
-		L"Data\\Shaders\\ReactiveFX\\ReactiveFXCS.hlsl", {}, "cs_5_0", "SpawnCS")));
+		L"Data\\PIXL-Shaders\\ReactiveFX\\ReactiveFXCS.hlsl", {}, "cs_5_0", "SpawnCS")));
 	simulateCS.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
-		L"Data\\Shaders\\ReactiveFX\\ReactiveFXCS.hlsl", {}, "cs_5_0", "SimulateCS")));
+		L"Data\\PIXL-Shaders\\ReactiveFX\\ReactiveFXCS.hlsl", {}, "cs_5_0", "SimulateCS")));
 	buildMaskCS.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
-		L"Data\\Shaders\\ReactiveFX\\ReactiveFXCS.hlsl", {}, "cs_5_0", "BuildMaskCS")));
+		L"Data\\PIXL-Shaders\\ReactiveFX\\ReactiveFXCS.hlsl", {}, "cs_5_0", "BuildMaskCS")));
 	compositeCS.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
-		L"Data\\Shaders\\ReactiveFX\\ReactiveFXCS.hlsl", {}, "cs_5_0", "CompositeCS")));
+		L"Data\\PIXL-Shaders\\ReactiveFX\\ReactiveFXCS.hlsl", {}, "cs_5_0", "CompositeCS")));
 	reconstructionMaskCS.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
-		L"Data\\Shaders\\ReactiveFX\\ReactiveFXCS.hlsl", {}, "cs_5_0", "WriteReactiveMaskCS")));
+		L"Data\\PIXL-Shaders\\ReactiveFX\\ReactiveFXCS.hlsl", {}, "cs_5_0", "WriteReactiveMaskCS")));
 	reactivePassReady = spawnCS && simulateCS && buildMaskCS && compositeCS && reconstructionMaskCS;
 	if (!reactivePassReady)
 		logger::error("[ReactiveFX] One or more shaders failed; no stale particle resources will be sampled");
@@ -1211,7 +1211,6 @@ void ReactiveFX::QueueAmbientEmitters(float deltaTime)
 		std::uint32_t formID{};
 		SourceType source{ SourceType::Unknown };
 		float distance{ std::numeric_limits<float>::max() };
-		std::uint32_t fireKind{};
 		float pulseInterval{};
 		bool ambientAtEffectAnchor{};
 		float ambientDensity{ 1.0f };
@@ -1220,35 +1219,6 @@ void ReactiveFX::QueueAmbientEmitters(float deltaTime)
 	const auto camera = globals::game::frameBufferCached.GetCameraPosAdjust();
 	const RE::NiPoint3 eye = Finite({ camera.x, camera.y, camera.z })
 		? RE::NiPoint3{ camera.x, camera.y, camera.z } : player->GetPosition();
-	auto traceBrazierSurface = [tes](const RE::NiPoint3& base) -> std::optional<RE::NiPoint3> {
-		if (!Finite(base))
-			return std::nullopt;
-		const float scale = RE::bhkWorld::GetWorldScale();
-		if (!std::isfinite(scale) || scale <= 0.0f)
-			return std::nullopt;
-		// The named flame node can be buried in a brazier's pedestal. Cast through
-		// a short vertical window around the fixture and accept only its elevated
-		// collision surface; this rejects the floor, nearby walls and overheads.
-		const RE::NiPoint3 start = base + RE::NiPoint3{ 0.0f, 0.0f, 240.0f };
-		const RE::NiPoint3 end = base + RE::NiPoint3{ 0.0f, 0.0f, -64.0f };
-		const RE::NiPoint3 delta = end - start;
-		RE::bhkPickData pick{};
-		pick.rayInput.from = RE::hkVector4{ start.x * scale, start.y * scale, start.z * scale, 0.0f };
-		pick.rayInput.to = RE::hkVector4{ end.x * scale, end.y * scale, end.z * scale, 0.0f };
-		pick.rayInput.enableShapeCollectionFilter = false;
-		pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kLOS);
-		pick.ray = RE::hkVector4{ delta.x * scale, delta.y * scale, delta.z * scale, 0.0f };
-		pick.rayOutput.Reset();
-		tes->Pick(pick);
-		const float fraction = pick.rayOutput.hitFraction;
-		if (!pick.rayOutput.HasHit() || !std::isfinite(fraction) || fraction < 0.0f || fraction > 1.0f)
-			return std::nullopt;
-		const RE::NiPoint3 hit = start + delta * fraction;
-		const float rise = hit.z - base.z;
-		if (!Finite(hit) || rise < 24.0f || rise > 220.0f)
-			return std::nullopt;
-		return hit;
-	};
 	tes->ForEachReferenceInRange(player, 1400.0f, [&](RE::TESObjectREFR* reference) {
 		if (!reference || reference->IsDisabled() || !reference->Get3D(false))
 			return RE::BSContainer::ForEachResult::kContinue;
@@ -1262,15 +1232,10 @@ void ReactiveFX::QueueAmbientEmitters(float deltaTime)
 		if (!modelPath) return RE::BSContainer::ForEachResult::kContinue;
 		const std::string_view model = modelPath;
 		const std::string_view name = base->GetName() ? base->GetName() : "";
-		const auto has = [&](std::string_view token) { return ContainsNoCase(model, token) || ContainsNoCase(name, token); };
 		const bool candle = ContainsNoCase(model, "candle") || ContainsNoCase(name, "candle");
-		const bool brazier = has("brazier");
-		const std::uint32_t fireKind = has("torch") ? 1u :
-			(has("fireplace") || has("hearth")) ? 3u :
-			brazier ? 4u :
-			(has("campfire") || has("firepit") || has("fire pit")) ? 2u : 0u;
-		const bool fire = fireKind != 0u && !has("unlit") && !has("extinguished") && !has("burntout");
-		if (!candle && !fire)
+		// Static fire fixtures are deliberately excluded: their model origins and
+		// flame-node placement vary too much for reliable ambient particle anchors.
+		if (!candle)
 			return RE::BSContainer::ForEachResult::kContinue;
 		const auto rootPosition = reference->GetPosition();
 		auto position = rootPosition;
@@ -1317,8 +1282,7 @@ void ReactiveFX::QueueAmbientEmitters(float deltaTime)
 			cooldownEntry->second = std::max(cooldownEntry->second - 1.5f, 0.0f);
 			return RE::BSContainer::ForEachResult::kContinue;
 		}
-		const float basePulseInterval = candle ? 12.0f : fireKind == 1u ? 10.0f :
-			(fireKind == 2u || fireKind == 4u) ? 4.0f : 7.0f;
+		const float basePulseInterval = 12.0f;
 		const float pulseInterval = basePulseInterval * (1.0f + (1.0f - ambientDensity) * 2.0f);
 		for (const auto& candidate : nearest)
 			if (candidate.source != SourceType::Unknown && Length(candidate.position - position) < 48.0f)
@@ -1327,30 +1291,19 @@ void ReactiveFX::QueueAmbientEmitters(float deltaTime)
 			return a.distance < b.distance;
 		});
 		if (distance < farthest->distance)
-			*farthest = { position, formID, candle ? SourceType::AmbientCandle : SourceType::AmbientFire, distance, fireKind, pulseInterval, ambientAtEffectAnchor, ambientDensity };
+			*farthest = { position, formID, SourceType::AmbientCandle, distance, pulseInterval, ambientAtEffectAnchor, ambientDensity };
 		return RE::BSContainer::ForEachResult::kContinue;
 	});
 	for (const auto& candidate : nearest) {
 		if (candidate.source == SourceType::Unknown)
 			continue;
 		Event event{};
-		float sourceLift = candidate.source == SourceType::AmbientCandle ? 9.0f :
-			(candidate.fireKind == 1u ? 18.0f : (candidate.fireKind == 3u ? 28.0f : 38.0f));
-		RE::NiPoint3 emitterOrigin = candidate.position;
-		if (candidate.fireKind == 4u) {
-			if (const auto hit = traceBrazierSurface(candidate.position)) {
-				emitterOrigin = *hit;
-				sourceLift = 4.0f; // Clear the collision face without visibly floating above the bowl.
-			}
-		}
-		event.position = emitterOrigin + RE::NiPoint3{ 0.0f, 0.0f, sourceLift };
+		event.position = candidate.position + RE::NiPoint3{ 0.0f, 0.0f, 9.0f };
 		event.direction = { 0.0f, 0.0f, 1.0f };
-		event.radius = candidate.fireKind == 1u ? 8.0f :
-			(candidate.fireKind == 2u ? 90.0f : (candidate.fireKind == 4u ? 48.0f : 24.0f));
-		event.strength = candidate.source == SourceType::AmbientFire ? 0.9f : 0.55f;
+		event.radius = 24.0f;
+		event.strength = 0.55f;
 		event.source = candidate.source;
 		event.sourceFormID = candidate.formID;
-		event.ambientFireKind = candidate.fireKind;
 		event.ambientDensity = candidate.ambientDensity;
 		ambientEmitterCooldowns[candidate.formID] = candidate.pulseInterval;
 		event.ambientAtEffectAnchor = candidate.ambientAtEffectAnchor;
@@ -1512,7 +1465,7 @@ void ReactiveFX::DrawReactiveFX()
 		return;
 	const bool collisionEnabled = settings.EnableParticleCollision && normal.SRV;
 	D3D11_TEXTURE2D_DESC mainDesc{};
-	main.texture->GetDesc(&mainDesc);
+	main.texture->GetDesc(REX::W32::AsW32(&mainDesc));
 	if (!mainDesc.Width || !mainDesc.Height)
 		return;
 	const auto active = Util::ConvertToDynamic(
@@ -1594,7 +1547,7 @@ void ReactiveFX::DrawReactiveFX()
 	}
 
 	globals::profiler->BeginPass("ReactiveFX::Simulate");
-	ID3D11ShaderResourceView* simulateViews[3]{ depthSRV, collisionEnabled ? normal.SRV : nullptr, impulseSRV.get() };
+	ID3D11ShaderResourceView* simulateViews[3]{ depthSRV, collisionEnabled ? REX::W32::AsReal(normal.SRV) : nullptr, impulseSRV.get() };
 	ID3D11UnorderedAccessView* particleUAV = particles->uav.get();
 	context->CSSetShaderResources(0, 3, simulateViews);
 	context->CSSetUnorderedAccessViews(0, 1, &particleUAV, nullptr);
@@ -1630,14 +1583,14 @@ void ReactiveFX::DrawReactiveFX()
 		context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, savedRTVs, &savedDSV);
 		context->OMSetRenderTargets(0, nullptr, nullptr);
 		D3D11_BOX sourceBox{ 0, 0, 0, width, height, 1 };
-		context->CopySubresourceRegion(sceneColorCopy->resource.get(), 0, 0, 0, 0, main.texture, 0, &sourceBox);
+		context->CopySubresourceRegion(sceneColorCopy->resource.get(), 0, 0, 0, 0, REX::W32::AsReal(main.texture), 0, &sourceBox);
 		context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, savedRTVs, savedDSV);
 		for (auto*& view : savedRTVs)
 			if (view) view->Release();
 		if (savedDSV) savedDSV->Release();
 	}
 	ID3D11ShaderResourceView* compositeViews[4]{ particleMask->srv.get(), depthSRV, impulseSRV.get(), sceneColorCopy ? sceneColorCopy->srv.get() : nullptr };
-	ID3D11UnorderedAccessView* mainUAV = main.UAV;
+	ID3D11UnorderedAccessView* mainUAV = REX::W32::AsReal(main.UAV);
 	context->CSSetShaderResources(0, 4, compositeViews);
 	context->CSSetUnorderedAccessViews(0, 1, &mainUAV, nullptr);
 	context->CSSetShader(compositeCS.get(), nullptr, 0);
@@ -1978,7 +1931,7 @@ void ReactiveFX::DrawSettings()
 
 void ReactiveFX::LoadSettings(json& value)
 {
-	settings = value;
+	settings = value.is_object() ? value.get<Settings>() : Settings{};
 	settings.Quality = std::min(settings.Quality, 3u);
 	settings.MaximumDistance = std::clamp(
 		std::isfinite(settings.MaximumDistance) ? settings.MaximumDistance : 12000.0f,

@@ -10,7 +10,7 @@ $gameRoot = (Resolve-Path -LiteralPath $GameRoot).Path
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $old = Join-Path $repo 'build\deployment-backups\RC-DayNight-20260912-122615-9db15f481ba94e1f8f9ee399e34f60ef\PipelineLibrary'
 $live = Join-Path $gameRoot 'Data\PIXL\PipelineLibrary'
-$shaders = Join-Path $gameRoot 'Data\Shaders'
+$shaders = Join-Path $gameRoot 'Data\PIXL-Shaders'
 $old = (Resolve-Path -LiteralPath $old).Path
 $live = (Resolve-Path -LiteralPath $live).Path
 foreach ($root in @($old,$live)) {

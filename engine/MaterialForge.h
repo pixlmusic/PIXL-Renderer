@@ -8,6 +8,7 @@
 #include "RenderModule.h"
 #include "Buffer.h"
 #include "Renderer/RendererMetadata.h"
+#include "MaterialForge/MaterialSurfaceProfile.h"
 
 struct GlintParameters
 {
@@ -98,7 +99,7 @@ public:
 		float LegacyMetalInferenceThreshold = 0.32f;
 		/** Upper bound for guessed vanilla metalness; authored/Material Layers data is not capped by this. */
 		float LegacyMetalInferenceMaximum = 0.55f;
-		/** Promotes calibrated inverse-square attenuation for all local lights. */
+		/** Promotes calibrated inverse-distance attenuation for local lights. */
 		uint EnablePhysicalLocalLightFalloff = 1;
 		/** Enables a short depth-buffer contact ray for the most influential local lights. */
 		uint EnableLocalContactShadows = 1;
@@ -118,14 +119,14 @@ public:
 		uint EnableGGXMultiScatter = 1;
 		/** Blends from single-scatter GGX to the compensated response. */
 		float GGXMultiScatterStrength = 1.0f;
-		/** Finite emitter radius used to regularize inverse-square attenuation near a light. */
+		/** Finite emitter radius used to regularize inverse-distance attenuation near a light. */
 		float LocalLightMinimumDistance = 28.0f;
 		/** Blends Skyrim/Natural Lighting attenuation into PIXL's physical local-light falloff. */
 		float PhysicalLocalLightFalloffStrength = 0.65f;
 	};
 	STATIC_ASSERT_ALIGNAS_16(Settings);
 	static_assert(sizeof(Settings) == PIXL::Metadata::ABI::MaterialForge.sizeBytes, "MaterialForge::Settings must match its five-register shader ABI.");
-	// distribution/Shaders/Common/SharedData.hlsli::MaterialForgeSettings mirrors this exact
+	// distribution/PIXL-Shaders/Common/SharedData.hlsli::MaterialForgeSettings mirrors this exact
 	// layout. PipelineBuffer.cpp copies this complete struct immediately before
 	// SkinOpticsData, so any CPU/HLSL size drift corrupts every following feature.
 	static_assert(offsetof(Settings, EnableLegacyPhysicalDirectLighting) == 4);
@@ -151,7 +152,7 @@ public:
 	Settings settings;
 
 	static constexpr uint LegacyTuningMagic = 0x504D4654u;  // "PMFT"
-	static constexpr uint LegacyTuningVersion = 1u;
+	static constexpr uint LegacyTuningVersion = 2u;
 
 	/**
 	 * @brief Legacy-to-physical calibration bound through dedicated PS b10.
@@ -202,9 +203,31 @@ public:
 		float MetalTintChromaHigh = 0.32f;
 		float MetalColorCorrelationLow = 0.76f;
 		float MetalColorCorrelationHigh = 0.97f;
+
+		// c7-c9: material surface controls; shared FeatureData and engine layouts stay fixed.
+		uint EnableWeatherSnow = 1;
+		uint EnableProceduralDetail = 1;
+		float SnowStrength = 0.8f;
+		float ProceduralDetailStrength = 0.25f;
+		float WeatherSnowCoverage = 0.f; // Runtime only; sourced from Ground Response.
+		float WeatherSnowMeltWetness = 0.f;
+		float SnowSlopeMinimum = 0.30f;
+		float SnowSlopeFeather = 0.35f;
+		float ProceduralDetailScale = 0.6f;
+		float ProceduralDetailDistance = 512.f;
+		float SnowRoughness = 0.78f;
+		float SnowAlbedo = 0.76f;
+		float IndoorDustStrength = 0.08f;
+		float ExteriorDirtStrength = 0.f;
+		float surfacePad0 = 0.f;
+		float surfacePad1 = 0.f;
 	};
 	STATIC_ASSERT_ALIGNAS_16(LegacyTuningSettings);
-	static_assert(sizeof(LegacyTuningSettings) == 112, "MaterialForge::LegacyTuningSettings must match PS b10.");
+	static_assert(offsetof(LegacyTuningSettings, EnableWeatherSnow) == 112);
+	static_assert(offsetof(LegacyTuningSettings, WeatherSnowCoverage) == 128);
+	static_assert(offsetof(LegacyTuningSettings, ProceduralDetailScale) == 144);
+	static_assert(offsetof(LegacyTuningSettings, IndoorDustStrength) == 160);
+	static_assert(sizeof(LegacyTuningSettings) == 176, "MaterialForge::LegacyTuningSettings must match PS b10 version 2.");
 
 	LegacyTuningSettings legacyTuningSettings;
 	ConstantBuffer* legacyTuningCB = nullptr;
@@ -253,6 +276,7 @@ public:
 
 	struct PBRTextureSetData
 	{
+		MaterialSurface::Profile surface;
 		float roughnessScale = 1.f;
 		float displacementScale = 1.f;
 		float specularLevel = 0.04f;

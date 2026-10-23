@@ -17,6 +17,12 @@ Texture2D<float2> ExponentialHeightFogDepthRange : register(t99);
 
 namespace Atmosphere
 {
+	float FogSmootherStep(float value)
+	{
+		float t = saturate(value);
+		return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+	}
+
 	float GetVanillaFogFade(float vanillaFogFade)
 	{
 		return SharedData::atmosphereSettings.respectVanillaFogFade != 0 ? vanillaFogFade : 1.0f;
@@ -64,6 +70,8 @@ namespace Atmosphere
 
 	float GetDepthRangeWeight(float sceneDepth, float2 depthRange)
 	{
+		if (!isfinite(sceneDepth) || !all(isfinite(depthRange)))
+			return 0.0f;
 		float maxDepth = max(depthRange.x, depthRange.y);
 		float minDepth = min(depthRange.x, depthRange.y);
 		if (maxDepth <= 0.0f)
@@ -72,7 +80,8 @@ namespace Atmosphere
 		float depthGap = max(max(minDepth - sceneDepth, sceneDepth - maxDepth), 0.0f);
 		float depthScale = max(sceneDepth, max(SharedData::CameraData.y * 4.0f, 256.0f));
 		float relativeGap = depthGap / depthScale;
-		return exp2(-max(SharedData::atmosphereSettings.volumetricDepthAwareUpsamplingStrength, 0.0f) * relativeGap);
+		float weight = exp2(-max(SharedData::atmosphereSettings.volumetricDepthAwareUpsamplingStrength, 0.0f) * relativeGap);
+		return weight * weight * weight * (weight * (weight * 6.0f - 15.0f) + 10.0f);
 	}
 
 	void AccumulateDepthAwareVolumeSample(
@@ -99,6 +108,8 @@ namespace Atmosphere
 			SampColorSampler,
 			float3(sampleUV, clamp(volumeZ, zMin, zMax)),
 			0);
+		if (!all(isfinite(fog)))
+			return;
 		accumulatedFog += fog * weight;
 		accumulatedWeight += weight;
 	}
@@ -143,6 +154,7 @@ namespace Atmosphere
 		float2 texelPosition = volumeUV * float2(volumeWidth, volumeHeight) - 0.5f;
 		int2 baseCoord = int2(floor(texelPosition));
 		float2 f = frac(texelPosition);
+		f = f * f * f * (f * (f * 6.0f.xx - 15.0f.xx) + 10.0f.xx);
 
 		float4 accumulatedFog = 0.0f.xxxx;
 		float accumulatedWeight = 0.0f;
@@ -151,7 +163,8 @@ namespace Atmosphere
 		AccumulateDepthAwareVolumeSample(baseCoord + int2(0, 1), (1.0f - f.x) * f.y, volumeZ, sceneDepth, volumeWidth, volumeHeight, volumeDepth, accumulatedFog, accumulatedWeight);
 		AccumulateDepthAwareVolumeSample(baseCoord + int2(1, 1), f.x * f.y, volumeZ, sceneDepth, volumeWidth, volumeHeight, volumeDepth, accumulatedFog, accumulatedWeight);
 
-		return accumulatedWeight > 1e-5f ? accumulatedFog / accumulatedWeight : linearSample;
+		float4 resolved = accumulatedWeight > 1e-5f ? accumulatedFog / accumulatedWeight : linearSample;
+		return all(isfinite(resolved)) ? float4(max(resolved.rgb, 0.0f), saturate(resolved.a)) : float4(0, 0, 0, 1);
 	}
 
 	float2 GetLegacyUpsampleJitter(float2 screenPixel, float2 volumeSize)
@@ -195,7 +208,8 @@ namespace Atmosphere
 
 		float volumeZ = saturate(ComputeVolumetricNormalizedSlice(sceneDepth, float(volumeDepth)));
 		float4 volumetricFog = SampleIntegratedVolumetricFog(volumeUV, volumeZ, sceneDepth, volumeWidth, volumeHeight, volumeDepth);
-		return lerp(float4(0.0f, 0.0f, 0.0f, 1.0f), volumetricFog, saturate((sceneDepth - GetVolumetricStartDistance()) * 100000000.0f));
+		float startFade = FogSmootherStep((sceneDepth - GetVolumetricStartDistance()) / max(SharedData::CameraData.y * 2.0f, 1.0f));
+		return lerp(float4(0.0f, 0.0f, 0.0f, 1.0f), volumetricFog, startFade);
 	}
 
 	float4 SampleVolumetricFog(float4 screenPosition)
@@ -220,11 +234,13 @@ namespace Atmosphere
 		volumeUV += GetLegacyUpsampleJitter(screenPosition.xy, volumeSize);
 
 		float4 volumetricFog = SampleIntegratedVolumetricFog(volumeUV, volumeZ, sceneDepth, volumeWidth, volumeHeight, volumeDepth);
-		return lerp(float4(0.0f, 0.0f, 0.0f, 1.0f), volumetricFog, saturate((sceneDepth - GetVolumetricStartDistance()) * 100000000.0f));
+		float startFade = FogSmootherStep((sceneDepth - GetVolumetricStartDistance()) / max(SharedData::CameraData.y * 2.0f, 1.0f));
+		return lerp(float4(0.0f, 0.0f, 0.0f, 1.0f), volumetricFog, startFade);
 	}
 
 	float4 CombineVolumetricFog(float4 analyticalFog, float3 positionWS)
 	{
+		analyticalFog = all(isfinite(analyticalFog)) ? float4(max(analyticalFog.rgb, 0.0f), saturate(analyticalFog.a)) : 0.0f.xxxx;
 		float4 volumetricFog = SampleVolumetricFog(positionWS);
 		float analyticalTransmittance = 1.0f - analyticalFog.w;
 		float combinedTransmittance = max(
@@ -238,6 +254,7 @@ namespace Atmosphere
 
 	float4 CombineVolumetricFog(float4 analyticalFog, float4 screenPosition)
 	{
+		analyticalFog = all(isfinite(analyticalFog)) ? float4(max(analyticalFog.rgb, 0.0f), saturate(analyticalFog.a)) : 0.0f.xxxx;
 		float4 volumetricFog = SampleVolumetricFog(screenPosition);
 		float analyticalTransmittance = 1.0f - analyticalFog.w;
 		float combinedTransmittance = max(

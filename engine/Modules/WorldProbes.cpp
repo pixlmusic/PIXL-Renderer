@@ -124,7 +124,14 @@ void WorldProbes::DrawSettings()
 
 void WorldProbes::LoadSettings(json& o_json)
 {
-	settings = o_json;
+	settings = o_json.is_object() ? o_json.get<Settings>() : Settings{};
+	settings.EnabledSSR = !!settings.EnabledSSR;
+	settings.EnabledCreator = !!settings.EnabledCreator;
+	auto& color = settings.CubemapColor;
+	const float defaults[4]{ 1.0f, 1.0f, 1.0f, 0.0f };
+	float* channels = &color.x;
+	for (int i = 0; i < 4; ++i)
+		channels[i] = std::isfinite(channels[i]) ? std::clamp(channels[i], 0.0f, 1.0f) : defaults[i];
 	recompileFlag = true;
 }
 
@@ -226,7 +233,7 @@ ID3D11ComputeShader* WorldProbes::GetComputeShaderUpdate()
 {
 	if (!updateCubemapCS) {
 		logger::debug("Compiling UpdateCubemapCS");
-		updateCubemapCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\WorldProbes\\UpdateCubemapCS.hlsl", {}, "cs_5_0"));
+		updateCubemapCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\WorldProbes\\UpdateCubemapCS.hlsl", {}, "cs_5_0"));
 	}
 	return updateCubemapCS;
 }
@@ -235,7 +242,7 @@ ID3D11ComputeShader* WorldProbes::GetComputeShaderUpdateReflections()
 {
 	if (!updateCubemapReflectionsCS) {
 		logger::debug("Compiling UpdateCubemapCS REFLECTIONS");
-		updateCubemapReflectionsCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\WorldProbes\\UpdateCubemapCS.hlsl", { { "REFLECTIONS", "" } }, "cs_5_0"));
+		updateCubemapReflectionsCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\WorldProbes\\UpdateCubemapCS.hlsl", { { "REFLECTIONS", "" } }, "cs_5_0"));
 	}
 	return updateCubemapReflectionsCS;
 }
@@ -244,7 +251,7 @@ ID3D11ComputeShader* WorldProbes::GetComputeShaderUpdateFakeReflections()
 {
 	if (!updateCubemapFakeReflectionsCS) {
 		logger::debug("Compiling UpdateCubemapCS FAKEREFLECTIONS");
-		updateCubemapFakeReflectionsCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\WorldProbes\\UpdateCubemapCS.hlsl", { { "FAKEREFLECTIONS", "" } }, "cs_5_0"));
+		updateCubemapFakeReflectionsCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\WorldProbes\\UpdateCubemapCS.hlsl", { { "FAKEREFLECTIONS", "" } }, "cs_5_0"));
 	}
 	return updateCubemapFakeReflectionsCS;
 }
@@ -253,7 +260,7 @@ ID3D11ComputeShader* WorldProbes::GetComputeShaderInferrence()
 {
 	if (!inferCubemapCS) {
 		logger::debug("Compiling InferCubemapCS");
-		inferCubemapCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\WorldProbes\\InferCubemapCS.hlsl", {}, "cs_5_0"));
+		inferCubemapCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\WorldProbes\\InferCubemapCS.hlsl", {}, "cs_5_0"));
 	}
 	return inferCubemapCS;
 }
@@ -262,7 +269,7 @@ ID3D11ComputeShader* WorldProbes::GetComputeShaderInferrenceReflections()
 {
 	if (!inferCubemapReflectionsCS) {
 		logger::debug("Compiling InferCubemapCS REFLECTIONS");
-		inferCubemapReflectionsCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\WorldProbes\\InferCubemapCS.hlsl", { { "REFLECTIONS", "" } }, "cs_5_0"));
+		inferCubemapReflectionsCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\WorldProbes\\InferCubemapCS.hlsl", { { "REFLECTIONS", "" } }, "cs_5_0"));
 	}
 	return inferCubemapReflectionsCS;
 }
@@ -271,7 +278,7 @@ ID3D11ComputeShader* WorldProbes::GetComputeShaderInferrenceFakeReflections()
 {
 	if (!inferCubemapFakeReflectionsCS) {
 		logger::debug("Compiling InferCubemapCS FAKEREFLECTIONS");
-		inferCubemapFakeReflectionsCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\WorldProbes\\InferCubemapCS.hlsl", { { "FAKEREFLECTIONS", "" } }, "cs_5_0"));
+		inferCubemapFakeReflectionsCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\WorldProbes\\InferCubemapCS.hlsl", { { "FAKEREFLECTIONS", "" } }, "cs_5_0"));
 	}
 	return inferCubemapFakeReflectionsCS;
 }
@@ -280,7 +287,7 @@ ID3D11ComputeShader* WorldProbes::GetComputeShaderSpecularIrradiance()
 {
 	if (!specularIrradianceCS) {
 		logger::debug("Compiling SpecularIrradianceCS");
-		specularIrradianceCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\WorldProbes\\SpecularIrradianceCS.hlsl", {}, "cs_5_0"));
+		specularIrradianceCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\WorldProbes\\SpecularIrradianceCS.hlsl", {}, "cs_5_0"));
 	}
 	return specularIrradianceCS;
 }
@@ -289,7 +296,7 @@ ID3D11ComputeShader* WorldProbes::GetComputeShaderBC6HEncode()
 {
 	if (!bc6hEncodeCS) {
 		logger::debug("Compiling BC6HEncodeCS");
-		bc6hEncodeCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\Shaders\\WorldProbes\\BC6HEncodeCS.hlsl", {}, "cs_5_0"));
+		bc6hEncodeCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\WorldProbes\\BC6HEncodeCS.hlsl", {}, "cs_5_0"));
 	}
 	return bc6hEncodeCS;
 }
@@ -302,7 +309,7 @@ void WorldProbes::UpdateCubemapCapture(bool a_reflections)
 	auto& depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
 	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
 
-	ID3D11ShaderResourceView* srvs[2] = { depth.depthSRV, main.SRV };
+	ID3D11ShaderResourceView* srvs[2] = { REX::W32::AsReal(depth.depthSRV), REX::W32::AsReal(main.SRV) };
 	context->CSSetShaderResources(0, 2, srvs);
 
 	uint index = a_reflections ? 1 : 0;
@@ -387,7 +394,7 @@ void WorldProbes::Inferrence(bool a_reflections)
 
 	auto& cubemap = renderer->GetRendererData().cubemapRenderTargets[RE::RENDER_TARGETS_CUBEMAP::kREFLECTIONS];
 
-	ID3D11ShaderResourceView* srvs[3] = { (a_reflections ? envCaptureReflectionsTexture : envCaptureTexture)->srv.get(), cubemap.SRV, defaultCubemap };
+	ID3D11ShaderResourceView* srvs[3] = { (a_reflections ? envCaptureReflectionsTexture : envCaptureTexture)->srv.get(), REX::W32::AsReal(cubemap.SRV), defaultCubemap };
 	context->CSSetShaderResources(0, 3, srvs);
 
 	context->CSSetSamplers(0, 1, &computeSampler);
@@ -586,7 +593,7 @@ void WorldProbes::UpdateCubemap()
 	if (recompileFlag) {
 		logger::debug("Recompiling for World Probes");
 		auto shaderCache = globals::shaderCache;
-		if (!shaderCache->Clear("Data//Shaders//ISReflectionsRayTracing.hlsl"))
+		if (!shaderCache->Clear("Data//PIXL-Shaders//ISReflectionsRayTracing.hlsl"))
 			// if can't find specific hlsl file cache, clear all image space files
 			shaderCache->Clear(RE::BSShader::Types::ImageSpace);
 		recompileFlag = false;
@@ -685,10 +692,10 @@ void WorldProbes::SetupResources()
 
 	{
 		D3D11_TEXTURE2D_DESC texDesc;
-		cubemap.texture->GetDesc(&texDesc);
+		cubemap.texture->GetDesc(REX::W32::AsW32(&texDesc));
 
 		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc;
-		cubemap.SRV->GetDesc(&srvDesc);
+		cubemap.SRV->GetDesc(REX::W32::AsW32(&srvDesc));
 
 		texDesc.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
 
@@ -855,7 +862,7 @@ void WorldProbes::SetupResources()
 	}
 
 	{
-		DirectX::CreateDDSTextureFromFile(device, L"Data\\Shaders\\WorldProbes\\defaultcubemap.dds", nullptr, &defaultCubemap);
+		DirectX::CreateDDSTextureFromFile(device, L"Data\\PIXL-Shaders\\WorldProbes\\defaultcubemap.dds", nullptr, &defaultCubemap);
 	}
 }
 

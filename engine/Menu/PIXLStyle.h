@@ -279,15 +279,15 @@ namespace PIXLUI
 		bool playing,
 		std::size_t* clickedPoint = nullptr)
 	{
-		const float safeDuration = std::max(duration, 0.001f);
+		const float safeDuration = std::isfinite(duration) ? std::max(duration, 0.001f) : 0.001f;
 		const ImVec2 origin = ImGui::GetCursorScreenPos();
-		const ImVec2 size(std::max(ImGui::GetContentRegionAvail().x, Ref(220.0f)), Ref(64.0f));
+		const ImVec2 size(std::max(ImGui::GetContentRegionAvail().x, 1.0f), Ref(64.0f));
 		ImGui::PushID(id);
 		ImGui::InvisibleButton("##timeline", size);
 		const bool hovered = ImGui::IsItemHovered();
 		const bool active = ImGui::IsItemActive();
 		bool changed = false;
-		const float inset = Ref(14.0f);
+		const float inset = std::min(Ref(14.0f), std::max(0.0f, (size.x - 1.0f) * 0.5f));
 		const float railMin = origin.x + inset;
 		const float railMax = origin.x + size.x - inset;
 		if (clickedPoint)

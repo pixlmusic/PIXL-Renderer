@@ -12,7 +12,8 @@ namespace
 		// MaterialForge. Skyrim may initialize it after DataLoaded, so callers
 		// resolve it lazily from the landscape-material hook.
 		static const auto defaultLandTextureAddress = REL::Relocation<RE::TESLandTexture**>(RELOCATION_ID(514783, 400936));
-		return *defaultLandTextureAddress;
+		auto** defaultLandTexture = defaultLandTextureAddress.get();
+		return defaultLandTexture ? *defaultLandTexture : nullptr;
 	}
 }
 
@@ -75,7 +76,8 @@ bool TerrainField::TESObjectLAND_SetupMaterial(RE::TESObjectLAND* land)
 		if (geometry != nullptr) {
 			const auto shaderProp = static_cast<RE::BSLightingShaderProperty*>(geometry->GetGeometryRuntimeData().shaderProperty.get());
 			if (shaderProp != nullptr) {
-				hashKey = shaderProp->GetBaseMaterial()->hashKey;
+				if (auto* baseMaterial = shaderProp->GetBaseMaterial())
+					hashKey = baseMaterial->hashKey;
 			}
 		}
 
@@ -85,7 +87,7 @@ bool TerrainField::TESObjectLAND_SetupMaterial(RE::TESObjectLAND* land)
 		}
 
 		// Create array of texture sets (6 tiles)
-		std::array<RE::BGSTextureSet*, 6> textureSets;
+		std::array<RE::BGSTextureSet*, 6> textureSets{};
 		auto defTexture = land->loadedData->defQuadTextures[quadI];
 		if (defTexture != nullptr && defTexture->formID != 0) {
 			textureSets[0] = Util::GetSeasonalSwap(defTexture->textureSet);
@@ -108,20 +110,26 @@ bool TerrainField::TESObjectLAND_SetupMaterial(RE::TESObjectLAND* land)
 			}
 		}
 
-		// Assign textures to material
+		// Copy the retained texture references while locked, then perform engine texture-set
+		// updates without holding the shared cache lock across engine calls.
+		std::array<RE::NiSourceTexturePtr, 6> parallaxTextures{};
 		{
 			const std::unique_lock lock(extendedSlotsMutex);
 			auto& slot = extendedSlots.try_emplace(hashKey).first->second;
+			parallaxTextures = slot.parallax;
+		}
 
-			for (uint32_t textureI = 0; textureI < 6; ++textureI) {
-				if (textureSets[textureI] == nullptr) {
-					continue;
-				}
+		// Assign only valid replacement maps. A missing extended map keeps the source
+		// texture set's existing parallax slot intact instead of clearing it.
+		for (uint32_t textureI = 0; textureI < 6; ++textureI) {
+			auto* txSet = textureSets[textureI];
+			auto* replacement = parallaxTextures[textureI].get();
+			if (txSet == nullptr || replacement == nullptr)
+				continue;
 
-				auto txSet = textureSets[textureI];
-				if (txSet->GetTexturePath(static_cast<RE::BSTextureSet::Texture>(3)) != nullptr) {
-					txSet->SetTexture(static_cast<RE::BSTextureSet::Texture>(3), slot.parallax[textureI]);
-				}
+			const char* existingPath = txSet->GetTexturePath(static_cast<RE::BSTextureSet::Texture>(3));
+			if (existingPath != nullptr && existingPath[0] != '\0') {
+				txSet->SetTexture(static_cast<RE::BSTextureSet::Texture>(3), parallaxTextures[textureI]);
 			}
 		}
 	}
@@ -139,7 +147,11 @@ struct THExtendedRendererState
 
 	void SetPSTexture(size_t textureIndex, RE::BSGraphics::Texture* newTexture)
 	{
-		ID3D11ShaderResourceView* resourceView = newTexture ? newTexture->resourceView : nullptr;
+		if (textureIndex >= NumPSTextures)
+			return;
+		ID3D11ShaderResourceView* resourceView = newTexture ? REX::W32::AsReal(newTexture->resourceView) : nullptr;
+		if (PSTexture[textureIndex] == resourceView)
+			return;
 
 		PSTexture[textureIndex] = resourceView;
 		PSResourceModifiedBits |= (1 << textureIndex);
@@ -153,6 +165,8 @@ struct THExtendedRendererState
 
 void TerrainField::SetShaderResources(ID3D11DeviceContext* a_context)
 {
+	if (!a_context)
+		return;
 	uint32_t mask = thExtendedRendererState.PSResourceModifiedBits;
 
 	if (mask == 0) [[likely]] {
@@ -198,14 +212,23 @@ void TerrainField::BSLightingShader_SetupMaterial(RE::BSLightingShaderMaterialBa
 	{
 		const std::shared_lock lock(extendedSlotsMutex);
 
-		if (!extendedSlots.contains(material->hashKey)) {
-			// hash does not exists
+		const auto found = extendedSlots.find(material->hashKey);
+		if (found == extendedSlots.end()) {
+			// A previous landscape draw may have left extended displacement SRVs
+			// active. Clear only Terrain Field's six reserved slots and bits.
+			for (uint32_t textureI = 0; textureI < 6; ++textureI)
+				thExtendedRendererState.SetPSTexture(textureI, nullptr);
+			if (auto* state = globals::state)
+				state->permutationData.ExtraFeatureDescriptor &=
+					~(0x3Fu | uint(State::ExtraFeatureDescriptors::THLandHasDisplacement));
 			return;
 		}
-		materialBase = extendedSlots[material->hashKey];
+		materialBase = found->second;
 	}
 
 	const auto state = globals::state;
+	if (!state || !globals::game::graphicsState)
+		return;
 	const auto& stateData = globals::game::graphicsState->GetRuntimeData();
 
 	state->permutationData.ExtraFeatureDescriptor &= ~uint(State::ExtraFeatureDescriptors::THLandHasDisplacement);

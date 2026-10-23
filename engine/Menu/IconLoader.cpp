@@ -7,10 +7,8 @@
 #include "Utils/D3D.h"
 #include "Utils/FileSystem.h"
 
-#include <chrono>
 #include <filesystem>
 #include <stb_image.h>
-#include <thread>
 
 namespace Util
 {
@@ -155,10 +153,6 @@ namespace Util::IconLoader
 
 		logger::info("LoadThemeSpecificIcons: Checking for custom icons in theme '{}' at path: {}", selectedTheme, themeIconsPath.string());
 
-		ID3D11DeviceContext* context = globals::d3d::context;
-		if (context)
-			context->Flush();
-
 		int iconsOverridden = 0;
 
 		for (const auto& iconDef : iconDefs) {
@@ -200,17 +194,8 @@ namespace Util::IconLoader
 			return false;
 		}
 
-		// Flush and wait for GPU idle before releasing textures
-		context->Flush();
-		winrt::com_ptr<ID3D11Query> eventQuery;
-		D3D11_QUERY_DESC queryDesc = { D3D11_QUERY_EVENT, 0 };
-		if (SUCCEEDED(device->CreateQuery(&queryDesc, eventQuery.put()))) {
-			context->End(eventQuery.get());
-			BOOL queryData = FALSE;
-			for (int i = 0; i < 1000 && context->GetData(eventQuery.get(), &queryData, sizeof(BOOL), 0) != S_OK; i++) {
-				std::this_thread::sleep_for(std::chrono::milliseconds(1));
-			}
-		}
+		// Reload runs between ImGui frames. D3D11 retains resources referenced by
+		// submitted commands; releasing our SRV ownership does not require GPU idle.
 
 		std::string basePath = Util::PathHelpers::GetIconsPath().string() + "\\";
 		logger::info("InitializeMenuIcons: Loading icons from base path: {}", basePath);

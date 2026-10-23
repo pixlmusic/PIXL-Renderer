@@ -148,11 +148,16 @@ void SkyContinuity::DrawSettings()
 void SkyContinuity::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	const auto finiteOr = [](float value, float fallback) { return std::isfinite(value) ? value : fallback; };
 	settings.MoonLightSource = std::clamp(settings.MoonLightSource, static_cast<int32_t>(MoonLightSource::Brightest), static_cast<int32_t>(MoonLightSource::Secunda));
 	settings.SunPath = std::clamp(settings.SunPath, static_cast<int32_t>(SunPath::Southern), static_cast<int32_t>(SunPath::Custom));
-	settings.CustomAngle = std::clamp(settings.CustomAngle, -90.0f, 90.0f);
-	settings.MinShadowElevation = std::clamp(settings.MinShadowElevation, 0.0f, 45.0f);
-	settings.HorizonFadeHours = std::clamp(settings.HorizonFadeHours, 0.0f, MaxHorizonFadeHours);
+	settings.CustomAngle = std::clamp(finiteOr(settings.CustomAngle, 0.0f), -90.0f, 90.0f);
+	settings.MinShadowElevation = std::clamp(finiteOr(settings.MinShadowElevation, 5.0f), 0.0f, 45.0f);
+	settings.ShadowTransitionDuration = std::clamp(finiteOr(settings.ShadowTransitionDuration, 100.0f), 0.0f, 500.0f);
+	settings.HorizonFadeHours = std::clamp(finiteOr(settings.HorizonFadeHours, 1.0f), 0.0f, MaxHorizonFadeHours);
+	settings.NewMoonIntensity = std::clamp(finiteOr(settings.NewMoonIntensity, 0.0f), 0.0f, 1.0f);
+	settings.CrescentMoonIntensity = std::clamp(finiteOr(settings.CrescentMoonIntensity, 0.35f), 0.0f, 1.0f);
+	settings.FullMoonIntensity = std::clamp(finiteOr(settings.FullMoonIntensity, 1.0f), 0.0f, 1.0f);
 	SetSunAngle();
 }
 
@@ -183,7 +188,7 @@ void SkyContinuity::PostPostLoad()
 	gSunPosition = reinterpret_cast<RE::NiPoint3*>(REL::RelocationID(527924, 414871).address());
 
 	gVolumetricLighting = reinterpret_cast<RE::BSVolumetricLightingRenderData*>(
-		REL::RelocationID(527719, 414629).address() - offsetof(RE::BSVolumetricLightingRenderData, red));
+		REL::RelocationID(527719, 414629).address() - offsetof(RE::BSVolumetricLightingRenderData, color));
 
 	logger::info("[Sky Continuity] Installed hooks");
 }
@@ -248,9 +253,13 @@ void SkyContinuity::Update(const RE::Sky* sky)
 
 	if (cell != currentCell) {
 		const auto prevCell = currentCell;
+		const bool prevInterior = currentCellIsInterior;
+		const std::uint32_t prevWorldspaceID = currentWorldspaceID;
 		if (cell)
 			SetSkyRotation(sky, cell);
-		if (cell && prevCell && (cell->IsInteriorCell() != prevCell->IsInteriorCell() || cell->GetRuntimeData().worldSpace != prevCell->GetRuntimeData().worldSpace))
+		const auto* worldspace = cell ? cell->GetRuntimeData().worldSpace : nullptr;
+		const std::uint32_t worldspaceID = worldspace ? worldspace->GetFormID() : 0;
+		if (cell && prevCell && (cell->IsInteriorCell() != prevInterior || worldspaceID != prevWorldspaceID))
 			shadowFader.Reset();
 			lastGameHour = -1.0f;
 	}
@@ -306,6 +315,7 @@ void SkyContinuity::Update(const RE::Sky* sky)
 		sunRising = false;
 		sunBelowHorizon = false;
 	}
+	currentDim = std::clamp(std::isfinite(currentDim) ? currentDim : 1.0f, 0.0f, 1.0f);
 
 	RE::NiPoint3 directions[3] = {};
 	float intensities[3] = {};
@@ -351,11 +361,16 @@ void SkyContinuity::SetSunAngle()
 
 void SkyContinuity::SetSkyRotation(const RE::Sky* sky, RE::TESObjectCELL* cell)
 {
+	if (!sky || !sky->root || !cell)
+		return;
 	// If the interior cell isn't initialised it won't have the north rotation extra data ready, skip for a frame
 	if (cell->IsInteriorCell() && cell->cellState == static_cast<RE::TESObjectCELL::CellState>(0))
 		return;
 
 	currentCell = cell;
+	currentCellIsInterior = cell->IsInteriorCell();
+	const auto* worldspace = cell->GetRuntimeData().worldSpace;
+	currentWorldspaceID = worldspace ? worldspace->GetFormID() : 0;
 	const float rotation = cell->GetNorthRotation();
 	if (rotation == currentSkyRotation)
 		return;
@@ -369,6 +384,8 @@ void SkyContinuity::SetSkyRotation(const RE::Sky* sky, RE::TESObjectCELL* cell)
 void SkyContinuity::ProcessSun(const RE::Sky* sky, RE::NiPoint3 dirs[], float intensities[])
 {
 	const auto sun = sky->sun;
+	if (!sun || !sun->root || !sun->sunBase)
+		return;
 	RE::NiPoint3 dir;
 	float dist;
 
@@ -465,7 +482,21 @@ void SkyContinuity::ShadowFader::Reset()
 
 void SkyContinuity::ShadowFader::Update(const RE::Sky* sky, RE::NiPoint3 dirs[], float intensities[], float fadeDuration, float fadeAdvance)
 {
+	for (int i = 0; i < 3; ++i) {
+		auto& direction = dirs[i];
+		const float lengthSq = direction.Dot(direction);
+		if (!std::isfinite(direction.x) || !std::isfinite(direction.y) || !std::isfinite(direction.z) ||
+			!std::isfinite(lengthSq) || lengthSq < 1.0e-8f) {
+			direction = {};
+			intensities[i] = 0.0f;
+		} else {
+			direction *= 1.0f / std::sqrt(lengthSq);
+			intensities[i] = std::clamp(std::isfinite(intensities[i]) ? intensities[i] : 0.0f, 0.0f, 1.0f);
+		}
+	}
 	auto isValidDir = [](const RE::NiPoint3& d) { return d.x != 0.0f || d.y != 0.0f || d.z != 0.0f; };
+	fadeDuration = std::clamp(std::isfinite(fadeDuration) ? fadeDuration : 0.0f, 0.0f, 3600.0f);
+	fadeAdvance = std::clamp(std::isfinite(fadeAdvance) ? fadeAdvance : 0.0f, 0.0f, fadeDuration);
 
 	Caster best;
 
@@ -518,7 +549,11 @@ void SkyContinuity::ShadowFader::Update(const RE::Sky* sky, RE::NiPoint3 dirs[],
 		std::lerp(startDir.y, targetDir.y, t),
 		std::lerp(startDir.z, targetDir.z, t)
 	};
-	currentDir.Unitize();
+	const float currentLengthSq = currentDir.Dot(currentDir);
+	if (!std::isfinite(currentLengthSq) || currentLengthSq < 1.0e-8f)
+		currentDir = targetDir;
+	else
+		currentDir *= 1.0f / std::sqrt(currentLengthSq);
 
 	if (t >= 1.0f) {
 		currentDir = targetDir;
@@ -563,6 +598,8 @@ void SkyContinuity::ShadowFader::LockSunElevation(RE::NiPoint3 dirs[])
 
 void SkyContinuity::ShadowFader::SetLighting(const RE::Sky* sky, RE::NiPoint3 dir)
 {
+	if (!sky || !sky->sun || !sky->sun->light)
+		return;
 	ClampDirection(dir);
 
 	RE::NiMatrix3& m = sky->sun->light->local.rotate;

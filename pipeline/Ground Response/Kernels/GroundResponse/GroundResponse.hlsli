@@ -19,12 +19,13 @@ namespace GroundResponse
 
 	float DecodeHeight(float encodedHeight)
 	{
-		return lerp(ZRANGE.x, ZRANGE.y, saturate(encodedHeight));
+		encodedHeight = isfinite(encodedHeight) ? saturate(encodedHeight) : 0.0f;
+		return lerp(ZRANGE.x, ZRANGE.y, encodedHeight);
 	}
 
 	bool HasContact(float encodedHeight)
 	{
-		return encodedHeight > EMPTY_EPSILON;
+		return isfinite(encodedHeight) && encodedHeight > EMPTY_EPSILON;
 	}
 
 	float DecodeContactHeight(float encodedHeight, float receiverHeight)
@@ -40,10 +41,11 @@ namespace GroundResponse
 	float ProceduralAnimation(float recoverySeparation, float distanceFromCenter)
 	{
 		recoverySeparation = max(recoverySeparation, 0.0f);
-		float phase =
+		float phase = min(
 			recoverySeparation * (100.0f / 250.0f) *
-			rcp(max(distanceFromCenter, 0.01f));
-		return cos(phase * (4.0f * Math::PI)) * exp(-phase * 4.0f);
+			rcp(max(distanceFromCenter, 0.01f)), 8.0f);
+		float viscoelasticSettle = lerp(1.0f, cos(phase * (4.0f * Math::PI)), 0.28f);
+		return viscoelasticSettle * exp(-phase * 4.0f);
 	}
 
 	void GetCollision(
@@ -72,10 +74,12 @@ namespace GroundResponse
 			float(TEXTURE_SIZE) - 0.5f;
 		int2 baseTexel = (int2)floor(texelPosition);
 		float2 fraction = frac(texelPosition);
+		fraction = fraction * fraction * fraction *
+			(fraction * (fraction * 6.0f - 15.0f) + 10.0f);
 		int2 arrayOrigin = int2(SharedData::deformableGroundSettings.ArrayOrigin);
 
 		float weightSum = 0.0f;
-		float clampedMaximumDepth = max(maximumDepth, 0.0f);
+		float clampedMaximumDepth = clamp(maximumDepth, 0.0f, abs(ZRANGE.x - ZRANGE.y));
 
 		[unroll] for (int y = 0; y < 2; ++y)
 		{
@@ -226,6 +230,8 @@ namespace GroundResponse
 
 		float nearFactor =
 			1.0f - smoothstep(0.0f, 2048.0f, length(worldPosition));
+		nearFactor = nearFactor * nearFactor * nearFactor *
+			(nearFactor * (nearFactor * 6.0f - 15.0f) + 10.0f);
 		if (nearFactor <= 0.0f)
 			return;
 
@@ -256,9 +262,10 @@ namespace GroundResponse
 		previousCollision.z = -abs(previousCollision.z);
 
 		float alpha = saturate(input.Color.w * 10.0f);
-		float responseStrength = max(
+		alpha = alpha * alpha * (3.0f - 2.0f * alpha);
+		float responseStrength = clamp(
 			SharedData::deformableGroundSettings.GroundResponseStrength,
-			0.0f);
+			0.0f, 4.0f);
 		float scale =
 			alpha * nearFactor * 0.75f * responseStrength;
 

@@ -22,7 +22,7 @@ foreach ($contract in @(
     @('pipeline\Camera Suite\Kernels\CameraSuite\DofControl.hlsli', 'cbuffer\s+DofControl\s*:\s*register\(b1\)', 'Camera DOF b1'),
     @('pipeline\Hybrid GI\Kernels\HybridGI\common.hlsli', 'cbuffer\s+HybridGICB\s*:\s*register\(b1\)', 'HybridGI b1'),
     @('pipeline\Ground Response\Kernels\GroundResponse\Runtime.hlsli', 'cbuffer\s+GroundResponseRuntimeCB\s*:\s*register\(b13\)', 'Ground Response b13'),
-    @('distribution\Shaders\Common\SharedData.hlsli', 'cbuffer\s+FeatureData\s*:\s*register\(b6\)', 'shared FeatureData b6'))) {
+    @('distribution\PIXL-Shaders\Common\SharedData.hlsli', 'cbuffer\s+FeatureData\s*:\s*register\(b6\)', 'shared FeatureData b6'))) {
     Require-Text $contract[0] $contract[1] $contract[2]
 }
 

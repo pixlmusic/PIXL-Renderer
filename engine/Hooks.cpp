@@ -294,7 +294,7 @@ namespace WaterBlendHistory
 			const float clearColor[4] = { 0.f, 0.f, 0.f, 0.f };
 			const auto target = renderTargets[1];
 			globals::d3d::context->ClearRenderTargetView(
-				globals::game::renderer->GetRuntimeData().renderTargets[target].RTV,
+				REX::W32::AsReal(globals::game::renderer->GetRuntimeData().renderTargets[target].RTV),
 				clearColor);
 
 			func(imageSpaceShader, shape, param);
@@ -415,7 +415,7 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 
 	DXGI_SWAP_CHAIN_DESC modifiedDesc = *pSwapChainDesc;
 
-	if (globals::pipeline::cameraSuite.loaded) {
+	if (globals::pipeline::cameraSuite.loaded && globals::pipeline::cameraSuite.settings.enableHDR) {
 		modifiedDesc.BufferDesc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
 		modifiedDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 		if (modifiedDesc.BufferCount < 2)
@@ -1280,7 +1280,15 @@ namespace Hooks
 		logger::info("Installing SetupGeometry hooks");
 		stl::write_vfunc<0x6, EffectExtensions::BSEffectShader_SetupGeometry>(RE::VTABLE_BSEffectShader[0]);
 		stl::write_vfunc<0x6, SkyExtensions::BSSkyShader_SetupGeometry>(RE::VTABLE_BSSkyShader[0]);
-		stl::write_thunk_call<GrassExtensions::BSGrassShaderProperty_ctor>(REL::RelocationID(15214, 15383).address() + REL::Relocate(0x45B, 0x4F5));
+		if (REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104) {
+			// This constructor call-site offset has not been verified against 1.7.104's
+			// changed instruction layout. Leave Skyrim's grass property construction
+			// untouched on this runtime; add a verified relocation before re-enabling.
+			logger::warn("[PIXL Renderer] Skipping unverified grass property hook on Skyrim 1.7.104.");
+		} else {
+			stl::write_thunk_call<GrassExtensions::BSGrassShaderProperty_ctor>(
+				REL::RelocationID(15214, 15383).address() + REL::Relocate(0x45B, 0x4F5));
+		}
 		stl::write_vfunc<0x6, GrassExtensions::BSGrassShader_SetupGeometry>(RE::VTABLE_BSGrassShader[0]);
 		stl::write_vfunc<0x6, PostProcessingExtensions::BSParticleShader_SetupGeometry>(RE::VTABLE_BSParticleShader[0]);
 
@@ -1289,10 +1297,13 @@ namespace Hooks
 		if (REL::Module::IsSE())
 			stl::write_thunk_call<PostProcessingExtensions::Main_HDRTonemapBlendCinematic_Render>(REL::RelocationID(99023, 105674).address() + REL::Relocate(0x230, 0x178));
 
-		// Patch render space in BSLightingShader::SetupGeometry to always use world space
-		// The variable updateEyePosition is set to 1 when not skinned. By patching to be 0 it will always use world space
-		// We offset from the base address of the containing function to the start of the patch
-		{
+		// These byte offsets were validated against older executables only. Runtime
+		// 1.7.104 changed instruction layout in this function (the adjacent point-
+		// light call site overlapped a five-byte store), so keep native eye-position
+		// handling until the new patch sites are verified against the executable.
+		if (REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_104) {
+			logger::warn("[PIXL Renderer] Skipping unvalidated BSLightingShader::SetupGeometry eye-position patch on runtime {}; preserving Skyrim's native shader setup.", REL::Module::get().version().string());
+		} else {
 			logger::info("Patching BSLightingShader::SetupGeometry::updateEyePosition");
 			auto setupGeometryUpdateRenderSpace = REL::RelocationID(100565, 107300).address();
 
@@ -1311,7 +1322,16 @@ namespace Hooks
 			}
 		}
 
-		stl::write_thunk_call<BSLightingShader_SetupGeometry_GeometrySetupConstantPointLights>(REL::RelocationID(100565, 107300).address() + REL::Relocate(0x523, 0xB0E));
+		if (REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_104) {
+			// The 1.7.104 function has a five-byte store at +0xB0C and the next
+			// instruction begins at +0xB11. The legacy AE patch site +0xB0E
+			// overlaps both; the observed illegal-instruction crash at +0xB12
+			// confirms that the call patch corrupts the function. Preserve the
+			// native point-light setup until a verified call site is available.
+			logger::warn("[RadiantGrid] Skipping SetupGeometry point-light hook on runtime {}; preserving Skyrim's native point-light setup.", REL::Module::get().version().string());
+		} else {
+			stl::write_thunk_call<BSLightingShader_SetupGeometry_GeometrySetupConstantPointLights>(REL::RelocationID(100565, 107300).address() + REL::Relocate(0x523, 0xB0E));
+		}
 
 		hookRegistry.SetStatus(
 			"Core.RendererPipelineHooks",

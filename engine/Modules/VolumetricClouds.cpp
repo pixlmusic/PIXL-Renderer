@@ -20,7 +20,6 @@
 #include <array>
 #include <chrono>
 #include <cmath>
-#include <limits>
 
 namespace
 {
@@ -29,6 +28,10 @@ namespace
 	constexpr float kWeatherExtent = 1048576.0f;
 	constexpr double kCloudAdvectionPeriod = 4096.0 / 0.000020;
 	constexpr float kCloudCurvatureRadius = 445900000.0f;
+	// Keep workload tiers together: Performance, Balanced, High, Ultra.
+	constexpr std::array<std::uint32_t, 4> kCloudDownsample{ 4u, 4u, 2u, 2u };
+	constexpr std::array<std::uint32_t, 4> kCloudPrimarySteps{ 32u, 48u, 80u, 96u };
+	constexpr std::array<std::uint32_t, 4> kCloudLightSteps{ 3u, 4u, 5u, 6u };
 
 	float FiniteClamp(float value, float fallback, float minimum, float maximum)
 	{
@@ -57,6 +60,12 @@ namespace
 		float cloudTop{ 45000.0f };
 		float windScale{ 0.20f };
 		float detailScale{ 1.0f };
+		float upperCoverage{ 0.32f };
+		float upperDensity{ 0.34f };
+		float upperType{ 0.08f };
+		float upperDetail{ 0.65f };
+		float upperWindScale{ 0.75f };
+		float upperTop{ 95000.0f };
 	};
 
 	struct CloudWeatherPreset
@@ -67,22 +76,27 @@ namespace
 		float detail{ 1.0f };
 		float wind{ 1.0f };
 		float maximumTop{ 65000.0f };
+		float upperCoverage{ 0.32f };
+		float upperDensity{ 0.34f };
+		float upperType{ 0.08f };
+		float upperDetail{ 0.65f };
+		float upperWind{ 0.75f };
+		float upperTop{ 95000.0f };
 	};
 
 	CloudWeatherPreset GetCloudWeatherPreset(WeatherManager::WeatherClass weatherClass)
 	{
-		// Independent PIXL analogues to Enviro's Clear Sky, Cloudy 1, Foggy, Rain,
-		// Storm, and Snow profiles. Cloudy is the authored PIXL baseline (Cloudy Day 1);
-		// its neutral multipliers preserve the current user-tuned look for transitions.
+		// Keep the established weather-class profiles. Authored Skyrim cloud
+		// opacity remains authoritative per weather.
 		switch (weatherClass) {
-		case WeatherManager::WeatherClass::Clear: return { 0.00f, 0.82f, 0.10f, 0.78f, 0.72f, 45000.0f };
-		case WeatherManager::WeatherClass::Cloudy: return { 1.00f, 1.00f, 0.38f, 1.00f, 1.00f, 65000.0f };
-		case WeatherManager::WeatherClass::Fog: return { 0.90f, 0.94f, 0.16f, 0.84f, 0.82f, 58000.0f };
-		case WeatherManager::WeatherClass::Rain: return { 1.10f, 1.10f, 0.63f, 0.96f, 1.18f, 65000.0f };
-		case WeatherManager::WeatherClass::Storm: return { 1.18f, 1.20f, 0.86f, 1.08f, 1.38f, 65000.0f };
-		case WeatherManager::WeatherClass::Snow: return { 1.04f, 1.06f, 0.58f, 0.94f, 1.02f, 62000.0f };
-		case WeatherManager::WeatherClass::Special: return { 0.94f, 1.00f, 0.48f, 0.96f, 0.96f, 61000.0f };
-		default: return { 1.00f, 1.00f, 0.42f, 1.00f, 1.00f, 65000.0f };
+		case WeatherManager::WeatherClass::Clear: return { 0.85f, 0.82f, 0.10f, 0.78f, 0.72f, 45000.0f, 0.42f, 0.24f, 0.02f, 0.55f, 0.70f, 100000.0f };
+		case WeatherManager::WeatherClass::Cloudy: return { 1.08f, 1.00f, 0.38f, 1.00f, 1.00f, 65000.0f, 0.34f, 0.32f, 0.10f, 0.68f, 0.78f, 95000.0f };
+		case WeatherManager::WeatherClass::Fog: return { 0.98f, 0.94f, 0.16f, 0.84f, 0.82f, 58000.0f, 0.20f, 0.18f, 0.02f, 0.48f, 0.60f, 82000.0f };
+		case WeatherManager::WeatherClass::Rain: return { 1.18f, 1.10f, 0.63f, 0.96f, 1.18f, 65000.0f, 0.24f, 0.26f, 0.12f, 0.56f, 0.82f, 90000.0f };
+		case WeatherManager::WeatherClass::Storm: return { 1.25f, 1.20f, 0.86f, 1.08f, 1.38f, 65000.0f, 0.18f, 0.20f, 0.20f, 0.52f, 0.92f, 88000.0f };
+		case WeatherManager::WeatherClass::Snow: return { 1.12f, 1.06f, 0.58f, 0.94f, 1.02f, 62000.0f, 0.30f, 0.28f, 0.12f, 0.62f, 0.72f, 92000.0f };
+		case WeatherManager::WeatherClass::Special: return { 1.02f, 1.00f, 0.48f, 0.96f, 0.96f, 61000.0f, 0.28f, 0.30f, 0.12f, 0.72f, 0.76f, 96000.0f };
+		default: return { 1.08f, 1.00f, 0.42f, 1.00f, 1.00f, 65000.0f, 0.32f, 0.30f, 0.10f, 0.65f, 0.76f, 95000.0f };
 		}
 	}
 
@@ -103,13 +117,13 @@ namespace
 	float WeatherCloudFloor(WeatherManager::WeatherClass weatherClass)
 	{
 		switch (weatherClass) {
-		case WeatherManager::WeatherClass::Clear: return 0.14f;
-		case WeatherManager::WeatherClass::Cloudy: return 0.72f;
-		case WeatherManager::WeatherClass::Fog: return 0.76f;
-		case WeatherManager::WeatherClass::Rain: return 0.88f;
-		case WeatherManager::WeatherClass::Storm: return 0.98f;
-		case WeatherManager::WeatherClass::Snow: return 0.82f;
-		case WeatherManager::WeatherClass::Special: return 0.55f;
+		case WeatherManager::WeatherClass::Clear: return 0.20f;
+		case WeatherManager::WeatherClass::Cloudy: return 0.77f;
+		case WeatherManager::WeatherClass::Fog: return 0.80f;
+		case WeatherManager::WeatherClass::Rain: return 0.91f;
+		case WeatherManager::WeatherClass::Storm: return 0.99f;
+		case WeatherManager::WeatherClass::Snow: return 0.86f;
+		case WeatherManager::WeatherClass::Special: return 0.60f;
 		default: return 0.0f;
 		}
 	}
@@ -142,34 +156,17 @@ namespace
 			sunsetBegin = 17.0f;
 			sunsetEnd = 18.0f;
 		}
-		float dayBegin = sunriseEnd;
-		while (dayBegin < sunriseBegin)
-			dayBegin += 24.0f;
-		float dayEnd = sunsetBegin;
-		while (dayEnd < dayBegin)
-			dayEnd += 24.0f;
-		float nightBegin = sunsetEnd;
-		while (nightBegin < dayEnd)
-			nightBegin += 24.0f;
-		float nextSunrise = sunriseBegin;
-		while (nextSunrise < nightBegin)
-			nextSunrise += 24.0f;
-		const std::array<float, 4> anchors{
+		// Validated climate timestamps already increase monotonically within one day.
+		const std::array<float, 4> timeAnchors{
 			(sunriseBegin + sunriseEnd) * 0.5f,
-			(dayBegin + dayEnd) * 0.5f,
+			(sunriseEnd + sunsetBegin) * 0.5f,
 			(sunsetBegin + sunsetEnd) * 0.5f,
-			(nightBegin + nextSunrise) * 0.5f
+			(sunsetEnd + (sunriseBegin + 24.0f)) * 0.5f
 		};
 		float sampleHour = std::isfinite(hour) ? hour : 12.0f;
 		sampleHour = std::fmod(sampleHour, 24.0f);
 		if (sampleHour < 0.0f)
 			sampleHour += 24.0f;
-		if (sampleHour < anchors[0])
-			sampleHour += 24.0f;
-		std::array<float, 4> timeAnchors = anchors;
-		for (std::size_t index = 1; index < timeAnchors.size(); ++index)
-			while (timeAnchors[index] < timeAnchors[index - 1])
-				timeAnchors[index] += 24.0f;
 		if (sampleHour < timeAnchors[0])
 			sampleHour += 24.0f;
 
@@ -243,7 +240,7 @@ namespace
 		WeatherProfile profile{};
 		// Preserve the tuned cloudy-day look while allowing authored clear records
 		// and the semantic clear fallback (0.14) to reach exactly zero.
-		const float clearT = std::clamp((clouds - 0.14f) / 0.20f, 0.0f, 1.0f);
+		const float clearT = std::clamp((clouds - 0.10f) / 0.24f, 0.0f, 1.0f);
 		const float clearGate = clearT * clearT * (3.0f - 2.0f * clearT);
 		const float presetCoverage = blendPresetValue(fromPreset.coverage, toPreset.coverage);
 		const float presetDensity = blendPresetValue(fromPreset.density, toPreset.density);
@@ -251,6 +248,12 @@ namespace
 		const float presetDetail = blendPresetValue(fromPreset.detail, toPreset.detail);
 		const float presetWind = blendPresetValue(fromPreset.wind, toPreset.wind);
 		const float presetMaximumTop = blendPresetValue(fromPreset.maximumTop, toPreset.maximumTop);
+		profile.upperCoverage = blendPresetValue(fromPreset.upperCoverage, toPreset.upperCoverage);
+		profile.upperDensity = blendPresetValue(fromPreset.upperDensity, toPreset.upperDensity);
+		profile.upperType = blendPresetValue(fromPreset.upperType, toPreset.upperType);
+		profile.upperDetail = blendPresetValue(fromPreset.upperDetail, toPreset.upperDetail);
+		profile.upperWindScale = blendPresetValue(fromPreset.upperWind, toPreset.upperWind);
+		profile.upperTop = blendPresetValue(fromPreset.upperTop, toPreset.upperTop);
 		profile.coverage = std::clamp((0.06f + clouds * 0.88f + precipitation * 0.12f) *
 			std::max(clearGate, std::max(precipitation, storm)) * presetCoverage, 0.0f, 1.0f);
 		profile.density = std::clamp((0.48f + clouds * 0.62f + precipitation * 0.34f + storm * 0.30f) *
@@ -272,6 +275,10 @@ namespace
 		profile.cloudTop = std::lerp(45000.0f, presetMaximumTop, verticalDevelopment);
 		profile.windScale = std::lerp(0.20f, 0.58f, verticalDevelopment) * presetWind;
 		profile.detailScale = std::lerp(0.70f, 1.15f, std::max(clouds, cloudSeverity)) * presetDetail;
+		// The cirrus-like upper deck remains distinct from the lower storm body.
+		// Weather classes shape it independently, then transitions blend smoothly.
+		profile.upperCoverage *= std::lerp(0.72f, 1.0f, std::max(clouds, cloudSeverity));
+		profile.upperDensity *= std::lerp(0.80f, 1.0f, std::max(clouds, cloudSeverity));
 
 		// WeatherManager already interpolates its semantic signals between the
 		// outgoing and incoming records. Keep this conversion continuous as well;
@@ -287,8 +294,9 @@ namespace
 			initialized = true;
 			return state;
 		}
-		auto approach = [deltaTime](float current, float next, float seconds) {
-			const float weight = 1.0f - std::exp(-std::clamp(deltaTime, 0.0f, 0.1f) / seconds);
+		const float boundedDelta = std::clamp(deltaTime, 0.0f, 0.1f);
+		auto approach = [boundedDelta](float current, float next, float seconds) {
+			const float weight = 1.0f - std::exp(-boundedDelta / seconds);
 			return std::lerp(current, next, weight);
 		};
 		state.coverage = approach(state.coverage, target.coverage, 9.0f);
@@ -302,6 +310,12 @@ namespace
 		state.cloudTop = approach(state.cloudTop, target.cloudTop, 42.0f);
 		state.windScale = approach(state.windScale, target.windScale, 14.0f);
 		state.detailScale = approach(state.detailScale, target.detailScale, 20.0f);
+		state.upperCoverage = approach(state.upperCoverage, target.upperCoverage, 18.0f);
+		state.upperDensity = approach(state.upperDensity, target.upperDensity, 22.0f);
+		state.upperType = approach(state.upperType, target.upperType, 18.0f);
+		state.upperDetail = approach(state.upperDetail, target.upperDetail, 20.0f);
+		state.upperWindScale = approach(state.upperWindScale, target.upperWindScale, 14.0f);
+		state.upperTop = approach(state.upperTop, target.upperTop, 42.0f);
 		return state;
 	}
 
@@ -375,6 +389,8 @@ struct VolumetricClouds::Runtime
 	float weatherSimulationAccumulator{};
 	double cloudDisplacementX{};
 	double cloudDisplacementY{};
+	double upperCloudDisplacementX{};
+	double upperCloudDisplacementY{};
 	double weatherAdvectionX{};
 	double weatherAdvectionY{};
 	double weatherDisplacementX{};
@@ -403,7 +419,7 @@ bool VolumetricClouds::CompileShaders()
 {
 	if (!runtime)
 		return false;
-	constexpr wchar_t shaderPath[] = L"Data\\Shaders\\VolumetricClouds\\VolumetricCloudsCS.hlsl";
+	constexpr wchar_t shaderPath[] = L"Data\\PIXL-Shaders\\VolumetricClouds\\VolumetricCloudsCS.hlsl";
 	auto compile = [](const wchar_t* path, const char* entry) {
 		winrt::com_ptr<ID3D11ComputeShader> shader;
 		shader.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(path, {}, "cs_5_0", entry)));
@@ -431,9 +447,7 @@ void VolumetricClouds::SetupResources()
 			DXGI_FORMAT_R16G16B16A16_FLOAT, "VolumetricClouds::WeatherB");
 		D3D11_SAMPLER_DESC sampler{};
 		sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-		sampler.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
-		sampler.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
-		sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+		sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
 		sampler.MaxLOD = D3D11_FLOAT32_MAX;
 		DX::ThrowIfFailed(globals::d3d::device->CreateSamplerState(&sampler, runtime->linearClamp.put()));
 	} catch (const std::exception& error) {
@@ -464,9 +478,8 @@ bool VolumetricClouds::EnsureFrameResources(std::uint32_t width, std::uint32_t h
 {
 	if (!runtime || width == 0 || height == 0)
 		return false;
-	static constexpr std::array<std::uint32_t, 4> downsample{ 4u, 4u, 2u, 2u };
 	const std::uint32_t quality = std::min(settings.Quality, 3u);
-	const std::uint32_t divisor = downsample[quality];
+	const std::uint32_t divisor = kCloudDownsample[quality];
 	const std::uint32_t lowWidth = (width + divisor - 1u) / divisor;
 	const std::uint32_t lowHeight = (height + divisor - 1u) / divisor;
 	if (runtime->rawCloud && runtime->width == width && runtime->height == height &&
@@ -488,6 +501,10 @@ bool VolumetricClouds::EnsureFrameResources(std::uint32_t width, std::uint32_t h
 			logger::error("[PIXL Volumetric Clouds] frame resource creation failed: {}", error.what());
 			runtime->resourceFailureLogged = true;
 		}
+		// A partial allocation must never pass the next frame's cache-hit check.
+		runtime->width = runtime->height = runtime->lowWidth = runtime->lowHeight = 0u;
+		runtime->activeQuality = ~0u;
+		InvalidateHistory();
 		return false;
 	}
 	runtime->width = width;
@@ -541,6 +558,8 @@ void VolumetricClouds::DrawClouds()
 		!runtime->weatherShader || !runtime->raymarchShader || !runtime->temporalShader || !runtime->compositeShader ||
 		!globals::game::perFrame.get() || !*globals::game::perFrame || !globals::state->sharedDataCB)
 		return;
+	// All subsequent runtime dereferences are covered by the early guard.
+	auto& rt = *runtime;
 	const auto& weatherContext = WeatherManager::GetSingleton()->GetContext();
 	if (!weatherContext.exterior || Util::IsInterior()) {
 		InvalidateHistory();
@@ -552,11 +571,17 @@ void VolumetricClouds::DrawClouds()
 	if (!main.texture || !main.UAV || !depthSRV)
 		return;
 	D3D11_TEXTURE2D_DESC mainDesc{};
-	main.texture->GetDesc(&mainDesc);
+	main.texture->GetDesc(REX::W32::AsW32(&mainDesc));
+	if (mainDesc.Width == 0u || mainDesc.Height == 0u)
+		return;
 	const auto dynamicSize = Util::ConvertToDynamic(
 		float2{ static_cast<float>(mainDesc.Width), static_cast<float>(mainDesc.Height) }, true);
-	const std::uint32_t width = std::clamp(static_cast<std::uint32_t>(std::max(dynamicSize.x, 1.0f)), 1u, mainDesc.Width);
-	const std::uint32_t height = std::clamp(static_cast<std::uint32_t>(std::max(dynamicSize.y, 1.0f)), 1u, mainDesc.Height);
+	const auto safeDimension = [](float size, std::uint32_t maximum) {
+		const double finiteSize = std::isfinite(size) ? static_cast<double>(size) : 1.0;
+		return static_cast<std::uint32_t>(std::clamp(finiteSize, 1.0, static_cast<double>(maximum)));
+	};
+	const std::uint32_t width = safeDimension(dynamicSize.x, mainDesc.Width);
+	const std::uint32_t height = safeDimension(dynamicSize.y, mainDesc.Height);
 	if (!EnsureFrameResources(width, height))
 		return;
 
@@ -564,8 +589,8 @@ void VolumetricClouds::DrawClouds()
 		? std::clamp(*globals::game::deltaTime, 0.0f, 0.10f)
 		: 1.0f / 60.0f;
 	const auto wallClockNow = std::chrono::steady_clock::now();
-	const double wallClockDelta = std::chrono::duration<double>(wallClockNow - runtime->lastWallClockUpdate).count();
-	runtime->lastWallClockUpdate = wallClockNow;
+	const double wallClockDelta = std::chrono::duration<double>(wallClockNow - rt.lastWallClockUpdate).count();
+	rt.lastWallClockUpdate = wallClockNow;
 	// Skyrim can report a zero frame delta while paused or while a camera tool
 	// owns the view. Keep the atmospheric simulation alive during those states.
 	const float deltaTime = gameDeltaTime > 1.0e-4f ? gameDeltaTime :
@@ -584,15 +609,15 @@ void VolumetricClouds::DrawClouds()
 	if (auto* calendar = RE::Calendar::GetSingleton()) {
 		const double candidate = static_cast<double>(calendar->GetTimescale());
 		if (std::isfinite(candidate) && candidate > 0.0)
-			runtime->lastKnownTimeScale = candidate;
-		timeScale = runtime->lastKnownTimeScale;
+			rt.lastKnownTimeScale = candidate;
+		timeScale = rt.lastKnownTimeScale;
 	}
 	double simulationDelta = static_cast<double>(boundedDeltaTime) * timeScale;
 	if (auto* calendar = RE::Calendar::GetSingleton()) {
 		const double gameTimeDays = static_cast<double>(calendar->GetCurrentGameTime());
 		if (std::isfinite(gameTimeDays)) {
-			if (runtime->gameTimeValid) {
-				const double elapsedGameDays = gameTimeDays - runtime->lastGameTimeDays;
+			if (rt.gameTimeValid) {
+				const double elapsedGameDays = gameTimeDays - rt.lastGameTimeDays;
 				if (elapsedGameDays >= 0.0) {
 					const double calendarDelta = elapsedGameDays * 86400.0;
 					// During Wait, the game may be paused while its calendar advances.
@@ -608,9 +633,9 @@ void VolumetricClouds::DrawClouds()
 					InvalidateHistory();
 				}
 			} else {
-				runtime->gameTimeValid = true;
+				rt.gameTimeValid = true;
 			}
-			runtime->lastGameTimeDays = gameTimeDays;
+			rt.lastGameTimeDays = gameTimeDays;
 		}
 	}
 	if (freezeCloudsForPhoto || (freezeForPause && simulationDelta <= 0.0))
@@ -619,9 +644,9 @@ void VolumetricClouds::DrawClouds()
 	// deliberate discontinuity: do not blend the old cloud image into the new one.
 	if (simulationDelta > 2.0)
 		InvalidateHistory();
-	runtime->weatherAccumulator = std::min(runtime->weatherAccumulator + boundedDeltaTime, 1.0f);
-	runtime->weatherSimulationAccumulator = std::min(
-		runtime->weatherSimulationAccumulator + static_cast<float>(std::min(simulationDelta, 1.0e7)), 1.0e7f);
+	rt.weatherAccumulator = std::min(rt.weatherAccumulator + boundedDeltaTime, 1.0f);
+	rt.weatherSimulationAccumulator = std::min(
+		rt.weatherSimulationAccumulator + static_cast<float>(std::min(simulationDelta, 1.0e7)), 1.0e7f);
 	const auto temporalSnapshot = PIXL::Renderer::TemporalContext::Get().GetFrameSnapshot();
 	const float cameraX = static_cast<float>(temporalSnapshot.current.absoluteCameraPosition[0]);
 	const float cameraY = static_cast<float>(temporalSnapshot.current.absoluteCameraPosition[1]);
@@ -641,61 +666,58 @@ void VolumetricClouds::DrawClouds()
 			weatherContext.weatherClass == WeatherManager::WeatherClass::Rain);
 	const bool lightningWeatherActive = settings.LightningIntensity > 0.001f && authoredLightning &&
 		rainyWeather && weatherContext.precipitation > 0.05f;
-	if (simulationDelta > 2.0) {
-		// Wait/fast-travel should reposition clouds, not play a backlog of skipped bolts.
-		runtime->lightningAge = 10.0f;
-		runtime->lightningCountdown = 4.0f;
-	} else if (!lightningWeatherActive) {
-		runtime->lightningAge = 10.0f;
-		runtime->lightningCountdown = 4.0f;
+	// Wait/fast-travel must not replay skipped bolts; inactive storms reset the same timer.
+	if (simulationDelta > 2.0 || !lightningWeatherActive) {
+		rt.lightningAge = 10.0f;
+		rt.lightningCountdown = 4.0f;
 	} else {
 		// Lightning is a visible real-time event, not accelerated Skyrim calendar
 		// time. Using simulationDelta here reduced a sub-second flash to a few
 		// hundredths of a second at the normal game timescale.
 		const float lightningDelta = boundedDeltaTime;
-		runtime->lightningAge += lightningDelta;
-		runtime->lightningCountdown -= lightningDelta;
-		if (runtime->lightningCountdown <= 0.0f) {
+		rt.lightningAge += lightningDelta;
+		rt.lightningCountdown -= lightningDelta;
+		if (rt.lightningCountdown <= 0.0f) {
 			auto nextRandom = [&]() {
-				runtime->lightningRandomState ^= runtime->lightningRandomState << 13;
-				runtime->lightningRandomState ^= runtime->lightningRandomState >> 17;
-				runtime->lightningRandomState ^= runtime->lightningRandomState << 5;
-				return runtime->lightningRandomState;
+				rt.lightningRandomState ^= rt.lightningRandomState << 13;
+				rt.lightningRandomState ^= rt.lightningRandomState >> 17;
+				rt.lightningRandomState ^= rt.lightningRandomState << 5;
+				return rt.lightningRandomState;
 			};
 			const auto random01 = [&]() { return (nextRandom() & 0x00FFFFFFu) / 16777215.0f; };
-			runtime->lightningSeed = random01();
+			rt.lightningSeed = random01();
 			const float angle = random01() * 6.28318530718f;
 			const float range = std::lerp(28000.0f, 11000.0f, stormStrength);
-			runtime->lightningX = temporalSnapshot.current.absoluteCameraPosition[0] + std::cos(angle) * range;
-			runtime->lightningY = temporalSnapshot.current.absoluteCameraPosition[1] + std::sin(angle) * range;
+			rt.lightningX = temporalSnapshot.current.absoluteCameraPosition[0] + std::cos(angle) * range;
+			rt.lightningY = temporalSnapshot.current.absoluteCameraPosition[1] + std::sin(angle) * range;
 			// Resolve an actual LAND height at the strike point so the projected
 			// leader reaches terrain. Keep the camera-relative estimate as a safe
 			// fallback for unloaded cells, water, or worldspaces without LAND data.
 			const double cameraZ = temporalSnapshot.current.absoluteCameraPosition[2];
-			runtime->lightningGroundZ = std::max(0.0, cameraZ - 2500.0);
+			rt.lightningGroundZ = std::max(0.0, cameraZ - 2500.0);
 			if (auto* tes = RE::TES::GetSingleton()) {
-				float terrainHeight = static_cast<float>(runtime->lightningGroundZ);
-				const RE::NiPoint3 strikeSample{ static_cast<float>(runtime->lightningX),
-					static_cast<float>(runtime->lightningY), static_cast<float>(cameraZ) };
+				float terrainHeight = static_cast<float>(rt.lightningGroundZ);
+				const RE::NiPoint3 strikeSample{ static_cast<float>(rt.lightningX),
+					static_cast<float>(rt.lightningY), static_cast<float>(cameraZ) };
 				if (tes->GetLandHeight(strikeSample, terrainHeight) && std::isfinite(terrainHeight))
-					runtime->lightningGroundZ = static_cast<double>(terrainHeight) + 8.0;
+					rt.lightningGroundZ = static_cast<double>(terrainHeight) + 8.0;
 			}
-			runtime->lightningAge = 0.0f;
+			rt.lightningAge = 0.0f;
 			const float profileFrequency = lightningWeather && lightningWeather->data.thunderLightningFrequency > 0
 				? std::clamp(static_cast<float>(lightningWeather->data.thunderLightningFrequency) / 10.0f, 0.25f, 1.0f)
 				: stormStrength;
 			const float baseInterval = std::lerp(38.0f, 13.0f, std::max(stormStrength, profileFrequency));
 			const float variation = 0.65f + random01() * 0.70f;
-			runtime->lightningCountdown = baseInterval * variation /
+			rt.lightningCountdown = baseInterval * variation /
 				FiniteClamp(settings.LightningIntensity, 1.0f, 0.25f, 2.0f);
 		}
-		const float age = runtime->lightningAge;
+		const float age = rt.lightningAge;
 		if (age < 3.6f) {
 			// Let the main discharge read for longer, then add two seeded, softer
 			// re-strikes and a slow residual glow. The seed is fixed per strike so
 			// the timing is randomized between events but temporally stable per event.
-			const float pulseA = 0.42f + std::fmod(runtime->lightningSeed * 17.13f, 1.0f) * 0.28f;
-			const float pulseB = 1.02f + std::fmod(runtime->lightningSeed * 43.71f, 1.0f) * 0.62f;
+			const float pulseA = 0.42f + std::fmod(rt.lightningSeed * 17.13f, 1.0f) * 0.28f;
+			const float pulseB = 1.02f + std::fmod(rt.lightningSeed * 43.71f, 1.0f) * 0.62f;
 			const float first = 1.22f * std::exp2(-age * 3.6f);
 			const float second = 0.42f * std::exp2(-std::abs(age - pulseA) * 11.0f);
 			const float third = 0.24f * std::exp2(-std::abs(age - pulseB) * 8.0f);
@@ -712,45 +734,62 @@ void VolumetricClouds::DrawClouds()
 	// Weather synthesis is a full 512x512 dispatch. Recenter requests are folded
 	// into the existing cadence instead of triggering a second dispatch whenever
 	// the camera crosses a snapped map texel.
-	const bool weatherUpdate = !runtime->weatherValid || runtime->weatherAccumulator >= kWeatherUpdateInterval;
+	const bool weatherUpdate = !rt.weatherValid || rt.weatherAccumulator >= kWeatherUpdateInterval;
 	if (weatherUpdate) {
-		runtime->previousWeatherOrigin = runtime->weatherValid ? runtime->weatherOrigin : newOrigin;
-		runtime->weatherOrigin = newOrigin;
+		rt.previousWeatherOrigin = rt.weatherValid ? rt.weatherOrigin : newOrigin;
+		rt.weatherOrigin = newOrigin;
 	}
 
 	const WeatherProfile targetProfile = BuildWeatherProfile(weatherContext);
-	const WeatherProfile profile = SmoothWeatherProfile(targetProfile, runtime->weatherProfile,
-		runtime->weatherProfileValid, boundedDeltaTime);
+	const WeatherProfile profile = SmoothWeatherProfile(targetProfile, rt.weatherProfile,
+		rt.weatherProfileValid, boundedDeltaTime);
 	const std::uint32_t quality = std::min(settings.Quality, 3u);
-	static constexpr std::array<std::uint32_t, 4> primarySteps{ 32u, 48u, 80u, 96u };
-	static constexpr std::array<std::uint32_t, 4> lightSteps{ 3u, 4u, 5u, 6u };
 	float windAngle = 0.75f;
 	if (globals::game::sky && std::isfinite(globals::game::sky->windAngle))
 		windAngle = globals::game::sky->windAngle;
 	const float windUserScale = FiniteClamp(settings.WindSpeed, 0.41f, 0.0f, 4.0f) / 0.41f;
 	const float windSpeed = (45.0f + weatherContext.windIntensity * 420.0f) *
 		profile.windScale * windUserScale;
-	const double windX = static_cast<double>(std::cos(windAngle) * windSpeed);
-	const double windY = static_cast<double>(std::sin(windAngle) * windSpeed);
+	const float windVelocityX = std::cos(windAngle) * windSpeed;
+	const float windVelocityY = std::sin(windAngle) * windSpeed;
+	constexpr float degreesToRadians = 0.01745329251994329577f;
+	const float upperWindAngle = windAngle +
+		FiniteClamp(settings.HighCloudWindDirection, 28.0f, -180.0f, 180.0f) * degreesToRadians;
+	const float upperWindBaseSpeed = (45.0f + weatherContext.windIntensity * 420.0f) *
+		profile.upperWindScale * FiniteClamp(settings.HighCloudWindSpeed, 0.72f, 0.0f, 2.0f) / 0.72f;
+	const float upperWindVelocityX = std::cos(upperWindAngle) * upperWindBaseSpeed;
+	const float upperWindVelocityY = std::sin(upperWindAngle) * upperWindBaseSpeed;
+	const double windX = static_cast<double>(windVelocityX);
+	const double windY = static_cast<double>(windVelocityY);
 	// Integrate each frame's wind vector into a persistent path. Applying the
 	// latest direction to total elapsed time would rotate old travel whenever
 	// Skyrim's wind direction changed, making clouds appear to ping-pong.
-	AdvancePeriodic(runtime->cloudDisplacementX, windX * simulationDelta, kCloudAdvectionPeriod);
-	AdvancePeriodic(runtime->cloudDisplacementY, windY * simulationDelta, kCloudAdvectionPeriod);
-	AdvancePeriodic(runtime->weatherAdvectionX, windX * simulationDelta,
+	AdvancePeriodic(rt.cloudDisplacementX, windX * simulationDelta, kCloudAdvectionPeriod);
+	AdvancePeriodic(rt.cloudDisplacementY, windY * simulationDelta, kCloudAdvectionPeriod);
+	AdvancePeriodic(rt.upperCloudDisplacementX,
+		static_cast<double>(upperWindVelocityX) * simulationDelta, kCloudAdvectionPeriod);
+	AdvancePeriodic(rt.upperCloudDisplacementY,
+		static_cast<double>(upperWindVelocityY) * simulationDelta, kCloudAdvectionPeriod);
+	AdvancePeriodic(rt.weatherAdvectionX, windX * simulationDelta,
 		static_cast<double>(kWeatherExtent * 0.33f) * 4096.0);
-	AdvancePeriodic(runtime->weatherAdvectionY, windY * simulationDelta,
+	AdvancePeriodic(rt.weatherAdvectionY, windY * simulationDelta,
 		static_cast<double>(kWeatherExtent * 0.33f) * 4096.0);
 	// This interval-only offset reprojects the previous weather map and is reset
 	// after its dispatch; unlike the two persistent phases it stays small.
-	runtime->weatherDisplacementX += windX * simulationDelta;
-	runtime->weatherDisplacementY += windY * simulationDelta;
-	const float cloudBase = FiniteClamp(settings.CloudBase, 17522.0f, 0.0f, 120000.0f) + profile.baseOffset;
+	rt.weatherDisplacementX += windX * simulationDelta;
+	rt.weatherDisplacementY += windY * simulationDelta;
+	// Raise the full weather-class layer slightly while preserving its configured
+	// thickness and the relative spacing between clear, rain, snow, and storm tops.
+	constexpr float cloudAltitudeScale = 1.075f;
+	const float cloudBase = std::max(
+		(FiniteClamp(settings.CloudBase, 15000.0f, 0.0f, 120000.0f) + profile.baseOffset) * cloudAltitudeScale,
+		0.0f);
 	const float authoredThicknessScale = FiniteClamp(settings.CloudThickness, 50085.0f, 2000.0f, 90000.0f) / 50085.0f;
-	const float thickness = std::max(profile.cloudTop - cloudBase, 5000.0f) * authoredThicknessScale;
+	const float thickness = std::max(profile.cloudTop - cloudBase / cloudAltitudeScale, 5000.0f) *
+		cloudAltitudeScale * authoredThicknessScale;
 	CloudConstants constants{};
-	constants.renderSize = { static_cast<float>(runtime->lowWidth), static_cast<float>(runtime->lowHeight),
-		1.0f / runtime->lowWidth, 1.0f / runtime->lowHeight };
+	constants.renderSize = { static_cast<float>(rt.lowWidth), static_cast<float>(rt.lowHeight),
+		1.0f / rt.lowWidth, 1.0f / rt.lowHeight };
 	constants.fullSize = { static_cast<float>(width), static_cast<float>(height), 1.0f / width, 1.0f / height };
 	constants.layer = { cloudBase, cloudBase + thickness,
 		FiniteClamp(settings.MaximumDistance, 320000.0f, 50000.0f, 800000.0f), kCloudCurvatureRadius };
@@ -758,8 +797,8 @@ void VolumetricClouds::DrawClouds()
 		profile.density * FiniteClamp(settings.Density, 1.55f, 0.1f, 2.5f), profile.type, profile.precipitation };
 	constants.weatherSecondary = { profile.storm, profile.fog,
 		std::clamp(weatherContext.transition.lerpFactor, 0.0f, 1.0f), profile.sunVisibility };
-	constants.windTime = { std::cos(windAngle) * windSpeed, std::sin(windAngle) * windSpeed,
-		FiniteClamp(settings.OriginalSkyExposure, 0.0f, -3.0f, 2.0f), runtime->weatherSimulationAccumulator };
+	constants.windTime = { windVelocityX, windVelocityY,
+		FiniteClamp(settings.OriginalSkyExposure, 0.0f, -3.0f, 2.0f), rt.weatherSimulationAccumulator };
 	float3 strikeColor{ 0.78f, 0.88f, 1.0f };
 	if (lightningWeather) {
 		strikeColor = { lightningWeather->data.lightningColor.red / 255.0f,
@@ -770,14 +809,14 @@ void VolumetricClouds::DrawClouds()
 	}
 	constants.cloudMotion = { constants.windTime.x, constants.windTime.y,
 		static_cast<float>(std::min(simulationDelta, 0.10)), strikeColor.x };
-	constants.cloudOffset = { static_cast<float>(runtime->cloudDisplacementX),
-		static_cast<float>(runtime->cloudDisplacementY), static_cast<float>(runtime->weatherDisplacementX),
-		static_cast<float>(runtime->weatherDisplacementY) };
-	constants.weatherAdvection = { static_cast<float>(runtime->weatherAdvectionX),
-		static_cast<float>(runtime->weatherAdvectionY), strikeColor.y, strikeColor.z };
-	constants.weatherMap = { runtime->weatherOrigin.x, runtime->weatherOrigin.y, kWeatherExtent, 1.0f / kWeatherExtent };
-	constants.previousWeatherMap = { runtime->previousWeatherOrigin.x, runtime->previousWeatherOrigin.y,
-		kWeatherExtent, runtime->weatherValid ? 1.0f : 0.0f };
+	constants.cloudOffset = { static_cast<float>(rt.cloudDisplacementX),
+		static_cast<float>(rt.cloudDisplacementY), static_cast<float>(rt.weatherDisplacementX),
+		static_cast<float>(rt.weatherDisplacementY) };
+	constants.weatherAdvection = { static_cast<float>(rt.weatherAdvectionX),
+		static_cast<float>(rt.weatherAdvectionY), strikeColor.y, strikeColor.z };
+	constants.weatherMap = { rt.weatherOrigin.x, rt.weatherOrigin.y, kWeatherExtent, 1.0f / kWeatherExtent };
+	constants.previousWeatherMap = { rt.previousWeatherOrigin.x, rt.previousWeatherOrigin.y,
+		kWeatherExtent, rt.weatherValid ? 1.0f : 0.0f };
 	constants.shape = { FiniteClamp(settings.ShapeScale, 1.26f, 0.2f, 3.0f),
 		FiniteClamp(settings.DetailScale, 1.5f, 0.2f, 3.0f) * profile.detailScale,
 		FiniteClamp(settings.Erosion, 0.62f, 0.0f, 1.5f),
@@ -793,28 +832,40 @@ void VolumetricClouds::DrawClouds()
 		? std::lerp(baseTemporalResponse, std::min(baseTemporalResponse, 0.22f),
 			std::clamp(lightningFlash, 0.0f, 1.0f))
 		: baseTemporalResponse;
-	const bool temporalValid = runtime->temporalHistoryId != 0 &&
-		PIXL::Renderer::TemporalContext::Get().IsHistoryValid(runtime->temporalHistoryId) &&
+	const bool temporalValid = rt.temporalHistoryId != 0 &&
+		PIXL::Renderer::TemporalContext::Get().IsHistoryValid(rt.temporalHistoryId) &&
 		temporalSnapshot.previousFrameValid;
 	constants.temporal = { lightningTemporalResponse, temporalValid ? 1.0f : 0.0f,
 		static_cast<float>(temporalSnapshot.current.frameIndex & 1023u), 0.12f };
 	constants.composite = { FiniteClamp(settings.ShadowStrength, 0.52f, 0.0f, 1.0f), 180000.0f,
 		FiniteClamp(settings.OriginalSkyContrast, 1.0f, 0.5f, 2.0f),
 		static_cast<float>(std::min(settings.DebugMode, 2u)) };
-	constants.skyEffects = { auroraStrength, runtime->weatherSimulationAccumulator, lightningFlash,
-		runtime->lightningSeed };
-	constants.lightningPosition = { static_cast<float>(runtime->lightningX),
-		static_cast<float>(runtime->lightningY), static_cast<float>(runtime->lightningGroundZ), 0.0f };
-	constants.primarySteps = primarySteps[quality];
-	constants.lightSteps = lightSteps[quality];
-	constants.weatherHistoryValid = runtime->weatherValid ? 1u : 0u;
+	constants.skyEffects = { auroraStrength, rt.weatherSimulationAccumulator, lightningFlash,
+		rt.lightningSeed };
+	constants.lightningPosition = { static_cast<float>(rt.lightningX),
+		static_cast<float>(rt.lightningY), static_cast<float>(rt.lightningGroundZ), 0.0f };
+	constants.primarySteps = kCloudPrimarySteps[quality];
+	constants.lightSteps = kCloudLightSteps[quality];
+	constants.weatherHistoryValid = rt.weatherValid ? 1u : 0u;
 	constants.updateWeather = weatherUpdate ? 1u : 0u;
+	const float upperBase = FiniteClamp(settings.HighCloudBase, 30000.0f, 20000.0f, 70000.0f);
+	const float requestedUpperTop = FiniteClamp(settings.HighCloudTop, 100000.0f, 65000.0f, 110000.0f);
+	const float upperTop = std::max(upperBase + 2000.0f, std::min(requestedUpperTop, profile.upperTop));
+	constants.upperLayer = { upperBase, upperTop,
+		settings.EnableHighCloudLayer ? FiniteClamp(settings.HighCloudCoverage, 0.42f, 0.0f, 1.0f) * profile.upperCoverage : 0.0f,
+		profile.upperDensity * FiniteClamp(settings.HighCloudDensity, 0.80f, 0.0f, 2.0f) };
+	constants.upperShape = { profile.upperType,
+		FiniteClamp(settings.ShapeScale, 1.08f, 0.2f, 3.0f) * 0.68f,
+		FiniteClamp(settings.HighCloudDetail, 0.65f, 0.1f, 2.0f) * profile.upperDetail,
+		FiniteClamp(settings.Erosion, 0.62f, 0.0f, 1.5f) * 0.72f };
+	constants.upperWind = { upperWindVelocityX, upperWindVelocityY,
+		static_cast<float>(rt.upperCloudDisplacementX), static_cast<float>(rt.upperCloudDisplacementY) };
 	try {
-		runtime->constants->Update(constants);
+		rt.constants->Update(constants);
 	} catch (const std::exception& error) {
-		if (!runtime->resourceFailureLogged) {
+		if (!rt.resourceFailureLogged) {
 			logger::error("[PIXL Volumetric Clouds] constant upload failed: {}", error.what());
-			runtime->resourceFailureLogged = true;
+			rt.resourceFailureLogged = true;
 		}
 		return;
 	}
@@ -822,77 +873,75 @@ void VolumetricClouds::DrawClouds()
 	auto* context = globals::d3d::context;
 	ID3D11Buffer* sharedBuffer = globals::state->sharedDataCB->CB();
 	ID3D11Buffer* frameBuffer = *globals::game::perFrame;
-	ID3D11Buffer* cloudBuffer = runtime->constants->CB();
+	ID3D11Buffer* cloudBuffer = rt.constants->CB();
 	context->CSSetConstantBuffers(5, 1, &sharedBuffer);
 	context->CSSetConstantBuffers(12, 1, &frameBuffer);
 	context->CSSetConstantBuffers(13, 1, &cloudBuffer);
-	ID3D11SamplerState* sampler = runtime->linearClamp.get();
+	ID3D11SamplerState* sampler = rt.linearClamp.get();
 	context->CSSetSamplers(0, 1, &sampler);
+	ID3D11ShaderResourceView* nullViews4[4]{};
+	ID3D11UnorderedAccessView* nullOutputs2[2]{};
 
 	if (weatherUpdate) {
-		const std::uint32_t sourceIndex = runtime->weatherFlip ? 1u : 0u;
+		const std::uint32_t sourceIndex = rt.weatherFlip ? 1u : 0u;
 		const std::uint32_t destinationIndex = 1u - sourceIndex;
-		ID3D11ShaderResourceView* weatherInput = runtime->weatherMap[sourceIndex]->srv.get();
-		ID3D11UnorderedAccessView* weatherOutput = runtime->weatherMap[destinationIndex]->uav.get();
+		ID3D11ShaderResourceView* weatherInput = rt.weatherMap[sourceIndex]->srv.get();
+		ID3D11UnorderedAccessView* weatherOutput = rt.weatherMap[destinationIndex]->uav.get();
 		context->CSSetShaderResources(0, 1, &weatherInput);
 		context->CSSetUnorderedAccessViews(0, 1, &weatherOutput, nullptr);
-		context->CSSetShader(runtime->weatherShader.get(), nullptr, 0);
+		context->CSSetShader(rt.weatherShader.get(), nullptr, 0);
 		globals::profiler->BeginPass("VolumetricClouds::Weather");
 		context->Dispatch(kWeatherMapSize / 8u, kWeatherMapSize / 8u, 1u);
 		globals::profiler->EndPass();
-		ID3D11ShaderResourceView* nullSRV = nullptr;
-		ID3D11UnorderedAccessView* nullUAV = nullptr;
-		context->CSSetShaderResources(0, 1, &nullSRV);
-		context->CSSetUnorderedAccessViews(0, 1, &nullUAV, nullptr);
-		runtime->weatherFlip = destinationIndex != 0u;
-		runtime->weatherValid = true;
-		runtime->weatherAccumulator = 0.0f;
-		runtime->weatherSimulationAccumulator = 0.0f;
-		runtime->weatherDisplacementX = 0.0;
-		runtime->weatherDisplacementY = 0.0;
+		context->CSSetShaderResources(0, 1, nullViews4);
+		context->CSSetUnorderedAccessViews(0, 1, nullOutputs2, nullptr);
+		rt.weatherFlip = destinationIndex != 0u;
+		rt.weatherValid = true;
+		rt.weatherAccumulator = 0.0f;
+		rt.weatherSimulationAccumulator = 0.0f;
+		rt.weatherDisplacementX = 0.0;
+		rt.weatherDisplacementY = 0.0;
 	}
-	const std::uint32_t currentWeatherIndex = runtime->weatherFlip ? 1u : 0u;
-	ID3D11ShaderResourceView* rayViews[2]{ runtime->weatherMap[currentWeatherIndex]->srv.get(), depthSRV };
-	ID3D11UnorderedAccessView* rayOutputs[2]{ runtime->rawCloud->uav.get(), runtime->rawDepth->uav.get() };
+	const std::uint32_t currentWeatherIndex = rt.weatherFlip ? 1u : 0u;
+	ID3D11ShaderResourceView* rayViews[2]{ rt.weatherMap[currentWeatherIndex]->srv.get(), depthSRV };
+	ID3D11UnorderedAccessView* rayOutputs[2]{ rt.rawCloud->uav.get(), rt.rawDepth->uav.get() };
 	context->CSSetShaderResources(0, 2, rayViews);
 	context->CSSetUnorderedAccessViews(0, 2, rayOutputs, nullptr);
-	context->CSSetShader(runtime->raymarchShader.get(), nullptr, 0);
+	context->CSSetShader(rt.raymarchShader.get(), nullptr, 0);
 	globals::profiler->BeginPass("VolumetricClouds::Raymarch");
-	context->Dispatch((runtime->lowWidth + 7u) / 8u, (runtime->lowHeight + 7u) / 8u, 1u);
+	context->Dispatch((rt.lowWidth + 7u) / 8u, (rt.lowHeight + 7u) / 8u, 1u);
 	globals::profiler->EndPass();
-	ID3D11ShaderResourceView* nullViews4[4]{};
-	ID3D11UnorderedAccessView* nullOutputs2[2]{};
 	context->CSSetShaderResources(0, 2, nullViews4);
 	context->CSSetUnorderedAccessViews(0, 2, nullOutputs2, nullptr);
 
-	const std::uint32_t previousIndex = runtime->historyFlip ? 1u : 0u;
+	const std::uint32_t previousIndex = rt.historyFlip ? 1u : 0u;
 	const std::uint32_t resolvedIndex = 1u - previousIndex;
-	ID3D11ShaderResourceView* temporalViews[4]{ runtime->rawCloud->srv.get(), runtime->rawDepth->srv.get(),
-		runtime->historyCloud[previousIndex]->srv.get(), runtime->historyDepth[previousIndex]->srv.get() };
-	ID3D11UnorderedAccessView* temporalOutputs[2]{ runtime->historyCloud[resolvedIndex]->uav.get(),
-		runtime->historyDepth[resolvedIndex]->uav.get() };
+	ID3D11ShaderResourceView* temporalViews[4]{ rt.rawCloud->srv.get(), rt.rawDepth->srv.get(),
+		rt.historyCloud[previousIndex]->srv.get(), rt.historyDepth[previousIndex]->srv.get() };
+	ID3D11UnorderedAccessView* temporalOutputs[2]{ rt.historyCloud[resolvedIndex]->uav.get(),
+		rt.historyDepth[resolvedIndex]->uav.get() };
 	context->CSSetShaderResources(0, 4, temporalViews);
 	context->CSSetUnorderedAccessViews(0, 2, temporalOutputs, nullptr);
-	context->CSSetShader(runtime->temporalShader.get(), nullptr, 0);
+	context->CSSetShader(rt.temporalShader.get(), nullptr, 0);
 	globals::profiler->BeginPass("VolumetricClouds::Temporal");
-	context->Dispatch((runtime->lowWidth + 7u) / 8u, (runtime->lowHeight + 7u) / 8u, 1u);
+	context->Dispatch((rt.lowWidth + 7u) / 8u, (rt.lowHeight + 7u) / 8u, 1u);
 	globals::profiler->EndPass();
-	runtime->frameCloudsAvailable = true;
+	rt.frameCloudsAvailable = true;
 	context->CSSetShaderResources(0, 4, nullViews4);
 	context->CSSetUnorderedAccessViews(0, 2, nullOutputs2, nullptr);
-	runtime->historyFlip = resolvedIndex != 0u;
-	if (runtime->temporalHistoryId != 0)
-		PIXL::Renderer::TemporalContext::Get().SetHistoryValid(runtime->temporalHistoryId, true);
+	rt.historyFlip = resolvedIndex != 0u;
+	if (rt.temporalHistoryId != 0)
+		PIXL::Renderer::TemporalContext::Get().SetHistoryValid(rt.temporalHistoryId, true);
 
-	ID3D11ShaderResourceView* compositeViews[4]{ runtime->historyCloud[resolvedIndex]->srv.get(),
-		runtime->historyDepth[resolvedIndex]->srv.get(), depthSRV, runtime->weatherMap[currentWeatherIndex]->srv.get() };
-	ID3D11UnorderedAccessView* sceneOutput = main.UAV;
+	ID3D11ShaderResourceView* compositeViews[4]{ rt.historyCloud[resolvedIndex]->srv.get(),
+		rt.historyDepth[resolvedIndex]->srv.get(), depthSRV, rt.weatherMap[currentWeatherIndex]->srv.get() };
+	ID3D11UnorderedAccessView* sceneOutput = REX::W32::AsReal(main.UAV);
 	const auto fogFrame = PIXL::Renderer::VolumetricContext::Get().Acquire();
 	ID3D11ShaderResourceView* integratedFog = fogFrame.valid ? fogFrame.integratedScattering.get() : nullptr;
 	context->CSSetShaderResources(19, 1, &integratedFog);
 	context->CSSetShaderResources(0, 4, compositeViews);
 	context->CSSetUnorderedAccessViews(0, 1, &sceneOutput, nullptr);
-	context->CSSetShader(runtime->compositeShader.get(), nullptr, 0);
+	context->CSSetShader(rt.compositeShader.get(), nullptr, 0);
 	globals::profiler->BeginPass("VolumetricClouds::Composite");
 	context->Dispatch((width + 7u) / 8u, (height + 7u) / 8u, 1u);
 	globals::profiler->EndPass();
@@ -994,6 +1043,27 @@ void VolumetricClouds::DrawSettings()
 		"Adds distortion to cloud shapes and local weather variation. Higher values create less uniform fronts without adding a render pass.");
 	slider("Cloud Movement", settings.WindSpeed, 0.0f, 4.0f, "%.2f",
 		"Scales weather-driven motion. PIXL transitions from a slow 0.20 clear-weather factor to about 0.58 in severe storms; zero stops wind advection while weather still reshapes clouds.");
+	if (ImGui::CollapsingHeader("High Cloud Layer")) {
+		changed |= ImGui::Checkbox("Enable High Cloud Layer", &settings.EnableHighCloudLayer);
+		if (auto tip = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Adds a separate, thinner high-altitude cloud deck. It uses weather-specific coverage and height, a softer shape, and its own wind path. Disabled by default; enabling it uses the existing cloud pass and does not create shader permutations.");
+		ImGui::BeginDisabled(!settings.EnableHighCloudLayer);
+		slider("High Cloud Base", settings.HighCloudBase, 20000.0f, 70000.0f, "%.0f units",
+			"Sets the high deck's lower altitude. The default begins at 30,000 units.");
+		slider("High Cloud Top", settings.HighCloudTop, 65000.0f, 110000.0f, "%.0f units",
+			"Sets the maximum high deck altitude; each weather profile can lower it to retain a distinct sky. Typical tops are 82,000–100,000 units.");
+		slider("High Cloud Coverage", settings.HighCloudCoverage, 0.0f, 1.0f, "%.2f",
+			"Sets how much of the upper sky is occupied. Weather transitions modulate it independently from the lower cloud body.");
+		slider("High Cloud Density", settings.HighCloudDensity, 0.0f, 2.0f, "%.2f",
+			"Controls opacity of the high deck separately from lower cloud density.");
+		slider("High Cloud Detail", settings.HighCloudDetail, 0.1f, 2.0f, "%.2f",
+			"Controls fine breakup on the high deck. Lower values create broader, smoother cirrus-like forms.");
+		slider("Wind Direction Offset", settings.HighCloudWindDirection, -180.0f, 180.0f, "%.0f deg",
+			"Rotates the upper layer's wind relative to Skyrim's current wind. Its accumulated path stays independent through weather direction changes.");
+		slider("Wind Speed", settings.HighCloudWindSpeed, 0.0f, 2.0f, "%.2f",
+			"Scales upper-layer movement separately from the lower cloud body.");
+		ImGui::EndDisabled();
+	}
 	if (ImGui::CollapsingHeader("Lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
 		slider("Light Extinction", settings.Extinction, 0.1f, 3.0f, "%.2f",
 			"Controls how quickly light is absorbed inside clouds. Higher values deepen interiors and shorten visible light penetration.");
@@ -1040,33 +1110,50 @@ void VolumetricClouds::DrawSettings()
 
 void VolumetricClouds::LoadSettings(json& value)
 {
+	if (!value.is_object()) {
+		settings = {};
+		InvalidateHistory();
+		return;
+	}
+	// Preserve historical defaults, JSON keys, and finite clamping for older profiles.
+	const auto readFloat = [&value](const char* key, float fallback, float minimum, float maximum) {
+		return FiniteClamp(value.value(key, fallback), fallback, minimum, maximum);
+	};
 	settings.Enabled = value.value("Enabled", true);
 	settings.Quality = std::min(value.value("Quality", 2u), 3u);
-	settings.Coverage = FiniteClamp(value.value("Coverage", 0.60f), 0.60f, 0.0f, 2.0f);
-	settings.Density = FiniteClamp(value.value("Density", 1.55f), 1.55f, 0.1f, 2.5f);
-	settings.VanillaCloudVisibility = FiniteClamp(value.value("VanillaCloudVisibility", 0.62f), 0.62f, 0.0f, 1.0f);
-	settings.OriginalSkyExposure = FiniteClamp(value.value("OriginalSkyExposure", 0.0f), 0.0f, -3.0f, 2.0f);
-	settings.OriginalSkyContrast = FiniteClamp(value.value("OriginalSkyContrast", 1.0f), 1.0f, 0.5f, 2.0f);
-	settings.AuroraIntensity = FiniteClamp(value.value("AuroraIntensity", 0.35f), 0.35f, 0.0f, 1.5f);
-	settings.LightningIntensity = FiniteClamp(value.value("LightningIntensity", 1.0f), 1.0f, 0.0f, 2.0f);
-	settings.CloudBase = FiniteClamp(value.value("CloudBase", 17522.0f), 17522.0f, 0.0f, 120000.0f);
-	settings.CloudThickness = FiniteClamp(value.value("CloudThickness", 50085.0f), 50085.0f, 2000.0f, 90000.0f);
-	settings.MaximumDistance = FiniteClamp(value.value("MaximumDistance", 466346.0f), 466346.0f, 50000.0f, 800000.0f);
-	settings.ShapeScale = FiniteClamp(value.value("ShapeScale", 1.08f), 1.08f, 0.2f, 3.0f);
-	settings.DetailScale = FiniteClamp(value.value("DetailScale", 1.5f), 1.5f, 0.2f, 3.0f);
-	settings.Erosion = FiniteClamp(value.value("Erosion", 0.62f), 0.62f, 0.0f, 1.5f);
-	settings.Turbulence = FiniteClamp(value.value("Turbulence", 0.44f), 0.44f, 0.0f, 1.5f);
-	settings.WindSpeed = FiniteClamp(value.value("WindSpeed", 0.41f), 0.41f, 0.0f, 4.0f);
-	settings.Extinction = FiniteClamp(value.value("Extinction", 1.17f), 1.17f, 0.1f, 3.0f);
-	settings.Scattering = FiniteClamp(value.value("Scattering", 0.8f), 0.8f, 0.0f, 3.0f);
-	settings.AmbientLight = FiniteClamp(value.value("AmbientLight", 0.68f), 0.68f, 0.0f, 3.0f);
-	settings.ForwardScattering = FiniteClamp(value.value("ForwardScattering", 0.72f), 0.72f, 0.0f, 0.92f);
-	settings.BackScattering = FiniteClamp(value.value("BackScattering", -0.18f), -0.18f, -0.8f, 0.0f);
-	settings.SilverLining = FiniteClamp(value.value("SilverLining", 0.85f), 0.85f, 0.0f, 2.0f);
-	settings.Powder = FiniteClamp(value.value("Powder", 0.55f), 0.55f, 0.0f, 2.0f);
-	settings.MultipleScattering = FiniteClamp(value.value("MultipleScattering", 0.65f), 0.65f, 0.0f, 1.5f);
-	settings.ShadowStrength = FiniteClamp(value.value("ShadowStrength", 0.20f), 0.20f, 0.0f, 1.0f);
-	settings.TemporalResponse = FiniteClamp(value.value("TemporalResponse", 0.92f), 0.92f, 0.0f, 0.98f);
+	settings.Coverage = readFloat("Coverage", 0.60f, 0.0f, 2.0f);
+	settings.Density = readFloat("Density", 1.55f, 0.1f, 2.5f);
+	settings.VanillaCloudVisibility = readFloat("VanillaCloudVisibility", 0.25f, 0.0f, 1.0f);
+	settings.OriginalSkyExposure = readFloat("OriginalSkyExposure", 0.0f, -3.0f, 2.0f);
+	settings.OriginalSkyContrast = readFloat("OriginalSkyContrast", 1.0f, 0.5f, 2.0f);
+	settings.AuroraIntensity = readFloat("AuroraIntensity", 0.35f, 0.0f, 1.5f);
+	settings.LightningIntensity = readFloat("LightningIntensity", 1.0f, 0.0f, 2.0f);
+	settings.CloudBase = readFloat("CloudBase", 15000.0f, 0.0f, 120000.0f);
+	settings.CloudThickness = readFloat("CloudThickness", 50085.0f, 2000.0f, 90000.0f);
+	settings.EnableHighCloudLayer = value.value("EnableHighCloudLayer", false);
+	settings.HighCloudBase = readFloat("HighCloudBase", 30000.0f, 20000.0f, 70000.0f);
+	settings.HighCloudTop = readFloat("HighCloudTop", 100000.0f, 65000.0f, 110000.0f);
+	settings.HighCloudCoverage = readFloat("HighCloudCoverage", 0.42f, 0.0f, 1.0f);
+	settings.HighCloudDensity = readFloat("HighCloudDensity", 0.80f, 0.0f, 2.0f);
+	settings.HighCloudDetail = readFloat("HighCloudDetail", 0.65f, 0.1f, 2.0f);
+	settings.HighCloudWindDirection = readFloat("HighCloudWindDirection", 28.0f, -180.0f, 180.0f);
+	settings.HighCloudWindSpeed = readFloat("HighCloudWindSpeed", 0.72f, 0.0f, 2.0f);
+	settings.MaximumDistance = readFloat("MaximumDistance", 466346.0f, 50000.0f, 800000.0f);
+	settings.ShapeScale = readFloat("ShapeScale", 1.08f, 0.2f, 3.0f);
+	settings.DetailScale = readFloat("DetailScale", 1.5f, 0.2f, 3.0f);
+	settings.Erosion = readFloat("Erosion", 0.62f, 0.0f, 1.5f);
+	settings.Turbulence = readFloat("Turbulence", 0.44f, 0.0f, 1.5f);
+	settings.WindSpeed = readFloat("WindSpeed", 0.41f, 0.0f, 4.0f);
+	settings.Extinction = readFloat("Extinction", 1.17f, 0.1f, 3.0f);
+	settings.Scattering = readFloat("Scattering", 0.8f, 0.0f, 3.0f);
+	settings.AmbientLight = readFloat("AmbientLight", 0.68f, 0.0f, 3.0f);
+	settings.ForwardScattering = readFloat("ForwardScattering", 0.72f, 0.0f, 0.92f);
+	settings.BackScattering = readFloat("BackScattering", -0.18f, -0.8f, 0.0f);
+	settings.SilverLining = readFloat("SilverLining", 0.85f, 0.0f, 2.0f);
+	settings.Powder = readFloat("Powder", 0.55f, 0.0f, 2.0f);
+	settings.MultipleScattering = readFloat("MultipleScattering", 0.65f, 0.0f, 1.5f);
+	settings.ShadowStrength = readFloat("ShadowStrength", 0.20f, 0.0f, 1.0f);
+	settings.TemporalResponse = readFloat("TemporalResponse", 0.92f, 0.0f, 0.98f);
 	settings.DebugMode = 0u;
 }
 
@@ -1080,6 +1167,11 @@ void VolumetricClouds::SaveSettings(json& value)
 		{ "AuroraIntensity", settings.AuroraIntensity },
 		{ "LightningIntensity", settings.LightningIntensity },
 		{ "Density", settings.Density }, { "CloudBase", settings.CloudBase }, { "CloudThickness", settings.CloudThickness },
+		{ "EnableHighCloudLayer", settings.EnableHighCloudLayer }, { "HighCloudBase", settings.HighCloudBase },
+		{ "HighCloudTop", settings.HighCloudTop }, { "HighCloudCoverage", settings.HighCloudCoverage },
+		{ "HighCloudDensity", settings.HighCloudDensity },
+		{ "HighCloudDetail", settings.HighCloudDetail }, { "HighCloudWindDirection", settings.HighCloudWindDirection },
+		{ "HighCloudWindSpeed", settings.HighCloudWindSpeed },
 		{ "MaximumDistance", settings.MaximumDistance }, { "ShapeScale", settings.ShapeScale },
 		{ "DetailScale", settings.DetailScale }, { "Erosion", settings.Erosion }, { "Turbulence", settings.Turbulence },
 		{ "WindSpeed", settings.WindSpeed }, { "Extinction", settings.Extinction }, { "Scattering", settings.Scattering },
@@ -1098,23 +1190,21 @@ void VolumetricClouds::RestoreDefaultSettings()
 void VolumetricClouds::RegisterWeatherVariables()
 {
 	auto* registry = WeatherVariables::GlobalWeatherRegistry::GetSingleton()->GetOrCreateFeatureRegistry(GetShortName());
-	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
-		"Coverage", "Cloud Coverage", "Per-weather multiplier applied after automatic weather classification.",
-		&settings.Coverage, 0.60f, 0.0f, 2.0f));
-	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
-		"Density", "Cloud Density", "Per-weather optical-density multiplier.",
-		&settings.Density, 1.55f, 0.1f, 2.5f));
-	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
-		"CloudBase", "Cloud Base", "Base altitude for this weather in Skyrim world units.",
-		&settings.CloudBase, 17522.0f, 0.0f, 120000.0f));
-	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
-		"CloudThickness", "Cloud Thickness", "Scales weather-driven vertical development around the configured cloud base.",
-		&settings.CloudThickness, 50085.0f, 2000.0f, 90000.0f));
-	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
-		"Erosion", "Cloud Erosion", "Fine breakup and wispy-edge strength for this weather.",
-		&settings.Erosion, 0.62f, 0.0f, 1.5f));
-	registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
-		"ShadowStrength", "Cloud Shadow Strength", "Strength of broad world-space cloud shadows.",
-		&settings.ShadowStrength, 0.20f, 0.0f, 1.0f));
+	const auto addFloat = [registry](const char* key, const char* label, const char* tooltip,
+		float& setting, float fallback, float minimum, float maximum) {
+		registry->RegisterVariable(std::make_shared<WeatherVariables::FloatVariable>(
+			key, label, tooltip, &setting, fallback, minimum, maximum));
+	};
+	addFloat("Coverage", "Cloud Coverage", "Per-weather multiplier applied after automatic weather classification.",
+		settings.Coverage, 0.60f, 0.0f, 2.0f);
+	addFloat("Density", "Cloud Density", "Per-weather optical-density multiplier.",
+		settings.Density, 1.55f, 0.1f, 2.5f);
+	addFloat("CloudBase", "Cloud Base", "Base altitude for this weather in Skyrim world units.",
+		settings.CloudBase, 15000.0f, 0.0f, 120000.0f);
+	addFloat("CloudThickness", "Cloud Thickness", "Scales weather-driven vertical development around the configured cloud base.",
+		settings.CloudThickness, 50085.0f, 2000.0f, 90000.0f);
+	addFloat("Erosion", "Cloud Erosion", "Fine breakup and wispy-edge strength for this weather.",
+		settings.Erosion, 0.62f, 0.0f, 1.5f);
+	addFloat("ShadowStrength", "Cloud Shadow Strength", "Strength of broad world-space cloud shadows.",
+		settings.ShadowStrength, 0.20f, 0.0f, 1.0f);
 }
-

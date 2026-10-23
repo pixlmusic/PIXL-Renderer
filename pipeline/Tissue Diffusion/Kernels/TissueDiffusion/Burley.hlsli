@@ -12,12 +12,13 @@
 // https://graphics.pixar.com/library/ApproxBSSRDF/paper.pdf
 float3 GetBurleyCDF(float3 d, float3 r, float rand)
 {
-	return 1 - 0.25 * exp(-r / d) - 0.75 * exp(-r / (3 * d)) - rand;
+	d = max(d, 1.0e-5f.xxx);
+	return 1 - 0.25 * exp(-r / d) - 0.75 * exp(-r / (3 * d)) - saturate(rand);
 }
 
 float GetBurleyPDF(float r, float l, float s)
 {
-	float d = l / s;
+	float d = max(l / max(s, 1.0e-5f), 1.0e-5f);
 	float pdf = 0.25 / d * (exp(-r / d) + exp(-r / (3 * d)));  // cdf dr
 	return max(pdf, 1e-5f);
 }
@@ -29,7 +30,8 @@ float RadiusApprox(float d, float rand)
 {
 	// g(ξ) = d((2 − c)ξ − 2)log(1 − ξ)
 	// minimal mean squared error when c = 2.5715
-	return d * ((2 - 2.5715f) * rand - 2) * log(1 - rand);
+	rand = clamp(rand, 1.0e-5f, 1.0f - 1.0e-5f);
+	return max(d, 1.0e-5f) * ((2 - 2.5715f) * rand - 2) * log(1 - rand);
 }
 
 float3 GetBurleyProfile(float3 l, float3 s, float radius)
@@ -49,7 +51,8 @@ float3 GetScalingFactor(float3 albedo)
 	// d = l / (3.5 + 100(A − 0.33)^4)
 	// here we choose the third to use diffuse mean free path as parameter.
 	float3 value = albedo - 0.33f;
-	return 3.5f + 100.f * pow(abs(value), 4);
+	float3 value2 = value * value;
+	return 3.5f + 100.f * value2 * value2;
 }
 
 // DTid/texCoord    : dispatch pixel and its UV.
@@ -126,7 +129,9 @@ float4 BurleyNormalizedSS(uint2 DTid, float2 texCoord, float sssAmount, float4 m
 		uvOffset.y *= sin(theta);
 
 		float2 sampleUV = texCoord + uvOffset;
-		float2 clampedUV = clamp(sampleUV, float2(0.0f, 0.0f), float2(1.0f, 1.0f));
+		if (any(sampleUV <= 0.0f.xx) || any(sampleUV >= 1.0f.xx))
+			continue;
+		float2 clampedUV = sampleUV;
 		uint2 samplePixcoord = min(
 			uint2(clampedUV * SharedData::BufferDim.xy),
 			uint2(SharedData::BufferDim.xy) - 1u);
@@ -150,7 +155,7 @@ float4 BurleyNormalizedSS(uint2 DTid, float2 texCoord, float sssAmount, float4 m
 		float normalWeight = sqrt(saturate(dot(sampleNormalWS, normalWS) * 0.5f + 0.5f));
 #if USE_PIXL_STABLE_SSS
 		float normalAgreement = dot(sampleNormalWS, normalWS);
-		normalWeight *= smoothstep(-0.1f, 0.75f, normalAgreement);
+		normalWeight *= SSSSmootherStep((normalAgreement + 0.1f) / 0.85f);
 		normalWeight *= exp2(-0.08f * abs(deltaDepth));
 #endif
 		float3 sampleWeight = (diffusionProfile / pdf) * normalWeight * maskSample * profileAgreement;
@@ -177,7 +182,7 @@ float4 BurleyNormalizedSS(uint2 DTid, float2 texCoord, float sssAmount, float4 m
 	// Mask x is an amount/coverage control, not a mean-free-path multiplier.
 	// Keeping the physical diffusion radius stable while blending its contribution
 	// avoids full-strength tiny-radius halos around partially covered face pixels.
-	color = lerp(centerColorRestored, color, saturate(sssAmount));
+	color = lerp(centerColorRestored, color, SSSSmootherStep(sssAmount));
 
 	float4 outColor = float4(max(0.0f, color), ColorTexture[DTid.xy].w);
 	return outColor;

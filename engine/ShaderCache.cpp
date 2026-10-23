@@ -16,6 +16,7 @@
 #include "Plugin.h"
 
 #include <charconv>
+#include <atomic>
 
 namespace SIE
 {
@@ -26,15 +27,10 @@ namespace SIE
 	// shared by shader families which do not enable the changed module's define.
 	static constexpr const char* kPipelineCacheLayout = "PIXL.StageShard.v1";
 	static constexpr const char* kSharedShaderABI = "PIXL.SharedBuffers.20260926.RenderOrigin1";
-	// Global Lighting/PBR/glint shader semantics changed across the 1.0.4
-	// candidate. They reach shader families beyond one module's define, so a
-	// dedicated revision invalidates old compiled stages without mislabeling an
-	// unchanged CPU/HLSL buffer ABI as a new layout.
-	// Bump whenever a shared shader or an included module shader changes.  The
-	// liquid optics update is included by Lighting.hlsl, so retaining the old
-	// revision would incorrectly treat pre-update Lighting permutations as
-	// valid and hide the new runtime path behind the disk cache.
-	static constexpr const char* kPipelineShaderRevision = "PIXL.Shaders.20261011.FurShellCloudPolish1";
+	// Bump whenever a shared shader or included module shader changes. The
+	// 2026-10-21 shader updates postdate the prior cache revision; keep old
+	// compiled permutations from masking the source changes on the next launch.
+	static constexpr const char* kPipelineShaderRevision = "PIXL.Shaders.20261023.MaterialSurfaceProfiles1";
 
 	// Custom include handler to track all includes during shader compilation
 	class TrackingIncludeHandler : public ID3DInclude
@@ -539,6 +535,15 @@ namespace SIE
 			for (auto* feature : RenderModule::GetModuleList()) {
 				if (feature->loaded && feature->HasShaderDefine(RE::BSShader::Type::Water)) {
 					defines[lastIndex++] = { feature->GetShaderDefineName().data(), nullptr };
+					if (feature->GetShortName() == "OceanDynamics") {
+						static std::atomic_bool specularLogged = false;
+						static std::atomic_bool stencilLogged = false;
+						if (technique < 8 && !specularLogged.exchange(true, std::memory_order_relaxed))
+							logger::info("[PIXL Ocean Dynamics] OCEAN_DYNAMICS enabled for Water specular permutations");
+						else if (technique == static_cast<uint32_t>(ShaderCache::WaterShaderTechniques::Stencil) &&
+							 !stencilLogged.exchange(true, std::memory_order_relaxed))
+							logger::info("[PIXL Ocean Dynamics] OCEAN_DYNAMICS enabled for Water stencil permutations");
+					}
 				}
 			}
 
@@ -1166,7 +1171,7 @@ namespace SIE
 		template <size_t MaxOffsetsSize>
 		static void ReflectConstantBuffers(ID3D11ShaderReflection& reflector,
 			std::array<size_t, 3>& bufferSizes,
-			std::array<int8_t, MaxOffsetsSize>& constantOffsets,
+			std::array<uint8_t, MaxOffsetsSize>& constantOffsets,
 			uint64_t& vertexDesc,
 			ShaderClass shaderClass, uint32_t descriptor, const RE::BSShader& shader)
 		{
@@ -1805,7 +1810,6 @@ namespace SIE
 				{ "BSImagespaceShaderVolumetricLightingBlurHCS", RE::ImageSpaceManager::GetCurrentIndex(ISVolumetricLightingBlurHCS) },
 				{ "BSImagespaceShaderVolumetricLightingBlurVCS", RE::ImageSpaceManager::GetCurrentIndex(ISVolumetricLightingBlurVCS) },
 
-				{ "BSImagespaceShaderGraphicsTextureFilterMode", RE::ImageSpaceManager::GetCurrentIndex(ISGraphicsTextureFilterMode) },
 				{ "BSImagespaceShaderISDownsampleHierarchicalDepthBufferCS", RE::ImageSpaceManager::GetCurrentIndex(ISDownsampleHierarchicalDepthBufferCS) },
 				{ "BSImagespaceShaderISDiffScaleDownsampleDepthBufferCS", RE::ImageSpaceManager::GetCurrentIndex(ISDiffScaleDownsampleDepthBufferCS) },
 				{ "BSImagespaceShaderISTransformLvl7PreTest", RE::ImageSpaceManager::GetCurrentIndex(ISTransformLvl7PreTest) },
@@ -2742,7 +2746,7 @@ namespace SIE
 			listener = new UpdateListener(dependencyTracker.get());
 			// Add a folder to watch, and get the efsw::WatchID
 			// Reporting the files and directories changes to the instance of the listener
-			watchID = fileWatcher->addWatch("Data\\Shaders", listener, true);
+			watchID = fileWatcher->addWatch("Data\\PIXL-Shaders", listener, true);
 			// Start watching asynchronously the directories
 			fileWatcher->watch();
 			std::string pathStr = "";
@@ -3752,7 +3756,7 @@ namespace SIE
 
 		auto findOwningModule = [&]() -> RenderModule* {
 			std::error_code ec;
-			auto shaderRoot = std::filesystem::weakly_canonical("Data\\Shaders", ec);
+			auto shaderRoot = std::filesystem::weakly_canonical("Data\\PIXL-Shaders", ec);
 			if (ec)
 				return nullptr;
 			auto absolutePath = std::filesystem::weakly_canonical(filePath, ec);
@@ -3808,8 +3812,8 @@ namespace SIE
 				std::transform(parentDirName.begin(), parentDirName.end(), parentDirName.begin(),
 					[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
-				// Check if the parent directory name matches "shaders" in a case-insensitive way
-				if (parentDirName == "shaders" && shaderType.has_value()) {
+				// Top-level pipeline entry points live directly in PIXL's private shader root.
+				if (parentDirName == "pixl-shaders" && shaderType.has_value()) {
 					const std::string reason = std::format(
 						"file watcher changed top-level shader {}", filePath.string());
 					cache->InvalidateDiskCache(shaderType.value(), reason);

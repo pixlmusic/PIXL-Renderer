@@ -130,7 +130,7 @@ namespace
 			g_roofRunoffGenerateAttempted = true;
 			auto* compiled = static_cast<ID3D11ComputeShader*>(
 				Util::CompileShader(
-					L"Data\\Shaders\\RainResponse\\RoofRunoffGenerateCS.hlsl",
+					L"Data\\PIXL-Shaders\\RainResponse\\RoofRunoffGenerateCS.hlsl",
 					{},
 					"cs_5_0"));
 			if (compiled) {
@@ -149,7 +149,7 @@ namespace
 			g_roofRunoffCompositeAttempted = true;
 			auto* compiled = static_cast<ID3D11ComputeShader*>(
 				Util::CompileShader(
-					L"Data\\Shaders\\RainResponse\\RoofRunoffCompositeCS.hlsl",
+					L"Data\\PIXL-Shaders\\RainResponse\\RoofRunoffCompositeCS.hlsl",
 					{},
 					"cs_5_0"));
 			if (compiled) {
@@ -1356,7 +1356,8 @@ void RainResponse::Prepass()
 	auto& precipOcclusionTexture =
 		renderer->GetDepthStencilData().depthStencils[
 			RE::RENDER_TARGETS_DEPTHSTENCIL::kPRECIPITATION_OCCLUSION_MAP];
-	context->PSSetShaderResources(70, 1, &precipOcclusionTexture.depthSRV);
+	auto* precipOcclusionSRV = REX::W32::AsReal(precipOcclusionTexture.depthSRV);
+	context->PSSetShaderResources(70, 1, &precipOcclusionSRV);
 
 	if (!g_worldPrecipitationCB) {
 		g_worldPrecipitationCB = std::make_unique<ConstantBuffer>(
@@ -1521,7 +1522,7 @@ ID3D11ComputeShader* RainResponse::GetRoofRunoffDetectCS()
 		roofRunoffDetectAttempted = true;
 		auto* compiled = static_cast<ID3D11ComputeShader*>(
 			Util::CompileShader(
-				L"Data\\Shaders\\RainResponse\\RoofRunoffDetectCS.hlsl",
+				L"Data\\PIXL-Shaders\\RainResponse\\RoofRunoffDetectCS.hlsl",
 				{},
 				"cs_5_0"));
 		if (compiled) {
@@ -1540,7 +1541,7 @@ ID3D11ComputeShader* RainResponse::GetRoofRunoffResolveCS()
 		roofRunoffResolveAttempted = true;
 		auto* compiled = static_cast<ID3D11ComputeShader*>(
 			Util::CompileShader(
-				L"Data\\Shaders\\RainResponse\\RoofRunoffResolveCS.hlsl",
+				L"Data\\PIXL-Shaders\\RainResponse\\RoofRunoffResolveCS.hlsl",
 				{},
 				"cs_5_0"));
 		if (compiled) {
@@ -1604,7 +1605,7 @@ void RainResponse::DrawRoofRunoff()
 	}
 
 	D3D11_TEXTURE2D_DESC mainDesc{};
-	main.texture->GetDesc(&mainDesc);
+	main.texture->GetDesc(REX::W32::AsW32(&mainDesc));
 	if (mainDesc.Width == 0 || mainDesc.Height == 0) {
 		g_roofRunoffHistoryValid = false;
 		return;
@@ -1636,7 +1637,7 @@ void RainResponse::DrawRoofRunoff()
 			RE::RENDER_TARGETS_DEPTHSTENCIL::kPRECIPITATION_OCCLUSION_MAP];
 
 	ID3D11ShaderResourceView* sceneDepth = Util::GetCurrentSceneDepthSRV(false);
-	ID3D11ShaderResourceView* precipitationDepth = precipDepth.depthSRV;
+	ID3D11ShaderResourceView* precipitationDepth = REX::W32::AsReal(precipDepth.depthSRV);
 	if (!sceneDepth || !precipitationDepth) {
 		g_roofRunoffHistoryValid = false;
 		return;
@@ -1779,7 +1780,7 @@ void RainResponse::DrawRoofRunoff()
 		ID3D11ShaderResourceView* srv = g_roofRunoffDropMask->srv.get();
 		context->CSSetShaderResources(0, 1, &srv);
 
-		ID3D11UnorderedAccessView* uav = main.UAV;
+		ID3D11UnorderedAccessView* uav = REX::W32::AsReal(main.UAV);
 		context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
 		context->CSSetShader(compositeCS, nullptr, 0);
 
@@ -1805,6 +1806,10 @@ void RainResponse::DrawRoofRunoff()
 
 void RainResponse::LoadSettings(json& o_json)
 {
+	// Older settings may store a disabled module as null. Restore defaults before
+	// reading optional snow/runoff fields from the same JSON object.
+	if (!o_json.is_object())
+		o_json = json::object();
 	settings = o_json;
 	auto finiteOr = [](float value, float fallback) {
 		return std::isfinite(value) ? value : fallback;

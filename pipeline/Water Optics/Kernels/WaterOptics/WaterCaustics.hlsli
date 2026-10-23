@@ -44,7 +44,9 @@ namespace WaterOptics
 			dot(waterWorldXY, float2(0.012f, 0.007f)),
 			dot(waterWorldXY, float2(-0.006f, 0.015f)));
 		float2 bend = sin(phase + SharedData::Timer * float2(0.43f, -0.31f));
-		return uv + bend * lerp(0.003f, 0.010f, saturate(receiverHeight / 300.0f));
+		float heightResponse = saturate(receiverHeight / 300.0f);
+		heightResponse = heightResponse * heightResponse * (3.0f - 2.0f * heightResponse);
+		return uv + bend * lerp(0.003f, 0.010f, heightResponse);
 	}
 
 	float SampleCaustics(float2 uv)
@@ -68,14 +70,18 @@ namespace WaterOptics
 		// Reconstruct a compact focusing proxy from local density curvature. This is
 		// the texture-space analogue of measuring the area change of a refracted ray
 		// footprint, with a bounded response for stable HDR output.
-		const float2 tap = float2(0.0017f, 0.0023f);
+		float2 footprint = max(abs(ReceiverCausticDx), abs(ReceiverCausticDy));
+		float2 tap = clamp(max(float2(0.0017f, 0.0023f), footprint * 0.75f),
+			float2(0.0017f, 0.0023f), 0.025f.xx);
 		float center = SampleCaustics(uv);
 		float samplePX = SampleCaustics(uv + float2(tap.x, 0.0f));
 		float sampleNX = SampleCaustics(uv - float2(tap.x, 0.0f));
 		float samplePY = SampleCaustics(uv + float2(0.0f, tap.y));
 		float sampleNY = SampleCaustics(uv - float2(0.0f, tap.y));
 		float filtered = center * 0.50f + (samplePX + sampleNX + samplePY + sampleNY) * 0.125f;
-		float curvature = saturate(abs(4.0f * center - samplePX - sampleNX - samplePY - sampleNY) * 1.5f);
+		float footprintScale = rcp(1.0f + 24.0f * length(footprint));
+		float curvature = saturate(abs(4.0f * center - samplePX - sampleNX - samplePY - sampleNY) *
+			1.5f * footprintScale);
 		float focus = lerp(1.0f, 1.0f + curvature * 1.75f, saturate(SharedData::waterOpticsSettings.CausticsFocus * 0.5f));
 		float3 dispersed = SampleCausticsDispersion(uv, dispersionOffset);
 		float3 antiAliased = lerp(filtered.xxx, dispersed, 0.65f);
@@ -127,13 +133,19 @@ namespace WaterOptics
 			float2 projectedOffset = sunDirection.xy * (receiverHeight / safeSunZ);
 			float reachScale = maxAboveWaterHeight / 300.0f;
 			float heightFade = 1.0f - smoothstep(max(16.0f, 16.0f * reachScale), maxAboveWaterHeight, receiverHeight);
+			heightFade = heightFade * heightFade * heightFade * (heightFade * (heightFade * 6.0f - 15.0f) + 10.0f);
 			float footprintFade = 1.0f - smoothstep(64.0f * reachScale, 260.0f * reachScale, length(projectedOffset));
+			footprintFade = footprintFade * footprintFade * footprintFade *
+				(footprintFade * (footprintFade * 6.0f - 15.0f) + 10.0f);
 			float receiverFade = heightFade * footprintFade;
 			float3 reflectedDirection = normalize(float3(-sunDirection.xy, max(sunDirection.z, 0.0f)));
 			float3 normal = normalize(receiverNormal);
 			// Water-bounced light arrives from below. Upward terrain is not a receiver.
-			float normalResponse = saturate(dot(normal, -reflectedDirection)) *
-				(1.0f - smoothstep(0.02f, 0.35f, normal.z));
+			float normalLobe = saturate(dot(normal, -reflectedDirection));
+			normalLobe = normalLobe * normalLobe * (3.0f - 2.0f * normalLobe);
+			float upwardRejection = 1.0f - smoothstep(0.02f, 0.35f, normal.z);
+			upwardRejection = upwardRejection * upwardRejection * (3.0f - 2.0f * upwardRejection);
+			float normalResponse = normalLobe * upwardRejection;
 			float sunVisibility = saturate(sunDirection.z * 4.0f);
 			if (receiverFade > 0.0f && normalResponse > 0.0f && sunVisibility > 0.0f) {
 				float2 absolutePosition = worldPosition.xy + FrameBuffer::CameraPosAdjust.xy + projectedOffset;

@@ -121,7 +121,7 @@ public:
 	static_assert(sizeof(TuningSettings) == 304, "FoliageDynamics::TuningSettings must match PS b13.");
 
 	TuningSettings tuningSettings;
-	ConstantBuffer* tuningCB = nullptr;
+	std::unique_ptr<ConstantBuffer> tuningCB;
 
 	virtual void SetupResources() override;
 	virtual void Prepass() override;

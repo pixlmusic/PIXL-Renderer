@@ -3,7 +3,7 @@ param([string]$ShaderRoot = '', [string]$Fxc = '')
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 if ([string]::IsNullOrWhiteSpace($ShaderRoot)) {
-    $ShaderRoot = Join-Path $repo 'distribution\Shaders'
+    $ShaderRoot = Join-Path $repo 'distribution\PIXL-Shaders'
 }
 if ([string]::IsNullOrWhiteSpace($Fxc)) {
     $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'

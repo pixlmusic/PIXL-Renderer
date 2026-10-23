@@ -9,7 +9,9 @@
 
 #include <dxgi.h>
 #include <array>
+#include <atomic>
 #include <format>
+#include <string_view>
 #include <imgui.h>
 #include <imgui_impl_dx11.h>
 #include <imgui_impl_win32.h>
@@ -33,37 +35,53 @@
 namespace
 {
 	std::unordered_map<ImGuiID, float> s_windowOverlapAlpha;
-	constexpr std::array<const char*, 30> kCompilerTips{
-		"Compiling shaders. The dragons have declined to help.",
-		"Page Down opens PIXL Renderer. No console commands or ancient scrolls required.",
-		"Home opens Photo Mode. Even a mudcrab deserves a good portrait.",
-		"In Photo Mode, End takes the photo. Try to catch the dragon before it catches you.",
-		"Photo Mode's Insert key opens effects. It does not insert another dragon.",
-		"Cached shaders can be reused. Deleting them makes this reunion longer.",
-		"New shader combinations may compile later. Skyrim has a lot of ways to draw a bucket.",
-		"Off, TAA, FSR and supported DLSS are available in Quick Setup.",
-		"DLSS needs supported NVIDIA hardware. Sweet-talking the checkbox will not work.",
-		"Fog Height sets the layer's altitude. Height Falloff decides how quickly it thins above it.",
-		"Want taller fog? Lower Height Falloff before blaming the weather wizard.",
-		"Sky Protection preserves sky detail without clearing fog from the mountains.",
-		"Automatic Weather Atmosphere makes rain and snow denser. Pack an imaginary coat.",
-		"WindowLife's outdoor backgrounds are scenery, not a shortcut through the wall.",
-		"Interior View: Background Emission brightens the scenery seen through interior windows.",
-		"Exterior room glow has its own control. Your neighbour's lamps are safe.",
-		"Day and night window artwork blends with game time. No one has to change the paintings.",
-		"More sharpness is not always more detail. Sometimes it is just a louder pine needle.",
-		"Bloom is seasoning. The sun does not need to become soup.",
-		"Save a favourite look before experimenting. Future you appreciates backups.",
-		"A preloaded cache helps startup, but unfamiliar shader combinations may still need work.",
+	std::atomic_bool s_startupCurtainActive{ false };
+	bool s_startupCurtainStarted = false;
+	float s_startupCurtainEnterTime = 0.0f;
+	float s_startupCurtainExitTime = -1.0f;
+
+	float SmoothStep01(float value)
+	{
+		value = std::clamp(value, 0.0f, 1.0f);
+		return value * value * (3.0f - 2.0f * value);
+	}
+	constexpr std::array<const char*, 36> kCompilerTips{
+		"Compiling shaders. The dragons declined to help.",
+		"Page Down opens PIXL. No ancient scroll required.",
+		"Home opens Photo Mode. Mudcrabs love a portrait.",
+		"End takes the shot. Catch that dragon first.",
+		"Insert opens Photo Mode effects. No extra dragons.",
+		"Caches save time. Deleting one starts the reunion.",
+		"New shader combos may compile later. Skyrim has buckets.",
+		"Quick Setup offers Off, TAA, FSR and supported DLSS.",
+		"DLSS needs supported NVIDIA hardware. Nice try.",
+		"Fog Height sets the layer. Falloff thins it above.",
+		"Want taller fog? Lower Falloff before blaming mages.",
+		"Sky Protection keeps sky detail and mountain fog.",
+		"Rain and snow thicken the weather. Pack an imaginary coat.",
+		"WindowLife adds scenery to windows. No wall shortcut.",
+		"Interior View brightens rooms behind the glass.",
+		"Exterior room glow has its own control. Neighbors rejoice.",
+		"Window art follows game time. No painting swaps needed.",
+		"More sharpness can mean louder pine needles.",
+		"Bloom is seasoning. The sun is not soup.",
+		"Save a favourite look. Future you says thanks.",
+		"Preloaded shaders speed starts. New combos still compile.",
 		"These tips cannot compile shaders faster. We asked.",
-		"Some surfaces need different shaders for rain, snow and lighting. Even rocks have options.",
-		"Your GPU is preparing the scenery. The cheese wheels remain Skyrim's responsibility.",
-		"Photo Mode pauses the scene. A rare chance for everyone to stop shouting.",
-		"If a setting looks wrong, compare one change at a time. Science, but with mammoths.",
-		"Frame generation adds frames; it does not make every effect free.",
-		"Good reflections need surroundings. A shiny helmet has a lot to think about.",
-		"The release ships defaults, not somebody else's UserGraphics file. Your settings stay yours.",
-		"Nearly ready is a mood, not a benchmark. The progress counter has the actual numbers."
+		"Rain, snow and light need different shaders. Even rocks.",
+		"Your GPU handles scenery. Cheese wheels are on Skyrim.",
+		"Photo Mode pauses time. A break from the shouting.",
+		"Change one setting at a time. Mammoth science.",
+		"Frame generation adds frames, not free effects.",
+		"Reflections need scenery. Even helmets get lonely.",
+		"Fresh installs start with PIXL defaults. Make them yours.",
+		"Nearly ready is a mood. The progress bar has numbers.",
+		"Clouds have depth. Mountains may steal the show.",
+		"Caustics bring sunlight underwater. Fish approve.",
+		"Cloud shadows drift. No sky stickers here.",
+		"PIXL water bends reflections. Wave hello.",
+		"WindowLife lights up the neighbors. Be polite.",
+		"Skin optics soften light. Even lizards glow."
 	};
 	constexpr ImGuiWindowFlags SKIP_WINDOW_FLAGS = ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove;
 	constexpr const char* MAIN_WINDOW_PREFIX = "PIXL Renderer";
@@ -130,6 +148,13 @@ namespace
 		const ImU32 bgRGB = ImGui::GetColorU32(ImGuiCol_WindowBg) & ~IM_COL32_A_MASK;
 
 		for (auto& [win, rect] : windows) {
+			// The Extensions flyout is a control surface and must remain fully
+			// legible even when it overlaps the main settings window.
+			if (win->ID == ImHashStr("PIXL Extensions###PIXLExtensionPillar") ||
+				(win->Name && std::string_view(win->Name).starts_with("PIXL Extensions"))) {
+				s_windowOverlapAlpha.erase(win->ID);
+				continue;
+			}
 			const float target = overlapping.count(win->ID) ? C::OVERLAP_MIN_ALPHA : 0.0f;
 			float& alpha = s_windowOverlapAlpha[win->ID];
 			const float speed = (target > alpha) ? C::OVERLAP_FADEIN_SPEED : C::OVERLAP_FADEOUT_SPEED;
@@ -162,6 +187,15 @@ namespace
 	}
 }  // namespace
 
+bool OverlayRenderer::IsStartupCurtainActive() noexcept
+{
+	if (s_startupCurtainActive.load(std::memory_order_acquire))
+		return true;
+	const auto shaderCache = globals::shaderCache;
+	return shaderCache && shaderCache->menuLoaded && shaderCache->IsCompiling() &&
+		!shaderCache->backgroundCompilation.load(std::memory_order_acquire);
+}
+
 void OverlayRenderer::RenderOverlay(
 	Menu& menu,
 	const std::function<void()>& processInputEventQueue,
@@ -170,14 +204,16 @@ void OverlayRenderer::RenderOverlay(
 	float& cachedFontSize,
 	float currentFontSize)
 {
+	// Focus can change during setup or while settings are closed as well.
+	if (menu.focusChanged.exchange(false))
+		menu.OnFocusChanged();
 	processInputEventQueue();
 	if (!menu.IsEnabled) {
-		menu.CancelCustomHotkeyCapture();
+		if (!LaunchExperienceRenderer::ShouldShowFirstTimeSetup())
+			menu.CancelAllHotkeyCapture();
 		PIXLRendererPage::FlushPendingEdits(true);
 	}
 	TuningWorkspaceRenderer::UpdateTunerInspection();
-	if (!menu.IsEnabled || !menu.GetSettings().AdvancedMode)
-		PIXLUI::Extensions::ClosePillar();
 	PIXLRenderer::WorldBenchmark::GetSingleton().Update();
 
 	if (ShouldSkipRendering()) {
@@ -192,6 +228,12 @@ void OverlayRenderer::RenderOverlay(
 	InitializeImGuiFrame(menu);
 
 	RenderShaderCompilationStatus(keyIdToString);
+	if (IsStartupCurtainActive()) {
+		// Keep all other PIXL windows behind the full-screen startup curtain.
+		s_windowOverlapAlpha.clear();
+		FinalizeImGuiFrame();
+		return;
+	}
 	RenderShaderBlockingStatus();
 
 	if (menu.IsEnabled || LaunchExperienceRenderer::ShouldShowFirstTimeSetup()) {
@@ -200,13 +242,13 @@ void OverlayRenderer::RenderOverlay(
 		ImGui::GetIO().MouseDrawCursor = !inspectionMoving;
 		if (menu.IsEnabled && !inspectionMoving) {
 			drawSettings();
-			if (menu.IsEnabled && menu.GetSettings().AdvancedMode)
+			// Keep the extension launcher available in both Basic and Advanced
+			// layouts. Its open state belongs to the extension window, not to the
+			// currently selected settings mode.
+			if (menu.IsEnabled)
 				PIXLUI::Extensions::DrawPillar();
-			else
-				PIXLUI::Extensions::ClosePillar();
 		}
 	} else {
-		PIXLUI::Extensions::ClosePillar();
 		ImGui::GetIO().MouseDrawCursor = menu.IsProfilerInteractive() ||
 			(TuningWorkspaceRenderer::IsDirectorVideoEditorVisible() &&
 			 !TuningWorkspaceRenderer::IsDirectorInspectionMoving());
@@ -316,34 +358,60 @@ void OverlayRenderer::RenderShaderCompilationStatus(const std::function<const ch
 	auto& themeSettings = Menu::GetSingleton()->GetTheme();
 
 	const float percent = totalShaders > 0 ? std::clamp(static_cast<float>(compiledShaders) / static_cast<float>(totalShaders), 0.0f, 1.0f) : 0.0f;
+	const float now = static_cast<float>(ImGui::GetTime());
+	const bool foregroundCompiling = shaderCache->IsCompiling() &&
+		!shaderCache->backgroundCompilation.load(std::memory_order_acquire);
 
-	// Foreground compilation owns the startup presentation only until the user
-	// chooses ENTER SKYRIM. Once backgroundCompilation is set, compilation may
-	// continue, but the full-screen compiler card/backdrop must immediately stop.
-	if (shaderCache->IsCompiling() &&
-		!shaderCache->backgroundCompilation) {
-		if (Menu::GetSingleton()->IsEnabled)
-			return;
+	if (foregroundCompiling && !s_startupCurtainStarted) {
+		s_startupCurtainStarted = true;
+		s_startupCurtainEnterTime = now;
+		s_startupCurtainExitTime = -1.0f;
+		s_startupCurtainActive.store(true, std::memory_order_release);
+		logger::info("Foreground shader compilation acquired the startup curtain and game input.");
+	}
+	if (s_startupCurtainStarted && !foregroundCompiling && s_startupCurtainExitTime < 0.0f)
+		s_startupCurtainExitTime = now;
+
+	if (IsStartupCurtainActive()) {
+		constexpr float kPanelFadeOutSeconds = 0.28f;
+		constexpr float kCurtainFadeOutStartSeconds = 0.24f;
+		constexpr float kCurtainFadeOutSeconds = 0.58f;
+		constexpr float kCurtainTransitionSeconds = kCurtainFadeOutStartSeconds + kCurtainFadeOutSeconds;
+
+		const float enterElapsed = std::max(0.0f, now - s_startupCurtainEnterTime);
+		const float exitElapsed = s_startupCurtainExitTime >= 0.0f ? now - s_startupCurtainExitTime : 0.0f;
+		if (s_startupCurtainExitTime >= 0.0f && exitElapsed >= kCurtainTransitionSeconds) {
+			s_startupCurtainActive.store(false, std::memory_order_release);
+			s_startupCurtainStarted = false;
+			s_startupCurtainExitTime = -1.0f;
+			logger::info("Startup curtain faded away; Skyrim input restored.");
+		} else {
+			ImGuiViewport* viewport = ImGui::GetMainViewport();
+			const float blackAlpha = s_startupCurtainExitTime >= 0.0f
+				? 1.0f - SmoothStep01((exitElapsed - kCurtainFadeOutStartSeconds) / kCurtainFadeOutSeconds)
+				: 1.0f;
+			ImGui::GetBackgroundDrawList(viewport)->AddRectFilled(
+				viewport->Pos,
+				ImVec2(viewport->Pos.x + viewport->Size.x, viewport->Pos.y + viewport->Size.y),
+				IM_COL32(0, 0, 0, static_cast<int>(255.0f * blackAlpha)));
+
+			const float panelAlpha = s_startupCurtainExitTime >= 0.0f
+				? 1.0f - SmoothStep01(exitElapsed / kPanelFadeOutSeconds)
+				: SmoothStep01(enterElapsed / 0.34f);
+			const bool showPanel = s_startupCurtainExitTime < 0.0f || exitElapsed < kPanelFadeOutSeconds;
+			if (!showPanel)
+				return;
+
+			ImGui::PushStyleVar(ImGuiStyleVar_Alpha, panelAlpha);
+		}
+	}
+
+	// Keep the compiler card through the beginning of the curtain's fade-out.
+	if (IsStartupCurtainActive() &&
+		(s_startupCurtainExitTime < 0.0f || now - s_startupCurtainExitTime < 0.28f)) {
 
 		ImGuiViewport* viewport =
 			ImGui::GetMainViewport();
-
-		// Deterministic opaque compositor backdrop. This overwrites every pixel
-		// behind the compiler card each frame and prevents persistent swap-chain
-		// / UI-buffer contents from appearing as repeated previous windows.
-		ImGui::GetBackgroundDrawList(
-			viewport)->AddRectFilled(
-				viewport->Pos,
-				ImVec2(
-					viewport->Pos.x +
-						viewport->Size.x,
-					viewport->Pos.y +
-						viewport->Size.y),
-				IM_COL32(
-					4,
-					6,
-					8,
-					255));
 
 		const float cardWidth =
 			std::clamp(
@@ -418,6 +486,7 @@ void OverlayRenderer::RenderShaderCompilationStatus(const std::function<const ch
 			ImGui::End();
 			ImGui::PopStyleColor(2);
 			ImGui::PopStyleVar(3);
+			ImGui::PopStyleVar();
 			return;
 		}
 
@@ -681,6 +750,7 @@ void OverlayRenderer::RenderShaderCompilationStatus(const std::function<const ch
 		ImGui::End();
 		ImGui::PopStyleColor(2);
 		ImGui::PopStyleVar(3);
+		ImGui::PopStyleVar();
 		return;
 	}
 
