@@ -20,6 +20,14 @@ set(PIXL_DISPLAY_VERSION "1.0.9")
 include(CTest)
 option(PIXL_PORTABLE_TESTS_ONLY "Configure only game-independent PIXL validation" OFF)
 if(PIXL_PORTABLE_TESTS_ONLY)
+    include(FetchContent)
+    FetchContent_Declare(
+        nlohmann_json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG 55f93686c01528224f448c19128836e7df245f72
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(nlohmann_json)
     include(cmake/PIXLTests.cmake)
     message("PIXL portable validation-only configuration complete")
     return()

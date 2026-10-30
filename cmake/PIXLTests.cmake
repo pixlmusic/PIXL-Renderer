@@ -118,6 +118,9 @@ if(BUILD_TESTING)
             -C $<CONFIG> --output-on-failure -L portable
         DEPENDS
             ${PIXL_WINDOWS_MODERNISATION_TESTS}
+            PIXLTestEmitterChanges
+            PIXLTestHybridGICacheBudget
+            PIXLTestHybridGIGeometryPrototype
             PIXLTestTemporalMath
             PIXLTestCameraReprojection
             PIXLTestReactiveFXSpawnSafety
