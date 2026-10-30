@@ -48,6 +48,7 @@
 /tools/DeployPIXLSurfingAddon.ps1
 /tools/OceanGeometryValidation.h
 /tools/TestOcean*.cpp
+!/tools/OceanGeometryValidation.h
 !/tools/TestOceanDynamicsFFT.cpp
 
 # Private local instructions and machine-specific configuration.
