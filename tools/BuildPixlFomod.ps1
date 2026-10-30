@@ -44,6 +44,7 @@ if (Test-Path -LiteralPath $archive) { throw "Archive already exists: $archive" 
 foreach ($required in @(
     'PIXL-RENDERER.manifest.json',
     'SKSE\Plugins\PIXLRenderer.dll',
+    'SKSE\Plugins\PIXLRenderer\Presets\PIXL-Renderer-Live-Tested.pixlpreset.json',
     'PIXL-Shaders\Water.hlsl',
     'PIXL-Shaders\Common\Color.hlsli',
     'PIXL-Shaders\CameraSuite\HDROutputCS.hlsl',
@@ -55,7 +56,8 @@ foreach ($required in @(
     'SKSE\Plugins\PIXL\Documentation\ATTRIBUTION.md',
     'SKSE\Plugins\PIXL\Documentation\THIRD_PARTY_NOTICES.md',
     'SKSE\Plugins\PIXL\Documentation\TRADEMARKS.md',
-    'SKSE\Plugins\PIXL\Documentation\SOURCE-AND-CREDITS.md'
+    'SKSE\Plugins\PIXL\Documentation\SOURCE-AND-CREDITS.md',
+    'SKSE\Plugins\PIXL\Documentation\RENDER_PRESETS.md'
 )) {
     if (!(Test-Path -LiteralPath (Join-Path $base $required))) { throw "Incomplete PIXL package: $required" }
 }

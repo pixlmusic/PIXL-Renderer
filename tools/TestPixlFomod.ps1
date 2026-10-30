@@ -52,6 +52,7 @@ foreach ($image in $images) {
 
 foreach ($required in @(
     'SKSE\Plugins\PIXLRenderer.dll',
+    'SKSE\Plugins\PIXLRenderer\Presets\PIXL-Renderer-Live-Tested.pixlpreset.json',
     'SKSE\Plugins\PIXL\Config\RendererDefaults.json',
     'PIXL-Shaders\Water.hlsl',
     'SKSE\Plugins\PIXL\Documentation\COPYING',
@@ -64,6 +65,16 @@ foreach ($required in @(
 )) {
     if (!(Test-Path -LiteralPath (Join-Path $core $required))) { throw "Missing FOMOD core payload: $required" }
 }
+$bundledRenderPresets = @(Get-ChildItem -LiteralPath (Join-Path $core 'SKSE\Plugins\PIXLRenderer\Presets') -File -Filter '*.pixlpreset.json')
+if ($bundledRenderPresets.Count -ne 6) { throw "Expected six bundled renderer presets; found $($bundledRenderPresets.Count)." }
+foreach ($presetPath in $bundledRenderPresets) {
+    $preset = Get-Content -LiteralPath $presetPath.FullName -Raw | ConvertFrom-Json
+    if ($preset.format -ne 'PIXL.RenderPreset' -or $preset.schemaVersion -ne 1 -or $null -eq $preset.settings) {
+        throw "Bundled renderer preset has an invalid portable schema: $($presetPath.FullName)"
+    }
+}
+$presetGuide = Join-Path $core 'SKSE\Plugins\PIXL\Documentation\RENDER_PRESETS.md'
+if (!(Test-Path -LiteralPath $presetGuide)) { throw 'The user-facing renderer preset guide is missing from the package.' }
 $pipelineRoot = Join-Path $core 'PIXL\PipelineLibrary'
 & (Join-Path $PSScriptRoot 'VerifyPixlPackageManifest.ps1') -PackageDirectory $core
 $manifest = Get-Content (Join-Path $core 'PIXL-RENDERER.manifest.json') -Raw | ConvertFrom-Json

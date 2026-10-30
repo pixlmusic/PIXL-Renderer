@@ -25,6 +25,7 @@
 #include "Modules/DialogueFocus.h"
 #include "Modules/PulseProfiler.h"
 #include "Renderer/RenderPassScheduler.h"
+#include "Presets/RenderPresetLibrary.h"
 #include "Renderer/GPUResourceServices.h"
 #include "Renderer/LightTransportWorld.h"
 #include "Renderer/TemporalContext.h"
@@ -723,6 +724,8 @@ void State::Save(ConfigMode a_configMode)
 		// failed save must leave the user's last valid settings file untouched.
 		json settings;
 		SaveToJson(settings);
+		if (a_configMode == ConfigMode::USER)
+			PIXL::Presets::MergePendingRendererSettings(settings);
 		const auto serialized = settings.dump(1);
 		{
 			std::ofstream output{ temporaryPath, std::ios::out | std::ios::binary | std::ios::trunc };

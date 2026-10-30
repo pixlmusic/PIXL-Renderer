@@ -17,6 +17,7 @@ Lighting, materials, atmosphere and motion—working together to bring Skyrim in
   <a href="#features">EXPLORE</a> &nbsp; · &nbsp;
   <a href="#installation">INSTALL</a> &nbsp; · &nbsp;
   <a href="docs/MOD_COMPATIBILITY.md">COMPATIBILITY</a> &nbsp; · &nbsp;
+  <a href="docs/RENDER_PRESETS.md">PRESETS</a> &nbsp; · &nbsp;
   <a href="docs/CHANGELOG.md">CHANGELOG</a> &nbsp; · &nbsp;
   <a href="#building-from-source">BUILD</a>
 </p>
@@ -45,10 +46,12 @@ PIXL brings lighting, materials, atmosphere, water, terrain, characters and came
 | **Camera response** | Scene-aware local exposure no longer reuses a stale screen-space luminance field during camera movement, addressing the ghosting found with Physical Camera enabled. |
 | **Interior lighting** | A modest ambient-probe default improvement while retaining the existing local-light and Hybrid GI controls. |
 | **First launch** | The FOMOD includes 3,741 precompiled shader stages hash-matched to the live Steam cache; missing or invalidated permutations compile on the user's setup. |
+| **Preset sharing** | Save a complete renderer look, discover bundled or mod-manager-installed profiles, and apply compatible settings while keeping interface preferences and local paths private. |
 
 Changed permutations can compile during first launch. Let startup compilation finish before judging performance or image quality. Existing user settings remain in `UserGraphics.json` and take precedence over defaults.
 
 See the [1.0.9 changelog](docs/CHANGELOG.md), [release scorecard](docs/release_polish/RELEASE_SCORECARD.md), and [mod compatibility guide](docs/MOD_COMPATIBILITY.md) for current details and validation limits.
+Learn how to [save, install and share renderer presets](docs/RENDER_PRESETS.md).
 
 ## What makes PIXL different?
 

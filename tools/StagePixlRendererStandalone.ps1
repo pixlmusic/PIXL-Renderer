@@ -235,6 +235,7 @@ Copy-Item -LiteralPath (Join-Path $sourceRoot "pipeline\Terrain Field\Assets\Plu
 Copy-Item -LiteralPath $dll -Destination (Join-Path $output "SKSE\Plugins\PIXLRenderer.dll") -Force
 $runtimeSource = Join-Path $sourceRoot "distribution\SKSE\Plugins\PIXLRenderer"
 Copy-Item -LiteralPath (Join-Path $runtimeSource "SettingsDefault.json") -Destination (Join-Path $configRoot "RendererDefaults.json") -Force
+  Copy-TrackedTree (Join-Path $sourceRoot "distribution\RendererPresets") (Join-Path $output "SKSE\Plugins\PIXLRenderer\Presets")
 if (-not [string]::IsNullOrWhiteSpace($UserConfigPath)) {
     $resolvedUserConfig = (Resolve-Path -LiteralPath $UserConfigPath).Path
     try {
@@ -335,6 +336,7 @@ Copy-Item -LiteralPath (Join-Path $sourceRoot 'distribution\PIXL-RENDERER-README
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'installer\PIXLRenderer\PIXL-INSTALLER-NOTICE.md') -Destination $output -Force
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'distribution\SOURCE-AND-CREDITS.md') -Destination $documentationRoot -Force
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'docs\MOD_COMPATIBILITY.md') -Destination $documentationRoot -Force
+Copy-Item -LiteralPath (Join-Path $sourceRoot 'docs\RENDER_PRESETS.md') -Destination $documentationRoot -Force
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'extern\ReShade\LICENSE.md') -Destination (Join-Path $documentationRoot 'ReShade-API-LICENSE.md') -Force
 Copy-Item -LiteralPath (Join-Path $sourceRoot "docs\ImageReconstruction\DLSSG_SM86_INTEGRATION.md") -Destination $documentationRoot -Force
 foreach ($document in @("COPYING", "EXCEPTIONS.md", "NOTICE.md", "ATTRIBUTION.md", "THIRD_PARTY_NOTICES.md", "TRADEMARKS.md", "SOURCE-AND-CREDITS.md")) {

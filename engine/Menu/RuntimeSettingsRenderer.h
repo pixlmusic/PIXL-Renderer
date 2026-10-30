@@ -47,6 +47,7 @@ public:
 		SettingsState& state);
 
 private:
+	static void RenderPresetsTab();
 	static void RenderShadersTab();
 	static void RenderKeybindingsTab(
 		SettingsState& state);

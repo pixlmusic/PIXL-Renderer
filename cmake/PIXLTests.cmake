@@ -15,6 +15,11 @@ if(BUILD_TESTING)
     pixl_add_portable_test(PIXLTestEmitterChanges "${CMAKE_SOURCE_DIR}/tools/TestEmitterChanges.cpp")
     pixl_add_portable_test(PIXLTestHybridGICacheBudget "${CMAKE_SOURCE_DIR}/tools/TestHybridGICacheBudget.cpp")
     pixl_add_portable_test(PIXLTestHybridGIGeometryPrototype "${CMAKE_SOURCE_DIR}/tools/TestHybridGIGeometryPrototype.cpp")
+    pixl_add_portable_test(PIXLTestRenderPresetLibrary
+        "${CMAKE_SOURCE_DIR}/tools/TestRenderPresetLibrary.cpp"
+        "${CMAKE_SOURCE_DIR}/engine/Presets/RenderPresetLibrary.cpp")
+    target_link_libraries(PIXLTestRenderPresetLibrary PRIVATE nlohmann_json::nlohmann_json)
+    set_tests_properties(PIXLTestRenderPresetLibrary PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
     pixl_add_portable_test(PIXLTestTemporalMath
         "${CMAKE_SOURCE_DIR}/tools/TestTemporalMath.cpp")
     pixl_add_portable_test(PIXLTestCameraReprojection
@@ -121,6 +126,7 @@ if(BUILD_TESTING)
             PIXLTestEmitterChanges
             PIXLTestHybridGICacheBudget
             PIXLTestHybridGIGeometryPrototype
+            PIXLTestRenderPresetLibrary
             PIXLTestTemporalMath
             PIXLTestCameraReprojection
             PIXLTestReactiveFXSpawnSafety

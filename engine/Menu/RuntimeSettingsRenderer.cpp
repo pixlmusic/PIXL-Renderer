@@ -1,8 +1,12 @@
 #include "RuntimeSettingsRenderer.h"
 
+#include <array>
+#include <filesystem>
 #include <format>
 #include <set>
 #include <string>
+#include <system_error>
+#include <vector>
 #include <windows.h>
 
 #include "BackgroundBlur.h"
@@ -18,6 +22,10 @@
 #include "State.h"
 #include "ThemeManager.h"
 #include "PIXLStyle.h"
+#include "Presets/RenderPresetLibrary.h"
+#include "Utils/FileSystem.h"
+
+#include <shellapi.h>
 
 using json = nlohmann::json;
 
@@ -228,12 +236,229 @@ namespace
 				"%s", saved ? "Interface saved." : "Interface could not be saved. See PIXLRenderer.log.");
 		ImGui::Spacing();
 	}
+
+	struct RendererPresetWorkspace
+	{
+		std::vector<PIXL::Presets::RenderPreset> presets;
+		std::vector<std::string> labels;
+		std::vector<const char*> labelPointers;
+		std::filesystem::path selectedPath;
+		std::array<char, 81> name{};
+		std::array<char, 65> author{};
+		std::array<char, 769> description{};
+		std::string feedback;
+		bool feedbackSuccess = false;
+		bool discovered = false;
+		double feedbackUntil = 0.0;
+		int selectedIndex = -1;
+	};
+
+	RendererPresetWorkspace& GetRendererPresetWorkspace()
+	{
+		static RendererPresetWorkspace workspace;
+		return workspace;
+	}
+
+	void RefreshRendererPresets(RendererPresetWorkspace& workspace)
+	{
+		const auto presetRoot = Util::PathHelpers::GetRendererPresetsPath();
+		workspace.presets = PIXL::Presets::Discover(presetRoot);
+		workspace.labels.clear();
+		workspace.labelPointers.clear();
+		workspace.labels.reserve(workspace.presets.size());
+		workspace.labelPointers.reserve(workspace.presets.size());
+		for (const auto& preset : workspace.presets) {
+			workspace.labels.push_back(preset.name + (preset.legacy ? "  ·  LEGACY" : ""));
+			workspace.labelPointers.push_back(workspace.labels.back().c_str());
+		}
+		workspace.selectedIndex = -1;
+		for (std::size_t index = 0; index < workspace.presets.size(); ++index) {
+			if (workspace.presets[index].filePath == workspace.selectedPath) {
+				workspace.selectedIndex = static_cast<int>(index);
+				break;
+			}
+		}
+		if (workspace.selectedIndex < 0 && !workspace.presets.empty()) {
+			workspace.selectedIndex = 0;
+			workspace.selectedPath = workspace.presets[0].filePath;
+		}
+		workspace.discovered = true;
+	}
+
+	void RenderRendererPresetsTab()
+	{
+		const auto label = std::format("{}##RendererPresetsTab",
+			T("menu.settings.tab_renderer_presets", "Renderer Presets"));
+		if (!BeginTabItemWithFont(label.c_str(), Menu::FontRole::Heading))
+			return;
+
+		auto& workspace = GetRendererPresetWorkspace();
+		const auto& theme = globals::menu->GetSettings().Theme;
+		if (!workspace.discovered)
+			RefreshRendererPresets(workspace);
+
+		SeparatorTextWithFont(T("menu.presets.title", "Your renderer looks"), Menu::FontRole::Subheading);
+		ImGui::TextWrapped("%s", T("menu.presets.intro",
+			"Save a complete renderer look, share it as a small preset file, or install presets from a mod manager. Interface themes and personal hotkeys stay separate."));
+		ImGui::Spacing();
+
+		if (PIXLUI::ActionButton(T("menu.presets.refresh", "REFRESH LIBRARY")))
+			RefreshRendererPresets(workspace);
+		ImGui::SameLine();
+		if (PIXLUI::ActionButton(T("menu.presets.open_folder", "OPEN PRESET FOLDER"))) {
+			const auto path = Util::PathHelpers::GetRendererPresetsPath();
+			std::error_code error;
+			std::filesystem::create_directories(path, error);
+			if (!error)
+				ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+			else
+				logger::warn("Could not create renderer preset folder '{}': {}", path.string(), error.message());
+		}
+		if (auto tooltip = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T("menu.presets.open_folder_tooltip",
+				"Nexus or other mod-manager presets installed under this folder appear in the library after refresh."));
+		}
+
+		if (workspace.presets.empty()) {
+			ImGui::Spacing();
+			ImGui::TextColored(theme.StatusPalette.InfoColor, "%s", T("menu.presets.empty",
+				"No renderer presets found yet. Save your current look below, or install a .pixlpreset.json file."));
+		} else {
+			ImGui::Spacing();
+			ImGui::SetNextItemWidth(-1.0f);
+			if (ImGui::Combo("##RendererPresetLibrary", &workspace.selectedIndex,
+				workspace.labelPointers.data(), static_cast<int>(workspace.labelPointers.size()))) {
+				workspace.selectedPath = workspace.presets[static_cast<std::size_t>(workspace.selectedIndex)].filePath;
+			}
+
+			if (workspace.selectedIndex >= 0 && workspace.selectedIndex < static_cast<int>(workspace.presets.size())) {
+				const auto& selected = workspace.presets[static_cast<std::size_t>(workspace.selectedIndex)];
+				ImGui::Spacing();
+				ImGui::BeginChild("##RendererPresetCard", ImVec2(0.0f, PIXLUI::Ref(132.0f)), true);
+				ImGui::TextColored(theme.StatusPalette.InfoColor, "%s", selected.name.c_str());
+				if (!selected.author.empty()) {
+					ImGui::SameLine();
+					ImGui::TextDisabled("by %s", selected.author.c_str());
+				}
+				if (!selected.description.empty())
+					ImGui::TextWrapped("%s", selected.description.c_str());
+				ImGui::TextDisabled("%s · %zu setting groups · %s",
+					selected.legacy ? "Legacy snapshot" : "PIXL preset format",
+					selected.settings.size(),
+					selected.rendererVersion.empty() ? "renderer version not specified" : selected.rendererVersion.c_str());
+				if (!selected.rendererVersion.empty() && selected.rendererVersion != Plugin::VERSION.string()) {
+					ImGui::Spacing();
+					ImGui::TextColored(theme.StatusPalette.InfoColor,
+						"Settings from a different renderer version may be skipped when their names or types changed.");
+				}
+				ImGui::EndChild();
+
+				if (PIXLUI::ActionButton(T("menu.presets.apply", "APPLY FOR NEXT LAUNCH"))) {
+					json currentSettings;
+					auto* state = State::GetSingleton();
+					if (!state) {
+						workspace.feedbackSuccess = false;
+						workspace.feedback = "Renderer settings are not available right now.";
+					} else {
+						state->SaveToJson(currentSettings);
+						const auto apply = PIXL::Presets::ApplyToUserConfig(
+							Util::PathHelpers::GetSettingsUserPath(), currentSettings, selected);
+						workspace.feedbackSuccess = apply.success;
+						if (apply.success) {
+							PIXL::Presets::StagePendingRendererSettings(selected.settings);
+							workspace.feedback = std::format(
+								"Preset saved for next launch. Restart Skyrim to apply all settings. Backup: {}. Applied {} values; skipped {} unsupported values.",
+								apply.backupPath.empty() ? "no previous user file" : apply.backupPath.filename().string(),
+								apply.merge.applied, apply.merge.unsupported + apply.merge.typeMismatches);
+							logger::info("Applied renderer preset '{}' for next launch ({} values, {} compatibility skips)",
+								selected.name, apply.merge.applied, apply.merge.unsupported + apply.merge.typeMismatches);
+						} else {
+							workspace.feedback = std::format("Preset could not be applied: {}", apply.error);
+							logger::warn("Could not apply renderer preset '{}': {}", selected.name, apply.error);
+						}
+					}
+					workspace.feedbackUntil = ImGui::GetTime() + 12.0;
+				}
+				if (auto tooltip = Util::HoverTooltipWrapper()) {
+					ImGui::TextUnformatted(T("menu.presets.apply_tooltip",
+						"Writes the preset to UserGraphics.json, keeps a rollback copy, and applies it after Skyrim restarts."));
+				}
+			}
+		}
+
+		if (ImGui::GetTime() < workspace.feedbackUntil) {
+			ImGui::Spacing();
+			ImGui::TextColored(workspace.feedbackSuccess ? theme.StatusPalette.SuccessColor : theme.StatusPalette.Error,
+				"%s", workspace.feedback.c_str());
+		}
+
+		ImGui::Spacing();
+		SeparatorTextWithFont(T("menu.presets.save_title", "Create a shareable preset"), Menu::FontRole::Subheading);
+		ImGui::TextWrapped("%s", T("menu.presets.save_description",
+			"Your current renderer settings are captured without interface colors, hotkeys, compiler options, or local paths. The saved file can be shared directly or packaged as a Nexus mod."));
+		ImGui::SetNextItemWidth(PIXLUI::Ref(280.0f));
+		ImGui::InputTextWithHint("##RendererPresetName", T("menu.presets.name_hint", "Preset name"), workspace.name.data(), workspace.name.size());
+		ImGui::SameLine();
+		ImGui::SetNextItemWidth(PIXLUI::Ref(220.0f));
+		ImGui::InputTextWithHint("##RendererPresetAuthor", T("menu.presets.author_hint", "Author"), workspace.author.data(), workspace.author.size());
+		ImGui::SetNextItemWidth(-1.0f);
+		ImGui::InputTextWithHint("##RendererPresetDescription", T("menu.presets.description_hint", "Describe the intended look or performance target"),
+			workspace.description.data(), workspace.description.size());
+		if (PIXLUI::ActionButton(T("menu.presets.save", "SAVE CURRENT LOOK"))) {
+			json currentSettings;
+			std::filesystem::path savedPath;
+			std::string error;
+			bool saved = false;
+			std::string savedName;
+			auto* state = State::GetSingleton();
+			if (!state) {
+				error = "Renderer settings are not available right now.";
+			} else {
+				state->SaveToJson(currentSettings);
+				auto document = PIXL::Presets::CreateDocument(workspace.name.data(), workspace.author.data(),
+					workspace.description.data(), Plugin::VERSION.string(), currentSettings);
+				savedName = document["metadata"]["name"].get<std::string>();
+				saved = PIXL::Presets::SaveNewPreset(
+					Util::PathHelpers::GetRendererPresetsPath() / "User", document, savedPath, error);
+			}
+			workspace.feedbackSuccess = saved;
+			workspace.feedback = saved ? std::format("Preset saved: {}", savedPath.filename().string()) :
+				std::format("Preset could not be saved: {}", error);
+			workspace.feedbackUntil = ImGui::GetTime() + 12.0;
+			if (saved) {
+				workspace.name.fill('\0');
+				workspace.description.fill('\0');
+				RefreshRendererPresets(workspace);
+				for (std::size_t index = 0; index < workspace.presets.size(); ++index) {
+					if (workspace.presets[index].filePath == savedPath) {
+						workspace.selectedIndex = static_cast<int>(index);
+						workspace.selectedPath = savedPath;
+						break;
+					}
+				}
+				logger::info("Saved renderer preset '{}' to {}", savedName, savedPath.string());
+			} else {
+				logger::warn("Could not save renderer preset: {}", error);
+			}
+		}
+		if (auto tooltip = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted(T("menu.presets.save_tooltip",
+				"Creates a portable .pixlpreset.json file under the renderer Presets folder. Mod-manager installs are detected after Refresh."));
+		}
+		ImGui::EndTabItem();
+	}
+}
+
+void RuntimeSettingsRenderer::RenderPresetsTab()
+{
+	RenderRendererPresetsTab();
 }
 
 void RuntimeSettingsRenderer::RenderGeneralSettings(SettingsState& state)
 {
 	MenuFonts::TabBarPaddingGuard tabPaddingGuard(Menu::FontRole::Heading);
 	if (ImGui::BeginTabBar("##GeneralTabBar", ImGuiTabBarFlags_None)) {
+		RenderPresetsTab();
 		RenderShadersTab();
 		RenderKeybindingsTab(state);
 		RenderInterfaceTab();

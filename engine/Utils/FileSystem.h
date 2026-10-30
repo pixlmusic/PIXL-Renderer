@@ -101,6 +101,12 @@ namespace Util
 		std::filesystem::path GetThemesPath();
 
 		/**
+		 * Gets renderer profile presets installed as ordinary Data mods. Nexus
+		 * packages can place .pixlpreset.json files here for automatic discovery.
+		 */
+		std::filesystem::path GetRendererPresetsPath();
+
+		/**
 		 * Gets the Translations directory path for i18n locale files
 		 * @return PIXL / "Interface" / "Locale"
 		 */

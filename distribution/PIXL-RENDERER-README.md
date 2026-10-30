@@ -1,4 +1,4 @@
-# PIXL Renderer 1.0.8
+# PIXL Renderer 1.0.9
 
 An integrated DirectX 11 renderer for Skyrim Special Edition.
 
@@ -43,6 +43,12 @@ the PIXL/Skyrim path shipped with the renderer.
 5. Complete Quick Setup: choose Off, TAA, FSR Quality, DLSS Quality or **DLAA**. DLAA uses native-resolution DLSS anti-aliasing rather than upscaling. NVIDIA options are disabled when unavailable.
 6. Optionally check **Enable frame generation**. If setup requests a restart, save your game and relaunch normally. The confirmed exit option saves PIXL settings, **not game progress**, and does not automatically relaunch.
 7. Use **Page Down** for PIXL Renderer, **Home** for Photo Mode, and **SAVE LOOK** to keep adjustments. Reopen **QUICK SETUP** whenever needed.
+
+### Renderer presets
+
+Open **General > Renderer Presets** to select one of the bundled profiles, save your current renderer look, or discover profiles installed by a mod manager. Saved files use the `.pixlpreset.json` format and can be shared directly or distributed in a small Nexus mod under `SKSE/Plugins/PIXLRenderer/Presets/`. Select **Refresh library** after installing a preset mod, then choose **Apply for next launch** and restart Skyrim.
+
+Presets overlay settings supported by the installed PIXL version and keep a timestamped rollback copy of `UserGraphics.json`. They exclude interface themes, hotkeys, compiler options and personal capture folders. Profiles never execute code, download files or apply automatically. See `SKSE/Plugins/PIXL/Documentation/RENDER_PRESETS.md` for the file format and recovery steps.
 
 NMM's legacy virtual-install/symlink mode is not supported for PIXL shader
 assets. It can leave `.symlink` placeholders where Skyrim expects real HLSL

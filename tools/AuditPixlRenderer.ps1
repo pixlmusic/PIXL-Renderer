@@ -404,6 +404,7 @@ if ($PackageDirectory) {
             "SKSE\Plugins\PIXL\Documentation\ATTRIBUTION.md",
             "SKSE\Plugins\PIXL\Documentation\THIRD_PARTY_NOTICES.md",
             "SKSE\Plugins\PIXL\Documentation\TRADEMARKS.md",
+            "SKSE\Plugins\PIXL\Documentation\RENDER_PRESETS.md",
             "SKSE\Plugins\PIXL\Documentation\SOURCE-AND-CREDITS.md",
 			"PIXL-TerrainField.esp",
             "SKSE\Plugins\PIXLRenderer.dll",
@@ -437,6 +438,7 @@ if ($PackageDirectory) {
         $fixedSourceFiles = @{
             'SKSE\Plugins\PIXL\Config\RendererDefaults.json' = 'distribution\SKSE\Plugins\PIXLRenderer\SettingsDefault.json'
             'SKSE\Plugins\PIXL\Profiles\PIXL-Golden-Baseline.json' = 'distribution\SKSE\Plugins\PIXLRenderer\Presets\PIXL-Renderer-Live-Tested.json'
+            'SKSE\Plugins\PIXL\Documentation\RENDER_PRESETS.md' = 'docs\RENDER_PRESETS.md'
             'SKSE\Plugins\PIXL\Interface\Themes\PIXL.json' = 'distribution\SKSE\Plugins\PIXLRenderer\Themes\PIXL.json'
             'SKSE\Plugins\PIXL\Interface\Locale\en.json' = 'distribution\SKSE\Plugins\PIXLRenderer\Translations\en.json'
             'SKSE\Plugins\PIXL\Documentation\COPYING' = 'COPYING'
@@ -445,6 +447,10 @@ if ($PackageDirectory) {
             'SKSE\Plugins\PIXL\Documentation\ATTRIBUTION.md' = 'ATTRIBUTION.md'
             'SKSE\Plugins\PIXL\Documentation\THIRD_PARTY_NOTICES.md' = 'THIRD_PARTY_NOTICES.md'
             'SKSE\Plugins\PIXL\Documentation\TRADEMARKS.md' = 'TRADEMARKS.md'
+        }
+        foreach ($rendererPreset in Get-ChildItem -LiteralPath (Join-Path $repo 'distribution\RendererPresets') -File -Filter '*.pixlpreset.json') {
+            $fixedSourceFiles["SKSE\Plugins\PIXLRenderer\Presets\$($rendererPreset.Name)"] =
+                "distribution\RendererPresets\$($rendererPreset.Name)"
         }
         foreach ($entry in $fixedSourceFiles.GetEnumerator()) {
             $stagedPath = Join-Path $package $entry.Key

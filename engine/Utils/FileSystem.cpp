@@ -135,6 +135,11 @@ namespace Util
 			return GetPluginPath() / "Interface" / "Themes";
 		}
 
+		std::filesystem::path GetRendererPresetsPath()
+		{
+			return GetDataPath() / "SKSE" / "Plugins" / "PIXLRenderer" / "Presets";
+		}
+
 		std::filesystem::path GetTranslationsPath()
 		{
 			return GetPluginPath() / "Interface" / "Locale";
