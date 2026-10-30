@@ -26,6 +26,17 @@ Lighting, materials, atmosphere and motion—working together to bring Skyrim in
   <em>A unified rendering framework for Skyrim Special Edition—built around the world, not layered over it.</em>
 </p>
 
+<table>
+  <tr>
+    <td width="50%"><img src="installer/PIXLRenderer/images/pixl-materials.jpg" alt="PIXL Renderer interior lighting and material detail" width="100%"></td>
+    <td width="50%"><img src="installer/PIXLRenderer/images/pixl-water-default.jpg" alt="PIXL Renderer water, terrain and atmospheric detail" width="100%"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><strong>LIGHT & MATERIAL</strong> · Warm interior illumination and authored surfaces</sub></td>
+    <td align="center"><sub><strong>WATER & ATMOSPHERE</strong> · Weather, terrain and world-scale response</sub></td>
+  </tr>
+</table>
+
 PIXL brings lighting, materials, atmosphere, water, terrain, characters and camera tools together in one native **DirectX 11 + SKSE** renderer. The goal is a more coherent, physically convincing image that still feels like Skyrim.
 
 > **CURRENT CHECKPOINT · 1.0.9.0**
