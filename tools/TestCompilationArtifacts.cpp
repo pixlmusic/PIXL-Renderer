@@ -191,8 +191,12 @@ int main(int argc, char** argv)
             Blob code, errors;
             return concurrent.Compile(source, macros, include, "main", "ps_5_0", 0, {}, false, code.GetAddressOf(), errors.GetAddressOf());
         }));
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        const auto coalesceDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (concurrent.GetTimingSnapshot().requests < 12 &&
+               std::chrono::steady_clock::now() < coalesceDeadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         allowPreprocess.store(true, std::memory_order_release);
+        Require(concurrent.GetTimingSnapshot().requests == 12, "all duplicate requests reached in-flight window");
         for (auto& job : jobs) Require(SUCCEEDED(job.get()), "concurrent completion");
         Require(concurrent.CompileCount() == 1, "duplicate compiles coalesced with disk disabled");
         const auto concurrentStats = concurrent.GetTimingSnapshot();
