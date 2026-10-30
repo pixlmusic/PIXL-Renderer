@@ -4,27 +4,38 @@
 
 <h1 align="center">PIXL Renderer</h1>
 <p align="center"><strong>One renderer. One pipeline. One cohesive look.</strong><br>
-Modern, physically minded rendering for Skyrim Special Edition.</p>
+Lighting, materials, atmosphere and motion—working together to bring Skyrim into focus.</p>
 
 <p align="center">
   <a href="https://github.com/pixlmusic/PIXL-Renderer/tree/v1.0.9.0"><img alt="Version 1.0.9.0" src="https://img.shields.io/badge/version-1.0.9.0-75D9E8?style=for-the-badge&labelColor=17232B"></a>
   <a href="https://github.com/pixlmusic/PIXL-Renderer/actions/workflows/portable-validation.yml"><img alt="Portable validation" src="https://img.shields.io/github/actions/workflow/status/pixlmusic/PIXL-Renderer/portable-validation.yml?branch=main&label=validation&style=for-the-badge&labelColor=17232B"></a>
+  <img alt="Skyrim Special Edition · DirectX 11" src="https://img.shields.io/badge/Skyrim%20SE-DirectX%2011-9CC8D0?style=for-the-badge&labelColor=17232B">
   <a href="COPYING"><img alt="GPL 3.0 or later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-A8C7B8?style=for-the-badge&labelColor=17232B"></a>
 </p>
 
 <p align="center">
-  <a href="#features">Explore PIXL</a> &nbsp; | &nbsp;
-  <a href="#installation">Install</a> &nbsp; | &nbsp;
-  <a href="docs/CHANGELOG.md">Changelog</a> &nbsp; | &nbsp;
-  <a href="docs/MOD_COMPATIBILITY.md">Compatibility</a> &nbsp; | &nbsp;
-  <a href="#building-from-source">Build from source</a>
+  <a href="#features">EXPLORE</a> &nbsp; · &nbsp;
+  <a href="#installation">INSTALL</a> &nbsp; · &nbsp;
+  <a href="docs/MOD_COMPATIBILITY.md">COMPATIBILITY</a> &nbsp; · &nbsp;
+  <a href="docs/CHANGELOG.md">CHANGELOG</a> &nbsp; · &nbsp;
+  <a href="#building-from-source">BUILD</a>
 </p>
 
-PIXL brings lighting, materials, atmosphere, water, terrain, characters and camera tools together in one native **DirectX 11 + SKSE** renderer. The aim is to make Skyrim feel more coherent and physically convincing while keeping the identity of its original world.
+<p align="center">
+  <em>A unified rendering framework for Skyrim Special Edition—built around the world, not layered over it.</em>
+</p>
 
-> **Current checkpoint: 1.0.9.0** — source tag [`v1.0.9.0`](https://github.com/pixlmusic/PIXL-Renderer/tree/v1.0.9.0). The active live-test target is **Steam Skyrim SE 1.6.1170**. The FOMOD ships a verified preloaded shader cache; hardware, executable versions and mod combinations still need their own validation.
+PIXL brings lighting, materials, atmosphere, water, terrain, characters and camera tools together in one native **DirectX 11 + SKSE** renderer. The goal is a more coherent, physically convincing image that still feels like Skyrim.
+
+> **CURRENT CHECKPOINT · 1.0.9.0**
+> Live testing targets **Steam Skyrim SE 1.6.1170**. The installer includes a preloaded shader cache; missing or invalidated permutations compile locally. Compatibility still depends on the exact game executable, hardware and mod setup—see [Compatibility & troubleshooting](docs/MOD_COMPATIBILITY.md).
 >
-> **Known live-test issue:** irradiance-cache flicker is still being investigated. We are not claiming that issue is resolved in every scene.
+> **Live-test note:** irradiance-cache flicker is under investigation. Results can vary by scene; this checkpoint does not claim the issue is resolved in every situation.
+
+<p align="center">
+  <strong>LIGHT · MATERIAL · ATMOSPHERE · WATER · CAMERA</strong><br>
+  <sub>One coordinated renderer, with user-controlled reconstruction and quality.</sub>
+</p>
 
 ## 1.0.9 highlights
 
@@ -37,7 +48,7 @@ PIXL brings lighting, materials, atmosphere, water, terrain, characters and came
 
 Changed permutations can compile during first launch. Let startup compilation finish before judging performance or image quality. Existing user settings remain in `UserGraphics.json` and take precedence over defaults.
 
-See the full [1.0.9 changelog](docs/CHANGELOG.md) and [release scorecard](docs/release_polish/RELEASE_SCORECARD.md).
+See the [1.0.9 changelog](docs/CHANGELOG.md), [release scorecard](docs/release_polish/RELEASE_SCORECARD.md), and [mod compatibility guide](docs/MOD_COMPATIBILITY.md) for current details and validation limits.
 
 ## What makes PIXL different?
 
@@ -130,7 +141,7 @@ Neural Rendering (NR) is experimental and optional. **The NR runtime `nvngx_dlss
 5. Return to PIXL and select **I've copied it — Check File**. Green means found; red means missing; cyan means ready to confirm. This verifies file presence, **not authenticity, compatibility or licensing**.
 6. Confirm and return to Quick Setup, then **Save & Continue**. Use supported NVIDIA hardware, DLSS/DLAA, SDR and borderless/windowed mode. Save your game, fully exit Skyrim, and relaunch through SKSE. A save reload is not enough: the DX11/DX12 sidecar is initialized at startup.
 
-This is a third-party experimental runtime, not a NVIDIA-approved PIXL download. Availability and upstream instructions may change. Installing this silent 1.0.3 update does not require deleting your shader cache or resetting your settings.
+This is a third-party experimental runtime, not an NVIDIA-approved PIXL download. Availability and upstream instructions may change. Do not delete your shader cache or reset your settings just to enable this optional path.
 
 ### Requirements
 
