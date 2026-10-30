@@ -1,42 +1,43 @@
-# PIXL Renderer
+<p align="center">
+  <img src="installer/PIXLRenderer/images/pixl-hero.jpg" alt="PIXL Renderer — modern rendering for Skyrim" width="100%">
+</p>
 
-### A single, curated DirectX 11 rendering pipeline for Skyrim Special Edition
+<h1 align="center">PIXL Renderer</h1>
+<p align="center"><strong>One renderer. One pipeline. One cohesive look.</strong><br>
+Modern, physically minded rendering for Skyrim Special Edition.</p>
 
-PIXL Renderer modernizes Skyrim's lighting, materials, characters, weather, terrain, water and image reconstruction while preserving the atmosphere of the original game. Its systems are designed and tuned as one integrated renderer.
+<p align="center">
+  <a href="https://github.com/pixlmusic/PIXL-Renderer/tree/v1.0.9.0"><img alt="Version 1.0.9.0" src="https://img.shields.io/badge/version-1.0.9.0-75D9E8?style=for-the-badge&labelColor=17232B"></a>
+  <a href="https://github.com/pixlmusic/PIXL-Renderer/actions/workflows/portable-validation.yml"><img alt="Portable validation" src="https://img.shields.io/github/actions/workflow/status/pixlmusic/PIXL-Renderer/portable-validation.yml?branch=main&label=validation&style=for-the-badge&labelColor=17232B"></a>
+  <a href="COPYING"><img alt="GPL 3.0 or later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-A8C7B8?style=for-the-badge&labelColor=17232B"></a>
+</p>
 
-Install one renderer, complete Quick Setup and play. An optional advanced tuning workspace provides deeper control over the image.
+<p align="center">
+  <a href="#features">Explore PIXL</a> &nbsp; | &nbsp;
+  <a href="#installation">Install</a> &nbsp; | &nbsp;
+  <a href="docs/CHANGELOG.md">Changelog</a> &nbsp; | &nbsp;
+  <a href="docs/MOD_COMPATIBILITY.md">Compatibility</a> &nbsp; | &nbsp;
+  <a href="#building-from-source">Build from source</a>
+</p>
 
-> **Release candidate:** PIXL Renderer 1.0.6r4. This package includes the current preloaded shader cache snapshot. Optional DLSSG proxy and Neural Rendering paths remain experimental; experimental renderer modules remain opt-in and may be disabled by default.
+PIXL brings lighting, materials, atmosphere, water, terrain, characters and camera tools together in one native **DirectX 11 + SKSE** renderer. The aim is to make Skyrim feel more coherent and physically convincing while keeping the identity of its original world.
 
-> **Release status:** 1.0.6r4 is an owner-tested release candidate for advanced Skyrim setups. GPU, runtime, reconstruction-runtime and mod combinations vary; keep a recoverable mod-manager profile and report reproducible issues with the PIXL log attached.
+> **Current checkpoint: 1.0.9.0** — source tag [`v1.0.9.0`](https://github.com/pixlmusic/PIXL-Renderer/tree/v1.0.9.0). The active live-test target is **Steam Skyrim SE 1.6.1170**. The FOMOD ships a verified preloaded shader cache; hardware, executable versions and mod combinations still need their own validation.
+>
+> **Known live-test issue:** irradiance-cache flicker is still being investigated. We are not claiming that issue is resolved in every scene.
 
-## 1.0.6r4 renderer update
+## 1.0.9 highlights
 
-This revision continues the 1.0.6 line with a full preloaded cache snapshot and focused release-polish changes:
+| System | What changed |
+|---|---|
+| **Atmosphere and clouds** | Better directional sunlight through cloud layers, smoother fog scattering, and reduced history trails around sky and vegetation silhouettes. |
+| **Camera response** | Scene-aware local exposure no longer reuses a stale screen-space luminance field during camera movement, addressing the ghosting found with Physical Camera enabled. |
+| **Interior lighting** | A modest ambient-probe default improvement while retaining the existing local-light and Hybrid GI controls. |
+| **First launch** | The FOMOD includes 3,741 precompiled shader stages hash-matched to the live Steam cache; missing or invalidated permutations compile on the user's setup. |
 
-- **Hybrid GI and quality profiles** retain full-resolution GI while balancing ray, cache-injection, reflection and directional-shadow work across Low, Medium, High and Ultra. Directional screen-space shadow distance now follows the selected profile, leaving Skyrim's shadow maps to carry more of the distant range.
-- **Image Reconstruction recovery** restores the previously working DX11/DX12 neural-guide handoff path. Neural Rendering remains optional and experimental; use the manual setup guidance below and validate it with the installed runtime and hardware.
-- **Atmosphere and precipitation refinements** improve spatial fog response and world-stable precipitation integration. Optional microclimate and clothing-wear prototypes are experimental, are not release-ready features, and remain disabled unless explicitly enabled in PIXL.
-- **Distant Life and water** receive restrained world-space haze refinements and continued caustic/receiver tuning; the live-tested water in/out transition behavior is preserved.
-- **Release packaging and interface polish** update the FOMOD revision to 1.0.6r4, include the current full cache snapshot, and slightly reduce the settings workspace scale for improved fit.
+Changed permutations can compile during first launch. Let startup compilation finish before judging performance or image quality. Existing user settings remain in `UserGraphics.json` and take precedence over defaults.
 
-The r4 package revision does not change Skyrim plugin compatibility version `1.0.6` or the shader-cache ABI. Existing user settings remain authoritative when updating.
-
-## 1.0.5 renderer upgrade
-
-This source revision builds on the 1.0.4 baseline with final renderer integration, stability and quality-control work while retaining the established Skyrim SE DirectX 11 and shader-cache architecture:
-
-- **Auto-DOF** with one authoritative autofocus path, physical-lens controls, half-resolution adaptive bokeh, separate near/far treatment, foreground coverage, edge-aware reconstruction, sky protection and Director/Photo/Video integration;
-- **Contained Liquids** with effect-first potion classification, cached bottle-profile fitting, profile-aware volume fill, viscosity-aware slosh and bounded glass/liquid optics while preserving Skyrim's original bottle draw;
-- **Distant Life** for restrained, depth-aware distant settlement light activity that remains compatible with atmosphere, HDR and camera bokeh;
-- **Ground Response and water refinements** covering stable snow/mud deformation edges, material-specific response, flow, refraction, foam and temporal behavior;
-- **Window Life, Material Forge, directional SSS and character rendering updates** with safer classification, more stable projection/material response and live-tested skin-lighting defaults;
-- **PIXL Render Origin groundwork** for explicit large-world coordinate handling and validation without replacing Skyrim's camera-relative DX11 pipeline;
-- **Hybrid GI and emitter lighting refinements** with deterministic world-cache updates, fixed-rate cache aging, transparent fire/emissive injection, warmer particle-light classification and bounded contact shadows;
-- **reconstruction-aware camera and post processing** for TAA, DLSS/DLAA and FSR paths, with sharper UI separation and explicit history invalidation; and
-- **public-source provenance and release tooling** with preserved upstream notices, module-level attribution, third-party notices, reproducible audits and package hygiene checks.
-
-The concise changes since 1.0.4 are documented in [docs/CHANGELOG.md](docs/CHANGELOG.md); the earlier baseline audit remains in [docs/RELEASE_1.0.4_AUDIT.md](docs/RELEASE_1.0.4_AUDIT.md).
+See the full [1.0.9 changelog](docs/CHANGELOG.md) and [release scorecard](docs/release_polish/RELEASE_SCORECARD.md).
 
 ## What makes PIXL different?
 
@@ -53,7 +54,7 @@ At runtime the renderer:
 
 The release includes a preloaded pipeline library. Additional or invalidated shader permutations compile locally and are retained for subsequent sessions.
 
-## Renderer features
+## Features
 
 PIXL's release feature set contains **41 established rendering modules**, plus renderer-level systems for dialogue focus, Director/Photo/Video workflows, quality orchestration, benchmarking, tuning and capture. Additional alpha/experimental prototypes may be present in source and are not represented as release-ready features. One retired Hair Reconstruction source record remains solely for shared-shader ABI auditability and is not a runtime module.
 
@@ -138,7 +139,7 @@ This is a third-party experimental runtime, not a NVIDIA-approved PIXL download.
 - A DirectX 11-capable GPU. DLSS/DLAA require supported NVIDIA hardware and an available runtime.
 - Borderless/windowed mode for frame generation and the optional Neural Rendering sidecar.
 
-Owner testing covers Skyrim SE 1.5.97 and a reported successful GOG test whose executable was verified as 1.6.1179.0. Steam 1.6.1170 remains a separate validation target. See [mod compatibility and troubleshooting](docs/MOD_COMPATIBILITY.md) for assets, weather, grass interaction, WindowLife and ENB/ReShade distinctions.
+The current 1.0.9 live-test target is **Steam Skyrim SE 1.6.1170**. Do not infer compatibility with another executable from its SE/AE label; use the exact runtime notes in [mod compatibility and troubleshooting](docs/MOD_COMPATIBILITY.md). That guide also covers assets, weather, grass interaction, WindowLife and ENB/ReShade distinctions.
 
 ### Install and first launch
 
@@ -150,7 +151,7 @@ Owner testing covers Skyrim SE 1.5.97 and a reported successful GOG test whose e
 6. Optionally check **Enable frame generation**. If setup requests a restart, save your game and relaunch normally. The confirmed exit option saves PIXL settings, **not game progress**, and does not automatically relaunch.
 7. Use **Page Down** for PIXL Renderer, **Home** for Photo Mode, and **SAVE LOOK** to keep adjustments. Reopen **QUICK SETUP** whenever needed.
 
-The release ships owner-tuned fog and POM defaults, with reconstruction set to **Off/None**, frame generation off and real-time Neural Rendering off. Accepting the existing quality selection preserves the tuned look. The advanced tuner remains optional.
+The shipped defaults tune the renderer's visual systems while leaving image reconstruction to your Quick Setup choice. Frame generation and real-time Neural Rendering are off by default. Existing user settings remain authoritative during an update; the package does not include a personal `UserGraphics.json`.
 
 ### Optional DLSS frame-generation proxy
 

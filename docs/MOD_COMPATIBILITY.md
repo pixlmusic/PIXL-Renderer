@@ -2,11 +2,11 @@
 
 ## Runtime test coverage
 
-The owner reports successful testing on GOG. The executable in the supplied GOG
-installation was inspected on September 14, 2026 and reports **1.6.1179.0**.
-Steam 1.6.1170 is a separate target; this test does not reproduce that user's setup.
-Skyrim 1.5.97 also has owner test coverage. Use SKSE and dependencies matching the
-actual executable version, not the SE/AE product name.
+The current 1.0.9 live-test target is **Steam 1.6.1170**. Earlier owner testing
+also covered Skyrim 1.5.97 and a GOG executable verified as **1.6.1179.0**.
+Coverage on one executable does not certify every hook or feature on the others.
+Use SKSE and dependencies matching the actual executable version, not the SE/AE
+product name.
 
 ## What should I keep?
 
