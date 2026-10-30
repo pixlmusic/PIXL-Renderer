@@ -8,6 +8,7 @@
 #include "Renderer/RenderOrigin.h"
 #include "Renderer/RenderPassScheduler.h"
 #include "Renderer/ReflectionContext.h"
+#include "Renderer/PixelAnnotations.h"
 #include "Utils/D3D.h"
 
 #include "Modules/WorldProbes.h"
@@ -368,6 +369,13 @@ void Deferred::DeferredPasses()
 	auto& skyBounce = globals::pipeline::skyBounce;
 
 	auto& ssgi = globals::pipeline::hybridGI;
+    if (ssgi.settings.EnableCacheIntelligence) {
+        const auto annotationSize = Util::ConvertToDynamic(float2{
+            (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight });
+        // The opaque MRT is complete here; late reconstruction masks are not.
+        PIXL::Renderer::PixelAnnotations::Get().PublishOpaque(REX::W32::AsReal(masks.SRV),
+            static_cast<std::uint32_t>(annotationSize.x), static_cast<std::uint32_t>(annotationSize.y));
+    }
 	if (ssgi.loaded)
 		ssgi.DrawHybridGI();
 	else

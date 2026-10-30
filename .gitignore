@@ -50,6 +50,7 @@
 /tools/TestOcean*.cpp
 
 # Private local instructions and machine-specific configuration.
+/.codex/
 /AGENTS.md
 /AI-INSTRUCTIONS.md
 /PIXL_ACTIVE_STATE.md

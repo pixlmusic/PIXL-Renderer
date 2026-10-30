@@ -24,18 +24,18 @@ if ($atmosphereHeader -match 'lastVerticalFov|lastExteriorWorldspaceIdentity|has
     throw 'Legacy broad temporal state remains in Atmosphere'
 }
 $fogDefaults = $settingsDefaults.Atmosphere
-if ([math]::Abs($fogDefaults.automaticWeatherStrength - 0.49) -gt 1e-6 -or
+if ([math]::Abs($fogDefaults.automaticWeatherStrength - 0.50) -gt 1e-6 -or
 	[math]::Abs($fogDefaults.fogDensity - 0.049) -gt 1e-6 -or
 	$fogDefaults.startDistance -ne 0 -or $fogDefaults.volumetricFogStartDistance -ne 2224 -or
 	$fogDefaults.volumetricFogDistance -ne 48535 -or
-	$fogDefaults.volumetricHistoryWeight -ne 0.65 -or
+	[math]::Abs($fogDefaults.volumetricHistoryWeight - 0.65) -gt 1e-6 -or
 	$fogDefaults.volumetricHistoryMissSampleCount -ne 4) {
 	throw 'Shipped fog defaults no longer match the promoted runtime profile and motion-stability settings'
 }
 $cloudDefaults = $settingsDefaults.'PIXL Volumetric Clouds'
 if ($settingsDefaults.Version -ne '1-0-9-0' -or $cloudDefaults.Quality -ne 2 -or
 	$cloudDefaults.CloudThickness -ne 65000 -or $cloudDefaults.EnableHighCloudLayer -ne $true -or
-	$cloudDefaults.TemporalResponse -ne 0.68) {
+	[math]::Abs($cloudDefaults.TemporalResponse - 0.68) -gt 1e-6) {
 	throw 'Shipped cloud defaults must retain the promoted high-cloud layer at balanced quality with reduced temporal history'
 }
 if ($cloudTemporal -notmatch 'cameraMotionRejection\s*=\s*smoothstep\(0\.05f,\s*0\.9f,\s*screenMotionPixels\)' -or
@@ -51,6 +51,12 @@ if ($cloudTemporal -notmatch 'PreviousRayDistance\(float2 uv, float previousView
 	$cloudTemporal -notmatch 'historyDepth\s*-\s*previousRayDepth' -or
 	$cloudTemporal -notmatch 'min\(Temporal\.w,\s*0\.045f\)') {
 	throw 'Cloud temporal depth must validate the reprojected point in previous-camera ray space'
+}
+if ($cloudTemporal -notmatch 'currentMinOpacity\s*=\s*1\.0f\s*-\s*localMax\.a' -or
+	$cloudTemporal -notmatch 'historyOpacity\s*=\s*1\.0f\s*-\s*history\.a' -or
+	$cloudTemporal -notmatch 'historyOpacity\s*>\s*currentMaxOpacity\s*\+\s*coverageTolerance' -or
+	$cloudTemporal -notmatch 'historyWeight\s*=\s*0\.0f') {
+	throw 'Cloud temporal history must reject old coverage outside the current neighborhood to prevent clear-sky alpha stencils'
 }
 if ($cloudTemporal -cne $cloudDistribution) {
 	throw 'Cloud distribution payload must match the authoritative pipeline shader'

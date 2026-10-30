@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Buffer.h"
+#include "HybridGI/CacheBudget.h"
 #include "RenderModule.h"
 #include "Renderer/RendererMetadata.h"
 
@@ -98,6 +99,8 @@ public:
 		// Experimental Task 09 foundation. Disabled by default so the known-good
 		// fixed-work GI permutation remains the shipped behaviour until live-tested.
 		bool EnableAdaptiveRayAllocation = false;
+        bool EnableCacheIntelligence = false;
+        bool EnableBudgetedCacheUpdates = false;
 		float AdaptiveRayMinimum = 0.50f;
 		// visual
 		float MinScreenRadius = 0.01f;
@@ -296,6 +299,20 @@ public:
 	static_assert(offsetof(HybridGICB, WorldCacheDeltaTime) == 392);
 	static_assert(offsetof(HybridGICB, WorldCacheEmitterInjectionEnabled) == 400);
 	eastl::unique_ptr<ConstantBuffer> ssgiCB;
+	struct alignas(16) EmitterChangesCB
+	{
+		uint count{}, overflow{}, padding[2]{};
+		std::array<std::array<float, 4>, 128> spheres{};
+	};
+	static_assert(sizeof(EmitterChangesCB) == 2064);
+	eastl::unique_ptr<ConstantBuffer> emitterChangesCB;
+    struct alignas(16) CacheScheduleCB { float fraction{1.0f}; uint milliseconds{}, enabled{}, padding{}; };
+    static_assert(sizeof(CacheScheduleCB) == 16);
+    eastl::unique_ptr<ConstantBuffer> cacheScheduleCB;
+    eastl::unique_ptr<Texture2D> texWorldUpdateTime, texPreviousWorldUpdateTime;
+    PIXL::HybridGIInternal::CacheBudget cacheBudget;
+	winrt::com_ptr<ID3D11ComputeShader> worldCacheMarkCompute;
+    winrt::com_ptr<ID3D11ComputeShader> worldCacheEvidenceCompute, worldCacheEvidenceResolveCompute;
 
 	eastl::unique_ptr<Texture2D> texNoise = nullptr;
 	eastl::unique_ptr<Texture2D> texWorkingDepth = nullptr;
@@ -324,6 +341,9 @@ public:
 	eastl::unique_ptr<Texture2D> texWorldCacheSH1 = nullptr;
 	eastl::unique_ptr<Texture2D> texWorldCacheSH2 = nullptr;
 	eastl::unique_ptr<Texture2D> texWorldCacheNormal = nullptr;
+	// Companion evidence follows the same immutable snapshot lifetime as SH.
+	eastl::unique_ptr<Texture2D> texWorldCacheIntelligence = nullptr;
+	eastl::unique_ptr<Texture2D> texWorldCachePreviousIntelligence = nullptr;
 	// Immutable previous-frame snapshot used by secondary-bounce injection.
 	// Separating reads from current UAV writes prevents order-dependent cache flicker.
 	eastl::unique_ptr<Texture2D> texWorldCachePreviousMetadata = nullptr;
@@ -393,6 +413,7 @@ private:
 	bool lastEnableExperimentalSpecularGI = false;
 	bool lastEnableAdaptiveRayAllocation = false;
 	bool lastEnableWorldCache = true;
+    bool lastEnableCacheIntelligence = false;
 	int lastResolutionMode = 0;
 	float lastWorldCacheCellSizeNear = 0.0f;
 	float lastWorldCacheCellSizeFar = 0.0f;
@@ -402,6 +423,7 @@ private:
 	bool compiledGI = true;
 	bool compiledHybridReflections = false;
 	bool compiledAdaptiveRayAllocation = false;
+    bool compiledCacheIntelligence = false;
 
 	struct DiagnosticRecord
 	{

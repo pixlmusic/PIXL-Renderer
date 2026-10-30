@@ -377,7 +377,8 @@ void SampleHybridGISpecular(uint2 pixCoord, sh2 lobe, out float3 legacyIl, out f
 		float3 diagnostic = 0.0;
 		if (PixlGIDebugMode == 1u)
 			diagnostic = pixlDebugAO.xxx;
-		else if (PixlGIDebugMode == 2u || (PixlGIDebugMode >= 5u && PixlGIDebugMode <= 9u))
+		else if (PixlGIDebugMode == 2u || (PixlGIDebugMode >= 5u && PixlGIDebugMode <= 9u) ||
+            (PixlGIDebugMode >= 14u && PixlGIDebugMode <= 19u))
 			diagnostic = pixlDebugDiffuseGI;
 		else if (PixlGIDebugMode == 3u)
 			diagnostic = pixlDebugSpecularGI;

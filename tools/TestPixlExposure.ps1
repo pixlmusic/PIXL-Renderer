@@ -10,6 +10,14 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $output = Join-Path $repo ('build\exposure-validation-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $output | Out-Null
 
+# The local field is screen-space, so it must reflect the current camera frame
+# directly. Global photographic exposure retains its separate temporal response.
+$localExposureSource = Get-Content -LiteralPath (Join-Path $root 'CameraSuite/PhysicalCameraLocalExposureCS.hlsl') -Raw
+if ($localExposureSource -match 'PreviousLocalExposure|previousEV|stepEV' -or
+    $localExposureSource -notmatch 'LocalExposureOut\[dispatchID\]\s*=\s*exp2\(clamp\(targetEV, -0\.5f, 0\.5f\)\)') {
+    throw 'Local exposure must use current-frame scene luminance without stale screen-space history.'
+}
+
 # CPU reference of the exposure shader's stop-domain response. This checks the
 # recurrence, not GPU rendering or Skyrim's upstream image-space adaptation.
 function StepExposure([double]$previousEV, [double]$targetEV, [double]$dt, [double]$tau) {

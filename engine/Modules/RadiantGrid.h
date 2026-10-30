@@ -145,7 +145,8 @@ public:
 	};
 	STATIC_ASSERT_ALIGNAS_16(LightData);
 
-	void AddParticleLightsToBuffer(eastl::vector<LightData>& a_lightsData);
+	void AddParticleLightsToBuffer(eastl::vector<LightData>& a_lightsData,
+		std::array<std::uint64_t, MAX_LIGHTS>& a_emitterIdentities);
 
 	struct ClusterAABB
 	{

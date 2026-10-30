@@ -13,6 +13,7 @@
 
 #include <d3d11.h>
 #include <winrt/base.h>
+#include "EmitterChanges.h"
 
 namespace PIXL::Renderer
 {
@@ -81,6 +82,11 @@ namespace PIXL::Renderer
 			std::uint32_t emitterCount,
 			std::uint32_t totalLightCount);
 		[[nodiscard]] LocalLightingView AcquireLocalLights() const;
+		void PublishEmitterObservations(std::span<const EmitterObservation> observations);
+		[[nodiscard]] EmitterChangeBatch AcquireEmitterChanges() const;
+        [[nodiscard]] EmitterChangeBatch FinalizeEmitterChanges(std::uint64_t expectedFrame);
+        void PublishEnvironmentEnergy(const std::array<float,9>& energy);
+        void AcknowledgeEmitterChanges(std::uint64_t epoch, std::uint64_t sequence);
 
 		void PublishProbe(
 			ProbeKind kind,
@@ -96,6 +102,9 @@ namespace PIXL::Renderer
 	private:
 		mutable std::mutex mutex;
 		LocalLightingView localLights;
+		EmitterChangeTracker emitterTracker;
+        EnvironmentChangeTracker environmentTracker;
+		EmitterChangeJournal emitterChanges;
 		std::array<ProbeView, static_cast<std::size_t>(ProbeKind::Count)> probes;
 		std::string invalidationReason{ "not initialized" };
 		std::uint64_t frame{};

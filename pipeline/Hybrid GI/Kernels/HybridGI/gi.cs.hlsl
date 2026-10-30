@@ -60,6 +60,7 @@ Texture2D<float4> srcWorldSH0 : register(t10);
 Texture2D<float4> srcWorldSH1 : register(t11);
 Texture2D<float4> srcWorldSH2 : register(t12);
 Texture2D<uint> srcWorldNormal : register(t13);
+Texture2D<uint> srcWorldIntelligence : register(t17);
 Texture2D<float3> srcReflectance : register(t14);
 Texture2D<float4> srcPrevBentVisibility : register(t15);
 Texture2D<unorm float> srcPrevAo : register(t16);
@@ -104,7 +105,7 @@ float GetVisibilityFunctionSmithJointApprox(float roughness, float NdotV, float 
 }
 
 bool ReadWorldVoxelCascade(
-	float3 queryPositionWS, float3 receiverNormalWS, float3 sourceDirection, float3 cameraWS, uint cascade,
+	float3 queryPositionWS, float3 receiverPositionWS, float3 receiverNormalWS, float3 sourceDirection, float3 cameraWS, uint cascade,
 	inout float3 irradiance, inout float occupancy, bool readRadiance)
 {
 	irradiance = 0.0;
@@ -122,7 +123,7 @@ bool ReadWorldVoxelCascade(
 		valid = ageFade > 0.0;
 		if (valid) {
 			uint surface = srcWorldNormal.Load(int3(atlasCoord, 0));
-			float confidence = UnpackWorldConfidence(surface) * ageFade;
+			float confidence = UnpackWorldConfidence(surface) * ageFade * WorldIntelligenceReliability(srcWorldIntelligence.Load(int3(atlasCoord, 0)));
 			// Confidence describes sample reliability, not emitted energy. Keep it in
 			// occupancy/weighting so uncertain cells matter less, but do not attenuate
 			// the stored radiance by confidence a second time.
@@ -130,6 +131,7 @@ bool ReadWorldVoxelCascade(
 			valid = occupancy > (1.0 / 255.0);
 			if (valid) {
 				float3 sourceNormal = UnpackWorldNormal(surface);
+                occupancy *= WorldReceiverPlaneConfidence(receiverPositionWS, cell, sourceNormal, cellSize, confidence);
 				float receiverFacingSigned = dot(receiverNormalWS, sourceDirection);
 				float sourceFacingSigned = dot(sourceNormal, -sourceDirection);
 				// One-sided gates reject transport through the back of a cached surfel
@@ -171,8 +173,9 @@ bool ReadWorldVoxelCascade(
 								uint neighborSurface = srcWorldNormal.Load(int3(neighborCoord, 0));
 								float3 neighborNormal = UnpackWorldNormal(neighborSurface);
 								float neighborOccupancy = UnpackWorldOccupancy(neighborSurface) *
-									UnpackWorldConfidence(neighborSurface) * WorldCacheAgeFade(neighborAge, WorldCacheMaxAge);
-								if (neighborOccupancy > (1.0f / 255.0f) && dot(sourceNormal, neighborNormal) > 0.85f) {
+									UnpackWorldConfidence(neighborSurface) * WorldCacheAgeFade(neighborAge, WorldCacheMaxAge) * WorldIntelligenceReliability(srcWorldIntelligence.Load(int3(neighborCoord, 0)));
+								neighborOccupancy *= WorldReceiverPlaneConfidence(receiverPositionWS, neighborCell, neighborNormal, cellSize, UnpackWorldConfidence(neighborSurface));
+                            if (neighborOccupancy > (1.0f / 255.0f) && dot(sourceNormal, neighborNormal) > 0.85f) {
 									float neighborGate = lerp(1.0f, GISmootherStep((receiverFacingSigned + 0.05f) / 0.15f) *
 										GISmootherStep((dot(neighborNormal, -sourceDirection) + 0.05f) / 0.20f), leakReduction);
 									float3 neighborRadiance = WorldCacheEvaluateRadiance(
@@ -196,7 +199,7 @@ bool ReadWorldVoxelCascade(
 
 // [Optimization 2]: Cleaned cascade branching to prevent unnecessary queries
 bool ReadWorldVoxel(
-	float3 queryPositionWS, float3 receiverNormalWS, float3 rayDirection, float3 cameraWS,
+	float3 queryPositionWS, float3 receiverPositionWS, float3 receiverNormalWS, float3 rayDirection, float3 cameraWS,
 	inout float3 irradiance, inout float cascadeMix, inout float occupancy, bool readRadiance = true)
 {
 	irradiance = 0.0;
@@ -209,7 +212,7 @@ bool ReadWorldVoxel(
 	bool nearValid = false;
 
 	if (blend < 0.999) {
-		nearValid = ReadWorldVoxelCascade(queryPositionWS, receiverNormalWS, rayDirection, cameraWS, 0u,
+		nearValid = ReadWorldVoxelCascade(queryPositionWS, receiverPositionWS, receiverNormalWS, rayDirection, cameraWS, 0u,
 			nearIrradiance, nearOccupancy, readRadiance);
 	}
 
@@ -221,11 +224,12 @@ bool ReadWorldVoxel(
 	} else {
 		float3 farIrradiance = 0.0;
 		float farOccupancy = 0.0;
-		bool farValid = ReadWorldVoxelCascade(queryPositionWS, receiverNormalWS, rayDirection, cameraWS, 1u,
+		bool farValid = ReadWorldVoxelCascade(queryPositionWS, receiverPositionWS, receiverNormalWS, rayDirection, cameraWS, 1u,
 			farIrradiance, farOccupancy, readRadiance);
 
 		if (nearValid && farValid) {
-			irradiance = lerp(nearIrradiance, farIrradiance, blend);
+			irradiance = lerp(nearIrradiance, farIrradiance,
+                WorldCascadeRadianceBlend(blend, nearOccupancy, farOccupancy));
 			occupancy = lerp(nearOccupancy, farOccupancy, blend);
 			cascadeMix = blend;
 			valid = occupancy > (1.0 / 255.0);
@@ -247,7 +251,7 @@ bool ReadWorldVoxel(
 
 // [Optimization 9]: Accept cameraWS and receiver WS transformations directly
 void SampleWorldCache(
-	float3 receiverPositionWS, float3 receiverNormalWS, float3 cameraWS,
+	float3 receiverPositionWS, float3 receiverNormalWS, float3 cameraWS, uint rayBudget,
 	out float4 cacheY, out float2 cacheCoCg, out float hitRatio, out float cascadeMix,
 	out float directionalOcclusion)
 {
@@ -258,7 +262,8 @@ void SampleWorldCache(
 	directionalOcclusion = 0.0;
 	const bool computeDirectionalOcclusion = WorldCacheDirectionalOcclusionEnabled != 0u &&
 		(WorldCacheDirectionalOcclusionStrength > 1e-4f || DebugView == 8u);
-	uint sampleCount = clamp(WorldCacheSampleCount, 1u, 8u);
+	uint maximumSamples = clamp(WorldCacheSampleCount, 1u, 8u);
+    uint sampleCount = clamp(rayBudget, 1u, maximumSamples);
 	uint traceSteps = clamp(WorldCacheTraceSteps, 2u, 6u);
 	// Smooth world-locked variation avoids changing every ray direction at a
 	// voxel/cascade boundary, while continuous step spacing follows the same
@@ -272,7 +277,8 @@ void SampleWorldCache(
 
 	[loop] for (uint sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex) {
 		float3 direction = WorldCacheDirectionFromBasis(
-			sampleIndex, sampleCount, receiverNormalWS, cacheTangent, cacheBitangent, rotation);
+			WorldCacheRayIndex(sampleIndex, sampleCount, maximumSamples), maximumSamples,
+            receiverNormalWS, cacheTangent, cacheBitangent, rotation);
 		float rayTransmittance = 1.0;
 		bool foundIrradiance = false;
 		float stepPower = 1.0;
@@ -282,7 +288,7 @@ void SampleWorldCache(
 			float3 sampleIrradiance = 0.0;
 			float cascade = 0.0;
 			float occupancy = 0.0;
-			if (ReadWorldVoxel(receiverPositionWS + direction * distance, receiverNormalWS, direction, cameraWS,
+			if (ReadWorldVoxel(receiverPositionWS + direction * distance, receiverPositionWS, receiverNormalWS, direction, cameraWS,
 					sampleIrradiance, cascade, occupancy, !foundIrradiance)) {
 				float attenuation = rcp(1.0 + distance * inverseRadius);
 				float transportWeight = occupancy * rayTransmittance;
@@ -290,7 +296,14 @@ void SampleWorldCache(
 					directionalOcclusion += occupancy * rayTransmittance * attenuation;
 				rayTransmittance *= 1.0 - occupancy;
 
-				if (!foundIrradiance && any(sampleIrradiance > 1e-5)) {
+				// A reliable dark surface is a completed observation, not a hole
+                // through which a farther lit surface may replace the result.
+#ifdef CACHE_INTELLIGENCE
+                bool radianceObserved = true;
+#else
+                bool radianceObserved = any(sampleIrradiance > 1e-5);
+#endif
+				if (!foundIrradiance && radianceObserved) {
 					float3 ycocg = Color::RGBToYCoCg(sampleIrradiance * attenuation * transportWeight);
 					float4 basis = SphericalHarmonics::Evaluate(direction);
 					cacheY += ycocg.r * basis;
@@ -353,7 +366,7 @@ void SampleWorldCacheReflection(
 		float3 sampleIrradiance = 0.0;
 		float cascade = 0.0;
 		float occupancy = 0.0;
-		if (ReadWorldVoxel(receiverPositionWS + reflectionDirection * distance,
+		if (ReadWorldVoxel(receiverPositionWS + reflectionDirection * distance, receiverPositionWS,
 				receiverNormalWS, reflectionDirection, cameraWS, sampleIrradiance, cascade, occupancy)) {
 			float attenuation = rcp(1.0 + distance * inverseRadius);
 			float weight = occupancy * rayTransmittance * attenuation;
@@ -421,7 +434,11 @@ float AdaptiveWorldCacheConfidence(float3 viewspacePosition)
 
 	uint surface = srcWorldNormal.Load(int3(atlasCoord, 0));
 	uint age = ((WorldCacheClock & 255u) - (metadata >> 24)) & 255u;
-	return saturate(UnpackWorldConfidence(surface) * UnpackWorldOccupancy(surface) * WorldCacheAgeFade(age, WorldCacheMaxAge));
+#ifdef CACHE_INTELLIGENCE
+    if (((srcWorldIntelligence.Load(int3(atlasCoord, 0)) >> 24) & 15u) != 0u)
+        return 0.0f;
+#endif
+	return saturate(UnpackWorldConfidence(surface) * UnpackWorldOccupancy(surface) * WorldCacheAgeFade(age, WorldCacheMaxAge) * WorldIntelligenceReliability(srcWorldIntelligence.Load(int3(atlasCoord, 0))));
 }
 
 float ClassifyAdaptiveRayDemand(
@@ -474,14 +491,18 @@ float ClassifyAdaptiveRayDemand(
 	demand = max(demand, temporalDemand * 0.90f);
 	demand = max(demand, luminanceDemand * 0.80f);
 	demand = max(demand, specularDemand);
+#ifdef CACHE_INTELLIGENCE
+    demand = max(demand, cacheDemand);
+#else
 	demand = max(demand, cacheDemand * 0.60f);
+#endif
 	return saturate(demand);
 }
 #endif
 
 void CalculateGI(
 	uint2 dtid, float2 uv, float viewspaceZ, float3 viewspaceNormal,
-	uint effectiveNumSlices, uint effectiveNumSteps,
+	uint effectiveNumSlices, uint effectiveNumSteps, uint effectiveCacheRays,
 	out float o_ao, out sh2 o_currY, out float2 o_currCoCg, out float4 o_currGIAOSpecular, out float4 o_bentVisibility)
 {
 	float2 normalizedScreenPos = uv;
@@ -870,7 +891,7 @@ void CalculateGI(
 		const bool needCacheDebug = DebugView >= 5u && DebugView <= 8u;
 
 		[branch] if (needCacheDiffuse || needCacheDirectional || needCacheDebug) {
-			SampleWorldCache(receiverPositionWS, receiverNormalWS, cameraWS, cacheY, cacheCoCg,
+			SampleWorldCache(receiverPositionWS, receiverNormalWS, cameraWS, effectiveCacheRays, cacheY, cacheCoCg,
 				cacheHitRatio, cacheCascadeMix, cacheDirectionalOcclusion);
 		}
 
@@ -906,9 +927,44 @@ void CalculateGI(
 	radianceY *= max(GIStrength, 0.0f);
 	radianceCoCg *= max(GIStrength, 0.0f);
 
-	if (DebugView >= 5u && DebugView <= 9u) {
+	if ((DebugView >= 5u && DebugView <= 9u) || (DebugView >= 14u && DebugView <= 19u)) {
 		float3 debugColor = 0.0;
-		if (DebugView == 5u)
+        if (DebugView >= 14u) {
+            // Surface-cell inspection, not the ray-integrated lighting result.
+            // Magenta denotes unavailable intelligence; black means no address.
+            debugColor = float3(1.0f, 0.0f, 1.0f);
+#ifdef CACHE_INTELLIGENCE
+            debugColor = 0.0f;
+            float3 cameraWS = ViewToWorldPosition(0.0f, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
+            float3 receiverWS = ViewToWorldPosition(pixCenterPos, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
+            uint cascade = WorldCacheCascade(receiverWS, cameraWS);
+            float size = WorldCacheCellSize(cascade);
+            int3 cell = int3(floor(receiverWS / size));
+            uint2 coord = WorldCacheAtlasCoord(cell, cascade);
+            uint meta = srcWorldMetadata.Load(int3(coord, 0));
+            if (WorldCacheEnabled != 0u && WorldCacheCellInWindow(cell, cameraWS, cascade) &&
+                (meta & 0x00ffffffu) == WorldCacheHash(cell, cascade)) {
+                uint word = srcWorldIntelligence.Load(int3(coord, 0));
+                uint surface = srcWorldNormal.Load(int3(coord, 0));
+                uint age = ((WorldCacheClock & 255u) - (meta >> 24)) & 255u;
+                float confidence = WorldIntelligenceReliability(word) * UnpackWorldConfidence(surface) * WorldCacheAgeFade(age, WorldCacheMaxAge);
+                if (DebugView == 14u) debugColor = (float(word & 65535u) / 65535.0f).xxx;
+                else if (DebugView == 15u) debugColor = saturate(float(age) / max(float(WorldCacheMaxAge), 1.0f)).xxx;
+                else if (DebugView == 16u) debugColor = confidence.xxx;
+                else if (DebugView == 17u) {
+                    uint state = word >> 28;
+                    debugColor = state == WORLD_STATE_DARK ? float3(0.0f, 0.2f, 1.0f) :
+                        state == WORLD_STATE_RELIABLE ? float3(0.0f, 1.0f, 0.0f) :
+                        state == WORLD_STATE_UNCERTAIN ? float3(1.0f, 1.0f, 0.0f) :
+                        state == WORLD_STATE_STALE_LIGHT ? float3(1.0f, 0.0f, 0.0f) :
+                        state == WORLD_STATE_OCCLUDER ? float3(1.0f, 0.5f, 0.0f) :
+                        state == WORLD_STATE_EMPTY ? 0.2f.xxx : 0.5f.xxx;
+                } else if (DebugView == 18u) debugColor = (float((word >> 16) & 255u) / 255.0f).xxx;
+                else debugColor = WorldReceiverPlaneConfidence(cameraWS, cell, UnpackWorldNormal(surface), size, confidence).xxx;
+            }
+#endif
+        }
+		else if (DebugView == 5u)
 			debugColor = lerp(float3(0.35, 0.0, 0.0), float3(0.0, 1.0, 0.15), cacheHitRatio);
 		else if (DebugView == 6u)
 			debugColor = lerp(float3(0.0, 0.7, 1.0), float3(1.0, 0.1, 0.7), cacheCascadeMix) * max(cacheHitRatio, 0.15);
@@ -981,6 +1037,7 @@ void CalculateGI(
 
 	uint effectiveNumSlices = NumSlices;
 	uint effectiveNumSteps = NumSteps;
+    uint effectiveCacheRays = clamp(WorldCacheSampleCount, 1u, 8u);
 #if defined(ADAPTIVE_RAY_ALLOCATION)
 	if (groupThreadID.x == 0u && groupThreadID.y == 0u && groupThreadID.z == 0u)
 		gAdaptiveTileDemand = 0u;
@@ -996,6 +1053,12 @@ void CalculateGI(
 		return;
 
 	float tileDemand = (float)gAdaptiveTileDemand * (1.0f / 65535.0f);
+#if defined(CACHE_INTELLIGENCE) && defined(TEMPORAL_DENOISER)
+    // Without authoritative temporal/motion validity keep the fixed cache rays.
+    if (DebugView == 0u)
+        effectiveCacheRays = WorldCacheRayBudget(effectiveCacheRays, tileDemand, AdaptiveRayMinimum,
+            (pxCoord.x >> 3u) * 73856093u ^ (pxCoord.y >> 3u) * 19349663u, WorldCacheClock);
+#endif
 	float minimumWork = clamp(AdaptiveRayMinimum, 0.35f, 1.0f);
 	float workFraction = lerp(minimumWork, 1.0f, smoothstep(0.10f, 0.75f, tileDemand));
 	effectiveNumSlices = max(1u, min(NumSlices, (uint)ceil((float)NumSlices * workFraction)));
@@ -1035,7 +1098,7 @@ void CalculateGI(
 
 		CalculateGI(
 			pxCoord, uv, viewspaceZ, viewspaceNormal,
-			effectiveNumSlices, effectiveNumSteps,
+			effectiveNumSlices, effectiveNumSteps, effectiveCacheRays,
 			currAo, tempY, tempCoCg, tempSpec, tempBentVisibility);
 
 		currY = (half4)tempY;

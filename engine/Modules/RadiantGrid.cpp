@@ -1,4 +1,5 @@
 #include "RadiantGrid.h"
+#include "HybridGI.h"
 #include "NaturalLighting.h"
 #include "LinearLightCore.h"
 
@@ -511,6 +512,7 @@ void RadiantGrid::UpdateLights()
 
 	eastl::vector<LightData> lightsData{};
 	lightsData.reserve(MAX_LIGHTS);
+    std::array<std::uint64_t, MAX_LIGHTS> emitterIdentities{};
 
 	// Process point lights
 
@@ -587,6 +589,8 @@ void RadiantGrid::UpdateLights()
 							return;
 
 						if ((light.color.x + light.color.y + light.color.z) * light.fade > 1e-4 && light.radius > 1e-4) {
+                            if (lightsData.size() < MAX_LIGHTS)
+                                emitterIdentities[lightsData.size()] = reinterpret_cast<std::uintptr_t>(bsLight);
 							lightsData.push_back(light);
 						}
 					}
@@ -603,7 +607,7 @@ void RadiantGrid::UpdateLights()
 	}
 
 	particleLightBufferStart = static_cast<std::uint32_t>(std::min<std::size_t>(lightsData.size(), MAX_LIGHTS));
-	AddParticleLightsToBuffer(lightsData);
+	AddParticleLightsToBuffer(lightsData, emitterIdentities);
 	particleLightBufferCount = static_cast<std::uint32_t>(
 		std::min<std::size_t>(lightsData.size(), MAX_LIGHTS) - particleLightBufferStart);
 
@@ -617,6 +621,17 @@ void RadiantGrid::UpdateLights()
 	if (bytes > 0)
 		memcpy_s(mapped.pData, sizeof(LightData) * MAX_LIGHTS, lightsData.data(), bytes);
 	context->Unmap(lights->resource.get(), 0);
+    if (globals::pipeline::hybridGI.settings.EnableCacheIntelligence) {
+        std::array<PIXL::Renderer::EmitterObservation, MAX_LIGHTS> observations{};
+        for (uint i = 0; i < lightCount; ++i) {
+            const auto& light = lightsData[i];
+            observations[i] = { emitterIdentities[i],
+                {light.positionWS.data.x + eyePositionCached.x, light.positionWS.data.y + eyePositionCached.y,
+                 light.positionWS.data.z + eyePositionCached.z, light.radius},
+                {light.color.x * light.fade, light.color.y * light.fade, light.color.z * light.fade} };
+        }
+        PIXL::Renderer::LightTransportWorld::Get().PublishEmitterObservations({observations.data(), lightCount});
+    }
 
 	UpdateStructure();
 }
@@ -1285,7 +1300,8 @@ bool RadiantGrid::CheckParticleLights(RE::BSRenderPass* a_pass, uint32_t)
 	return true;
 }
 
-void RadiantGrid::AddParticleLightsToBuffer(eastl::vector<LightData>& a_lightsData)
+void RadiantGrid::AddParticleLightsToBuffer(eastl::vector<LightData>& a_lightsData,
+	std::array<std::uint64_t, MAX_LIGHTS>& a_emitterIdentities)
 {
 	static float& lightFadeStart = *reinterpret_cast<float*>(REL::RelocationID(527668, 414582).address());
 	static float& lightFadeEnd = *reinterpret_cast<float*>(REL::RelocationID(527669, 414583).address());
@@ -1301,7 +1317,12 @@ void RadiantGrid::AddParticleLightsToBuffer(eastl::vector<LightData>& a_lightsDa
 		pendingOwners.swap(queuedParticleLightOwners);
 	}
 
-	eastl::vector<ResolvedParticleLight> frameLights;
+	struct FrameParticleLight
+	{
+		RE::NiAVObject* owner;
+		ResolvedParticleLight light;
+	};
+	eastl::vector<FrameParticleLight> frameLights;
 	double frameTime = 0.0;
 	{
 		std::lock_guard lock{ particleLightStateMutex };
@@ -1348,14 +1369,15 @@ void RadiantGrid::AddParticleLightsToBuffer(eastl::vector<LightData>& a_lightsDa
 					(kLifetimeSeconds - kFullHoldSeconds));
 				resolved.color.alpha *= std::clamp(fade, 0.0f, 1.0f);
 			}
-			frameLights.push_back(resolved);
+			frameLights.push_back({ it->first, resolved });
 			++it;
 		}
 	}
 
-	for (const auto& pl : frameLights) {
+	for (const auto& frameLight : frameLights) {
 		if (a_lightsData.size() >= MAX_LIGHTS)
 			break;
+		const auto& pl = frameLight.light;
 
 		LightData light{};
 		constexpr float invPI = 1.f / std::numbers::pi_v<float>;
@@ -1398,6 +1420,9 @@ void RadiantGrid::AddParticleLightsToBuffer(eastl::vector<LightData>& a_lightsDa
 		light.fade = dimmer;
 		if ((light.color.x + light.color.y + light.color.z) * light.fade > 1e-4 && light.radius > 1e-4) {
 			light.invRadius = 1.f / light.radius;
+			// The owner key already scopes the short-lived persisted emitter. Use
+			// its pointer only as an identity token; the tracker never dereferences it.
+			a_emitterIdentities[a_lightsData.size()] = reinterpret_cast<std::uintptr_t>(frameLight.owner);
 			a_lightsData.push_back(light);
 			if (pl.source == ResolvedParticleLight::Source::GlowMappedGeometry)
 				++glowMappedEmitterLightCount;

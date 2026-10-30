@@ -20,6 +20,7 @@
 #include "Modules/CameraSuite.h"
 #include "Modules/InteriorDaylight.h"
 #include "Modules/GroundResponse.h"
+#include "Modules/HybridGI.h"
 #include "Modules/ActorSurfaceEffects.h"
 #include "Modules/DialogueFocus.h"
 #include "Modules/PulseProfiler.h"
@@ -1405,6 +1406,15 @@ void State::UpdateSharedData(bool a_inWorld, bool a_prepass)
 		}
 
 		sharedDataCB->Update(data);
+        if (globals::pipeline::hybridGI.settings.EnableCacheIntelligence) {
+            // L0 ambient and the world-space sun direction describe environment
+            // changes. Camera-relative/view-space L1 terms must never invalidate
+            // the world cache during ordinary camera motion.
+            PIXL::Renderer::LightTransportWorld::Get().PublishEnvironmentEnergy({
+                data.AmbientSHR.x, data.AmbientSHG.x, data.AmbientSHB.x,
+                data.DirLightColor.x, data.DirLightColor.y, data.DirLightColor.z,
+                data.SunDirection.x, data.SunDirection.y, data.SunDirection.z });
+        }
 	}
 
 	UpdateFeatureData(a_inWorld);

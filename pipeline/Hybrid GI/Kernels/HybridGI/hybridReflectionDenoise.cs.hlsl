@@ -108,5 +108,3 @@ void main(uint2 dtid : SV_DispatchThreadID)
     float confidence = max(center.a, filteredConfidence * adaptive);
     outReflection[dtid] = float4(result, saturate(confidence));
 }
-
-

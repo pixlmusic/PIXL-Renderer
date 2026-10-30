@@ -262,6 +262,41 @@ foreach ($assetRef in $runtimeAssetRefs) {
     }
 }
 
+# HybridGI's canonical authoring kernels and shipped runtime payload must stay
+# byte-identical. Its source files are sometimes new/untracked during a live
+# release candidate, so the generic tracked-file overlay check above is not
+# sufficient to catch a stale distribution copy.
+$hybridSource = Join-Path $repo 'pipeline\Hybrid GI\Kernels\HybridGI'
+$hybridPayload = Join-Path $distributionShaderRoot 'HybridGI'
+if (!(Test-Path -LiteralPath $hybridSource -PathType Container) -or
+    !(Test-Path -LiteralPath $hybridPayload -PathType Container)) {
+    Add-Error 'HybridGI authoring or distribution shader directory is missing.'
+} else {
+    $sourcePrefix = $hybridSource.TrimEnd('\') + '\'
+    $sourceFiles = @(Get-ChildItem -LiteralPath $hybridSource -File -Recurse)
+    $payloadFiles = @(Get-ChildItem -LiteralPath $hybridPayload -File -Recurse)
+    if ($sourceFiles.Count -ne $payloadFiles.Count) {
+        Add-Error "HybridGI source/distribution file count differs ($($sourceFiles.Count) vs $($payloadFiles.Count))."
+    }
+    foreach ($sourceFile in $sourceFiles) {
+        $relative = $sourceFile.FullName.Substring($sourcePrefix.Length)
+        $payloadFile = Join-Path $hybridPayload $relative
+        if (!(Test-Path -LiteralPath $payloadFile -PathType Leaf)) {
+            Add-Error "HybridGI distribution payload is missing: $relative"
+        } elseif ((Get-FileHash -LiteralPath $sourceFile.FullName -Algorithm SHA256).Hash -ne
+            (Get-FileHash -LiteralPath $payloadFile -Algorithm SHA256).Hash) {
+            Add-Error "HybridGI authoring/distribution shader payload is stale: $relative"
+        }
+    }
+    $sourceModule = Join-Path $repo 'pipeline\Hybrid GI\Module.ini'
+    $payloadModule = Join-Path $distributionShaderRoot 'PIXL\Modules\HybridGI.ini'
+    if (!(Test-Path -LiteralPath $payloadModule -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $sourceModule -Algorithm SHA256).Hash -ne
+        (Get-FileHash -LiteralPath $payloadModule -Algorithm SHA256).Hash) {
+        Add-Error 'HybridGI module descriptor is missing or stale in the distribution payload.'
+    }
+}
+
 # Validate the complete literal HLSL include graph against the same assembled
 # shader namespace the staging tool creates. C++ compilation cannot detect a
 # missing include that is reached only by a runtime shader permutation.

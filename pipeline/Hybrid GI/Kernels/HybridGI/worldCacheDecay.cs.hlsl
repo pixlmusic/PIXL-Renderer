@@ -2,6 +2,7 @@
 #include "HybridGI/worldCache.hlsli"
 
 RWTexture2D<uint> outWorldMetadata : register(u0);
+RWTexture2D<uint> outWorldIntelligence : register(u1);
 
 // Why this pass exists
 // ---------------------
@@ -24,9 +25,9 @@ RWTexture2D<uint> outWorldMetadata : register(u0);
 // Dispatch once per fixed cache-clock tick over the full atlas
 // (WORLD_CACHE_DIM * WORLD_CACHE_DIM x WORLD_CACHE_DIM * WORLD_CACHE_CASCADES,
 // i.e. 1024x64), after worldCacheInject_cs and before gi_cs reads the cache.
-// The whole atlas is only 65536 texels, so this is a negligible full pass --
-// no stride/jitter amortization needed, and none should be added: any
-// amortization reopens the wraparound window for cells revisited late.
+// Cost is measured by HybridGI::WorldCacheDecay timestamps. Keep this full
+// sweep as the reference until an alternative proves both expiry equivalence
+// and a lower total GPU cost; naive striding risks wraparound resurrection.
 //
 // Extension note: if WORLD_CACHE_DIM or WORLD_CACHE_CASCADES is increased
 // later (bigger world, more cascades), keep this a full unstrided pass as
@@ -46,12 +47,18 @@ void main(const uint2 dispatchThreadID : SV_DispatchThreadID)
 	if (hash == WORLD_CACHE_INVALID_HASH)
 		return;
 
-	uint age = ((WorldCacheClock & 255u) - (metadata >> 24)) & 255u;
-	if (age > WorldCacheMaxAge) {
+    uint intelligence = 0u;
+#ifdef CACHE_INTELLIGENCE
+    intelligence = outWorldIntelligence[dispatchThreadID];
+#endif
+	if (WorldCacheExpired(metadata, intelligence, WorldCacheClock, WorldCacheMaxAge)) {
 		// Keep the timestamp byte (harmless, and cheaper than a full zero
 		// write to reason about), just clear the hash so no future read or
 		// injection can mistake this cell for the voxel it used to hold.
 		outWorldMetadata[dispatchThreadID] = metadata & 0xff000000u;
+
+#ifdef CACHE_INTELLIGENCE
+        outWorldIntelligence[dispatchThreadID] = 0u;
+#endif
 	}
 }
-

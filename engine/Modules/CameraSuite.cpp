@@ -606,7 +606,7 @@ void CameraSuite::SetupCameraFinishingResources(const D3D11_TEXTURE2D_DESC& scen
 		delete texture;
 		texture = nullptr;
 	};
-	for (auto** texture : { &cameraLocalExposureTexture, &cameraLocalExposureHistoryTexture,
+	for (auto** texture : { &cameraLocalExposureTexture,
 		     &stormglassFieldTexture, &bloomHalfTexture, &bloomQuarterTexture,
 		     &bloomEighthTexture, &bloomSixteenthTexture, &bloomEighthScratchTexture,
 			     &bloomQuarterScratchTexture, &bloomHalfScratchTexture, &dofCoCTexture, &dofCoCHistoryTexture,
@@ -682,15 +682,10 @@ void CameraSuite::SetupCameraFinishingResources(const D3D11_TEXTURE2D_DESC& scen
 	}
 
 	cameraLocalExposureTexture = createTexture(quarterWidth, quarterHeight, DXGI_FORMAT_R16_FLOAT, "PIXL Camera::LocalExposure");
-	cameraLocalExposureHistoryTexture = createTexture(
-		quarterWidth, quarterHeight, DXGI_FORMAT_R16_FLOAT, "PIXL Camera::LocalExposureHistory");
-	if (cameraLocalExposureTexture && cameraLocalExposureTexture->uav &&
-		cameraLocalExposureHistoryTexture && cameraLocalExposureHistoryTexture->uav) {
+	if (cameraLocalExposureTexture && cameraLocalExposureTexture->uav) {
 		const FLOAT neutralLocalExposure[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
 		globals::d3d::context->ClearUnorderedAccessViewFloat(
 			cameraLocalExposureTexture->uav.get(), neutralLocalExposure);
-		globals::d3d::context->ClearUnorderedAccessViewFloat(
-			cameraLocalExposureHistoryTexture->uav.get(), neutralLocalExposure);
 	}
 	stormglassFieldTexture = createTexture(quarterWidth, quarterHeight, DXGI_FORMAT_R16G16B16A16_FLOAT, "PIXL Camera::StormglassField");
 	dofCoCTexture = createTexture(sceneDesc.Width, sceneDesc.Height, DXGI_FORMAT_R16_FLOAT, "PIXL Camera::DOF CoC");
@@ -1553,7 +1548,7 @@ void CameraSuite::DestroyResources()
 		texture = nullptr;
 	};
 	for (auto** texture : {
-		&cameraLocalExposureTexture, &cameraLocalExposureHistoryTexture,
+		&cameraLocalExposureTexture,
 		&bloomHalfTexture, &bloomQuarterTexture, &bloomEighthTexture,
 		&bloomSixteenthTexture, &bloomEighthScratchTexture,
 		&bloomQuarterScratchTexture, &bloomHalfScratchTexture,
@@ -2071,21 +2066,18 @@ void CameraSuite::RunCameraFinishingPasses(ID3D11ShaderResourceView* sceneSRV)
 		return true;
 	};
 
-	// Local exposure responds to each new camera framing. Keep it out of
-	// Photo/Video captures so the held global exposure is actually stable.
+	// Local exposure is a current-frame screen-space field. It must not reuse the
+	// previous pixel's gain after camera motion; global exposure already provides
+	// the intentionally smoothed photographic adaptation.
 	if (wantsPhysicalCamera && !TuningWorkspaceRenderer::IsDirectorPhotoModeActive() &&
-		settings.cameraLocalExposure > 1e-4f && cameraLocalExposureTexture &&
-		cameraLocalExposureHistoryTexture) {
-		ID3D11ShaderResourceView* localSrvs[3] = {
+		settings.cameraLocalExposure > 1e-4f && cameraLocalExposureTexture) {
+		ID3D11ShaderResourceView* localSrvs[2] = {
 			sceneSRV,
-			cameraExposureTexture->srv.get(),
-			cameraLocalExposureTexture->srv.get()
+			cameraExposureTexture->srv.get()
 		};
 		localExposurePassReady = dispatchPass(
-			"CameraSuite::LocalExposure", GetPhysicalCameraLocalExposureCS(), localSrvs, 3u,
-			cameraLocalExposureHistoryTexture);
-		if (localExposurePassReady)
-			std::swap(cameraLocalExposureTexture, cameraLocalExposureHistoryTexture);
+			"CameraSuite::LocalExposure", GetPhysicalCameraLocalExposureCS(), localSrvs, 2u,
+			cameraLocalExposureTexture);
 	}
 
 	if (wantsStormglass) {

@@ -59,6 +59,7 @@ namespace PIXL::Renderer
 		std::uint32_t height{};
 		std::uint64_t frame{};
 		bool valid{};
+        bool opaqueValid{};
 	};
 
 	class PixelAnnotations
@@ -69,6 +70,7 @@ namespace PIXL::Renderer
 		static std::string_view ToString(MaterialClass material) noexcept;
 
 		void BeginFrame(std::uint64_t frame);
+        void PublishOpaque(ID3D11ShaderResourceView* materialMask, std::uint32_t width, std::uint32_t height);
 		void PublishBase(ID3D11ShaderResourceView* materialMask, ID3D11ShaderResourceView* normalWaterMask,
 			ID3D11ShaderResourceView* temporalAAMask, std::uint32_t width, std::uint32_t height);
 		void PublishReconstruction(ID3D11ShaderResourceView* reactiveMask,

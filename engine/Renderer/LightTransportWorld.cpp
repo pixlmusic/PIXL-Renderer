@@ -19,6 +19,7 @@ namespace PIXL::Renderer
 			return;
 		frame = nextFrame;
 		localLights = {};
+		emitterChanges.BeginFrame();
 		for (auto& probe : probes)
 			probe = {};
 		invalidationReason.clear();
@@ -28,6 +29,9 @@ namespace PIXL::Renderer
 	{
 		std::scoped_lock lock(mutex);
 		++epoch;
+		emitterTracker.Reset();
+        environmentTracker.Reset();
+		emitterChanges.Reset();
 		localLights = {};
 		for (auto& probe : probes)
 			probe = {};
@@ -60,6 +64,45 @@ namespace PIXL::Renderer
 	{
 		std::scoped_lock lock(mutex);
 		return localLights;
+	}
+
+	void LightTransportWorld::PublishEmitterObservations(std::span<const EmitterObservation> observations)
+	{
+		std::scoped_lock lock(mutex);
+		emitterChanges.Publish(emitterTracker.Update(observations, frame, epoch));
+	}
+
+	EmitterChangeBatch LightTransportWorld::AcquireEmitterChanges() const
+	{
+		std::scoped_lock lock(mutex);
+		return emitterChanges.Acquire();
+	}
+
+    EmitterChangeBatch LightTransportWorld::FinalizeEmitterChanges(std::uint64_t expectedFrame)
+    {
+        std::scoped_lock lock(mutex);
+        if (frame != expectedFrame) return {};
+        // Called at the GI consumer boundary, after RadiantGrid publication.
+        // Missing/disabled producers retire their previous bounds exactly once.
+        return FinalizeEmitterPublication(emitterTracker, emitterChanges, frame, epoch);
+    }
+
+    void LightTransportWorld::PublishEnvironmentEnergy(const std::array<float,9>& energy)
+    {
+        std::scoped_lock lock(mutex);
+        if (!environmentTracker.Update(energy)) return;
+        EmitterChangeBatch change{};
+        change.frame = frame; change.epoch = epoch; change.published = true;
+        // A global environmental change has no bounded emitter sphere. Mark
+        // irradiance stale, preserving geometry, stored energy and cache age.
+        change.overflow = true;
+        emitterChanges.Publish(change);
+    }
+
+	void LightTransportWorld::AcknowledgeEmitterChanges(std::uint64_t acknowledgedEpoch, std::uint64_t sequence)
+	{
+		std::scoped_lock lock(mutex);
+		emitterChanges.Acknowledge(acknowledgedEpoch, sequence);
 	}
 
 	void LightTransportWorld::PublishProbe(

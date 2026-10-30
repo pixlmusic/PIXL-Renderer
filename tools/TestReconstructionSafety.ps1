@@ -48,8 +48,15 @@ Require 'pipeline/Camera Suite/Kernels/CameraSuite/PhysicalCameraHistogramCS.hls
 Require 'pipeline/Camera Suite/Kernels/CameraSuite/PhysicalCameraHistogramCS.hlsl' 'InterlockedAdd\(LocalHistogram\[min\(bin \+ 1u, 255u\)\], upperWeight\)'
 Require 'pipeline/Camera Suite/Kernels/CameraSuite/PhysicalCameraExposureCS.hlsl' 'total \* 0.95f'
 Require 'pipeline/Camera Suite/Kernels/CameraSuite/PhysicalCameraExposureCS.hlsl' 'lerp\(avgLogLum, medianLogLum, 0\.42f\)'
-Require 'pipeline/Camera Suite/Kernels/CameraSuite/PhysicalCameraLocalExposureCS.hlsl' 'PreviousLocalExposure'
-Require 'engine/Modules/CameraSuite.cpp' 'std::swap\(cameraLocalExposureTexture, cameraLocalExposureHistoryTexture\)'
+$localExposureShader = Get-Content -LiteralPath (Join-Path $repo 'pipeline/Camera Suite/Kernels/CameraSuite/PhysicalCameraLocalExposureCS.hlsl') -Raw
+if ($localExposureShader -match 'PreviousLocalExposure|previousEV|stepEV') {
+    throw 'Screen-space local exposure must not temporally reuse un-reprojected previous-frame gain.'
+}
+Require 'pipeline/Camera Suite/Kernels/CameraSuite/PhysicalCameraLocalExposureCS.hlsl' 'LocalExposureOut\[dispatchID\]\s*=\s*exp2\(clamp\(targetEV, -0\.5f, 0\.5f\)\)'
+Require 'engine/Modules/CameraSuite.cpp' '"CameraSuite::LocalExposure", GetPhysicalCameraLocalExposureCS\(\), localSrvs, 2u,\s*cameraLocalExposureTexture'
+if ((Get-Content -LiteralPath (Join-Path $repo 'engine/Modules/CameraSuite.cpp') -Raw) -match 'cameraLocalExposureHistoryTexture|std::swap\(cameraLocalExposureTexture') {
+    throw 'Local exposure no longer owns a screen-space temporal history texture.'
+}
 Require 'pipeline/Camera Suite/Kernels/CameraSuite/Stormglass.hlsli' 'transmittance = exp\(-pathMetres'
 Require 'pipeline/Camera Suite/Kernels/CameraSuite/HDROutputCS.hlsl' 'PixlApplySubmergedGrade\(cameraScene, stormglass.uv\)'
 Require 'distribution/PIXL-Shaders/Lighting.hlsl' 'lightsDiffuseColor \+= pixlLocalWaterBounce'

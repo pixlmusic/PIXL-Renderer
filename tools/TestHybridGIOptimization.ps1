@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$ShaderRoot,
-    [Parameter(Mandatory=$true)][string]$Fxc
+    [Parameter(Mandatory=$true)][string]$Fxc,
+    [switch]$CacheIntelligence
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -14,6 +15,12 @@ if ($sourceText -notmatch 'WorldCacheStrength\s*\*\s*0\.60f\s*\*\s*cacheConfiden
 	$sourceText -match 'screenMiss\s*=\s*1\.0f\s*-\s*saturate\(giCoverage') {
 	throw 'HybridGI world-cache contribution must use stable confidence weighting, independent of the stochastic horizon mask.'
 }
+$injection = Get-Content -LiteralPath (Join-Path $repo 'pipeline\Hybrid GI\Kernels\HybridGI\worldCacheInject.cs.hlsl') -Raw
+if ($injection -match 'if\s*\(staleLighting\)\s*historyValid\s*=\s*false' -or
+	$injection -notmatch 'if\s*\(staleLighting\)\s*response\s*=\s*max\(response,\s*0\.12f\)' -or
+	$injection -notmatch 'if\s*\(CacheScheduleEnabled\s*!=\s*0u\)\s*response\s*=\s*min\(response,\s*0\.18f\)') {
+	throw 'HybridGI cache refresh must blend invalidated light history and bound sparse scheduled radiance steps.'
+}
 $output = Join-Path $repo 'build\gi-optimization\permutations'
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 $count = 0
@@ -23,6 +30,7 @@ foreach ($resolution in 0..2) {
             foreach ($adaptive in 0..1) {
                 $argsFxc = @('/nologo','/WX','/Ges','/O3','/T','cs_5_0','/E','main','/I',$ShaderRoot)
                 $defines = @('COMPUTESHADER','WINPC','DX11')
+                if ($CacheIntelligence) { $defines += 'CACHE_INTELLIGENCE' }
                 if ($resolution -eq 1) { $defines += 'HALF_RES' }
                 if ($resolution -eq 2) { $defines += 'QUARTER_RES' }
                 if ($temporal) { $defines += 'TEMPORAL_DENOISER' }

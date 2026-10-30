@@ -13,6 +13,7 @@
 #include "Modules/RadiantGrid.h"
 #include "Globals.h"
 #include "Menu.h"
+#include "Profiler.h"
 #include "State.h"
 #include "MaterialForge.h"
 #include "MaterialForge/PhysicalMaterialRegistry.h"
@@ -22,6 +23,7 @@
 #include "Renderer/TemporalContext.h"
 #include "Renderer/GPUWorkloadBudgeter.h"
 #include "Renderer/ReflectionContext.h"
+#include "Renderer/PixelAnnotations.h"
 #include "Util.h"
 #include "../Menu/PIXLStyle.h"
 #include "Utils/FileSystem.h"
@@ -139,6 +141,12 @@ namespace
 		PixlDiagnosticView{ "23-hybrid-reflections", 13, 0 },
 		PixlDiagnosticView{ "24-pbr-raw-authored-metalness", 0, 11 },
 		PixlDiagnosticView{ "25-pbr-effective-metalness", 0, 12 },
+        PixlDiagnosticView{ "26-cache-log-variance", 14, 0 },
+        PixlDiagnosticView{ "27-cache-age", 15, 0 },
+        PixlDiagnosticView{ "28-cache-reliability", 16, 0 },
+        PixlDiagnosticView{ "29-cache-state", 17, 0 },
+        PixlDiagnosticView{ "30-cache-light-change", 18, 0 },
+        PixlDiagnosticView{ "31-cache-camera-plane-visibility", 19, 0 },
 	};
 
 	std::string PixlDiagnosticTimestamp()
@@ -655,6 +663,10 @@ void HybridGI::DrawSettings()
 
 					BeginSettingRow("Experimental Adaptive Ray Tiles", "Compiles an experimental 8x8 tile classifier that reduces horizon directions and steps only in stable, low-frequency tiles. Disabled by default pending live image-quality and GPU-profiler validation.");
 					recompileFlag |= DrawPixlToggleField("##adaptive_ray_tiles", &settings.EnableAdaptiveRayAllocation);
+                    BeginSettingRow("Experimental Cache Confidence", "Tracks world-cache lighting variance and observation reliability. Disabled by default pending visual validation; adds 512 KiB of cache storage.");
+                    recompileFlag |= DrawPixlToggleField("##cache_intelligence", &settings.EnableCacheIntelligence);
+                    BeginSettingRow("Experimental Cache Update Budget", "Prioritizes changed and uncertain cells using delayed GPU timings. Requires Cache Confidence; reserves 512 KiB while enabled. Reference updates remain active when timing data is unavailable.");
+                    DrawPixlToggleField("##cache_update_budget", &settings.EnableBudgetedCacheUpdates);
 
 					BeginSettingRow("Adaptive Minimum Work", "Lowest fraction of configured directions and steps retained in a stable tile. This is applied independently to both loop dimensions; 50% can therefore approach one quarter of the horizon samples in qualifying tiles.");
 					{
@@ -736,7 +748,9 @@ void HybridGI::DrawSettings()
 			"Bent Normal",
 			"Directional Visibility",
 			"Physical Specular Occlusion",
-			"Hybrid Reflections"
+			"Hybrid Reflections",
+            "Cache Log Variance", "Cache Age", "Cache Reliability", "Cache State",
+            "Cache Light Change", "Cache Camera-Plane Visibility"
 		};
 
 		if (BeginSettingsTable("PIXL GI Debug")) {
@@ -1020,6 +1034,11 @@ void HybridGI::WriteDiagnosticManifest(bool complete) const
 		{ "persistentWorldCache", true },
 		{ "frameAgeExpiryEnabled", true },
 		{ "worldCacheClockHz", 8.0f },
+        { "worldCacheClock", worldCacheClock },
+        { "cacheIntelligenceEnabled", settings.EnableCacheIntelligence },
+        { "cacheIntelligenceAllocatedBytes", texWorldCacheIntelligence && texWorldCachePreviousIntelligence ? 524288 : 0 },
+        { "cacheIntelligenceViews", "surface-cell values; 14 log variance, 15 age/lifetime, 16 reliability, 17 state, 18 unresolved light evidence, 19 camera/source plane compatibility; magenta means unavailable" },
+        { "cacheStatePalette", "black missing; blue dark; green reliable; yellow uncertain; red stale light; orange occluder; dark grey empty; grey pending" },
 		{ "worldCacheDeterministicElection", true },
 		{ "worldCacheFrameRateIndependentResponse", true },
 		{ "worldCacheBoundedToroidalWindow", true },
@@ -1047,6 +1066,19 @@ void HybridGI::WriteDiagnosticManifest(bool complete) const
 		{ "effectLightingScale", globals::pipeline::linearLightCore.settings.effectLightingMult },
 		{ "linearLightingEnabled", globals::pipeline::linearLightCore.settings.enableLinearLightCore != 0u }
 	};
+    const auto emitterChanges = PIXL::Renderer::LightTransportWorld::Get().AcquireEmitterChanges();
+    root["cacheEmitterChanges"] = {
+        { "count", emitterChanges.count }, { "overflow", emitterChanges.overflow },
+        { "frame", emitterChanges.frame }, { "epoch", emitterChanges.epoch },
+        { "sequence", emitterChanges.sequence }, { "published", emitterChanges.published }
+    };
+    root["repeatableCacheCaptureRecipes"] = {
+        { "torch", "Load the same save; wait six seconds facing a torch; capture; walk backward for two seconds; stop and capture again." },
+        { "doorway", "Load the same save facing a lit doorway; capture on each side at the same camera height and weather/time." },
+        { "cameraCut", "Capture a warmed scene; switch first/third person or teleport; capture immediately and after six seconds." },
+        { "floorStack", "Capture directly above and below the same floor/roof, then follow a fixed stair/bridge path through cascade boundaries." },
+        { "reflection", "Capture at fixed grazing angles; translate past a doorway and distant silhouette, using the same reconstruction settings." }
+    };
 	const float renderScaleX = std::clamp(reconstruction.resolutionScale.x, 0.0f, 1.0f);
 	const float renderScaleY = std::clamp(reconstruction.resolutionScale.y, 0.0f, 1.0f);
 	root["reconstruction"] = {
@@ -1099,6 +1131,8 @@ void HybridGI::WriteDiagnosticManifest(bool complete) const
 	recordBuffer("worldSH1", texWorldCacheSH1.get());
 	recordBuffer("worldSH2", texWorldCacheSH2.get());
 	recordBuffer("worldNormal", texWorldCacheNormal.get());
+    recordBuffer("worldIntelligence", texWorldCacheIntelligence.get());
+    recordBuffer("previousWorldIntelligence", texWorldCachePreviousIntelligence.get());
 	recordBuffer("previousWorldMetadata", texWorldCachePreviousMetadata.get());
 	recordBuffer("previousWorldSH0", texWorldCachePreviousSH0.get());
 	recordBuffer("previousWorldSH1", texWorldCachePreviousSH1.get());
@@ -1151,11 +1185,21 @@ void HybridGI::WriteDiagnosticManifest(bool complete) const
 		for (const auto& timer : globals::profiler->GetResults()) {
 			if (!timer.name.starts_with("HybridGI::") && timer.name != "DeferredComposite")
 				continue;
+            // Request-only statistics; the profiler already resolves timestamps
+            // asynchronously. Do not add a GPU wait or normal-frame readback.
+            std::array<float, Profiler::kHistorySize> samples{};
+            const auto count = std::min(timer.historyCount, Profiler::kHistorySize);
+            for (uint32_t i = 0; i < count; ++i)
+                samples[i] = timer.GetHistorySample(i);
+            std::sort(samples.begin(), samples.begin() + count);
 			root["timings"].push_back({
 				{ "name", timer.name },
 				{ "valid", timer.valid },
 				{ "gpuMs", timer.gpuTimeMs },
 				{ "averageMs", timer.avgMs },
+                { "samples", count },
+                { "p50Ms", count ? samples[count / 2] : 0.0f },
+                { "maxMs", count ? samples[count - 1] : 0.0f },
 				{ "p95Ms", timer.p95Ms },
 				{ "p99Ms", timer.p99Ms },
 				{ "cpuMs", timer.cpuTimeMs }
@@ -1163,11 +1207,11 @@ void HybridGI::WriteDiagnosticManifest(bool complete) const
 		}
 	}
 
-	constexpr std::array<std::string_view, 13> shaderFiles{
+	constexpr std::array<std::string_view, 15> shaderFiles{
 		"gi.cs.hlsl", "worldCache.hlsli", "worldCacheInject.cs.hlsl", "worldCacheDecay.cs.hlsl",
 		"hybridReflection.cs.hlsl", "hybridReflectionDenoise.cs.hlsl", "blur.cs.hlsl", "radianceDisocc.cs.hlsl",
 		"prefilterDepths.cs.hlsl", "prefilterRadiance.cs.hlsl", "prefilterNormal.cs.hlsl",
-		"upsample.cs.hlsl", "common.hlsli"
+		"upsample.cs.hlsl", "common.hlsli", "worldCacheMark.cs.hlsl", "worldCacheEvidence.cs.hlsl"
 	};
 	for (const auto shaderFile : shaderFiles) {
 		const auto path = Util::PathHelpers::GetPIXLShadersPath() / "HybridGI" / shaderFile;
@@ -1215,6 +1259,8 @@ void HybridGI::LoadSettings(json& o_json)
 	settings.ContactDepthRadius = o_json.value("ContactDepthRadius", 96.0f);
 	settings.ContactDepthBias = o_json.value("ContactDepthBias", 0.08f);
 	settings.EnableAdaptiveRayAllocation = o_json.value("EnableAdaptiveRayAllocation", false);
+    settings.EnableCacheIntelligence = o_json.value("EnableCacheIntelligence", false);
+    settings.EnableBudgetedCacheUpdates = o_json.value("EnableBudgetedCacheUpdates", false);
 	settings.AdaptiveRayMinimum = o_json.value("AdaptiveRayMinimum", 0.50f);
 	settings.EnableEmitterInjection = o_json.value("EnableEmitterInjection", true);
 	settings.EmitterInjectionStrength = o_json.value("EmitterInjectionStrength", 0.65f);
@@ -1228,7 +1274,7 @@ void HybridGI::LoadSettings(json& o_json)
 	settings.DepthFadeRange.x = finiteOr(settings.DepthFadeRange.x, defaults.DepthFadeRange.x);
 	settings.DepthFadeRange.y = finiteOr(settings.DepthFadeRange.y, defaults.DepthFadeRange.y);
 	settings.ResolutionMode = std::clamp(settings.ResolutionMode, 0, 2);
-	settings.DebugView = std::min(settings.DebugView, 13u);
+	settings.DebugView = std::min(settings.DebugView, 19u);
 	settings.WorldCacheTraceSteps = std::clamp(settings.WorldCacheTraceSteps, 2u, 6u);
 	settings.WorldCacheTemporalResponse = std::clamp(settings.WorldCacheTemporalResponse, 0.02f, 1.0f);
 	settings.WorldCacheSecondBounceStrength = std::clamp(settings.WorldCacheSecondBounceStrength, 0.0f, 0.5f);
@@ -1268,6 +1314,8 @@ void HybridGI::SaveSettings(json& o_json)
 	o_json["ContactDepthRadius"] = settings.ContactDepthRadius;
 	o_json["ContactDepthBias"] = settings.ContactDepthBias;
 	o_json["EnableAdaptiveRayAllocation"] = settings.EnableAdaptiveRayAllocation;
+    o_json["EnableCacheIntelligence"] = settings.EnableCacheIntelligence;
+    o_json["EnableBudgetedCacheUpdates"] = settings.EnableBudgetedCacheUpdates;
 	o_json["AdaptiveRayMinimum"] = settings.AdaptiveRayMinimum;
 	o_json["EnableEmitterInjection"] = settings.EnableEmitterInjection;
 	o_json["EmitterInjectionStrength"] = settings.EmitterInjectionStrength;
@@ -1308,6 +1356,10 @@ void HybridGI::PostPostLoad()
 
 void HybridGI::SetupResources()
 {
+    cacheScheduleCB.reset();
+    texWorldUpdateTime.reset();
+    texPreviousWorldUpdateTime.reset();
+    cacheBudget.Reset();
 	texReflectionDepth = nullptr;
 	for (auto& view : uavReflectionDepth)
 		view = nullptr;
@@ -1505,12 +1557,23 @@ void HybridGI::SetupResources()
 		texWorldCacheMetadata = createStorageTexture("PIXL HybridGI::WorldMetadata");
 		texWorldCacheWinners = createStorageTexture("PIXL HybridGI::WorldWinners");
 		texWorldCacheNormal = createStorageTexture("PIXL HybridGI::WorldNormal");
+        try {
+            emitterChangesCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<EmitterChangesCB>(), "HybridGI::EmitterChanges");
+            texWorldCacheIntelligence = createStorageTexture("PIXL HybridGI::WorldIntelligence");
+            texWorldCachePreviousIntelligence = createStorageTexture("PIXL HybridGI::Previous WorldIntelligence");
+        } catch (...) {
+            texWorldCacheIntelligence.reset();
+            texWorldCachePreviousIntelligence.reset();
+            settings.EnableCacheIntelligence = false;
+            logger::warn("[HybridGI] Cache intelligence allocation failed; retaining legacy world cache.");
+        }
 		texWorldCachePreviousMetadata = createStorageTexture("PIXL HybridGI::Previous WorldMetadata");
 		texWorldCachePreviousNormal = createStorageTexture("PIXL HybridGI::Previous WorldNormal");
 		const UINT clearValue[4] = { 0, 0, 0, 0 };
 		for (auto* texture : { texWorldCacheMetadata.get(), texWorldCacheNormal.get(),
-			texWorldCachePreviousMetadata.get(), texWorldCachePreviousNormal.get() })
-			context->ClearUnorderedAccessViewUint(texture->uav.get(), clearValue);
+			texWorldCachePreviousMetadata.get(), texWorldCachePreviousNormal.get(), texWorldCacheIntelligence.get(), texWorldCachePreviousIntelligence.get() })
+			if (texture && texture->uav)
+                context->ClearUnorderedAccessViewUint(texture->uav.get(), clearValue);
 
 		texDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 		srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -1606,7 +1669,9 @@ namespace
 		kShaderWorldDecay = 1u << 10,
 		kShaderReflection = 1u << 11,
 		kShaderReflectionDenoise = 1u << 12,
-		kShaderAll = (1u << 13) - 1u
+		kShaderWorldMark = 1u << 13,
+        kShaderWorldEvidence = 1u << 14,
+        kShaderAll = (1u << 15) - 1u
 	};
 }
 
@@ -1617,7 +1682,7 @@ void HybridGI::ClearShaderCache()
 	for (auto* shader : { &prefilterDepthsCompute, &reflectionDepthCompute,
 		&prefilterRadianceCompute, &prefilterNormalCompute, &radianceDisoccCompute,
 		&giCompute, &blurCompute, &blurAtrousCompute, &upsampleCompute,
-		&worldCacheInjectCompute, &worldCacheSelectCompute, &worldCacheDecayCompute,
+		&worldCacheInjectCompute, &worldCacheSelectCompute, &worldCacheDecayCompute, &worldCacheMarkCompute, &worldCacheEvidenceCompute, &worldCacheEvidenceResolveCompute,
 		&hybridReflectionCompute, &hybridReflectionDenoiseCompute })
 		*shader = nullptr;
 	CompileComputeShaders(kShaderAll);
@@ -1648,7 +1713,10 @@ void HybridGI::RecompileChangedShaders()
 			mask |= kShaderGI;
 	}
 
-	if (mask == 0u) {
+	if (compiledCacheIntelligence != settings.EnableCacheIntelligence)
+        mask = kShaderAll;
+
+    if (mask == 0u) {
 		recompileFlag = false;
 		return;
 	}
@@ -1669,6 +1737,9 @@ void HybridGI::RecompileChangedShaders()
 	clearIf(kShaderWorldInject, worldCacheInjectCompute);
 	clearIf(kShaderWorldSelect, worldCacheSelectCompute);
 	clearIf(kShaderWorldDecay, worldCacheDecayCompute);
+    clearIf(kShaderWorldMark, worldCacheMarkCompute);
+    clearIf(kShaderWorldEvidence, worldCacheEvidenceCompute);
+    clearIf(kShaderWorldEvidence, worldCacheEvidenceResolveCompute);
 	clearIf(kShaderReflection, hybridReflectionCompute);
 	clearIf(kShaderReflectionDenoise, hybridReflectionDenoiseCompute);
 
@@ -1685,7 +1756,7 @@ void HybridGI::CompileComputeShaders(std::uint32_t a_shaderMask)
 		std::vector<std::pair<const char*, const char*>> defines;
 	};
 
-	std::array<ShaderCompileInfo, 14> shaderInfos{{
+	std::array<ShaderCompileInfo, 17> shaderInfos{{
 		{ kShaderPrefilterDepth, &prefilterDepthsCompute, "prefilterDepths.cs.hlsl", { { "LINEAR_FILTER", "" } } },
 		{ kShaderPrefilterDepth, &reflectionDepthCompute, "prefilterDepths.cs.hlsl", { { "MIN_FILTER", "" } } },
 		{ kShaderPrefilterRadiance, &prefilterRadianceCompute, "prefilterRadiance.cs.hlsl", {} },
@@ -1698,17 +1769,21 @@ void HybridGI::CompileComputeShaders(std::uint32_t a_shaderMask)
 		{ kShaderWorldInject, &worldCacheInjectCompute, "worldCacheInject.cs.hlsl", {} },
 		{ kShaderWorldSelect, &worldCacheSelectCompute, "worldCacheInject.cs.hlsl", { { "WORLD_CACHE_SELECT", "" } } },
 		{ kShaderWorldDecay, &worldCacheDecayCompute, "worldCacheDecay.cs.hlsl", {} },
+        { kShaderWorldMark, &worldCacheMarkCompute, "worldCacheMark.cs.hlsl", {} },
+        { kShaderWorldEvidence, &worldCacheEvidenceCompute, "worldCacheEvidence.cs.hlsl", {} },
+        { kShaderWorldEvidence, &worldCacheEvidenceResolveCompute, "worldCacheEvidence.cs.hlsl", {{ "RESOLVE_EVIDENCE", "" }} },
 		{ kShaderReflection, &hybridReflectionCompute, "hybridReflection.cs.hlsl", {} },
 		{ kShaderReflectionDenoise, &hybridReflectionDenoiseCompute, "hybridReflectionDenoise.cs.hlsl", {} },
 	}};
 
+	bool intelligenceCompileFailed = false;
 	for (auto& info : shaderInfos) {
-		if ((a_shaderMask & info.bit) == 0u)
+		if ((a_shaderMask & info.bit) == 0u || ((info.bit == kShaderWorldMark || info.bit == kShaderWorldEvidence) && !settings.EnableCacheIntelligence))
 			continue;
 		// CompileShader hashes the complete define list. This explicit source
 		// revision forces only HybridGI's standalone compute artifacts to rebuild
 		// without raising the core feature compatibility version in Module.ini.
-		info.defines.push_back({ "PIXL_HYBRIDGI_MODULE_REVISION", "\"4-4-6\"" });
+		info.defines.push_back({ "PIXL_HYBRIDGI_MODULE_REVISION", "\"4-4-7\"" });
 		if (settings.ResolutionMode == 1)
 			info.defines.push_back({ "HALF_RES", "" });
 		if (settings.ResolutionMode == 2)
@@ -1723,10 +1798,27 @@ void HybridGI::CompileComputeShaders(std::uint32_t a_shaderMask)
 		}
 		if (settings.EnableAdaptiveRayAllocation)
 			info.defines.push_back({ "ADAPTIVE_RAY_ALLOCATION", "" });
+        if (settings.EnableCacheIntelligence)
+            info.defines.push_back({ "CACHE_INTELLIGENCE", "" });
 
 		auto path = std::filesystem::path("Data\\PIXL-Shaders\\HybridGI") / info.filename;
 		if (auto rawPtr = reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(path.c_str(), info.defines, "cs_5_0")))
 			info.programPtr->attach(rawPtr);
+		else if (settings.EnableCacheIntelligence)
+			intelligenceCompileFailed = true;
+	}
+	if (intelligenceCompileFailed) {
+		// Never combine new producers with legacy consumers (or vice versa).
+		// Retry the complete legacy set once; normal core/cache guards handle
+		// any independent failure in that reference path.
+		logger::warn("[HybridGI] Cache intelligence shader compilation failed; restoring legacy shaders.");
+		settings.EnableCacheIntelligence = false;
+		queuedResetWorldHistory = true;
+		queuedResetTemporalHistory = true;
+		for (auto& info : shaderInfos)
+			*info.programPtr = nullptr;
+		CompileComputeShaders(kShaderAll);
+		return;
 	}
 
 	compiledShaderConfigInitialized = true;
@@ -1735,6 +1827,7 @@ void HybridGI::CompileComputeShaders(std::uint32_t a_shaderMask)
 	compiledGI = settings.EnableGI;
 	compiledHybridReflections = settings.EnableExperimentalSpecularGI;
 	compiledAdaptiveRayAllocation = settings.EnableAdaptiveRayAllocation;
+    compiledCacheIntelligence = settings.EnableCacheIntelligence;
 	recompileFlag = false;
 }
 
@@ -1754,7 +1847,7 @@ bool HybridGI::WorldCacheShadersOK() const
 {
 	const bool resources = texWorldCacheMetadata && texWorldCacheWinners && texWorldCacheSH0 && texWorldCacheSH1 &&
 		texWorldCacheSH2 && texWorldCacheNormal && texWorldCachePreviousMetadata && texWorldCachePreviousSH0 &&
-		texWorldCachePreviousSH1 && texWorldCachePreviousSH2 && texWorldCachePreviousNormal;
+		texWorldCachePreviousSH1 && texWorldCachePreviousSH2 && texWorldCachePreviousNormal && (!settings.EnableCacheIntelligence || (texWorldCacheIntelligence && texWorldCachePreviousIntelligence));
 	return resources && worldCacheInjectCompute.get() != nullptr && worldCacheSelectCompute.get() != nullptr && worldCacheDecayCompute.get() != nullptr;
 }
 
@@ -1938,13 +2031,13 @@ void HybridGI::UpdateSB()
 		data.WorldCacheInjectionStride = std::clamp(settings.WorldCacheInjectionStride, 1u, 8u);
 		data.WorldCacheDirectionalOcclusionEnabled = settings.EnableDirectionalOcclusion ? 1u : 0u;
 		data.WorldCacheDirectionalOcclusionStrength = std::clamp(settings.DirectionalOcclusionStrength, 0.0f, 1.0f);
-		data.DebugView = std::min(settings.DebugView, 13u);
+		data.DebugView = std::min(settings.DebugView, 19u);
 		data.DebugGain = std::clamp(settings.DebugGain, 0.1f, 16.0f);
 		data.WorldCacheTemporalResponse = std::clamp(settings.WorldCacheTemporalResponse, 0.02f, 1.0f);
 		auto& radiantGrid = globals::pipeline::radiantGrid;
 		const auto sharedLights = PIXL::Renderer::LightTransportWorld::Get().AcquireLocalLights();
 		const bool sharedLightsReady = globals::state && sharedLights.ValidFor(globals::state->frameCount);
-		const bool radiantGridFallbackReady = radiantGrid.loaded && radiantGrid.lights &&
+		const bool radiantGridFallbackReady = !settings.EnableCacheIntelligence && radiantGrid.loaded && radiantGrid.lights &&
 			radiantGrid.lightIndexList && radiantGrid.lightGrid;
 		const std::uint32_t emitterStart = sharedLightsReady ? sharedLights.emitterStart : radiantGrid.particleLightBufferStart;
 		const std::uint32_t emitterCount = sharedLightsReady ? sharedLights.emitterCount : radiantGrid.particleLightBufferCount;
@@ -1988,9 +2081,17 @@ void HybridGI::UpdateSB()
 
 void HybridGI::DrawHybridGI()
 {
+    if (!settings.EnableCacheIntelligence || !settings.EnableBudgetedCacheUpdates) {
+        cacheScheduleCB.reset(); texWorldUpdateTime.reset(); texPreviousWorldUpdateTime.reset(); cacheBudget.Reset();
+    }
 	auto context = globals::d3d::context;
 	if (!context)
 		return;
+	if (settings.EnableCacheIntelligence && (!texWorldCacheIntelligence || !texWorldCachePreviousIntelligence)) {
+		settings.EnableCacheIntelligence = false;
+		recompileFlag = true;
+		logger::warn("[HybridGI] Cache intelligence unavailable; retaining legacy world cache.");
+	}
 
 	auto imageSpaceManager = globals::game::imageSpaceManager;
 	if (imageSpaceManager) {
@@ -2018,6 +2119,7 @@ void HybridGI::DrawHybridGI()
 		lastEnableExperimentalSpecularGI = settings.EnableExperimentalSpecularGI;
 		lastEnableAdaptiveRayAllocation = settings.EnableAdaptiveRayAllocation;
 		lastEnableWorldCache = settings.EnableWorldCache;
+        lastEnableCacheIntelligence = settings.EnableCacheIntelligence;
 		lastResolutionMode = std::clamp(settings.ResolutionMode, 0, 2);
 		lastWorldCacheCellSizeNear = settings.WorldCacheCellSizeNear;
 		lastWorldCacheCellSizeFar = settings.WorldCacheCellSizeFar;
@@ -2029,6 +2131,7 @@ void HybridGI::DrawHybridGI()
 			lastEnableExperimentalSpecularGI != settings.EnableExperimentalSpecularGI ||
 			lastEnableAdaptiveRayAllocation != settings.EnableAdaptiveRayAllocation ||
 			lastEnableWorldCache != settings.EnableWorldCache ||
+            lastEnableCacheIntelligence != settings.EnableCacheIntelligence ||
 			lastResolutionMode != currentResolutionMode;
 		if (temporalSemanticChanged)
 			queuedResetTemporalHistory = true;
@@ -2037,7 +2140,7 @@ void HybridGI::DrawHybridGI()
 			lastWorldCacheCellSizeNear != settings.WorldCacheCellSizeNear ||
 			lastWorldCacheCellSizeFar != settings.WorldCacheCellSizeFar;
 		const bool cacheReenabled = !lastEnableWorldCache && settings.EnableWorldCache;
-		if (cacheStructureChanged || cacheReenabled)
+		if (cacheStructureChanged || cacheReenabled || lastEnableCacheIntelligence != settings.EnableCacheIntelligence)
 			queuedResetWorldHistory = true;
 		if (cacheStructureChanged)
 			queuedResetTemporalHistory = true;
@@ -2047,6 +2150,7 @@ void HybridGI::DrawHybridGI()
 		lastEnableExperimentalSpecularGI = settings.EnableExperimentalSpecularGI;
 		lastEnableAdaptiveRayAllocation = settings.EnableAdaptiveRayAllocation;
 		lastEnableWorldCache = settings.EnableWorldCache;
+        lastEnableCacheIntelligence = settings.EnableCacheIntelligence;
 		lastResolutionMode = currentResolutionMode;
 		lastWorldCacheCellSizeNear = settings.WorldCacheCellSizeNear;
 		lastWorldCacheCellSizeFar = settings.WorldCacheCellSizeFar;
@@ -2112,7 +2216,7 @@ void HybridGI::DrawHybridGI()
 		const UINT clearUint[4] = { 0, 0, 0, 0 };
 		const FLOAT clearFloat[4] = { 0.f, 0.f, 0.f, 0.f };
 		for (auto* texture : { texWorldCacheMetadata.get(), texWorldCacheNormal.get(),
-			texWorldCachePreviousMetadata.get(), texWorldCachePreviousNormal.get() }) {
+			texWorldCachePreviousMetadata.get(), texWorldCachePreviousNormal.get(), texWorldCacheIntelligence.get(), texWorldCachePreviousIntelligence.get() }) {
 			if (texture && texture->uav)
 				context->ClearUnorderedAccessViewUint(texture->uav.get(), clearUint);
 		}
@@ -2166,8 +2270,8 @@ void HybridGI::DrawHybridGI()
 	const bool diffuseBlurActive = settings.EnableBlur && BlurShadersOK();
 	const bool reflectionSpatialActive = reflectionActive && settings.EnableBlur && hybridReflectionDenoiseCompute.get() != nullptr;
 
-	std::array<ID3D11ShaderResourceView*, 17> srvs = { nullptr };
-	std::array<ID3D11UnorderedAccessView*, 7> uavs = { nullptr };
+	std::array<ID3D11ShaderResourceView*, 18> srvs = { nullptr };
+	std::array<ID3D11UnorderedAccessView*, 8> uavs = { nullptr };
 	std::array<ID3D11SamplerState*, 2> samplers = { pointClampSampler.get(), linearClampSampler.get() };
 	auto cb = ssgiCB->CB();
 
@@ -2299,16 +2403,100 @@ void HybridGI::DrawHybridGI()
 	{
 		const bool cacheInjectionIsolated = diagnosticCaptureActive || materialDebugMode != 0u;
 		if (worldCacheActive && !cacheInjectionIsolated) {
+            if (settings.EnableCacheIntelligence && worldCacheMarkCompute && emitterChangesCB) {
+                const auto changes = PIXL::Renderer::LightTransportWorld::Get().FinalizeEmitterChanges(globals::state->frameCount);
+                if (changes.published && changes.frame == globals::state->frameCount && (changes.count || changes.overflow)) {
+                    resetViews();
+                    EmitterChangesCB data{};
+                    data.count = changes.count;
+                    data.overflow = changes.overflow ? 1u : 0u;
+                    data.spheres = changes.spheres;
+                    emitterChangesCB->Update(data);
+                    auto* changeBuffer = emitterChangesCB->CB();
+                    winrt::com_ptr<ID3D11Buffer> previousChangeBuffer;
+                    context->CSGetConstantBuffers(2, 1, previousChangeBuffer.put());
+                    context->CSSetConstantBuffers(2, 1, &changeBuffer);
+                    srvs.at(0) = texWorldCacheMetadata->srv.get();
+                    uavs.at(0) = texWorldCacheIntelligence->uav.get();
+                    context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
+                    context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+                    context->CSSetShader(worldCacheMarkCompute.get(), nullptr, 0);
+                    globals::profiler->BeginPass("HybridGI::WorldCacheLightChanges");
+                    context->Dispatch(128, 8, 1);
+                    PIXL::Renderer::LightTransportWorld::Get().AcknowledgeEmitterChanges(changes.epoch, changes.sequence);
+                    globals::profiler->EndPass();
+                    resetViews();
+                    changeBuffer = previousChangeBuffer.get();
+                    context->CSSetConstantBuffers(2, 1, &changeBuffer);
+                }
+            }
 			if (worldCacheInjectionDue) {
+                CacheScheduleCB schedule{};
+                schedule.milliseconds = PIXL::HybridGIInternal::CacheMilliseconds(worldCacheClock, worldCacheClockAccumulator);
+                if (settings.EnableCacheIntelligence && settings.EnableBudgetedCacheUpdates) {
+                    try {
+                        if (!cacheScheduleCB) {
+                            auto makeTimeAtlas = [&]() {
+                                auto texture = eastl::make_unique<Texture2D>(texWorldCacheMetadata->desc, "HybridGI::Cache Update Time");
+                                D3D11_SHADER_RESOURCE_VIEW_DESC srv{};
+                                srv.Format = DXGI_FORMAT_R32_UINT; srv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; srv.Texture2D.MipLevels = 1;
+                                D3D11_UNORDERED_ACCESS_VIEW_DESC uav{};
+                                uav.Format = DXGI_FORMAT_R32_UINT; uav.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+                                texture->CreateSRV(srv); texture->CreateUAV(uav);
+                                const uint initial[4]{schedule.milliseconds, 0, 0, 0};
+                                context->ClearUnorderedAccessViewUint(texture->uav.get(), initial);
+                                return texture;
+                            };
+                            texWorldUpdateTime = makeTimeAtlas(); texPreviousWorldUpdateTime = makeTimeAtlas();
+                            cacheScheduleCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<CacheScheduleCB>(), "HybridGI::Cache Schedule");
+                        }
+                        float cost = 0.0f; uint validTimers = 0;
+                        for (const auto& timer : globals::profiler->GetResults()) {
+                            if ((timer.name == "HybridGI::WorldCacheSelect" || timer.name == "HybridGI::WorldCacheInject") && timer.valid) {
+                                cost += timer.avgMs; ++validTimers;
+                            }
+                        }
+                        schedule.fraction = cacheBudget.Update(cost, validTimers == 2);
+                        schedule.enabled = 1;
+                    } catch (const std::exception& error) {
+                        logger::warn("HybridGI cache scheduling unavailable: {}", error.what());
+                        settings.EnableBudgetedCacheUpdates = false;
+                    }
+                }
+                if (!schedule.enabled) {
+                    cacheScheduleCB.reset(); texWorldUpdateTime.reset(); texPreviousWorldUpdateTime.reset(); cacheBudget.Reset();
+                }
+                if (cacheScheduleCB) cacheScheduleCB->Update(schedule);
+                auto* scheduleBuffer = cacheScheduleCB ? cacheScheduleCB->CB() : nullptr;
+                winrt::com_ptr<ID3D11Buffer> previousScheduleBuffer;
+                if (settings.EnableCacheIntelligence) {
+                    context->CSGetConstantBuffers(4, 1, previousScheduleBuffer.put());
+                    context->CSSetConstantBuffers(4, 1, &scheduleBuffer);
+                }
 				TracyD3D11Zone(globals::state->tracyCtx, "HybridGI - PIXL World Cache Inject");
 				resetViews();
 				// Snapshot at the bounded radiance-update cadence. The shader reads this
 				// immutable copy while updating live UAVs, preserving race-free second bounce.
+                globals::profiler->BeginPass("HybridGI::WorldCacheSnapshot");
 				context->CopyResource(texWorldCachePreviousMetadata->resource.get(), texWorldCacheMetadata->resource.get());
 				context->CopyResource(texWorldCachePreviousSH0->resource.get(), texWorldCacheSH0->resource.get());
 				context->CopyResource(texWorldCachePreviousSH1->resource.get(), texWorldCacheSH1->resource.get());
 				context->CopyResource(texWorldCachePreviousSH2->resource.get(), texWorldCacheSH2->resource.get());
 				context->CopyResource(texWorldCachePreviousNormal->resource.get(), texWorldCacheNormal->resource.get());
+                if (settings.EnableCacheIntelligence && texWorldCacheIntelligence && texWorldCachePreviousIntelligence)
+                    context->CopyResource(texWorldCachePreviousIntelligence->resource.get(), texWorldCacheIntelligence->resource.get());
+                globals::profiler->EndPass();
+                srvs.at(12) = texWorldCachePreviousIntelligence ? texWorldCachePreviousIntelligence->srv.get() : nullptr;
+                if (schedule.enabled) context->CopyResource(texPreviousWorldUpdateTime->resource.get(), texWorldUpdateTime->resource.get());
+                srvs.at(14) = schedule.enabled ? texPreviousWorldUpdateTime->srv.get() : nullptr;
+                uavs.at(7) = schedule.enabled ? texWorldUpdateTime->uav.get() : nullptr;
+                const auto annotations = PIXL::Renderer::PixelAnnotations::Get().Acquire();
+                const bool annotationsReady = settings.EnableCacheIntelligence && globals::state &&
+                    annotations.opaqueValid && annotations.frame == globals::state->frameCount &&
+                    annotations.width == static_cast<std::uint32_t>(size.x) &&
+                    annotations.height == static_cast<std::uint32_t>(size.y);
+                srvs.at(13) = annotationsReady ? annotations.deferredMaterialMask.get() : nullptr;
+                uavs.at(6) = texWorldCacheIntelligence ? texWorldCacheIntelligence->uav.get() : nullptr;
 				srvs.at(0) = texWorkingDepth->srv.get();
 				srvs.at(1) = texNormal->srv.get();
 				srvs.at(2) = texRadiance->srv.get();
@@ -2353,7 +2541,32 @@ void HybridGI::DrawHybridGI()
 				globals::profiler->BeginPass("HybridGI::WorldCacheInject");
 				context->Dispatch((injectWidth + 7u) >> 3, (injectHeight + 7u) >> 3, 1);
 				globals::profiler->EndPass();
-				lastWorldCacheInjectionClock = worldCacheClock;
+                if (settings.EnableCacheIntelligence) {
+                    scheduleBuffer = previousScheduleBuffer.get();
+                    context->CSSetConstantBuffers(4, 1, &scheduleBuffer);
+                }
+				                if (settings.EnableCacheIntelligence && worldCacheEvidenceCompute && worldCacheEvidenceResolveCompute) {
+                    resetViews();
+                    const UINT emptyEvidence[4]{};
+                    context->ClearUnorderedAccessViewUint(texWorldCacheWinners->uav.get(), emptyEvidence);
+                    srvs.at(0) = Util::GetCurrentSceneDepthSRV(false);
+                    uavs.at(0) = texWorldCacheWinners->uav.get();
+                    context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
+                    context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+                    context->CSSetShader(worldCacheEvidenceCompute.get(), nullptr, 0);
+                    globals::profiler->BeginPass("HybridGI::WorldCacheEvidence");
+                    context->Dispatch((injectWidth + 7u) >> 3, (injectHeight + 7u) >> 3, 1);
+                    resetViews();
+                    uavs.at(0) = texWorldCacheWinners->uav.get();
+                    uavs.at(1) = texWorldCacheMetadata->uav.get();
+                    uavs.at(2) = texWorldCacheIntelligence->uav.get();
+                    context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+                    context->CSSetShader(worldCacheEvidenceResolveCompute.get(), nullptr, 0);
+                    context->Dispatch(128, 8, 1);
+                    globals::profiler->EndPass();
+                    resetViews();
+                }
+                lastWorldCacheInjectionClock = worldCacheClock;
 				worldCacheInjectionAccumulator = 0.0f;
 				worldCacheInjectionDue = false;
 			}
@@ -2365,8 +2578,9 @@ void HybridGI::DrawHybridGI()
 			if (worldCacheClock != lastWorldCacheDecayClock) {
 				resetViews();
 				uavs.at(0) = texWorldCacheMetadata->uav.get();
-				context->CSSetUnorderedAccessViews(0, 1, uavs.data(), nullptr);
-				context->CSSetShader(worldCacheDecayCompute.get(), nullptr, 0);
+				uavs.at(1) = texWorldCacheIntelligence ? texWorldCacheIntelligence->uav.get() : nullptr;
+                context->CSSetUnorderedAccessViews(0, 2, uavs.data(), nullptr);
+                context->CSSetShader(worldCacheDecayCompute.get(), nullptr, 0);
 				globals::profiler->BeginPass("HybridGI::WorldCacheDecay");
 				context->Dispatch(((32u * 32u) + 7u) >> 3, ((32u * 2u) + 7u) >> 3, 1);
 				globals::profiler->EndPass();
@@ -2391,6 +2605,7 @@ void HybridGI::DrawHybridGI()
 		srvs.at(11) = worldCacheActive ? texWorldCacheSH1->srv.get() : nullptr;
 		srvs.at(12) = worldCacheActive ? texWorldCacheSH2->srv.get() : nullptr;
 		srvs.at(13) = worldCacheActive ? texWorldCacheNormal->srv.get() : nullptr;
+        srvs.at(17) = worldCacheActive && texWorldCacheIntelligence ? texWorldCacheIntelligence->srv.get() : nullptr;
 			srvs.at(14) = REX::W32::AsReal(rts[REFLECTANCE].SRV);
 			srvs.at(15) = texBentVisibility[inputBentTexIdx]->srv.get();
 			srvs.at(16) = texAo[inputAoTexIdx]->srv.get();
@@ -2433,6 +2648,7 @@ void HybridGI::DrawHybridGI()
 		srvs.at(8) = worldCacheActive ? texWorldCacheSH1->srv.get() : nullptr;
 		srvs.at(9) = worldCacheActive ? texWorldCacheSH2->srv.get() : nullptr;
 		srvs.at(10) = worldCacheActive ? texWorldCacheNormal->srv.get() : nullptr;
+        srvs.at(13) = worldCacheActive && texWorldCacheIntelligence ? texWorldCacheIntelligence->srv.get() : nullptr;
 		srvs.at(11) = texReflectionDepth->srv.get();
 		srvs.at(12) = settings.EnableTemporalDenoiser ?
 			texAccumFrames[lastFrameAccumTexIdx]->srv.get() : nullptr;

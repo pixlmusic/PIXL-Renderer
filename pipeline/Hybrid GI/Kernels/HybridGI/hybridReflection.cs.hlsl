@@ -16,6 +16,7 @@ Texture2D<float4> srcWorldSH0 : register(t7);
 Texture2D<float4> srcWorldSH1 : register(t8);
 Texture2D<float4> srcWorldSH2 : register(t9);
 Texture2D<uint> srcWorldNormal : register(t10);
+Texture2D<uint> srcWorldIntelligence : register(t13);
 // CS-only t11; bound/unbound by HybridGI alongside t0..t16. No b1/b5/b6 ABI change.
 Texture2D<float2> srcReflectionHiZ : register(t11);
 // Geometry-validated GI history length, reduced locally when direct lighting
@@ -120,10 +121,11 @@ inline bool ReadReflectionVoxelCascade(float3 queryWS, float3 receiverWS, float3
 		valid = ageFade > 0.0f;
         if (valid) {
             uint surface = srcWorldNormal.Load(int3(coord, 0));
-			float confidence = UnpackWorldConfidence(surface) * ageFade;
+			float confidence = UnpackWorldConfidence(surface) * ageFade * WorldIntelligenceReliability(srcWorldIntelligence.Load(int3(coord, 0)));
 			occupancy = saturate(UnpackWorldOccupancy(surface) * confidence);
 
             float3 sourceNormal = UnpackWorldNormal(surface);
+    occupancy *= WorldReceiverPlaneConfidence(receiverWS, cell, sourceNormal, cellSize, confidence);
             float3 sourceToReceiver = SafeNormalizeReflection(receiverWS - queryWS, sourceNormal);
             float sourceFacingSigned = dot(sourceNormal, sourceToReceiver);
             float sourceGate = smoothstep(-0.05f, 0.15f, sourceFacingSigned);
@@ -156,8 +158,9 @@ inline bool ReadReflectionVoxelCascade(float3 queryWS, float3 receiverWS, float3
 							uint neighborSurface = srcWorldNormal.Load(int3(neighborCoord, 0));
 							float3 neighborNormal = UnpackWorldNormal(neighborSurface);
 							float neighborOccupancy = saturate(UnpackWorldOccupancy(neighborSurface) *
-								UnpackWorldConfidence(neighborSurface) * WorldCacheAgeFade(neighborAge, WorldCacheMaxAge));
-							if (neighborOccupancy > (1.0f / 255.0f) && dot(sourceNormal, neighborNormal) > 0.85f) {
+								UnpackWorldConfidence(neighborSurface) * WorldCacheAgeFade(neighborAge, WorldCacheMaxAge) * WorldIntelligenceReliability(srcWorldIntelligence.Load(int3(neighborCoord, 0))));
+							neighborOccupancy *= WorldReceiverPlaneConfidence(receiverWS, neighborCell, neighborNormal, cellSize, UnpackWorldConfidence(neighborSurface));
+                            if (neighborOccupancy > (1.0f / 255.0f) && dot(sourceNormal, neighborNormal) > 0.85f) {
 								float3 neighborToReceiver = SafeNormalizeReflection(receiverWS - queryWS, neighborNormal);
 								float neighborGate = lerp(1.0f,
 									smoothstep(-0.05f, 0.15f, dot(neighborNormal, neighborToReceiver)),
@@ -199,7 +202,8 @@ inline bool ReadReflectionVoxel(float3 queryWS, float3 receiverWS, float3 camera
     } else {
         bool farValid = ReadReflectionVoxelCascade(queryWS, receiverWS, cameraWS, 1u, farRadiance, farOccupancy);
         if (nearValid && farValid) {
-            radiance = lerp(nearRadiance, farRadiance, blend);
+            radiance = lerp(nearRadiance, farRadiance,
+                WorldCascadeRadianceBlend(blend, nearOccupancy, farOccupancy));
             occupancy = lerp(nearOccupancy, farOccupancy, blend);
             valid = occupancy > (1.0f / 255.0f);
         } else if (nearValid) {

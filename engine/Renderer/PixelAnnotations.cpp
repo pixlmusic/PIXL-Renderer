@@ -65,6 +65,14 @@ namespace PIXL::Renderer
 		views.frame = frame;
 	}
 
+    void PixelAnnotations::PublishOpaque(ID3D11ShaderResourceView* material, std::uint32_t width, std::uint32_t height)
+    {
+        std::scoped_lock lock(mutex);
+        views.deferredMaterialMask.copy_from(material);
+        views.width = width;
+        views.height = height;
+        views.opaqueValid = material && width && height;
+    }
 	void PixelAnnotations::PublishBase(ID3D11ShaderResourceView* material, ID3D11ShaderResourceView* normalWater,
 		ID3D11ShaderResourceView* taa, std::uint32_t width, std::uint32_t height)
 	{
@@ -75,6 +83,7 @@ namespace PIXL::Renderer
 		views.width = width;
 		views.height = height;
 		views.valid = material && normalWater && taa && width && height;
+        views.opaqueValid = material && width && height;
 	}
 
 	void PixelAnnotations::PublishReconstruction(ID3D11ShaderResourceView* reactive,

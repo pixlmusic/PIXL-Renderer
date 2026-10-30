@@ -53,7 +53,7 @@ public:
 		float startDistance = 0.0f;
 		float fogHeight = 22000.0f;
 		float fogHeightFalloff = 1.283f;
-		float fogDensity = 0.051f;
+		float fogDensity = 0.049f;
 		float directionalInscatteringMultiplier = 1.17f;
 		float directionalInscatteringAnisotropy = 0.158f;
 		float4 inscatteringTint = { 1.0f, 1.0f, 1.0f, 0.41568628f };
@@ -66,11 +66,11 @@ public:
 		uint volumetricFogEnabled = 1;
 		uint volumetricGridPixelSize = 24;
 		uint volumetricGridSizeZ = 64;
-		float volumetricFogDistance = 24423.0f;
-		float volumetricFogStartDistance = 0.0f;
-		float volumetricFogNearFadeInDistance = 0.0f;
-		float volumetricFogExtinctionScale = 1.06f;
-		float4 volumetricFogAlbedo = { 0.9529412f, 0.968627453f, 1.0f, 0.8509804f };
+		float volumetricFogDistance = 48535.0f;
+		float volumetricFogStartDistance = 2224.0f;
+		float volumetricFogNearFadeInDistance = 4951.0f;
+		float volumetricFogExtinctionScale = 1.31f;
+		float4 volumetricFogAlbedo = { 0.9529412f, 0.968627453f, 1.0f, 0.549019635f };
 		float4 volumetricFogEmissive = { 1.0f, 1.0f, 1.0f, 0.0f };
 		float volumetricDirectionalScatteringIntensity = 1.52f;
 		float volumetricShadowBias = 0.004f;
@@ -110,7 +110,7 @@ public:
 		// Automatic mode preserves the authored sliders as a look/quality baseline,
 		// then adapts visibility, phase and range from Skyrim's live weather.
 		uint automaticWeatherFog = 1;
-		float automaticWeatherStrength = 0.49f;
+		float automaticWeatherStrength = 0.5f;
 		float minimumAtmosphereTransmittance = 0.07f;
 		float weatherMieStrength = 1.0f;
 	} settings;

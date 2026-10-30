@@ -620,6 +620,7 @@ void TemporalCS(uint3 dispatchThreadID : SV_DispatchThreadID)
 				}
 			}
 		}
+		float historyOpacity = 1.0f - history.a;
 		history = clamp(history, localMin - 0.035f, localMax + 0.035f);
 		// Compare the fetched history depth with this world feature's expected
 		// radial distance from the previous camera. Comparing against currentDepth
@@ -638,6 +639,16 @@ void TemporalCS(uint3 dispatchThreadID : SV_DispatchThreadID)
 		float rejection = saturate(depthError / max(min(Temporal.w, 0.045f), 0.001f) + weatherMotion);
 		rejection = max(rejection, cameraMotionRejection);
 		float historyWeight = min(saturate(Temporal.x * (1.0f - rejection)), 0.84f);
+		// Cloud coverage is stored as transmittance in alpha. Reject history whose
+		// cloud support no longer exists in the current 3x3 footprint. The loose
+		// radiance clamp below intentionally tolerates lighting noise, but on a dark
+		// sky even that tolerance can leave a visible, cloud-shaped alpha stencil.
+		float currentMinOpacity = 1.0f - localMax.a;
+		float currentMaxOpacity = 1.0f - localMin.a;
+		const float coverageTolerance = 0.08f;
+		if (historyOpacity < currentMinOpacity - coverageTolerance ||
+			historyOpacity > currentMaxOpacity + coverageTolerance)
+			historyWeight = 0.0f;
 		// Thin foliage and object edges can cross a low-resolution cloud pixel
 		// without changing its representative cloud depth. Shed cloud history in
 		// mixed foreground/sky pixels so it cannot trail the moving silhouette.

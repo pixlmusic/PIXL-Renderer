@@ -14,6 +14,162 @@
 #define WORLD_CACHE_INVALID_HASH 0u
 #define WORLD_CACHE_EPSILON 1e-5f
 
+// Companion word: logarithmic relative variance, unresolved light change,
+// material class, explicit observation state. Hash/age remain authoritative.
+#define WORLD_STATE_UNOBSERVED 0u
+#define WORLD_STATE_EMPTY 1u
+#define WORLD_STATE_DARK 2u
+#define WORLD_STATE_UNCERTAIN 3u
+#define WORLD_STATE_RELIABLE 4u
+#define WORLD_STATE_STALE_LIGHT 5u
+#define WORLD_STATE_OCCLUDER 6u
+#define WORLD_STATE_EMPTY_PENDING 7u
+#define WORLD_STATE_OCCLUDER_PENDING 8u
+
+// These classes describe proven opaque MRT signals, not engine material IDs.
+// Emissive/particle class IDs are not encoded by the current deferred mask.
+uint WorldObservedMaterial(float2 tissueAndDeformation)
+{
+    if (tissueAndDeformation.x > 0.0f) return 2u;
+    return tissueAndDeformation.y > (1.0f / 255.0f) ? 1u : 0u;
+}
+
+float WorldMaterialResponse(uint material)
+{
+    return material == 1u ? 0.28f : material == 2u ? 0.18f : 0.0f;
+}
+
+uint WorldCacheRayBudget(uint maximum, float demand, float minimumFraction, uint tileKey, uint clock)
+{
+    maximum = clamp(maximum, 1u, 8u);
+    // Keep periodic full-budget exploration even in a converged tile. Selection
+    // rotates at the cache clock, independent of presentation/frame generation.
+    if (((tileKey + clock) & 3u) == 0u) return maximum;
+    float work = lerp(clamp(minimumFraction, 0.5f, 1.0f), 1.0f, smoothstep(0.10f, 0.75f, demand));
+    return clamp((uint)ceil(float(maximum) * work), 1u, maximum);
+}
+
+uint WorldCacheRayIndex(uint sample, uint selected, uint maximum)
+{
+    // Stratify across the fixed reference ray set rather than retaining only
+    // its near-normal prefix. Retained rays keep their original directions.
+    return min(((2u * sample + 1u) * maximum) / (2u * max(selected, 1u)), maximum - 1u);
+}
+
+bool WorldCacheScheduleCell(uint hash, uint age, float confidence, uint intelligence, uint clock, float fraction)
+{
+    // Unknown geometry and changed lighting always take priority. The ageing
+    // guard prevents any visible stable cell waiting more than two clock ticks.
+    uint state = intelligence >> 28;
+    if ((asuint(fraction) & 0x7f800000u) == 0x7f800000u || fraction <= 0.0f || fraction >= 1.0f || age >= 2u || confidence < 0.8f ||
+        state < WORLD_STATE_DARK || state > WORLD_STATE_RELIABLE ||
+        state == WORLD_STATE_UNCERTAIN ||
+        ((intelligence >> 16) & 255u) != 0u || (intelligence & 65535u) > 1319u ||
+        ((intelligence >> 24) & 15u) != 0u)
+        return true;
+    // Stable world-space identity, independent of the camera and wrapped atlas
+    // slot. Rotate four strata at each fixed tick; minimum budget is four.
+    uint quota = clamp((uint)ceil(saturate(fraction) * 16.0f), 4u, 16u);
+    return ((hash + clock * 4u) & 15u) < quota;
+}
+
+bool WorldCacheExpired(uint metadata, uint intelligence, uint clock, uint maxAge)
+{
+    if ((metadata & 0x00ffffffu) == WORLD_CACHE_INVALID_HASH) return false;
+    uint lifetime = maxAge;
+#ifdef CACHE_INTELLIGENCE
+    uint state = intelligence >> 28;
+    if (state == WORLD_STATE_EMPTY || state == WORLD_STATE_EMPTY_PENDING ||
+        state == WORLD_STATE_OCCLUDER || state == WORLD_STATE_OCCLUDER_PENDING)
+        lifetime = min(lifetime, 4u);
+#endif
+    return (((clock & 255u) - (metadata >> 24)) & 255u) > lifetime;
+}
+
+// UINT_MAX means preserve the existing record. Two distinct ray witnesses
+// and a separate fixed clock tick are required to promote either evidence type.
+uint WorldResolveEvidenceState(uint bits, uint oldState, bool matching, uint age)
+{
+    if (matching && oldState >= WORLD_STATE_DARK && oldState <= WORLD_STATE_STALE_LIGHT)
+        return 0xffffffffu;
+    bool hit = (bits & 12u) == 12u;
+    bool empty = (bits & 3u) == 3u && (bits & 12u) == 0u;
+    if (!hit && !empty) return 0xffffffffu;
+    if (matching && age == 0u) return 0xffffffffu;
+    uint pending = hit ? WORLD_STATE_OCCLUDER_PENDING : WORLD_STATE_EMPTY_PENDING;
+    uint confirmed = hit ? WORLD_STATE_OCCLUDER : WORLD_STATE_EMPTY;
+    return matching && age <= 4u && (oldState == pending || oldState == confirmed) ? confirmed : pending;
+}
+
+uint PackWorldIntelligence(float variance, float lightChange, uint material, uint state)
+{
+    float boundedVariance = ((asuint(variance) & 0x7f800000u) != 0x7f800000u) ? clamp(variance, 0.0f, 65535.0f) : 65535.0f;
+    uint v = (uint)round(log2(1.0f + boundedVariance) * (65535.0f / 16.0f));
+    uint change = (uint)round(saturate(lightChange) * 255.0f);
+    return v | (change << 16) | ((material & 15u) << 24) | ((state & 15u) << 28);
+}
+
+float WorldIntelligenceVariance(uint packed)
+{
+    return exp2(float(packed & 65535u) * (16.0f / 65535.0f)) - 1.0f;
+}
+
+float WorldIntelligenceReliability(uint packed)
+{
+#ifndef CACHE_INTELLIGENCE
+    return 1.0f;
+#else
+    uint state = packed >> 28;
+    if (state < WORLD_STATE_DARK || state > WORLD_STATE_STALE_LIGHT)
+        return 0.0f;
+    float change = float((packed >> 16) & 255u) / 255.0f;
+    return rcp(1.0f + WorldIntelligenceVariance(packed)) * (1.0f - change);
+#endif
+}
+
+// A cell stores a normal but not the representative point. The projected
+// half-box support bounds every possible point on that cell's surface. Only
+// receivers beyond that uncertainty band provide evidence of a wrong side.
+float WorldReceiverPlaneConfidence(float3 receiverWS, int3 sourceCell,
+    float3 sourceNormal, float cellSize, float reliability)
+{
+#ifndef CACHE_INTELLIGENCE
+    return 1.0f;
+#else
+    float3 center = (float3(sourceCell) + 0.5f) * cellSize;
+    float support = max(0.5f * cellSize * dot(abs(sourceNormal), 1.0f.xxx), 1e-3f);
+    float separation = dot(receiverWS - center, sourceNormal);
+    float compatible = smoothstep(-2.0f * support, -support, separation);
+    return lerp(1.0f, compatible, saturate(reliability));
+#endif
+}
+
+// Occupancy includes age, variance and plane compatibility. Normalize only
+// the radiance mixture; never apply confidence to stored energy itself.
+float WorldCascadeRadianceBlend(float blend, float nearConfidence, float farConfidence)
+{
+#ifdef CACHE_INTELLIGENCE
+    float nearWeight = (1.0f - blend) * nearConfidence;
+    float farWeight = blend * farConfidence;
+    return farWeight / max(nearWeight + farWeight, 1e-6f);
+#else
+    return blend;
+#endif
+}
+
+float WorldCacheBlendDistance(float3 diff, float nearExtent)
+{
+#ifdef CACHE_INTELLIGENCE
+    float radialDistance = length(diff * float3(1.0f, 1.0f, 0.75f));
+    float windowDistance = max(abs(diff.x), max(abs(diff.y), abs(diff.z)));
+    float windowBlend = smoothstep(0.90f, 1.06f, windowDistance / max(nearExtent, 1.0f));
+    return max(windowBlend, smoothstep(0.62f, 1.08f, radialDistance / max(nearExtent, 1.0f)));
+#else
+    float radialDistance = length(diff);
+    return smoothstep(0.62f, 1.08f, radialDistance / max(nearExtent, 1.0f));
+#endif
+}
+
 uint WorldCacheHash(int3 cell, uint cascade)
 {
     uint3 v = (uint3)cell;
@@ -179,11 +335,9 @@ float WorldCacheCascadeBlend(float3 positionWS, float3 cameraWS)
 {
     float nearExtent = WorldCacheCellSizeNear * (WORLD_CACHE_DIM * 0.47f);
     float3 diff = positionWS - cameraWS;
-    // Chebyshev distance made the near/far handoff a cube: axis-aligned
-    // corners could change cache authority together and read as a moving square
-    // in reflections. A radial metric makes the transition isotropic.
-    float radialDistance = length(diff);
-    return smoothstep(0.62f, 1.08f, radialDistance / max(nearExtent, 1.0f));
+    // Skyrim's vertical axis is Z. Retain fine cells longer above/below the
+    // camera, while the cube-window guard hands off before addressing aliases.
+    return WorldCacheBlendDistance(diff, nearExtent);
 }
 
 uint WorldCacheCascade(float3 positionWS, float3 cameraWS)
