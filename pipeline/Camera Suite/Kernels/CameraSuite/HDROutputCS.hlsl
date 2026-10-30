@@ -249,7 +249,9 @@ float PixlDofLinearDepth(float2 uv, out bool isSky)
 		isSky = false;
 		return 0.0f;
 	}
-	isSky = rawDepth >= 0.999998f;
+	// Only the exact depth clear value is sky; distant LOD geometry must keep
+	// its real optical depth so the final DOF blend cannot sharpen the skyline.
+	isSky = rawDepth >= 1.0f;
 	float linearDepth = isSky
 		? dofFocusDistance + dofFocusRange * (dofAutoFocus >= 2.0f ? 2.0f : 8.0f)
 		: max(SharedData::GetScreenDepth(rawDepth), 0.0f);
@@ -411,7 +413,7 @@ float2 PixlCameraMotionVector(float2 uv, uint2 dim, out float centerDepth)
 {
 	centerDepth = 0.0f;
 	float rawDepth = SharedData::GetDepth(saturate(uv));
-	if (rawDepth <= 1.0e-5f || rawDepth >= 0.999998f)
+	if (rawDepth <= 1.0e-5f || rawDepth >= 1.0f)
 		return 0.0f.xx;
 
 	float4 currentCS = float4(uv * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), rawDepth, 1.0f);
@@ -472,7 +474,7 @@ float3 PixlApplyCameraMotionBlur(float2 uv, uint2 dim, float3 sharpScene)
 		float t = ((float)i + 0.5f) / (float)sampleCount - 0.5f;
 		float2 sampleUV = saturate(uv - span * t);
 		float rawSampleDepth = SharedData::GetDepth(sampleUV);
-		if (rawSampleDepth <= 1.0e-5f || rawSampleDepth >= 0.999998f)
+		if (rawSampleDepth <= 1.0e-5f || rawSampleDepth >= 1.0f)
 			continue;
 		float sampleDepth = max(SharedData::GetScreenDepth(rawSampleDepth), 0.0f);
 		float relativeSeparation = abs(sampleDepth - centerDepth) / max(min(sampleDepth, centerDepth), 128.0f);

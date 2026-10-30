@@ -30,6 +30,7 @@ public:
 		float2 StartSplitDistances;
 	};
 	STATIC_ASSERT_ALIGNAS_16(DirectionalShadowLightData);
+	static_assert(sizeof(DirectionalShadowLightData) == 272, "Directional shadow t98 buffer must match GPU layout");
 
 	/** @brief Creates render targets, samplers, and the directional shadow structured buffer. */
 	void SetupResources();
@@ -126,6 +127,12 @@ public:
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
+		struct Main_RenderPlayerView
+		{
+			static void thunk(void* a1, bool a2, bool a3);
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
 		struct Main_RenderWorld_Start
 		{
 			static void thunk(RE::BSBatchRenderer* This, uint32_t StartRange, uint32_t EndRanges, uint32_t RenderFlags, int GeometryGroup);
@@ -161,13 +168,29 @@ public:
 		{
 			stl::write_vfunc<0x35, BSCubeMapCamera_RenderCubemap>(RE::VTABLE_BSCubeMapCamera[0]);
 
-			stl::write_thunk_call<Main_RenderShadowMaps>(REL::RelocationID(35560, 36559).address() + REL::Relocate(0x2EC, 0x2EC));
+			// These offsets are not valid call boundaries in Steam 1.7.104's
+			// Main::RenderPlayerView. In particular, +0x2EC lands inside an
+			// instruction and overwrites bytes executed at +0x2F0 during world
+			// startup. Leave the engine path intact until verified 1.7.104 sites
+			// are available.
+			const bool hasUnverified117104Sites =
+				REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104;
+			if (hasUnverified117104Sites) {
+				logger::warn("[Deferred] Skipping unverified Main::RenderPlayerView call-site hooks on Skyrim 1.7.104.");
+				// Own the full player-view entry so reconstruction can configure the
+				// viewport before any depth, shadow, or world draw in this runtime.
+				stl::detour_thunk<Main_RenderPlayerView>(REL::RelocationID(35560, 36559));
+				// FrameAnnotations normally owns this safe whole-function detour.
+				// Deferred takes it on 1.7.104 to restore the in-world frame bracket.
+				stl::detour_thunk<Main_RenderWorld>(REL::RelocationID(100424, 107142));
+			} else {
+				stl::write_thunk_call<Main_RenderShadowMaps>(REL::RelocationID(35560, 36559).address() + REL::Relocate(0x2EC, 0x2EC));
+				stl::write_thunk_call<Main_RenderWorld>(REL::RelocationID(35560, 36559).address() + REL::Relocate(0x831, 0x841));
+				stl::write_thunk_call<Main_RenderFirstPersonView>(REL::RelocationID(35560, 36559).address() + REL::Relocate(0x944, 0x954));
+			}
 
-			stl::write_thunk_call<Main_RenderWorld>(REL::RelocationID(35560, 36559).address() + REL::Relocate(0x831, 0x841));
 			stl::write_thunk_call<Main_RenderWorld_Start>(REL::RelocationID(99938, 106583).address() + REL::Relocate(0x8E, 0x84));
 			stl::write_thunk_call<Main_RenderWorld_BlendedDecals>(REL::RelocationID(99938, 106583).address() + REL::Relocate(0x319, 0x308));
-
-			stl::write_thunk_call<Main_RenderFirstPersonView>(REL::RelocationID(35560, 36559).address() + REL::Relocate(0x944, 0x954));
 
 			stl::detour_thunk<Renderer_ResetState>(REL::RelocationID(75570, 77371));
 

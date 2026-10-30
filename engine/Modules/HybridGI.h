@@ -129,7 +129,7 @@ public:
 		// PIXL hybrid world-radiance cache. This augments, rather than replaces,
 		// the horizon-bitmask screen-space result.
 		bool EnableWorldCache = true;
-		uint WorldCacheMaxAge = 72;
+		uint WorldCacheMaxAge = 48;
 		uint WorldCacheSampleCount = 8;
 		float WorldCacheStrength = static_cast<float>(PIXL::Metadata::Settings::HybridWorldCacheStrength.defaultValue);
 		float WorldCacheCellSizeNear = 96.f;

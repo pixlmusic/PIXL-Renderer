@@ -22,7 +22,7 @@ param(
 
 $ErrorActionPreference='Stop'
 $repo=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$productVersion='1.0.8'
+$productVersion='1.0.9'
 $localConfig=Join-Path $repo 'build\PIXLDevTools.local.json'
 $script:step=0
 $script:coreStage=''

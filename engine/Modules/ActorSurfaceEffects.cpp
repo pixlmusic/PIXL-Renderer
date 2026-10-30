@@ -11,15 +11,24 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <cstddef>
+#include <cstdint>
+#include <utility>
+#include <vector>
 #include <mutex>
 #include <unordered_map>
 
 namespace
 {
 	constexpr std::uint32_t kActorSurfaceMagic = 0x46555341u;    // "ASUF"
-	constexpr std::uint32_t kActorSurfaceVersion = 0x00010001u;  // bone-anchored events
-	constexpr std::size_t kMaximumGPUEvents = 12;
+	constexpr std::uint32_t kActorSurfaceVersion = 0x00010001u;  // unchanged shader ABI; bone-local payload
+	constexpr std::size_t kMaximumGPUEvents = ActorSurfaceEffects::kShaderEventCapacity;
+	static_assert(kMaximumGPUEvents == 12u, "Update CharacterRuntime.hlsli before changing the event capacity");
 	constexpr float kEventEpsilon = 1.0e-4f;
+	constexpr float kMinimumBoneScale = 1.0e-3f;
+	constexpr float kMaximumBoneScale = 100.0f;
+	constexpr float kMaximumFootprintWorldRadius = 72.0f;
+	constexpr float kMaximumFootprintWorldHeight = 96.0f;
 
 	float Saturate(float a_value)
 	{
@@ -60,24 +69,9 @@ namespace
 		return a_actor->GetPosition();
 	}
 
-	RE::NiPoint3 ToActorLocal(RE::Actor* a_actor, const RE::NiPoint3& a_world)
-	{
-		const RE::NiPoint3 origin = ResolveActorRenderOrigin(a_actor);
-		const float yaw = a_actor->GetAngleZ();
-		const float cosine = std::cos(yaw);
-		const float sine = std::sin(yaw);
-		const float dx = a_world.x - origin.x;
-		const float dy = a_world.y - origin.y;
-		return {
-			cosine * dx + sine * dy,
-			-sine * dx + cosine * dy,
-			a_world.z - origin.z
-		};
-	}
-
 	std::uint32_t QualityEventLimit(std::uint32_t a_quality)
 	{
-		constexpr std::array<std::uint32_t, 4> limits{ 4u, 6u, 12u, 24u };
+		constexpr std::array<std::uint32_t, 4> limits{ 4u, 6u, 12u, static_cast<std::uint32_t>(kMaximumGPUEvents) };
 		return limits[std::min<std::uint32_t>(a_quality, 3u)];
 	}
 
@@ -169,9 +163,9 @@ namespace
 	{
 		RE::NiPoint3 localCenter{};
 		RE::BSFixedString anchorBone;
-		RE::NiMatrix3 referenceRotation;
-		RE::NiPoint3 referenceOrigin{};
-		float referenceScale = 1.0f;
+		// localCenter and radii are captured in the named bone's *local* space.
+		// The same named bone is looked up from the current skeleton at draw time.
+		// No bind-pose, actor yaw, or world-space reprojection is accumulated.
 		float horizontalRadius = 1.0f;
 		float verticalRadius = 1.0f;
 		float snowFresh = 0.0f;
@@ -197,13 +191,38 @@ namespace
 		std::vector<LocalEffectLobe> lobes{};
 		std::unique_ptr<ConstantBuffer> constantBuffer{};
 		float lastInteractionSeconds = 0.0f;
-		float lastVisibleSeconds = 0.0f;
 		bool prepared = false;
-		CharacterRuntimeGPUData preparedData{};
 	};
+
+	bool IsUsableBone(const RE::NiAVObject* a_bone)
+	{
+		if (!a_bone || a_bone->name.empty() || !IsFinite(a_bone->world.translate) ||
+			!std::isfinite(a_bone->world.scale) || a_bone->world.scale < kMinimumBoneScale ||
+			a_bone->world.scale > kMaximumBoneScale)
+			return false;
+		for (const auto& row : a_bone->world.rotate.entry)
+			for (const float component : row)
+				if (!std::isfinite(component))
+					return false;
+		return true;
+	}
+
+	// A fixed bone-local frame is invariant under actor locomotion, full skeleton
+	// rotation and animation, including pitch/roll that actor GetAngleZ omits.
+	bool WorldToBoneLocal(const RE::NiAVObject* a_bone, const RE::NiPoint3& a_world,
+		RE::NiPoint3& a_local)
+	{
+		if (!IsUsableBone(a_bone) || !IsFinite(a_world))
+			return false;
+		const auto inverse = a_bone->world.rotate.Transpose() * (1.0f / a_bone->world.scale);
+		a_local = inverse * (a_world - a_bone->world.translate);
+		return IsFinite(a_local);
+	}
 
 	RE::NiAVObject* FindContactBone(RE::Actor* actor, const RE::NiPoint3& position, float reach)
 	{
+		if (!actor)
+			return nullptr;
 		static const std::array<RE::BSFixedString, 13> names{
 			"NPC L Foot [Lft ]", "NPC R Foot [Rft ]", "NPC L Calf [LClf]", "NPC R Calf [RClf]",
 			"NPC L Thigh [LThg]", "NPC R Thigh [RThg]", "NPC Pelvis [Pelv]",
@@ -213,27 +232,119 @@ namespace
 		float best = reach * reach;
 		for (const auto& name : names) {
 			auto* bone = actor->GetNodeByName(name);
-			if (!bone || !IsFinite(bone->world.translate) || !std::isfinite(bone->world.scale) || bone->world.scale <= 0.001f)
+			if (!IsUsableBone(bone))
 				continue;
 			const float distance = position.GetSquaredDistance(bone->world.translate);
-			if (distance < best) { best = distance; nearest = bone; }
+			if (std::isfinite(distance) && distance < best) {
+				best = distance;
+				nearest = bone;
+			}
 		}
-		return nearest;
+		if (nearest)
+			return nearest;
+
+		// For creatures/custom skeletons, prefer a resolvable root over an
+		// unanchored actor-yaw mask, which would slide during locomotion.
+		static const RE::BSFixedString npcRoot("NPC Root [Root]");
+		auto* root = actor->GetNodeByName(npcRoot);
+		if (!root)
+			root = actor->Get3D();
+		if (IsUsableBone(root) && actor->GetNodeByName(root->name) == root)
+			return root;
+		return nullptr;
 	}
 
-	bool DepositFrame(RE::Actor* actor, const LocalEffectLobe& lobe, RE::NiMatrix3& rotation, RE::NiPoint3& origin)
+	// Three rows of an affine camera-relative world -> live bone-local transform.
+	// This is emitted into the existing 3xfloat4 HLSL layout with zero ABI changes.
+	bool BuildBoneFrame(RE::Actor* a_actor, const LocalEffectLobe& a_lobe,
+		const float4& a_cameraAdjust, std::array<float4, 3>& a_rows)
 	{
-		if (lobe.anchorBone.empty())
+		if (a_lobe.anchorBone.empty())
 			return false;
-		auto* bone = actor->GetNodeByName(lobe.anchorBone);
-		if (!bone || !IsFinite(bone->world.translate) || !std::isfinite(bone->world.scale) || bone->world.scale <= 0.001f)
+		auto* bone = a_actor->GetNodeByName(a_lobe.anchorBone);
+		if (!IsUsableBone(bone))
 			return false;
-		rotation = (lobe.referenceRotation * bone->world.rotate.Transpose()) * (lobe.referenceScale / bone->world.scale);
-		for (const auto& row : rotation.entry)
-			for (const float value : row)
-				if (!std::isfinite(value))
-					return false;
-		origin = bone->world.translate;
+		const auto inverse = bone->world.rotate.Transpose() * (1.0f / bone->world.scale);
+		const RE::NiPoint3 relativeOrigin{
+			bone->world.translate.x - a_cameraAdjust.x,
+			bone->world.translate.y - a_cameraAdjust.y,
+			bone->world.translate.z - a_cameraAdjust.z
+		};
+		const auto translation = inverse * relativeOrigin;
+		if (!IsFinite(translation))
+			return false;
+		for (std::uint32_t row = 0; row < 3u; ++row) {
+			const auto* v = inverse.entry[row];
+			const float offset = row == 0u ? translation.x : row == 1u ? translation.y : translation.z;
+			a_rows[row] = { v[0], v[1], v[2], -offset };
+		}
+		return true;
+	}
+
+	// Called lazily on the first Lighting draw for each actor. Capturing the live
+	// skeleton here avoids the prepass-vs-animation delay that made footprints lag
+	// a stride behind the visible skinned geometry. Remaining draws reuse this CB.
+	bool PrepareActorForDraw(RE::Actor* a_actor, ActorEffectState& a_state,
+		const ActorSurfaceEffects::Settings& a_settings, const float4& a_cameraAdjust)
+	{
+		if (!a_actor || !a_state.constantBuffer || a_state.lobes.empty())
+			return false;
+
+		CharacterRuntimeGPUData data{};
+		DialogueFocus::GetSingleton().BuildGPUDataForActor(a_actor, data.Dialogue);
+		data.Magic = kActorSurfaceMagic;
+		data.Version = kActorSurfaceVersion;
+		data.Flags = (a_settings.EnableSnow ? 1u : 0u) | (a_settings.EnableMud ? 2u : 0u);
+
+		const RE::NiPoint3 rawActorPosition = ResolveActorRenderOrigin(a_actor);
+		const RE::NiPoint3 actorPosition = IsFinite(rawActorPosition) ? rawActorPosition : RE::NiPoint3{};
+		float actorHeight = a_actor->GetHeight();
+		if (!std::isfinite(actorHeight) || actorHeight < 24.0f || actorHeight > 420.0f)
+			actorHeight = 128.0f;
+		const float rawYaw = a_actor->GetAngleZ();
+		const float yaw = std::isfinite(rawYaw) ? rawYaw : 0.0f;
+		const float rawScale = a_actor->GetScale();
+		data.ActorOriginScale = {
+			actorPosition.x - a_cameraAdjust.x,
+			actorPosition.y - a_cameraAdjust.y,
+			actorPosition.z - a_cameraAdjust.z,
+			std::isfinite(rawScale) ? std::clamp(rawScale, 0.1f, 10.0f) : 1.0f
+		};
+		data.ActorRotationHeight = { std::cos(yaw), std::sin(yaw), actorHeight, 0.0f };
+		data.Tuning = {
+			std::clamp(a_settings.AccumulationStrength, 0.0f, 2.0f),
+			std::clamp(a_settings.MaskSoftness, 0.04f, 0.55f),
+			std::clamp(a_settings.EdgeBreakup, 0.0f, 0.40f),
+			static_cast<float>(a_settings.Debug)
+		};
+		data.SnowAppearance = { 0.72f, 0.82f, 0.93f, 0.82f };
+
+		const auto maxEvents = std::min<std::size_t>(
+			{ a_state.lobes.size(), QualityEventLimit(a_settings.EffectQuality), kMaximumGPUEvents });
+		for (std::size_t index = 0; index < maxEvents; ++index) {
+			const auto& source = a_state.lobes[index];
+			std::array<float4, 3> rows{};
+			if (!BuildBoneFrame(a_actor, source, a_cameraAdjust, rows))
+				continue; // No invalid or zeroed transforms in the published event span.
+			auto& target = data.Events[data.EventCount++];
+			target.WorldToDeposit = rows;
+			// Keep the deposit's spatial envelope fixed while coverage grows or melts.
+			// Scaling/recentering this radius from retainedAmount made the visible mask
+			// bob vertically as its material channels weathered over time.
+			const float verticalRadius = std::max(source.verticalRadius, 1.0e-3f);
+			target.LocalCenterRadius = {
+				source.localCenter.x, source.localCenter.y, source.localCenter.z,
+				source.horizontalRadius
+			};
+			target.VerticalAmounts = {
+				verticalRadius, source.snowFresh, source.snowMelting, source.mudWet
+			};
+			target.State = { source.mudDry, source.wetness, source.seed, source.splash };
+		}
+		// Count and slots are compact even when a bone disappears during an outfit
+		// or camera skeleton transition; absent anchors must never become actor masks.
+		a_state.constantBuffer->Update(data);
+		a_state.prepared = true;
 		return true;
 	}
 
@@ -255,6 +366,7 @@ namespace
 		// graph. Indexing those nodes gives the render hook a deterministic owner
 		// without caching armour meshes or performing a global actor scan per draw.
 		std::vector<RE::NiAVObject*> pending{ root };
+		pending.reserve(256);
 		constexpr std::size_t kMaximumIndexedNodesPerActor = 4096u;
 		for (std::size_t cursor = 0;
 			cursor < pending.size() && cursor < kMaximumIndexedNodesPerActor;
@@ -265,7 +377,7 @@ namespace
 			a_owners.try_emplace(object, a_formID);
 			if (auto* node = object->AsNode()) {
 				for (const auto& child : node->GetChildren()) {
-					if (child)
+					if (child && pending.size() < kMaximumIndexedNodesPerActor)
 						pending.push_back(child.get());
 				}
 			}
@@ -308,9 +420,9 @@ std::pair<std::string, std::vector<std::string>> ActorSurfaceEffects::GetModuleS
 	return {
 		"Adds actor-anchored snow, mud and melt wetness from real Ground Response contacts.",
 		{
-			"Localized boots, legs and contacted body regions instead of biome-wide tinting",
+			"Bone-local contact masks follow animated feet and limbs through walking and jumping",
 			"Frame-rate-independent snow melt, mud drying and wetness recovery",
-			"One logical state across player first person, third person and equipment changes",
+			"Stable contact regions persist across equipment changes without world-space sliding",
 			"Bounded nearby-NPC pool with no per-actor render targets or extra draw calls",
 			"Generic event foundation for future blood, frost, char, ash and spell residue"
 		}
@@ -343,6 +455,11 @@ void ActorSurfaceEffects::SetupResources()
 		return;
 
 	try {
+		// Recreate per-actor CBs after device reset: old D3D11 buffers belong to
+		// the previous device, and stale view bindings are unsafe.
+		std::scoped_lock lock(runtime->mutex);
+		runtime->actors.clear();
+		runtime->activeSkeletonOwners.clear();
 		runtime->neutralBuffer = std::make_unique<ConstantBuffer>(
 			ConstantBufferDesc<CharacterRuntimeGPUData>(),
 			"ActorSurfaceEffects::NeutralCharacterRuntime");
@@ -380,6 +497,9 @@ bool ActorSurfaceEffects::AddSurfaceEffect(RE::Actor* a_actor, const SurfaceInte
 {
 	if (!runtime || !loaded || !settings.Enable || !a_actor || !a_actor->Is3DLoaded())
 		return false;
+	if (a_event.type != EffectType::Snow && a_event.type != EffectType::Mud &&
+		a_event.type != EffectType::Wetness)
+		return false;
 	if ((a_event.type == EffectType::Snow && !settings.EnableSnow) ||
 		(a_event.type == EffectType::Mud && !settings.EnableMud)) {
 		return false;
@@ -402,13 +522,7 @@ bool ActorSurfaceEffects::AddSurfaceEffect(RE::Actor* a_actor, const SurfaceInte
 			return false;
 	}
 
-	RE::NiPoint3 localPosition = ToActorLocal(a_actor, a_event.worldPosition);
-	// Ground contacts come from animated Havok bodies, so their centres contain a
-	// few units of walk/run pose motion. Quantise only the vertical anchor at event
-	// creation; the mask remains spatially localized in X/Y, while a boot lobe no
-	// longer creeps up and down the bind-pose mesh as new footsteps merge into it.
-	localPosition.z = std::round(localPosition.z * 0.25f) * 4.0f;
-	const float radius = std::clamp(a_event.horizontalRadius, 1.0f, 72.0f);
+	const float radius = std::clamp(a_event.horizontalRadius, 1.0f, kMaximumFootprintWorldRadius);
 	// Interaction depth is authoritative for deep snow/mud. The Ground Response
 	// contact band normally supplies half this height already; retain whichever is
 	// larger so shallow contacts stay tight and deep contacts cover the entered
@@ -416,8 +530,18 @@ bool ActorSurfaceEffects::AddSurfaceEffect(RE::Actor* a_actor, const SurfaceInte
 	const float verticalRadius = std::clamp(
 		std::max(a_event.verticalRadius, a_event.contactDepth * 0.50f + 1.0f),
 		1.0f,
-		96.0f);
+		kMaximumFootprintWorldHeight);
 	auto* contactBone = FindContactBone(a_actor, a_event.worldPosition, std::max(radius, verticalRadius) + 24.0f);
+	// Do not create an unanchored effect: world/actor-yaw fallback masks can visibly
+	// slide across an animated skeleton, especially on legs during locomotion.
+	if (!contactBone)
+		return false;
+	RE::NiPoint3 localPosition{};
+	if (!WorldToBoneLocal(contactBone, a_event.worldPosition, localPosition))
+		return false;
+	const float localScale = 1.0f / contactBone->world.scale;
+	const float localRadius = radius * localScale;
+	const float localVerticalRadius = verticalRadius * localScale;
 	const float amount = Saturate(a_event.intensity * settings.AccumulationStrength);
 	if (amount <= kEventEpsilon)
 		return false;
@@ -472,6 +596,10 @@ bool ActorSurfaceEffects::AddSurfaceEffect(RE::Actor* a_actor, const SurfaceInte
 	}
 
 	ActorEffectState& state = *found->second;
+	// FormIDs can be reused across actor teardown/recreation. Never carry a
+	// previous actor's accumulated snow onto an unrelated skeleton.
+	if (auto previousActor = state.handle.get(); previousActor && previousActor.get() != a_actor)
+		state.lobes.clear();
 	state.handle = a_actor->GetHandle();
 	state.lastInteractionSeconds = runtime->elapsedSeconds;
 	state.prepared = false;
@@ -479,19 +607,16 @@ bool ActorSurfaceEffects::AddSurfaceEffect(RE::Actor* a_actor, const SurfaceInte
 	LocalEffectLobe* mergeTarget = nullptr;
 	float bestDistance = std::numeric_limits<float>::max();
 	for (auto& lobe : state.lobes) {
-		if (lobe.anchorBone != (contactBone ? contactBone->name : RE::BSFixedString{}))
+		if (lobe.anchorBone != contactBone->name)
 			continue;
-		RE::NiPoint3 mergePosition = localPosition;
-		RE::NiMatrix3 depositRotation;
-		RE::NiPoint3 depositOrigin;
-		if (DepositFrame(a_actor, lobe, depositRotation, depositOrigin))
-			mergePosition = depositRotation * (a_event.worldPosition - depositOrigin) + lobe.referenceOrigin;
+		// Both values are in the exact same persistent bone-local frame. Walking
+		// no longer changes the merge comparison or drags the original deposit.
 		const RE::NiPoint3 delta{
-			lobe.localCenter.x - mergePosition.x,
-			lobe.localCenter.y - mergePosition.y,
-			lobe.localCenter.z - mergePosition.z
+			lobe.localCenter.x - localPosition.x,
+			lobe.localCenter.y - localPosition.y,
+			lobe.localCenter.z - localPosition.z
 		};
-		const float mergeRadius = std::max(lobe.horizontalRadius, radius) * 0.78f;
+		const float mergeRadius = std::max(lobe.horizontalRadius, localRadius) * 0.78f;
 		const float distanceSquared = LengthSquared(delta);
 		const bool sameFamily =
 			(a_event.type == EffectType::Snow && (lobe.snowFresh + lobe.snowMelting) > kEventEpsilon) ||
@@ -519,19 +644,9 @@ bool ActorSurfaceEffects::AddSurfaceEffect(RE::Actor* a_actor, const SurfaceInte
 			mergeTarget = &state.lobes.back();
 		}
 		mergeTarget->localCenter = localPosition;
-		if (contactBone) {
-			mergeTarget->anchorBone = contactBone->name;
-			const float yaw = a_actor->GetAngleZ();
-			RE::NiMatrix3 actorInverse;
-			actorInverse.entry[0][0] = actorInverse.entry[1][1] = std::cos(yaw);
-			actorInverse.entry[0][1] = std::sin(yaw);
-			actorInverse.entry[1][0] = -std::sin(yaw);
-			mergeTarget->referenceRotation = actorInverse * contactBone->world.rotate;
-			mergeTarget->referenceOrigin = ToActorLocal(a_actor, contactBone->world.translate);
-			mergeTarget->referenceScale = contactBone->world.scale;
-		}
-		mergeTarget->horizontalRadius = radius;
-		mergeTarget->verticalRadius = verticalRadius;
+		mergeTarget->anchorBone = contactBone->name;
+		mergeTarget->horizontalRadius = localRadius;
+		mergeTarget->verticalRadius = localVerticalRadius;
 		const std::uint32_t seedBits = formID * 1664525u +
 			static_cast<std::uint32_t>(state.lobes.size()) * 1013904223u;
 		mergeTarget->seed = static_cast<float>(seedBits & 0xFFFFu) / 65535.0f;
@@ -540,8 +655,8 @@ bool ActorSurfaceEffects::AddSurfaceEffect(RE::Actor* a_actor, const SurfaceInte
 		// its coverage but must never drag its centre around the character; otherwise
 		// the visible snow/mud swims with the gait. Spatially distinct contacts still
 		// allocate independent lobes through the merge-radius test above.
-		mergeTarget->horizontalRadius = std::max(mergeTarget->horizontalRadius, radius);
-		mergeTarget->verticalRadius = std::max(mergeTarget->verticalRadius, verticalRadius);
+		mergeTarget->horizontalRadius = std::max(mergeTarget->horizontalRadius, localRadius);
+		mergeTarget->verticalRadius = std::max(mergeTarget->verticalRadius, localVerticalRadius);
 	}
 
 	auto accumulate = [amount](float& a_channel, float a_scale = 1.0f) {
@@ -587,9 +702,11 @@ void ActorSurfaceEffects::AddGroundContact(
 	// to an elapsed-time dose so standing/walking accumulation is consistent at
 	// 30, 60 and 120+ FPS instead of saturating in two render frames.
 	float frameDelta = globals::game::deltaTime ? *globals::game::deltaTime : RE::GetSecondsSinceLastFrame();
+	if (globals::game::ui && globals::game::ui->GameIsPaused())
+		return;
 	if (!std::isfinite(frameDelta) || frameDelta <= 0.0f)
-		frameDelta = 1.0f / 60.0f;
-	event.intensity = a_intensity * std::clamp(frameDelta * 5.0f, 0.01f, 0.25f);
+		return;  // Do not add an artificial contact dose during a paused frame.
+	event.intensity = a_intensity * std::clamp(frameDelta * 5.0f, 0.0f, 0.25f);
 	const float horizontalSpeed = std::sqrt(
 		a_worldVelocity.x * a_worldVelocity.x + a_worldVelocity.y * a_worldVelocity.y);
 	event.splash = Saturate((horizontalSpeed - 70.0f) / 180.0f) *
@@ -604,6 +721,7 @@ void ActorSurfaceEffects::Reset()
 	if (!settings.Enable) {
 		std::scoped_lock lock(runtime->mutex);
 		runtime->actors.clear();
+		runtime->activeSkeletonOwners.clear();
 		return;
 	}
 
@@ -728,7 +846,6 @@ void ActorSurfaceEffects::Prepass()
 	if (!settings.Enable)
 		return;
 
-	const float4 cameraAdjust = globals::game::frameBufferCached.GetCameraPosAdjust();
 	auto* player = RE::PlayerCharacter::GetSingleton();
 	const RE::NiPoint3 playerPosition = player ? player->GetPosition() : RE::NiPoint3{};
 	const float maximumDistance = std::clamp(settings.EffectDistance, 800.0f, 8000.0f);
@@ -737,103 +854,14 @@ void ActorSurfaceEffects::Prepass()
 	runtime->activeSkeletonOwners.clear();
 	for (auto& [formID, statePointer] : runtime->actors) {
 		ActorEffectState& state = *statePointer;
+		state.prepared = false; // skeleton + camera transforms are sampled at first draw
 		auto actor = state.handle.get();
 		if (!actor || !actor->Is3DLoaded() || !state.constantBuffer || state.lobes.empty())
 			continue;
 		if (player && actor.get() != player &&
-			actor->GetPosition().GetSquaredDistance(playerPosition) > maximumDistanceSquared) {
-			state.prepared = false;
+			actor->GetPosition().GetSquaredDistance(playerPosition) > maximumDistanceSquared)
 			continue;
-		}
 		IndexActorSkeleton(actor.get(), formID, runtime->activeSkeletonOwners);
-
-		CharacterRuntimeGPUData data{};
-		DialogueFocus::GetSingleton().BuildGPUDataForActor(actor.get(), data.Dialogue);
-		data.Magic = kActorSurfaceMagic;
-		data.Version = kActorSurfaceVersion;
-		data.EventCount = std::min<std::uint32_t>(
-			static_cast<std::uint32_t>(state.lobes.size()),
-			QualityEventLimit(settings.EffectQuality));
-		data.Flags = (settings.EnableSnow ? 1u : 0u) | (settings.EnableMud ? 2u : 0u);
-
-		// Match event conversion to the rendered skeleton root. Subtracting this
-		// live origin in HLSL cancels jump/gait/root motion rather than sliding an
-		// otherwise persistent deposit through the character.
-		const RE::NiPoint3 actorPosition = ResolveActorRenderOrigin(actor.get());
-		float actorHeight = actor->GetHeight();
-		if (!std::isfinite(actorHeight) || actorHeight < 24.0f || actorHeight > 420.0f)
-			actorHeight = 128.0f;
-		const float yaw = actor->GetAngleZ();
-		data.ActorOriginScale = {
-			actorPosition.x - cameraAdjust.x,
-			actorPosition.y - cameraAdjust.y,
-			actorPosition.z - cameraAdjust.z,
-			std::clamp(actor->GetScale(), 0.1f, 10.0f)
-		};
-		data.ActorRotationHeight = { std::cos(yaw), std::sin(yaw), actorHeight, 0.0f };
-		data.Tuning = {
-			std::clamp(settings.AccumulationStrength, 0.0f, 2.0f),
-			std::clamp(settings.MaskSoftness, 0.04f, 0.55f),
-			std::clamp(settings.EdgeBreakup, 0.0f, 0.40f),
-			static_cast<float>(settings.Debug)
-		};
-		data.SnowAppearance = { 0.72f, 0.82f, 0.93f, 0.82f };
-
-		for (std::uint32_t index = 0; index < data.EventCount; ++index) {
-			const auto& source = state.lobes[index];
-			auto& target = data.Events[index];
-			if (!source.anchorBone.empty()) {
-				RE::NiMatrix3 depositRotation;
-				RE::NiPoint3 depositOrigin;
-				// Resolve names against the live skeleton; never retain bone pointers
-				// across equipment swaps or unloaded/replaced actor scene graphs.
-				if (!DepositFrame(actor.get(), source, depositRotation, depositOrigin))
-					continue; // Missing anchor: suppress this lobe, do not project it in the wrong space.
-				depositOrigin -= RE::NiPoint3{ cameraAdjust.x, cameraAdjust.y, cameraAdjust.z };
-				const auto translation = source.referenceOrigin - depositRotation * depositOrigin;
-				for (uint32_t row = 0; row < 3; ++row) {
-					const auto* r = depositRotation.entry[row];
-					const float t = row == 0 ? translation.x : row == 1 ? translation.y : translation.z;
-					target.WorldToDeposit[row] = { r[0], r[1], r[2], t };
-				}
-			}
-			// As a deposit ages away its upper boundary recedes toward the original
-			// contact plane. This gives snow/mud a gravity-readable downward fade
-			// instead of uniformly dissolving the complete vertical lobe in place.
-			const float retainedAmount = std::clamp(source.TotalAmount(), 0.0f, 1.0f);
-			const float retainedHeight = std::lerp(
-				0.12f,
-				1.0f,
-				std::sqrt(retainedAmount));
-			const float sourceRadius = std::max(source.verticalRadius, 1.0f);
-			const float lowerBoundary = source.localCenter.z - sourceRadius;
-			const float visibleHeight = std::max(2.0f * sourceRadius * retainedHeight, 2.0f);
-			const float visibleRadius = visibleHeight * 0.5f;
-			const float visibleCenterZ = lowerBoundary + visibleRadius;
-			target.LocalCenterRadius = {
-				source.localCenter.x,
-				source.localCenter.y,
-				visibleCenterZ,
-				source.horizontalRadius
-			};
-			target.VerticalAmounts = {
-				visibleRadius,
-				source.snowFresh,
-				source.snowMelting,
-				source.mudWet
-			};
-			target.State = {
-				source.mudDry,
-				source.wetness,
-				source.seed,
-				source.splash
-			};
-		}
-
-		state.constantBuffer->Update(data);
-		state.preparedData = data;
-		state.prepared = true;
-		state.lastVisibleSeconds = runtime->elapsedSeconds;
 	}
 }
 
@@ -881,8 +909,30 @@ void ActorSurfaceEffects::BindLightingGeometry(RE::BSRenderPass* a_pass)
 		// DialogueFocus prefix built during Prepass. It must win even when that actor
 		// is the dialogue subject; selecting dialogueOnly here erased every surface
 		// lobe whenever conversation focus became active.
-		if (found != runtime->actors.end() && found->second->prepared && found->second->constantBuffer) {
-			buffer = found->second->constantBuffer->CB();
+		if (found != runtime->actors.end() && found->second->constantBuffer) {
+			auto& state = *found->second;
+			if (!state.prepared) {
+				auto ownedActor = state.handle.get();
+				// When an armour mesh resolves via the indexed skin bones, the
+				// draw has no direct actor userData. The authoritative handle is
+				// still present; use it rather than dropping all armour effects.
+				if (ownedActor && ownedActor->Is3DLoaded() &&
+					(!actor || ownedActor.get() == actor)) {
+					bool withinRange = true;
+					if (auto* player = RE::PlayerCharacter::GetSingleton(); player && ownedActor.get() != player) {
+						const float maxDistance = std::clamp(settings.EffectDistance, 800.0f, 8000.0f);
+						const float distance2 = player->GetPosition().GetSquaredDistance(ownedActor->GetPosition());
+						withinRange = std::isfinite(distance2) && distance2 <= maxDistance * maxDistance;
+					}
+					if (withinRange) {
+						const auto cameraAdjust = globals::game::frameBufferCached.GetCameraPosAdjust();
+						if (std::isfinite(cameraAdjust.x) && std::isfinite(cameraAdjust.y) && std::isfinite(cameraAdjust.z))
+							PrepareActorForDraw(ownedActor.get(), state, settings, cameraAdjust);
+					}
+				}
+			}
+			if (state.prepared)
+				buffer = state.constantBuffer->CB();
 		}
 	}
 	globals::d3d::context->PSSetConstantBuffers(13, 1, &buffer);
@@ -961,25 +1011,46 @@ void ActorSurfaceEffects::LoadSettings(json& a_json)
 		settings = {};
 		return;
 	}
-	auto finiteRange = [](float value, float fallback, float low, float high) {
-		return std::isfinite(value) ? std::clamp(value, low, high) : fallback;
+	// A single malformed setting must not abort the whole module or introduce
+	// NaNs into an extended character constant buffer.
+	auto readBool = [&](const char* key, bool fallback) {
+		const auto it = a_json.find(key);
+		return it != a_json.end() && it->is_boolean() ? it->get<bool>() : fallback;
 	};
-	settings.Enable = a_json.value("Enable", true);
-	settings.EnableSnow = a_json.value("EnableSnow", true);
-	settings.EnableMud = a_json.value("EnableMud", true);
-	settings.EffectQuality = std::clamp(a_json.value("EffectQuality", 2u), 0u, 3u);
-	if (a_json.value("QualityContractVersion", 1u) < 2u && settings.EffectQuality == 3u)
+	auto readUInt = [&](const char* key, std::uint32_t fallback, std::uint32_t low, std::uint32_t high) {
+		const auto it = a_json.find(key);
+		if (it == a_json.end() || !it->is_number_integer())
+			return fallback;
+		if (it->is_number_unsigned()) {
+			const auto value = it->get<std::uint64_t>();
+			return static_cast<std::uint32_t>(std::clamp<std::uint64_t>(value, low, high));
+		}
+		const auto value = it->get<std::int64_t>();
+		return static_cast<std::uint32_t>(std::clamp<std::int64_t>(value, low, high));
+	};
+	auto readFloat = [&](const char* key, float fallback, float low, float high) {
+		const auto it = a_json.find(key);
+		if (it == a_json.end() || !it->is_number())
+			return fallback;
+		const double value = it->get<double>();
+		return std::isfinite(value) ? static_cast<float>(std::clamp(value, static_cast<double>(low), static_cast<double>(high))) : fallback;
+	};
+	settings.Enable = readBool("Enable", true);
+	settings.EnableSnow = readBool("EnableSnow", true);
+	settings.EnableMud = readBool("EnableMud", true);
+	settings.EffectQuality = readUInt("EffectQuality", 2u, 0u, 3u);
+	if (readUInt("QualityContractVersion", 1u, 0u, 10u) < 2u && settings.EffectQuality == 3u)
 		settings.EffectQuality = 2u;
-	settings.Persistence = finiteRange(a_json.value("Persistence", 0.68f), 0.68f, 0.0f, 1.0f);
-	settings.AccumulationStrength = finiteRange(a_json.value("AccumulationStrength", 1.0f), 1.0f, 0.0f, 2.0f);
-	settings.SnowMeltRate = finiteRange(a_json.value("SnowMeltRate", 0.010f), 0.010f, 0.001f, 0.05f);
-	settings.MudDryRate = finiteRange(a_json.value("MudDryRate", 0.007f), 0.007f, 0.001f, 0.04f);
-	settings.DryMudFadeRate = finiteRange(a_json.value("DryMudFadeRate", 0.0025f), 0.0025f, 0.0005f, 0.02f);
-	settings.WetnessDryRate = finiteRange(a_json.value("WetnessDryRate", 0.014f), 0.014f, 0.001f, 0.06f);
-	settings.MaximumAffectedNPCs = std::clamp(a_json.value("MaximumAffectedNPCs", 24u), 1u, 64u);
-	settings.EffectDistance = finiteRange(a_json.value("EffectDistance", 3200.0f), 3200.0f, 800.0f, 8000.0f);
-	settings.MaskSoftness = finiteRange(a_json.value("MaskSoftness", 0.24f), 0.24f, 0.04f, 0.55f);
-	settings.EdgeBreakup = finiteRange(a_json.value("EdgeBreakup", 0.16f), 0.16f, 0.0f, 0.40f);
+	settings.Persistence = readFloat("Persistence", 0.68f, 0.0f, 1.0f);
+	settings.AccumulationStrength = readFloat("AccumulationStrength", 1.0f, 0.0f, 2.0f);
+	settings.SnowMeltRate = readFloat("SnowMeltRate", 0.010f, 0.001f, 0.05f);
+	settings.MudDryRate = readFloat("MudDryRate", 0.007f, 0.001f, 0.04f);
+	settings.DryMudFadeRate = readFloat("DryMudFadeRate", 0.0025f, 0.0005f, 0.02f);
+	settings.WetnessDryRate = readFloat("WetnessDryRate", 0.014f, 0.001f, 0.06f);
+	settings.MaximumAffectedNPCs = readUInt("MaximumAffectedNPCs", 24u, 1u, 64u);
+	settings.EffectDistance = readFloat("EffectDistance", 3200.0f, 800.0f, 8000.0f);
+	settings.MaskSoftness = readFloat("MaskSoftness", 0.24f, 0.04f, 0.55f);
+	settings.EdgeBreakup = readFloat("EdgeBreakup", 0.16f, 0.0f, 0.40f);
 	settings.Debug = DebugView::Off;
 }
 

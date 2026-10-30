@@ -10,7 +10,6 @@
 #include "Modules/GroundResponse.h"
 #include "Modules/ActorSurfaceEffects.h"
 #include "Modules/FoliageDynamics.h"
-#include "Modules/FoliageOptimizer.h"
 #include "Modules/ReactiveFX.h"
 #include "Modules/CameraSuite.h"
 #include "Modules/StrandShading.h"
@@ -62,7 +61,7 @@ namespace PIXLRenderer::QualityProfiles
 			LightingContract{ 0, 2, 4, 2, 2, 8, false, 12, 1, 3072.0f, 6144.0f, 1, 16, 3.0f, 4.0f, 4.0f, 0.08f },
 			LightingContract{ 0, 3, 7, 3, 3, 5, true, 20, 1, 3584.0f, 7168.0f, 1, 24, 2.5f, 5.0f, 6.0f, 0.075f },
 			LightingContract{ 0, 5, 10, 6, 3, 3, true, 36, 3, 4608.0f, 8192.0f, 2, 24, 2.0f, 8.0f, 10.0f, 0.07f },
-			LightingContract{ 0, 8, 16, 8, 5, 1, true, 56, 6, 6144.0f, 10240.0f, 2, 36, 1.6f, 12.0f, 16.0f, 0.06f }
+			LightingContract{ 0, 8, 16, 8, 5, 1, true, 56, 6, 6144.0f, 10240.0f, 4, 36, 1.6f, 12.0f, 16.0f, 0.06f }
 		};
 
 		struct MaterialsContract
@@ -118,21 +117,13 @@ namespace PIXLRenderer::QualityProfiles
 			float tessellationNear;
 			float tessellationFar;
 			std::uint32_t historyTiles;
-			float minPixelSize;
-			float fullDetailPixelSize;
-			float minDensity;
-			float simpleShadingPixelSize;
-			float meshCostBias;
-			float costBiasStartDistance;
-			float collisionDistance;
-			bool meshLod;
 		};
 
 		constexpr std::array<TerrainVegetationContract, 4> kTerrainVegetationContracts{
-			TerrainVegetationContract{ 4.0f, 1.25f, 48u, 6.0f, 48.0f, 0.010f, 16.0f, 0.85f, 3000.0f, 1024.0f, true },
-			TerrainVegetationContract{ 7.0f, 2.0f, 96u, 3.5f, 28.0f, 0.020f, 9.0f, 0.60f, 5000.0f, 1536.0f, true },
-			TerrainVegetationContract{ 10.0f, 2.5f, 192u, 2.0f, 16.0f, 0.030f, 0.0f, 0.40f, 6000.0f, 2048.0f, false },
-			TerrainVegetationContract{ 16.0f, 6.0f, 512u, 1.0f, 8.0f, 0.080f, 0.0f, 0.0f, 20000.0f, 4096.0f, false }
+			TerrainVegetationContract{ 4.0f, 1.25f, 48u },
+			TerrainVegetationContract{ 7.0f, 2.0f, 96u },
+			TerrainVegetationContract{ 10.0f, 2.5f, 192u },
+			TerrainVegetationContract{ 16.0f, 6.0f, 512u }
 		};
 
 		constexpr std::array<std::uint32_t, 4> kCharacterBurleySamples{ 6u, 12u, 24u, 64u };
@@ -309,7 +300,6 @@ namespace PIXLRenderer::QualityProfiles
 		void ApplyTerrainVegetation(int quality)
 		{
 			auto& ground = globals::pipeline::groundResponse.settings;
-			auto& foliage = globals::pipeline::foliageOptimizer.settings;
 			const auto& contract = kTerrainVegetationContracts[quality];
 			// Reactive FX follows the renderer's terrain/vegetation workload tier,
 			// while its artistic strength and master enable remain user-owned.
@@ -328,18 +318,6 @@ namespace PIXLRenderer::QualityProfiles
 			// user's back.
 			ground.SessionSurfaceHistoryTileBudget = contract.historyTiles;
 			globals::pipeline::terrainDetail.settings.enableLODTerrainTilingFix = 1;
-
-			// Scale only GPU-culling workload controls. Authored wind, vegetation
-			// material response and the user's grass range remain untouched.
-			foliage.MinPixelSize = contract.minPixelSize;
-			foliage.FullDetailPixelSize = contract.fullDetailPixelSize;
-			foliage.MinDensity = contract.minDensity;
-			foliage.SimpleShadingPixelSize = contract.simpleShadingPixelSize;
-			foliage.MeshCostBias = contract.meshCostBias;
-			foliage.CostBiasStartDistance = contract.costBiasStartDistance;
-			foliage.CollisionDistance = contract.collisionDistance;
-			foliage.EnableMeshLOD = contract.meshLod;
-			foliage.EnableOcclusionCulling = true;
 		}
 
 		void ApplyCharacters(int quality)
@@ -451,22 +429,12 @@ namespace PIXLRenderer::QualityProfiles
 		{
 			const auto& ground = globals::pipeline::groundResponse.settings;
 			const auto& terrain = globals::pipeline::terrainDetail.settings;
-			const auto& foliage = globals::pipeline::foliageOptimizer.settings;
 			for (int quality = Low; quality <= Ultra; ++quality) {
 				const auto& contract = kTerrainVegetationContracts[quality];
 				if (NearlyEqual(ground.GeometryTessellationNear, contract.tessellationNear) &&
 				    NearlyEqual(ground.GeometryTessellationFar, contract.tessellationFar) &&
 				    ground.SessionSurfaceHistoryTileBudget == contract.historyTiles &&
-				    terrain.enableLODTerrainTilingFix == 1 &&
-				    NearlyEqual(foliage.MinPixelSize, contract.minPixelSize) &&
-				    NearlyEqual(foliage.FullDetailPixelSize, contract.fullDetailPixelSize) &&
-				    NearlyEqual(foliage.MinDensity, contract.minDensity) &&
-				    NearlyEqual(foliage.SimpleShadingPixelSize, contract.simpleShadingPixelSize) &&
-				    NearlyEqual(foliage.MeshCostBias, contract.meshCostBias) &&
-				    NearlyEqual(foliage.CostBiasStartDistance, contract.costBiasStartDistance) &&
-				    NearlyEqual(foliage.CollisionDistance, contract.collisionDistance) &&
-				    foliage.EnableMeshLOD == contract.meshLod &&
-				    foliage.EnableOcclusionCulling) {
+				    terrain.enableLODTerrainTilingFix == 1) {
 					return quality;
 				}
 			}

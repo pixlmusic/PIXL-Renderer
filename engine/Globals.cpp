@@ -10,7 +10,6 @@
 #include "Modules/GroundResponse.h"
 #include "Modules/ActorSurfaceEffects.h"
 #include "Modules/FoliageDynamics.h"
-#include "Modules/FoliageOptimizer.h"
 #include "Modules/CameraSuite.h"
 #include "Modules/StrandShading.h"
 #include "Modules/HairReconstruction.h"
@@ -72,7 +71,6 @@ namespace globals
 		GroundResponse groundResponse{};
 		ActorSurfaceEffects actorSurfaceEffects{};
 		FoliageDynamics foliageDynamics{};
-		FoliageOptimizer foliageOptimizer{};
 		AmbientProbe ambientProbe{};
 		RadiantGrid radiantGrid{};
 		LinearLightCore linearLightCore{};

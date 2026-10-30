@@ -30,14 +30,20 @@ namespace MaterialSurface
 		return float4(float3(gx,gy,y.y-y.x) * du, lerp(y.x,y.y,u.z));
 	}
 
-	float SnowMask(float accumulation, float slope, float shelter, float noise, float footprint)
+	float SnowMask(float accumulation, float slope, float shelter, float noise, float edgeHeight, float footprint)
 	{
 		float amount = saturate(accumulation) * saturate(slope) * saturate(shelter);
 		float width = clamp(0.16f + footprint, 0.16f, 0.42f);
 		// Accumulation transitions from sparse windblown deposits to a continuous
 		// blanket, so fully settled roofs and ground don't remain speckled forever.
 		float threshold = lerp(1.08f, -0.18f, amount);
-		return smoothstep(threshold - width, threshold + width, noise) * saturate(amount * 8);
+		float coverage = smoothstep(threshold - width, threshold + width, noise);
+		// A finer, world-anchored deposit field acts as a low-amplitude height
+		// signal only where the base snow edge crosses the source material. This
+		// breaks long, perfectly smooth contours without another texture binding.
+		float edgeWeight = 4.0f * coverage * (1.0f - coverage);
+		coverage = saturate(coverage + (saturate(edgeHeight) - 0.5f) * 0.20f * edgeWeight);
+		return coverage * saturate(amount * 8);
 	}
 
 	float DepositPattern(float3 position, float footprint)
@@ -53,6 +59,33 @@ namespace MaterialSurface
 	float TopFacingDeposit(float normalZ, float minimum, float feather)
 	{
 		return smoothstep(minimum, min(minimum + max(feather, 0.02f), 1.0f), saturate(normalZ));
+	}
+
+	// Snow on an animated object must not be re-authored from its current pose
+	// every frame. Camera-origin changes are removed by the caller before this
+	// displacement is measured. The footprint-aware band ignores tiny raster and
+	// transform noise, then smoothly selects a model-stable deposit coordinate.
+	float SurfaceMotionWeight(float3 currentAbsolutePosition, float3 previousAbsolutePosition, float footprint)
+	{
+		float displacement = length(currentAbsolutePosition - previousAbsolutePosition);
+		float lower = max(max(footprint, 0.0f), 0.15f);
+		float upper = max(max(footprint * 3.0f, 0.0f), 0.75f);
+		return smoothstep(lower, max(upper, lower + 1e-3f), displacement);
+	}
+
+	// Requiring the previous and current face orientation to both be snow-facing
+	// prevents a swinging mesh from rapidly transferring its weather mask between
+	// faces. Stationary surfaces use the current normal without temporal lag.
+	float StableSnowNormalZ(float currentNormalZ, float previousNormalZ, float motionWeight)
+	{
+		float currentZ = saturate(currentNormalZ);
+		float previousZ = saturate(previousNormalZ);
+		return lerp(currentZ, min(currentZ, previousZ), saturate(motionWeight));
+	}
+
+	float GroundSnowCompaction(float deformationAmount, float snowBlend)
+	{
+		return saturate(deformationAmount) * saturate(snowBlend);
 	}
 
 	// CPU contract: MaterialSurfaceProfile.h; no added texture or buffer bindings.

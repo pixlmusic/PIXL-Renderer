@@ -703,7 +703,10 @@ void HybridGI::DrawSettings()
 
 					BeginSettingRow("Cache Update Speed", "How quickly an existing voxel accepts newly observed lighting. Lower values are steadier; higher values respond faster to real lighting changes.");
 					ImGui::SliderFloat("##cache_response", &settings.WorldCacheTemporalResponse, 0.02f, 1.0f, "%.2f", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
-
+					BeginSettingRow("Cache Lifetime", "How long unseen voxels remain available. Old cells begin fading after one quarter of this time; shorter lifetimes reduce stale lighting trails, while longer lifetimes preserve more off-screen bounce.");
+					int cacheLifetimeSeconds = std::clamp(static_cast<int>(std::lround(settings.WorldCacheMaxAge / 8.0f)), 1, 15);
+					if (ImGui::SliderInt("##cache_lifetime", &cacheLifetimeSeconds, 1, 15, "%d s", ImGuiSliderFlags_AlwaysClamp))
+						settings.WorldCacheMaxAge = static_cast<uint>(cacheLifetimeSeconds) * 8u;
 					BeginSettingRow("Injection Spacing", "Pixel stride used when injecting visible surfaces into the world cache. Smaller values update more pixels and cost more GPU time.");
 					Util::UIntSlider("##injection_stride", &settings.WorldCacheInjectionStride, 1, 8, "%d px", ImGuiSliderFlags_AlwaysClamp);
 					ImGui::EndTable();
@@ -1702,6 +1705,10 @@ void HybridGI::CompileComputeShaders(std::uint32_t a_shaderMask)
 	for (auto& info : shaderInfos) {
 		if ((a_shaderMask & info.bit) == 0u)
 			continue;
+		// CompileShader hashes the complete define list. This explicit source
+		// revision forces only HybridGI's standalone compute artifacts to rebuild
+		// without raising the core feature compatibility version in Module.ini.
+		info.defines.push_back({ "PIXL_HYBRIDGI_MODULE_REVISION", "\"4-4-6\"" });
 		if (settings.ResolutionMode == 1)
 			info.defines.push_back({ "HALF_RES", "" });
 		if (settings.ResolutionMode == 2)
@@ -1772,8 +1779,9 @@ bool HybridGI::EnsureReflectionDepth()
 	reflectionDepthCreationAttempted = true;
 	try {
 		auto desc = texWorkingDepth->desc;
-		// R16 rounding can raise a minimum and make empty-space skipping unsafe.
-		desc.Format = DXGI_FORMAT_R32_FLOAT;
+		// Store conservative nearest/farthest view depth per cell. This lets SSR
+		// reject ray intervals both in front of and behind every surface in a tile.
+		desc.Format = DXGI_FORMAT_R32G32_FLOAT;
 		auto texture = eastl::make_unique<Texture2D>(desc, "HybridGI::ReflectionHiZ");
 		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
 		srvDesc.Format = desc.Format;
@@ -2225,6 +2233,7 @@ void HybridGI::DrawHybridGI()
 		srvs.at(8) = texIlCoCg[inputGITexIdx]->srv.get();
 		srvs.at(9) = texGiSpecular[inputSpecTexIdx]->srv.get();
 		srvs.at(10) = texBentVisibility[inputBentTexIdx]->srv.get();
+		srvs.at(11) = texRadiance->srv.get(); // previous frame; replaced after this dispatch
 
 		uavs.at(0) = texRadianceTemp->uav.get();
 		uavs.at(1) = texAccumFrames[!lastFrameAccumTexIdx]->uav.get();
@@ -2425,6 +2434,8 @@ void HybridGI::DrawHybridGI()
 		srvs.at(9) = worldCacheActive ? texWorldCacheSH2->srv.get() : nullptr;
 		srvs.at(10) = worldCacheActive ? texWorldCacheNormal->srv.get() : nullptr;
 		srvs.at(11) = texReflectionDepth->srv.get();
+		srvs.at(12) = settings.EnableTemporalDenoiser ?
+			texAccumFrames[lastFrameAccumTexIdx]->srv.get() : nullptr;
 		uavs.at(0) = texGiSpecular[!inputSpecTexIdx]->uav.get();
 		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 		context->CSSetUnorderedAccessViews(0, 1, uavs.data(), nullptr);

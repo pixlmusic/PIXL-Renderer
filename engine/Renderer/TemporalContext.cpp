@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "TemporalContext.h"
+#include "TemporalMath.h"
 
 #include <algorithm>
 #include <cmath>
@@ -47,7 +48,8 @@ namespace PIXL::Renderer
 				if (cameraDistanceSq > 32768.0 * 32768.0)
 					reasons |= TemporalMask(TemporalInvalidationReason::Teleport);
 				else if (cameraDistanceSq > 4096.0 * 4096.0 || input.cameraMode != frame.current.cameraMode ||
-					std::abs(input.verticalFov - frame.current.verticalFov) > 1.0e-4f)
+					std::abs(input.verticalFov - frame.current.verticalFov) > 1.0e-4f ||
+					IsAbruptCameraRotation(input.view, frame.current.view))
 					reasons |= TemporalMask(TemporalInvalidationReason::CameraCut);
 			}
 

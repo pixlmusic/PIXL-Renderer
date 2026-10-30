@@ -128,7 +128,14 @@ public:
 		static void Install()
 		{
 			// To know when we are rendering z-prepass depth vs shadows depth
-			stl::write_thunk_call<Main_RenderDepth>(REL::RelocationID(35560, 36559).address() + REL::Relocate(0x395, 0x395));
+			if (REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104) {
+				// 1.7.104 moved the bool/bool RenderDepth call from +0x395 to
+				// +0x3B3. Leaving the replay hook active without this depth capture
+				// produces uninitialised terrain depth and landscape holes.
+				stl::write_thunk_call<Main_RenderDepth>(REL::RelocationID(35560, 36559).address() + 0x3B3);
+			} else {
+				stl::write_thunk_call<Main_RenderDepth>(REL::RelocationID(35560, 36559).address() + REL::Relocate(0x395, 0x395));
+			}
 
 			// To manipulate the depth buffer write, depth testing, alpha blending
 			stl::write_thunk_call<BSBatchRenderer__RenderPassImmediately>(REL::RelocationID(100852, 107642).address() + REL::Relocate(0x29E, 0x28F));

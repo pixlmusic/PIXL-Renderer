@@ -1,4 +1,4 @@
-// CPU reference for the shader's cell-boundary/min-depth contract, not a GPU benchmark.
+// CPU reference for the shader's cell-boundary/min/max-depth contract, not a GPU benchmark.
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -10,20 +10,25 @@
 #include <vector>
 
 struct Pyramid {
-    std::array<std::vector<float>, 5> depth;
+    using DepthRange = std::array<float, 2>;
+    std::array<std::vector<DepthRange>, 5> depth;
     int width, height;
     Pyramid(int w, int h) : width(w), height(h) {
         for (int mip = 0; mip < 5; ++mip)
-            depth[mip].resize(static_cast<size_t>(w >> mip) * (h >> mip), 10000.f);
+            depth[mip].resize(static_cast<size_t>(w >> mip) * (h >> mip), {10000.f, 10000.f});
     }
     void build() {
         for (int mip = 1; mip < 5; ++mip) {
             int w = width >> mip, h = height >> mip, previousW = width >> (mip - 1);
             for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
-                float minimum = 10000.f;
+                float minimum = 10000.f, maximum = 0.f;
                 for (int dy = 0; dy < 2; ++dy) for (int dx = 0; dx < 2; ++dx)
-                    minimum = std::min(minimum, depth[mip - 1][(y * 2 + dy) * previousW + x * 2 + dx]);
-                depth[mip][y * w + x] = minimum;
+                {
+                    const auto child = depth[mip - 1][(y * 2 + dy) * previousW + x * 2 + dx];
+                    minimum = std::min(minimum, child[0]);
+                    maximum = std::max(maximum, child[1]);
+                }
+                depth[mip][y * w + x] = {minimum, maximum};
             }
         }
     }
@@ -64,11 +69,13 @@ Hit trace(const Pyramid& p, float x, float y, float dx, float dy, float z0, floa
         if (std::abs(dx) > 1e-8f) exit = std::min(exit, (static_cast<float>((cx + (dx >= 0.f ? 1 : 0)) * span) - x) / dx);
         if (std::abs(dy) > 1e-8f) exit = std::min(exit, (static_cast<float>((cy + (dy >= 0.f ? 1 : 0)) * span) - y) / dy);
         exit = std::max(exit, s);
-        float surface = p.depth[mip][cy * w + cx];
+        const auto surface = p.depth[mip][cy * w + cx];
         float a = depthAt(s), b = depthAt(exit);
         constexpr float thickness = 0.001f;
-        if (std::max(a, b) + thickness >= surface && mip > 0) { --mip; continue; }
-        if (mip == 0 && std::min(a, b) <= surface + thickness && std::max(a, b) >= surface - thickness) {
+        const bool before = std::max(a, b) + thickness < surface[0];
+        const bool behind = std::min(a, b) - thickness > surface[1];
+        if (!before && !behind && mip > 0) { --mip; continue; }
+        if (mip == 0 && std::min(a, b) <= surface[0] + thickness && std::max(a, b) >= surface[0] - thickness) {
             result.x = cx; result.y = cy; return result;
         }
         s = exit + epsilon;
@@ -102,8 +109,10 @@ int main() {
         Pyramid p(width, 131);
         int activeWidth = static_cast<int>(static_cast<float>(width) * scale);
         // Thin foreground silhouette, sloping background and a depth edge.
-        for (int y = 0; y < p.height; ++y) for (int x = 0; x < activeWidth; ++x)
-            p.depth[0][y * width + x] = x == activeWidth / 2 ? 130.f : 210.f + static_cast<float>(x) * 0.04f;
+		for (int y = 0; y < p.height; ++y) for (int x = 0; x < activeWidth; ++x) {
+            float z = x == activeWidth / 2 ? 130.f : 210.f + static_cast<float>(x) * 0.04f;
+            p.depth[0][y * width + x] = {z, z};
+		}
         p.build();
         for (int direction : {-1, 1}) for (float endZ : {45.f, 180.f, 350.f}) for (int row = 3; row < 120; row += 7) {
             float startX = direction > 0 ? 0.5f : static_cast<float>(activeWidth) - 0.5f;
@@ -132,8 +141,21 @@ int main() {
     Hit linear = trace(empty, 0.5f, 20.5f, 254.f, 0.f, 50.f, 200.f, false);
     assert(skip.x == -1 && skip.tests < linear.tests / 4);
     // Zero projected length still supports intersections along view depth.
-    empty.depth[0][20 * 256 + 30] = 100.f;
+    empty.depth[0][20 * 256 + 30] = {100.f, 100.f};
     empty.build();
     assert(trace(empty, 30.5f, 20.5f, 0.f, 0.f, 50.f, 200.f, true).x == 30);
-    std::cout << "PASS: " << comparisons << " Hi-Z/reference comparisons; reciprocal depth, DRS, NPOT, thin surfaces, negative directions and empty skips\n";
+
+    // A ray fully behind all geometry is now rejected at a coarse level. A
+    // mixed geometry/sky tile uses a far sentinel and must not claim this proof.
+    Pyramid solid(256, 128);
+    for (auto& depth : solid.depth[0]) depth = {100.f, 100.f};
+    solid.build();
+    Hit behind = trace(solid, 0.5f, 20.5f, 254.f, 0.f, 300.f, 400.f, true);
+    Hit behindLinear = trace(solid, 0.5f, 20.5f, 254.f, 0.f, 300.f, 400.f, false);
+    assert(behind.x == -1 && behind.tests < behindLinear.tests / 4);
+    solid.depth[0][20 * 256 + 30] = {1e20f, 1e20f};
+    solid.build();
+    Hit mixedBehind = trace(solid, 0.5f, 20.5f, 254.f, 0.f, 300.f, 400.f, true);
+    assert(mixedBehind.x == -1);
+    std::cout << "PASS: " << comparisons << " Hi-Z/reference comparisons; reciprocal depth, DRS, NPOT, thin surfaces, negative directions, empty and behind-surface skips\n";
 }

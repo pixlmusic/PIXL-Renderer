@@ -194,7 +194,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	SimpleLightingBalance,
 	DeveloperMode,
 	SkipExperimentalWarning,
-	ExperimentalRenderOriginEnabled,
 	QualityContractVersion,
 	RendererQuality,
 	LightingQuality,

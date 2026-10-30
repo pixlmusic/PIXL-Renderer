@@ -17,15 +17,15 @@ struct VolumetricClouds : RenderModule
 	{
 		bool Enabled = true;
 		std::uint32_t Quality = 2;  // Performance, Balanced, High, Ultra.
-		float Coverage = 0.60f;
-		float Density = 1.55f;
+		float Coverage = 0.73f;
+		float Density = 1.91f;
 		float VanillaCloudVisibility = 0.25f;
 		float OriginalSkyExposure = 0.0f;
 		float OriginalSkyContrast = 1.0f;
 		float AuroraIntensity = 0.35f;
 		float LightningIntensity = 1.0f;
-		float CloudBase = 15000.0f;
-		float CloudThickness = 50085.0f;
+		float CloudBase = 15435.0f;
+		float CloudThickness = 65000.0f;
 		bool EnableHighCloudLayer = false;
 		float HighCloudBase = 30000.0f;
 		float HighCloudTop = 100000.0f;
@@ -49,7 +49,7 @@ struct VolumetricClouds : RenderModule
 		float Powder = 0.55f;
 		float MultipleScattering = 0.65f;
 		float ShadowStrength = 0.20f;
-		float TemporalResponse = 0.92f;
+		float TemporalResponse = 0.68f;
 		std::uint32_t DebugMode = 0;
 	};
 

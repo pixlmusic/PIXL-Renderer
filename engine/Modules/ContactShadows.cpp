@@ -255,7 +255,12 @@ void ContactShadows::DrawShadows()
 
 	// Helper lambda to calculate light projection
 	auto CalculateLightProjection = [&]() -> std::array<float, 4> {
-		auto viewProjMat = globals::game::frameBufferCached.GetCameraViewProj().Transpose();
+		const auto& frame = globals::game::frameBufferCached;
+		// The ray is sampled against this frame's rasterized depth. Use the same
+		// jittered camera projection as the depth pass; mixing projections offsets
+		// the traced occluder by a subpixel each time temporal jitter changes.
+		const auto& viewProj = frame.GetCameraViewProj();
+		auto viewProjMat = viewProj.Transpose();
 		auto projectedLight = DirectX::SimpleMath::Vector4::Transform(lightProjection, viewProjMat);
 		return { projectedLight.x, projectedLight.y, projectedLight.z, projectedLight.w };
 	};

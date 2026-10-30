@@ -206,14 +206,40 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	static bool setupNeuralRendering = false;
 	static bool nrSetupConfirmed = false;
 	const bool dlssAvailable = globals::pipeline::imageReconstruction.streamline.featureDLSS;
+	struct SetupUpscalerOption {
+		const char* label;
+		uint method;
+		uint quality;
+	};
+	constexpr SetupUpscalerOption upscalerOptions[] = {
+		{ "Off (native, no temporal AA)", 0u, 0u },
+		{ "TAA (native)", 1u, 0u },
+		{ "FSR 3.1 Native AA", 2u, 0u },
+		{ "FSR 3.1 Quality", 2u, 1u },
+		{ "FSR 3.1 Balanced", 2u, 2u },
+		{ "FSR 3.1 Performance", 2u, 3u },
+		{ "FSR 3.1 Ultra Performance", 2u, 4u },
+		{ "DLAA (DLSS native anti-aliasing)", 3u, 0u },
+		{ "DLSS Quality", 3u, 1u },
+		{ "DLSS Balanced", 3u, 2u },
+		{ "DLSS Performance", 3u, 3u },
+		{ "DLSS Ultra Performance", 3u, 4u }
+	};
+	const auto usesDLSS = [&]() { return upscalerOptions[setupUpscaler].method == 3u; };
 	if (ImGui::IsWindowAppearing()) {
 		g_setupDismissKeysArmed = false;
 		setupQuality = std::clamp(menu->GetSettings().RendererQuality, 0, 3);
 		const auto& reconstruction = globals::pipeline::imageReconstruction.settings;
 		const auto current = dlssAvailable ? reconstruction.upscaleMethod : reconstruction.upscaleMethodNoDLSS;
-		setupUpscaler = std::clamp(static_cast<int>(current), 0, dlssAvailable ? 3 : 2);
-		if (setupUpscaler == 3 && reconstruction.qualityMode == 0)
-			setupUpscaler = 4;
+		setupUpscaler = 0;
+		const uint quality = std::min(reconstruction.qualityMode, 4u);
+		for (int index = 0; index < IM_ARRAYSIZE(upscalerOptions); ++index) {
+			if (upscalerOptions[index].method == current &&
+				(upscalerOptions[index].method < 2u || upscalerOptions[index].quality == quality)) {
+				setupUpscaler = index;
+				break;
+			}
+		}
 		setupFrameGeneration = reconstruction.frameGenerationMode != 0;
 		setupFGBackend = std::clamp(static_cast<int>(reconstruction.frameGenerationBackend), 0, 1);
 		setupNeuralRendering = reconstruction.neuralRenderingEnabled;
@@ -221,13 +247,12 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	}
 
 	ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanSoft), "IMAGE PATH");
-	const char* upscalerNames[] = { "Off (native, no temporal AA)", "TAA (native)", "FSR 3.1 Quality", "DLSS Quality", "DLAA (DLSS native anti-aliasing)" };
 	ImGui::SetNextItemWidth(-1.0f);
-	if (ImGui::BeginCombo("##PIXLSetupUpscaler", upscalerNames[setupUpscaler])) {
-		for (int index = 0; index < IM_ARRAYSIZE(upscalerNames); ++index) {
-			const bool unavailable = index >= 3 && !dlssAvailable;
+	if (ImGui::BeginCombo("##PIXLSetupUpscaler", upscalerOptions[setupUpscaler].label)) {
+		for (int index = 0; index < IM_ARRAYSIZE(upscalerOptions); ++index) {
+			const bool unavailable = upscalerOptions[index].method == 3u && !dlssAvailable;
 			ImGui::BeginDisabled(unavailable);
-			if (ImGui::Selectable(upscalerNames[index], setupUpscaler == index)) setupUpscaler = index;
+			if (ImGui::Selectable(upscalerOptions[index].label, setupUpscaler == index)) setupUpscaler = index;
 			ImGui::EndDisabled();
 			if (unavailable && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
 				ImGui::SetTooltip("DLSS requires supported NVIDIA hardware and an available DLSS runtime.");
@@ -278,8 +303,8 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 	if (PIXLUI::VisibleCheckbox("Enable Neural Rendering (experimental)", &setupNeuralRendering)) {
 		nrSetupConfirmed = false;
 		if (setupNeuralRendering) {
-			if (setupUpscaler < 3)
-				setupUpscaler = 4;  // NR requires DLSS; preserve native resolution with DLAA.
+			if (!usesDLSS())
+				setupUpscaler = 7;  // NR requires DLSS; preserve native resolution with DLAA.
 			ImGui::OpenPopup("NEURAL RENDERING | SETUP");
 		}
 	}
@@ -295,7 +320,7 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 		if (nrSetupConfirmed)
 			ImGui::PopStyleColor();
 		ImGui::TextWrapped("Requires DLSS or DLAA and SDR. First activation requires a restart to prepare Neural Rendering; use borderless/windowed mode. Normal DLSS remains the fallback if NR is unavailable.");
-		if (setupUpscaler < 3)
+		if (!usesDLSS())
 			ImGui::TextWrapped("Select DLSS or DLAA above to enable Neural Rendering.");
 	}
 
@@ -370,7 +395,7 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 		g_setupDismissKeysArmed = true;
 	const bool escapePressed = g_setupDismissKeysArmed && ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Escape);
 	const bool enterPressed = g_setupDismissKeysArmed && ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter);
-	const bool needsNRGuide = setupNeuralRendering && neuralAvailable && setupUpscaler >= 3 && !nrSetupConfirmed;
+	const bool needsNRGuide = setupNeuralRendering && neuralAvailable && usesDLSS() && !nrSetupConfirmed;
 	if (!capturing && !escapePressed && (continuePressed || enterPressed) && needsNRGuide)
 		ImGui::OpenPopup("NEURAL RENDERING | SETUP");
 	if (!capturing && (escapePressed || ((continuePressed || enterPressed) && !needsNRGuide))) {
@@ -379,12 +404,11 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 			if (setupQuality != menu->GetSettings().RendererQuality)
 				PIXLRenderer::QualityProfiles::ApplyGlobal(std::clamp(setupQuality, 0, 3));
 			auto& reconstruction = globals::pipeline::imageReconstruction.settings;
-			const bool selectedDLAA = dlssAvailable && setupUpscaler == 4;
-			const uint selectedMethod = selectedDLAA ? 3u : static_cast<uint>(std::clamp(setupUpscaler, 0, dlssAvailable ? 3 : 2));
+			const uint selectedMethod = upscalerOptions[setupUpscaler].method;
 			reconstruction.upscaleMethod = selectedMethod;
 			if (selectedMethod != static_cast<uint>(ImageReconstruction::UpscaleMethod::kDLSS))
 				reconstruction.upscaleMethodNoDLSS = selectedMethod;
-			reconstruction.qualityMode = !selectedDLAA && selectedMethod >= static_cast<uint>(ImageReconstruction::UpscaleMethod::kFSR) ? 1u : 0u;
+			reconstruction.qualityMode = upscalerOptions[setupUpscaler].quality;
 			reconstruction.frameGenerationMode = setupFrameGeneration && setupFGAvailable ? 1u : 0u;
 			reconstruction.frameGenerationBackend = static_cast<uint>(setupFGBackend);
 			reconstruction.neuralRenderingEnabled = setupNeuralRendering && neuralAvailable && selectedMethod == 3u;
@@ -402,7 +426,7 @@ void LaunchExperienceRenderer::RenderFirstTimeSetupDialog()
 		}
 	}
 
-	PIXLRendererPage::RenderNeuralSetupGuide(neuralAvailable && setupUpscaler >= 3, &nrSetupConfirmed);
+	PIXLRendererPage::RenderNeuralSetupGuide(neuralAvailable && usesDLSS(), &nrSetupConfirmed);
 	ImGui::EndPopup();
 	ImGui::PopStyleVar(3);
 }

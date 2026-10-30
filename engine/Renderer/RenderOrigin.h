@@ -85,6 +85,27 @@ namespace PIXL::RenderOrigin
 
         bool Update(std::uint64_t frame, Position camera, std::uint64_t context)
         {
+#if defined(PIXL_DISABLE_RENDER_ORIGIN_SHIFT)
+            // 1.0.9 ships the ABI and identity conversion helpers for clients
+            // still using the coordinate contract, but not the experimental
+            // camera-relative rebase implementation.
+            (void)camera;
+            initialized = true;
+            lastFrame = frame;
+            worldContext = context;
+            requestedEnabled = false;
+            enabled = false;
+            shifted = false;
+            historyValid = true;
+            discontinuity = false;
+            discontinuityReason = DiscontinuityReason::None;
+            currentOrigin = {};
+            previousOrigin = {};
+            originDelta = {};
+            debugOffset = {};
+            epoch = 0;
+            return true;
+#else
             if (initialized && frame == lastFrame)
                 return false;
             const bool first = !initialized;
@@ -136,6 +157,7 @@ namespace PIXL::RenderOrigin
             worldContext = context;
             initialized = true;
             return true;
+#endif
         }
 
         Position WorldToRender(Position absolute) const { return absolute - currentOrigin; }
@@ -203,5 +225,4 @@ namespace PIXL::RenderOrigin
 
     Manager& Get();
 	std::string_view ToString(DiscontinuityReason reason);
-    void DrawExperimentalPanel();
 }

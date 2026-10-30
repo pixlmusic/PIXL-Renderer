@@ -31,10 +31,8 @@ Owner testing covers Skyrim SE 1.5.97, GOG 1.6.1179.0, and Steam 1.6.1170.
 
 ### Water
 
-PIXL 1.0.8 uses PIXL's own water rendering. It does not bundle, patch, or offer
-SurfaceTides compatibility. The experimental native ocean and adaptive water
-work is being developed inside PIXL for a later release; until that work is
-validated, lakes, rivers, and other water keep the established PIXL/Skyrim path.
+PIXL 1.0.9 uses PIXL's own water rendering. Lakes, rivers, and other water use
+the PIXL/Skyrim path shipped with the renderer.
 
 ### Install and first launch
 

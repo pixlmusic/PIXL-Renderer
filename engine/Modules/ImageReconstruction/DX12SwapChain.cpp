@@ -124,12 +124,12 @@ void DX12SwapChain::CreateSwapChainDirect(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN
 	swapChainDesc.Flags = enableDLSSG ?
 		a_swapChainDesc.Flags & ~DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : a_swapChainDesc.Flags;
 	winrt::com_ptr<IDXGISwapChain1> nativeSwapChain;
-	logger::info("[DX12SwapChain] Calling CreateSwapChainForHwnd");
+			logger::debug("[DX12SwapChain] Calling CreateSwapChainForHwnd");
 	DX::ThrowIfFailed(dxgiFactory->CreateSwapChainForHwnd(commandQueue.get(), a_swapChainDesc.OutputWindow,
 		&swapChainDesc, nullptr, nullptr, nativeSwapChain.put()));
-	logger::info("[DX12SwapChain] Native swap chain created");
+			logger::debug("[DX12SwapChain] Native swap chain created");
 	DX::ThrowIfFailed(nativeSwapChain->QueryInterface(IID_PPV_ARGS(&swapChain)));
-	logger::info("[DX12SwapChain] Native swap chain interface acquired");
+		logger::debug("[DX12SwapChain] Native swap chain interface acquired");
 	for (UINT i = 0; i < swapChainDesc.BufferCount; ++i)
 		DX::ThrowIfFailed(swapChain->GetBuffer(i, IID_PPV_ARGS(&swapChainBuffers[i])));
 	frameIndex = swapChain->GetCurrentBackBufferIndex();
@@ -465,11 +465,8 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 				} else {
 					static std::atomic_bool guideMismatchLogged{ false };
 					if (!guideMismatchLogged.exchange(true, std::memory_order_acq_rel)) {
-						logger::warn(
-							"[NeuralRendering] Skipping Feature 18: guide contract is unpublished or outside allocation (guideFrame={}, cameraFrame={}, stateFrame={}, guide={}x{}, allocation={}x{})",
-							neuralGuides.frame,
-							imageReconstruction.cameraFrame.frame,
-							globals::state->frameCount,
+						logger::debug(
+							"[NeuralRendering] Deferring evaluation until guide buffers are ready (guide={}x{}, allocation={}x{})",
 							neuralGuides.width,
 							neuralGuides.height,
 							guideDesc.Width,
@@ -479,54 +476,63 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 			}
 		}
 		{
-			std::vector<D3D12_RESOURCE_BARRIER> barriers;
-			if (presentationSource == fakeSwapChain)
-				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(fakeSwapChain, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE));
-			barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(realSwapChain, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST));
-			commandLists[frameIndex]->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+			std::array<D3D12_RESOURCE_BARRIER, 2> barriers{};
+			UINT barrierCount = 0;
+			if (presentationSource == fakeSwapChain) {
+				barriers[barrierCount++] = CD3DX12_RESOURCE_BARRIER::Transition(
+					fakeSwapChain, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
+			}
+			barriers[barrierCount++] = CD3DX12_RESOURCE_BARRIER::Transition(
+				realSwapChain, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
+			commandLists[frameIndex]->ResourceBarrier(barrierCount, barriers.data());
 		}
 
 		commandLists[frameIndex]->CopyResource(realSwapChain, presentationSource);
 
 		{
-			std::vector<D3D12_RESOURCE_BARRIER> barriers;
-			if (presentationSource == fakeSwapChain)
-				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(fakeSwapChain, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON));
-			else if (neuralTransitionsActive)
-				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(presentationSource, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON));
-			barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(realSwapChain, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT));
-			commandLists[frameIndex]->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+			std::array<D3D12_RESOURCE_BARRIER, 2> barriers{};
+			UINT barrierCount = 0;
+			if (presentationSource == fakeSwapChain) {
+				barriers[barrierCount++] = CD3DX12_RESOURCE_BARRIER::Transition(
+					fakeSwapChain, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
+			} else if (neuralTransitionsActive) {
+				barriers[barrierCount++] = CD3DX12_RESOURCE_BARRIER::Transition(
+					presentationSource, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
+			}
+			barriers[barrierCount++] = CD3DX12_RESOURCE_BARRIER::Transition(
+				realSwapChain, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
+			commandLists[frameIndex]->ResourceBarrier(barrierCount, barriers.data());
 		}
 	}
 
 	if (presenter == Presenter::kDLSSG && imageReconstruction.streamlineDX12.featureDLSSG) {
 		auto& dlssg = imageReconstruction.streamlineDX12;
 		if (traceDLSSGPresent)
-			logger::info("[DX12SwapChain] DLSS-G present stage: begin frame setup");
+						logger::debug("[DX12SwapChain] DLSS-G present stage: begin frame setup");
 		const bool hasFrameToken = dlssg.EnsureFrameToken();
 		if (traceDLSSGPresent)
-			logger::info("[DX12SwapChain] DLSS-G present stage: frame token {}", hasFrameToken ? "ready" : "missing");
+						logger::debug("[DX12SwapChain] DLSS-G present stage: frame token {}", hasFrameToken ? "ready" : "missing");
 		dlssg.EmitPCLMarker(sl::PCLMarker::eSimulationEnd);
 		dlssg.EmitPCLMarker(sl::PCLMarker::eRenderSubmitStart);
 		if (traceDLSSGPresent)
-			logger::info("[DX12SwapChain] DLSS-G present stage: PCL start markers emitted");
+						logger::debug("[DX12SwapChain] DLSS-G present stage: PCL start markers emitted");
 		if (dlssg.CheckFrameConstants(dlssg.viewport, false)) {
 			if (traceDLSSGPresent)
-				logger::info("[DX12SwapChain] DLSS-G present stage: frame constants ready");
+						logger::debug("[DX12SwapChain] DLSS-G present stage: frame constants ready");
 			const bool tagsReady = dlssg.TagDX12Resources(commandLists[frameIndex].get(),
 				depthBufferShared12 ? depthBufferShared12->resource.get() : nullptr,
 				motionVectorBufferShared12 ? motionVectorBufferShared12->resource.get() : nullptr,
 				uiBufferWrapped ? uiBufferWrapped->resource.get() : nullptr,
 				swapChainDesc.Width, swapChainDesc.Height);
 			if (traceDLSSGPresent)
-				logger::info("[DX12SwapChain] DLSS-G present stage: resources tagged");
+						logger::debug("[DX12SwapChain] DLSS-G present stage: resources tagged");
 			dlssg.ConfigureDLSSG(tagsReady && imageReconstruction.ShouldUseFrameGenerationThisFrame());
 			if (traceDLSSGPresent)
-				logger::info("[DX12SwapChain] DLSS-G present stage: options configured");
+						logger::debug("[DX12SwapChain] DLSS-G present stage: options configured");
 		} else {
 			dlssg.ConfigureDLSSG(false);
 			if (traceDLSSGPresent)
-				logger::info("[DX12SwapChain] DLSS-G present stage: constants unavailable, disabled for frame");
+						logger::debug("[DX12SwapChain] DLSS-G present stage: constants unavailable, disabled for frame");
 		}
 	} else if (presenter == Presenter::kFidelityFX) {
 		imageReconstruction.fidelityFX.Present(imageReconstruction.ShouldUseFrameGenerationThisFrame(), isHDR);
@@ -534,24 +540,24 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 
 	DX::ThrowIfFailed(commandLists[frameIndex]->Close());
 	if (traceDLSSGPresent)
-		logger::info("[DX12SwapChain] DLSS-G present stage: command list closed");
+		logger::debug("[DX12SwapChain] DLSS-G present stage: command list closed");
 
 	ID3D12CommandList* commandListsToExecute[] = { commandLists[frameIndex].get() };
 	commandQueue->ExecuteCommandLists(1, commandListsToExecute);
 	if (traceDLSSGPresent)
-		logger::info("[DX12SwapChain] DLSS-G present stage: command list executed");
+		logger::debug("[DX12SwapChain] DLSS-G present stage: command list executed");
 	if (presenter == Presenter::kDLSSG && imageReconstruction.streamlineDX12.featureDLSSG) {
 		imageReconstruction.streamlineDX12.EmitPCLMarker(sl::PCLMarker::eRenderSubmitEnd);
 		imageReconstruction.streamlineDX12.EmitPCLMarker(sl::PCLMarker::ePresentStart);
 		if (traceDLSSGPresent)
-			logger::info("[DX12SwapChain] DLSS-G present stage: submit/present markers emitted");
+			logger::debug("[DX12SwapChain] DLSS-G present stage: submit/present markers emitted");
 		loggedFirstDLSSGPresent = true;
 	}
 
 	// Present the frame
 	DX::ThrowIfFailed(swapChain->Present(SyncInterval, Flags));
 	if (traceDLSSGPresent)
-		logger::info("[DX12SwapChain] DLSS-G present stage: swap chain present returned");
+		logger::debug("[DX12SwapChain] DLSS-G present stage: swap chain present returned");
 	if (presenter == Presenter::kDLSSG && imageReconstruction.streamlineDX12.featureDLSSG)
 		imageReconstruction.streamlineDX12.EmitPCLMarker(sl::PCLMarker::ePresentEnd);
 	if (presenter == Presenter::kDLSSG && imageReconstruction.streamlineDX12.featureDLSSG) {

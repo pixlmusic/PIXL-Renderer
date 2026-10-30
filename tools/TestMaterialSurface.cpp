@@ -100,9 +100,21 @@ RWStructuredBuffer<float4> Result : register(u0);
             MaterialSurface::NoiseGradient(pos+float3(0,0,step)).w-MaterialSurface::NoiseGradient(pos-float3(0,0,step)).w)/(2*step);
         value=float4(abs(n.xyz-fd),n.w);
     }
-    else if(i<256) value=float4(MaterialSurface::SnowMask(0,1,1,t,0),MaterialSurface::SnowMask(1,1,0,t,0),MaterialSurface::SnowMask(1,1,1,t,0),MaterialSurface::SnowMask(t,1,1,.5,.1));
+    else if(i<256) value=float4(MaterialSurface::SnowMask(0,1,1,t,0,0),MaterialSurface::SnowMask(1,1,0,t,0,0),MaterialSurface::SnowMask(1,1,1,t,0,0),MaterialSurface::SnowMask(t,1,1,.5,.1,0));
     else if(i<512) value=float4(MaterialSurface::FilmCoverage(t,0),MaterialSurface::FilmCoverage(t,1),MaterialSurface::FilmCoverage(t,.5),t);
     else if(i<768) value=float4(RoughnessWithMaterialVariance(t,0,0,1,.18),RoughnessWithMaterialVariance(t,1,1,0,.18),RoughnessWithMaterialVariance(t,.01,.02,1,.18),RoughnessWithMaterialVariance(t,100,100,1,.18));
+    else if(i>=768 && i<772) {
+        if(i==768) value.x=MaterialSurface::StableSnowNormalZ(.9,.2,1);
+        if(i==769) value.x=MaterialSurface::StableSnowNormalZ(.9,.9,1);
+        if(i==770) value.x=MaterialSurface::StableSnowNormalZ(.2,.9,1);
+        if(i==771) value.x=MaterialSurface::StableSnowNormalZ(.9,.2,0);
+        if(i==768) value.y=MaterialSurface::SurfaceMotionWeight(0.0.xxx,0.0.xxx,0);
+        if(i==769) value.y=MaterialSurface::SurfaceMotionWeight(float3(.45,0,0),0.0.xxx,0);
+        if(i==770) value.y=MaterialSurface::SurfaceMotionWeight(float3(.9,0,0),0.0.xxx,0);
+        if(i==771) value.y=MaterialSurface::SurfaceMotionWeight(float3(.1,0,0),0.0.xxx,0);
+        value.z=MaterialSurface::GroundSnowCompaction(.8,.5);
+        value.w=i==769 ? MaterialSurface::GroundSnowCompaction(1,1) : MaterialSurface::GroundSnowCompaction(0,1);
+    }
     else {
         PhysicalMaterial::Surface s=PhysicalMaterial::FromLegacy(.5.xxx,t*1024,1.0.xxx,1);
         value=float4(s.Roughness,s.F0.x,
@@ -158,6 +170,13 @@ RWStructuredBuffer<float4> Result : register(u0);
                 Require(Near(p[0],0) && Near(p[1],0) && Near(p[2],1), "Snow dry/roof/full-coverage contract");
                 if(i>128) Require(p[3]>=data[4*(i-1)+3], "Nonmonotonic snow accumulation");
             }
+            if(i>=768 && i<772) {
+                const float expectedSlope[] = {.2f,.9f,.2f,.9f};
+                const float expectedMotion[] = {0.0f,.5f,1.0f,0.0f};
+                Require(Near(p[0], expectedSlope[i-768]), "Moving snow face stability");
+                Require(Near(p[1], expectedMotion[i-768]), "Snow motion threshold");
+                Require(Near(p[2], .4f) && Near(p[3], i==769 ? 1.0f : 0.0f), "Snow compaction coupling");
+            }
             if(i>=256 && i<512) {
                 Require(Near(p[0],p[3]) && p[1]<=p[2]+1e-5f && p[2]<=p[0]+1e-5f, "Absorption ordering");
                 if(i>256) Require(p[1]>=data[4*(i-1)+1], "Nonmonotonic water film");
@@ -167,7 +186,7 @@ RWStructuredBuffer<float4> Result : register(u0);
                 Require(Near(p[0],t) && Near(p[1],t), "AA changed a uniform or disabled surface");
                 Require(p[2]>=t-1e-5f && p[3]>=p[2]-1e-5f, "AA variance ordering");
             }
-            if(i>=768) Require(Near(p[1],.04f) && Near(p[2],0) && Near(p[3],0), "Legacy dielectric / conductor guard");
+            if(i>=772) Require(Near(p[1],.04f) && Near(p[2],0) && Near(p[3],0), "Legacy dielectric / conductor guard");
         }
         context->Unmap(readback.Get(),0);
         std::cout << "PASS: 961 CPU profile combinations and 1024 production HLSL samples on DX11 WARP.\n";

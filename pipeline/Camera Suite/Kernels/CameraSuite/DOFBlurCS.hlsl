@@ -34,7 +34,7 @@ float3 LoadLinear(float2 uv)
 float ReadGatherDepth(float2 uv)
 {
 	float raw = SharedData::DepthTexture.SampleLevel(LinearClampSampler, saturate(uv), 0.0f).x;
-	if (!isfinite(raw) || raw >= 0.999998f)
+	if (!isfinite(raw) || raw >= 1.0f)
 		return 200000.0f;
 	float depth = SharedData::GetScreenDepth(raw);
 	return isfinite(depth) && depth > 0.0f ? depth : 200000.0f;

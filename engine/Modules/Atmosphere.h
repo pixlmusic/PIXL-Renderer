@@ -50,10 +50,10 @@ public:
 	{
 		uint enabled = 1;
 		uint useWorldProbes = 1;
-		float startDistance = 58680.6f;
+		float startDistance = 0.0f;
 		float fogHeight = 22000.0f;
 		float fogHeightFalloff = 1.283f;
-		float fogDensity = 0.138f;
+		float fogDensity = 0.051f;
 		float directionalInscatteringMultiplier = 1.17f;
 		float directionalInscatteringAnisotropy = 0.158f;
 		float4 inscatteringTint = { 1.0f, 1.0f, 1.0f, 0.41568628f };
@@ -66,23 +66,23 @@ public:
 		uint volumetricFogEnabled = 1;
 		uint volumetricGridPixelSize = 24;
 		uint volumetricGridSizeZ = 64;
-		float volumetricFogDistance = 32506.0f;
+		float volumetricFogDistance = 24423.0f;
 		float volumetricFogStartDistance = 0.0f;
 		float volumetricFogNearFadeInDistance = 0.0f;
-		float volumetricFogExtinctionScale = 0.55f;
-		float4 volumetricFogAlbedo = { 0.9529412f, 0.968627453f, 1.0f, 0.647058845f };
-		float4 volumetricFogEmissive = { 1.0f, 1.0f, 1.0f, 0.09411765f };
-		float volumetricDirectionalScatteringIntensity = 1.22f;
+		float volumetricFogExtinctionScale = 1.06f;
+		float4 volumetricFogAlbedo = { 0.9529412f, 0.968627453f, 1.0f, 0.8509804f };
+		float4 volumetricFogEmissive = { 1.0f, 1.0f, 1.0f, 0.0f };
+		float volumetricDirectionalScatteringIntensity = 1.52f;
 		float volumetricShadowBias = 0.004f;
 		float volumetricDepthDistributionScale = 8.1f;
-		float volumetricSkyLightingIntensity = 1.0f;
+		float volumetricSkyLightingIntensity = 1.49f;
 		float volumetricFogScatteringDistribution = 0.19f;
-		float volumetricHistoryWeight = 0.82f;
-		uint volumetricHistoryMissSampleCount = 6;
+		float volumetricHistoryWeight = 0.65f;
+		uint volumetricHistoryMissSampleCount = 4;
 		float volumetricSampleJitterMultiplier = 0.0f;
 		float volumetricUpsampleJitterMultiplier = 1.0f;
-		float volumetricLocalLightScatteringIntensity = 1.43f;
-		float skyProtection = 0.2f;
+		float volumetricLocalLightScatteringIntensity = 1.08f;
+		float skyProtection = 0.05f;
 		float pad0 = 0.0f;
 
 		// Atmosphere 2.0 reconstruction / temporal quality.
@@ -103,15 +103,15 @@ public:
 		float mapMinimumTransmittance = 0.83f;
 
 		float mapAmbientInscatteringMultiplier = 0.80f;
-		float mapDirectionalInscatteringMultiplier = 0.55f;
-		float mapSunlightAttenuationMultiplier = 0.25f;
+		float mapDirectionalInscatteringMultiplier = 0.63f;
+		float mapSunlightAttenuationMultiplier = 0.29f;
 		float mapWorldProbeMultiplier = 0.81f;
 
 		// Automatic mode preserves the authored sliders as a look/quality baseline,
 		// then adapts visibility, phase and range from Skyrim's live weather.
 		uint automaticWeatherFog = 1;
-		float automaticWeatherStrength = 0.90f;
-		float minimumAtmosphereTransmittance = 0.14f;
+		float automaticWeatherStrength = 0.49f;
+		float minimumAtmosphereTransmittance = 0.07f;
 		float weatherMieStrength = 1.0f;
 	} settings;
 	STATIC_ASSERT_ALIGNAS_16(Settings);

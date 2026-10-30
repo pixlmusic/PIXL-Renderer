@@ -358,7 +358,11 @@ void RadiantGrid::BSLightingShader_SetupGeometry_GeometrySetupConstantPointLight
 			continue;
 		auto* shadowLight = static_cast<RE::BSShadowLight*>(bsLight);
 		auto& maskIndex = shadowLight->GetRuntimeData().maskIndex;
-		strictLightDataTemp.ShadowBitMask |= (1u << maskIndex);
+		// The strict-light shader exposes a 32-bit mask. Some modded interior
+		// light sets report larger indices; the shader treats these as unsupported,
+		// so never perform an undefined shift by >= 32 on the CPU.
+		if (maskIndex < 32u)
+			strictLightDataTemp.ShadowBitMask |= (1u << maskIndex);
 	}
 }
 

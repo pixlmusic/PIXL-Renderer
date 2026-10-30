@@ -734,7 +734,7 @@ void ContainedLiquids::ReplayAfterDeferred()
     }
     replaying=false;pendingCount=0;
     if (count && !replayLogged) {
-        logger::info("[ContainedLiquids] Replayed %zu captured bottle draw(s) after deferred lighting", count);
+        logger::info("[ContainedLiquids] Replayed {} captured bottle draw(s) after deferred lighting", count);
         replayLogged=true;
     }
     ID3D11ShaderResourceView* empty[2]{};ctx->PSSetShaderResources(120,2,empty);

@@ -500,7 +500,6 @@ public:
 		float SimpleLightingBalance = 1.0f;                                                 // Routed Lighting-category balance while AdvancedControls is off
 		bool DeveloperMode = false;                                                         // Enables diagnostics, debug compilation, and engineering tools
 		bool SkipExperimentalWarning = false;                                               // Acknowledged the Experimental workspace entry warning
-		bool ExperimentalRenderOriginEnabled = false;                                       // Opt-in renderer-only origin rebasing; release default stays off
 		int QualityContractVersion = 2;                                                    // v2 moves the former Cinematic workload to High
 		int RendererQuality = 2;                                                           // 0 Low, 1 Medium, 2 High, 3 Cinematic
 		int LightingQuality = 2;

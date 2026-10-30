@@ -4,7 +4,7 @@ param(
     [string]$OutputDirectory = "",
     [string]$ArchivePath = "",
     [string]$AllowedOutputRoot = "",
-    [ValidateSet("", "r2", "r3")][string]$ReleaseRevision = "",
+    [ValidateSet("", "r2", "r3", "r4")][string]$ReleaseRevision = "",
     [string]$ProductVersion = "",
     [ValidateRange(0, 9)][int]$CompressionLevel = 7
 )
@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $base = (Resolve-Path -LiteralPath $BasePackageDirectory).Path
-$revisionVersion = "1.0.8$ReleaseRevision"
+$revisionVersion = "1.0.9$ReleaseRevision"
 if ([string]::IsNullOrWhiteSpace($ProductVersion)) { $ProductVersion = $revisionVersion }
 elseif ($ReleaseRevision -and $ProductVersion -ne $revisionVersion) { throw 'ProductVersion conflicts with ReleaseRevision.' }
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -83,7 +83,7 @@ Copy-Item -LiteralPath (Join-Path $repo 'installer\PIXLRenderer\PIXL-INSTALLER-N
 
 $configPath = Join-Path $output 'fomod\ModuleConfig.xml'
 $configText = Get-Content -LiteralPath $configPath -Raw
-$configText = $configText.Replace('1.0.7', $ProductVersion)
+$configText = [regex]::Replace($configText, '1\.0\.\d+(?:r\d+)?(?=(?:</moduleName>|" type=| highlights|</plugin>))', $ProductVersion)
 [IO.File]::WriteAllText($configPath, $configText, [Text.UTF8Encoding]::new($false))
 $infoPath = Join-Path $output 'fomod\info.xml'
 [xml]$info = Get-Content -LiteralPath $infoPath -Raw
@@ -94,7 +94,7 @@ $descriptionNode = $info.SelectSingleNode('/fomod/Description')
 if (!$descriptionNode) { throw 'FOMOD metadata has no Description node.' }
 if ($manifest.cacheMode -eq 'preloaded') {
     $descriptionNode.InnerText = 'Modern DirectX 11 rendering for Skyrim Special Edition, with a validated shader cache for faster first launch. Missing or changed permutations compile on your system.'
-} elseif ($manifest.channel -eq 'LIVE-TEST' -and $manifest.cacheMode -eq 'compile-on-device') {
+} elseif ($manifest.channel -in @('LIVE-TEST', 'RELEASE-CANDIDATE') -and $manifest.cacheMode -eq 'compile-on-device') {
     $descriptionNode.InnerText = 'Modern DirectX 11 rendering for Skyrim Special Edition. Shader permutations compile on first launch; allow compilation to finish before evaluating performance.'
 } else {
     throw 'Unsupported cache mode for FOMOD metadata.'

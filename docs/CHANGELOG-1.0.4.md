@@ -147,8 +147,6 @@ and shader payload. They remain opt-in or experimental where noted.
   1.0.4.
 - Added/updated manifest hashing, package self-containment checks, legal notice
   validation and FOMOD XML validation.
-- Added the optional SurfaceTides 1.0.2 universal bridge selection and status
-  reporting.
 - Hardened deployment with target-path validation, timestamped rollback
   backups, hash verification and preservation of user settings/cache.
 - Added release audit, source/provenance, shader staging and package review
@@ -160,8 +158,7 @@ and shader payload. They remain opt-in or experimental where noted.
 
 - Release C++ target `PIXL-12C` built successfully.
 - Core package manifest validation passed.
-- Complete FOMOD XML, branding, disclosure, core payload and SurfaceTides
-  bridge validation passed.
+- Complete FOMOD XML, branding, disclosure and core payload validation passed.
 - Package archives passed 7-Zip integrity tests.
 - Deployed DLL and updated shader/default files were hash-verified in the
   Steam Skyrim installation.

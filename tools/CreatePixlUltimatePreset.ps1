@@ -54,7 +54,7 @@ $gi.WorldCacheTemporalResponse = 0.07
 $config.'Contact Shadows'.SampleCount = 6
 $config.'Contact Shadows'.FalloffStart = 6144.0
 $config.'Contact Shadows'.FalloffEnd = 10240.0
-$config.'Material Forge'.LocalContactShadowLightCount = 2
+$config.'Material Forge'.LocalContactShadowLightCount = 4
 $config.'Light Volumes'.ExteriorQuality = 2
 $config.'Light Volumes'.InteriorQuality = 2
 

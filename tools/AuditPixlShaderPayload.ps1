@@ -150,7 +150,7 @@ foreach ($relative in ($shaderTexts.Keys | Sort-Object)) {
 }
 
 $shaderReport = [Collections.Generic.List[string]]::new()
-$shaderReport.Add('# Staged Shader Semantic Review — PIXL Renderer 1.0.8 / 12C')
+$shaderReport.Add('# Staged Shader Semantic Review — PIXL Renderer 1.0.9 / 12C')
 $shaderReport.Add('')
 $shaderReport.Add('Exact LIVE-TEST payload: `' + $packageDisplay + '`. Every staged HLSL/HLSLI file was opened, hashed, mapped to an include/native/game consumer, scanned for register declarations and reviewed for numerical-risk call sites. Risk counts identify locations requiring contextual review; they do not assert a bug. Duplicate bindings can be valid under mutually exclusive preprocessor branches.')
 $shaderReport.Add('')
@@ -170,7 +170,7 @@ foreach ($record in $shaderRecords) {
 $shaderReport | Set-Content -LiteralPath (Join-Path $reportRoot 'SHADER_REVIEW_MATRIX.md') -Encoding utf8
 
 $payloadReport = [Collections.Generic.List[string]]::new()
-$payloadReport.Add('# Staged Payload Review — PIXL Renderer 1.0.8 / 12C')
+$payloadReport.Add('# Staged Payload Review — PIXL Renderer 1.0.9 / 12C')
 $payloadReport.Add('')
 $payloadReport.Add('Every manifest entry was opened, assigned to its runtime/package consumer class, and SHA-256 checked. JSON was parsed; known binary formats were checked by magic; vendor DLL signatures were checked; text inputs were read. Source-to-stage identity is separately enforced by `AuditPixlRenderer.ps1 -PackageDirectory`.')
 $payloadReport.Add('')

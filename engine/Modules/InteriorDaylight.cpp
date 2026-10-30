@@ -77,10 +77,19 @@ void InteriorDaylight::PostPostLoad()
 	if (gInteriorShadowDistance && std::isfinite(settings.InteriorShadowDistance))
 		*gInteriorShadowDistance = std::clamp(settings.InteriorShadowDistance, 1000.0f, 8000.0f);
 
-	// Patches BSShadowDirectionalLight::SetFrameCamera to read the correct shadow distance value in interior cells
-	const std::uintptr_t address = REL::RelocationID(101499, 108496).address() + REL::Relocate(0xD62, 0xE6C);
-	const std::int32_t displacement = static_cast<std::int32_t>(reinterpret_cast<std::uintptr_t>(gShadowDistance) - (address + 8));
-	REL::safe_write(address + 4, &displacement, sizeof(displacement));
+	// Patches BSShadowDirectionalLight::SetFrameCamera to read the correct shadow distance value in interior cells.
+	// The legacy AE offset +0xE6C is stale on Skyrim 1.7.104: its displacement
+	// write lands at +0xE70 and overwrites the MOVSS instruction's ModRM/displacement
+	// bytes (the instruction begins at +0xE6E, with its displacement at +0xE72).
+	// Keep the engine's native shadow-distance load on 1.7.104 until a verified
+	// instruction signature and replacement site are available.
+	if (REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104) {
+		logger::warn("[Interior Daylight] Skipping unverified shadow-distance patch on Skyrim 1.7.104; preserving the native shadow-distance load.");
+	} else {
+		const std::uintptr_t address = REL::RelocationID(101499, 108496).address() + REL::Relocate(0xD62, 0xE6C);
+		const std::int32_t displacement = static_cast<std::int32_t>(reinterpret_cast<std::uintptr_t>(gShadowDistance) - (address + 8));
+		REL::safe_write(address + 4, &displacement, sizeof(displacement));
+	}
 
 	rasterStateCullMode = &globals::game::shadowState->GetRuntimeData().rasterStateCullMode;
 

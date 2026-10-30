@@ -1,6 +1,7 @@
 #include "ImageReconstruction.h"
 #include "ContainedLiquids.h"
 #include "ReactiveFX.h"
+#include "VolumetricClouds.h"
 
 #include "../I18n/I18n.h"
 #include "Deferred.h"
@@ -136,12 +137,6 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 	}
 
 	const bool sidecarAllowed = pSwapChainDesc->Windowed != FALSE;
-	if (!sidecarAllowed) {
-		// The isolated DX12 presenter is a windowed/borderless path. Do not force it
-		// onto Skyrim's exclusive swap chain: that can leave the image stalled until
-		// focus changes. Keep native fullscreen stable and explain the requirement.
-		logger::warn("[ImageReconstruction] DX12 sidecar unavailable in exclusive fullscreen; switch Skyrim to borderless/windowed for Neural Rendering or Frame Generation");
-	}
 
 	auto refreshRate = ImageReconstruction::GetRefreshRate(pSwapChainDesc->OutputWindow);
 	imageReconstruction.refreshRate = refreshRate;
@@ -151,6 +146,11 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 		imageReconstruction.settings.upscaleMethod == static_cast<uint>(ImageReconstruction::UpscaleMethod::kDLSS) &&
 		imageReconstruction.streamline.neuralRenderingSupportedOnCurrentAdapter;
 	const bool frameGenerationRequested = imageReconstruction.settings.frameGenerationMode != 0;
+	if (!sidecarAllowed && (frameGenerationRequested || neuralRenderingProvisioned)) {
+		// Keep the native exclusive swap chain unless a selected optional feature
+		// actually needs the windowed/borderless D3D12 presenter.
+		logger::warn("[ImageReconstruction] DX12 sidecar unavailable in exclusive fullscreen; switch Skyrim to borderless/windowed for Neural Rendering or Frame Generation");
+	}
 	imageReconstruction.frameGenerationConfiguredAtBoot = frameGenerationRequested;
 	imageReconstruction.frameGenerationBackendAtBoot = imageReconstruction.settings.frameGenerationBackend;
 	const bool refreshAllowsFrameGeneration = refreshRate >= 120 || imageReconstruction.settings.frameGenerationForceEnable;
@@ -196,7 +196,7 @@ HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChainUpscaling(
 		} else {
 			logger::warn("[Frame Generation] DLSS-G requires its DX12 Streamline runtime on an NVIDIA adapter; preserving the native D3D11 swap chain");
 		}
-	} else if (frameGenerationRequested && !refreshAllowsFrameGeneration) {
+	} else if (sidecarAllowed && frameGenerationRequested && !refreshAllowsFrameGeneration) {
 		logger::info("[Frame Generation] Sidecar not provisioned below 120 Hz unless Force Enable is selected");
 	}
 
@@ -928,12 +928,11 @@ void ImageReconstruction::PostPostLoad()
 	bool isGOG = !GetModuleHandle(L"steam_api64.dll");
 	stl::detour_thunk<MenuManagerDrawInterfaceStartHook>(REL::RelocationID(79947, 82084));
 
-	// Calculates resolution and jitter. The old AE call site (+0xE2) overlaps
-	// an instruction in Skyrim 1.7.104's Main_UpdateJitter (+0xDD); a live crash
-	// confirmed the patch corrupts that instruction. Keep the native routine on
-	// 1.7.104+ until a verified runtime-specific call site is available.
-	if (REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_104) {
-		logger::warn("[ImageReconstruction] Skipping Main_UpdateJitter hook on runtime {}; native temporal jitter remains active until this patch site is validated.", REL::Module::get().version().string());
+	// The old AE call site is not a call boundary in Skyrim 1.7.104.
+	if (REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104) {
+		logger::info("[ImageReconstruction] 1.7.104 viewport setup uses the player-view entry hook.");
+	} else if (REL::Module::get().version() > SKSE::RUNTIME_SSE_1_7_104) {
+		logger::warn("[ImageReconstruction] Skipping unverified jitter hook on runtime {}.", REL::Module::get().version().string());
 	} else {
 		stl::write_thunk_call<Main_UpdateJitter>(REL::RelocationID(75460, 77245).address() + REL::Relocate(0xE5, isGOG ? 0x133 : 0xE2));
 	}
@@ -950,8 +949,14 @@ void ImageReconstruction::PostPostLoad()
 	// Patches facegen texture generation to not use dynamic resolution
 	stl::detour_thunk<BSFaceGenManager_UpdatePendingCustomizationTextures>(REL::RelocationID(26455, 27041));
 
-	// Patches precipitation camera to not use dynamic resolution
-	stl::write_thunk_call<Main_RenderPrecipitation>(REL::RelocationID(35560, 36559).address() + REL::Relocate(0x3A1, 0x3A1));
+	// Patches precipitation camera to not use dynamic resolution. This legacy
+	// offset is not a call boundary in Steam 1.7.104's Main::RenderPlayerView;
+	// do not overwrite the surrounding renderer instructions on that runtime.
+	if (REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104) {
+		logger::warn("[ImageReconstruction] Skipping unverified precipitation call-site hook on Skyrim 1.7.104.");
+	} else {
+		stl::write_thunk_call<Main_RenderPrecipitation>(REL::RelocationID(35560, 36559).address() + REL::Relocate(0x3A1, 0x3A1));
+	}
 
 	// Forces FXAA off
 	stl::detour_thunk<BSImageSpace_Init_FXAA>(REL::RelocationID(98974, 105626));
@@ -1491,8 +1496,14 @@ void ImageReconstruction::ConfigureUpscaling(RE::BSGraphics::State* a_viewport)
 	dynamicResolutionWidthRatio = resolutionScale.x;
 	dynamicResolutionHeightRatio = resolutionScale.y;
 
-	// Disable dynamic resolution unless the game explicitly enables it
-	runtimeData.dynamicResolutionLock = 1;
+	// 1.7.104 no longer clears this lock at the old jitter call site. Leaving
+	// it set makes ConvertToDynamic return the full display size while the scene
+	// viewport is scaled, so DLSS receives a partly populated 1920x1080 input.
+	// Keep it unlocked only for the reduced-resolution scene; PerformUpscaling
+	// locks it again before image-space and UI rendering.
+	runtimeData.dynamicResolutionLock =
+		REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104 &&
+		upscaleMethod != UpscaleMethod::kNONE && upscaleMethod != UpscaleMethod::kTAA ? 0 : 1;
 }
 
 void ImageReconstruction::SetupResources()
@@ -2398,18 +2409,22 @@ void ImageReconstruction::Upscale()
 		uint32_t renderWidth = (uint32_t)renderSize.x;
 		uint32_t renderHeight = (uint32_t)renderSize.y;
 
-		ID3D11ShaderResourceView* views[5] = {
+		ID3D11ShaderResourceView* cloudMask = globals::pipeline::volumetricClouds.GetDofCloudMaskSRV();
+		ID3D11ShaderResourceView* views[6] = {
 			annotations.temporalAAMask.get(),
 			annotations.normalWaterMask.get(),
 			REX::W32::AsReal(motionVector.SRV),
 			REX::W32::AsReal(depth.depthSRV),
-			annotations.deferredMaterialMask.get()
+			annotations.deferredMaterialMask.get(),
+			cloudMask
 		};
 		context->CSSetShaderResources(0, ARRAYSIZE(views), views);
 		context->CSSetShader(encodeShader, nullptr, 0);
 
 		UpscalingDataCB upscalingData;
 		upscalingData.trueSamplingDim = float2((float)renderWidth, (float)renderHeight);
+		upscalingData.cloudMaskAvailable = cloudMask ? 1.0f : 0.0f;
+		upscalingData.pad0 = 0.0f;
 		upscalingDataCB->Update(upscalingData);
 		auto upscalingBuffer = upscalingDataCB->CB();
 		context->CSSetConstantBuffers(0, 1, &upscalingBuffer);
@@ -2425,7 +2440,7 @@ void ImageReconstruction::Upscale()
 
 		context->Dispatch((renderWidth + 7) / 8, (renderHeight + 7) / 8, 1);
 
-		ID3D11ShaderResourceView* nullViews[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
+		ID3D11ShaderResourceView* nullViews[6]{};
 		context->CSSetShaderResources(0, ARRAYSIZE(nullViews), nullViews);
 
 		ID3D11UnorderedAccessView* nullUAVs[4] = { nullptr, nullptr, nullptr, nullptr };
@@ -2500,6 +2515,15 @@ void ImageReconstruction::Upscale()
 		if (reconstructionHistoryId != 0) {
 			PIXL::Renderer::TemporalContext::Get().SetHistoryValid(reconstructionHistoryId, historyEvaluated);
 		}
+		static bool firstBackendResultLogged = false;
+		if (!firstBackendResultLogged) {
+			firstBackendResultLogged = true;
+			logger::info("[ImageReconstruction] First backend evaluation: method={}, success={}, input={}x{}, output={}x{}.",
+				static_cast<unsigned>(upscaleMethod), historyEvaluated,
+				static_cast<unsigned>(renderSizeForAnnotations.x),
+				static_cast<unsigned>(renderSizeForAnnotations.y),
+				globals::game::graphicsState->screenWidth, globals::game::graphicsState->screenHeight);
+		}
 
 		state->EndPerfEvent();
 		globals::profiler->EndPass();
@@ -2517,6 +2541,14 @@ void ImageReconstruction::PerformUpscaling()
 
 	// Disable dynamic resolution past this point
 	runtimeData.dynamicResolutionLock = 1;
+	if (REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104) {
+		// The 1.7.104 image-space path keeps the scene's reduced ratios and
+		// viewport unless both are restored before its post-processing pass.
+		// Leave resolutionScale itself intact for the next frame and UI readout.
+		runtimeData.dynamicResolutionWidthRatio = 1.0f;
+		runtimeData.dynamicResolutionHeightRatio = 1.0f;
+		globals::game::renderer->UpdateViewPort(0, 0, 1);
+	}
 
 	// Updates the PerFrame constant buffer so that dynamic resolution settings are disabled
 	UpdateCameraData();
@@ -2781,6 +2813,7 @@ void ImageReconstruction::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_th
 
 		if (upscaleMethod == UpscaleMethod::kDLSS)
 			imageReconstruction.ApplySharpening();
+
 	} else if (!duplicatePostProcessLogged.exchange(true, std::memory_order_acq_rel)) {
 		logger::warn(
 			"[ImageReconstruction] Skipped duplicate reconstruction in engine frame {} (target={}); this frame was already upscaled.",

@@ -157,9 +157,14 @@ public:
 	{
 		uint offset;
 		uint lightCount;
+		uint contactLight0;
+		uint contactLight1;
+		uint contactLight2;
+		uint contactLight3;
 		uint pad0[2];
 	};
 	STATIC_ASSERT_ALIGNAS_16(LightGrid);
+	static_assert(sizeof(LightGrid) == 32, "RadiantGrid LightGrid must match its structured shader buffer stride.");
 
 	struct alignas(16) LightBuildingCB
 	{

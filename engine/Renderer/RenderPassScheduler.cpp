@@ -7,7 +7,6 @@
 #include "GPUResourceServices.h"
 #include "LightTransportWorld.h"
 #include "TemporalContext.h"
-#include "VisibilityContext.h"
 
 #include "Globals.h"
 #include "Profiler.h"
@@ -294,7 +293,6 @@ namespace PIXL::Renderer
 			++resourceEpoch;
 			GPUResourceServices::Get().OnResolutionChanged();
 			LightTransportWorld::Get().Invalidate("render resolution changed");
-			VisibilityContext::Get().Invalidate("render resolution changed");
 			Notify(SchedulerEvent::ResolutionChanged);
 		}
 		if (!nextHistoryValid && (!frameObserved || historyValid))
@@ -315,7 +313,6 @@ namespace PIXL::Renderer
 		// this legacy scheduler notification into an indiscriminate ModuleReset;
 		// histories such as world-space caches deliberately survive camera cuts.
 		LightTransportWorld::Get().Invalidate(reason);
-		VisibilityContext::Get().Invalidate(reason);
 		Notify(SchedulerEvent::HistoryInvalidated);
 	}
 

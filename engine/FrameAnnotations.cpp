@@ -946,9 +946,13 @@ namespace FrameAnnotations
 
 		stl::detour_thunk<BSBatchRenderer_RenderBatches>(REL::RelocationID(100852, 107642));
 		stl::detour_thunk<Main_RenderDepth>(REL::RelocationID(100421, 107139));
-		stl::detour_thunk<Main_RenderWorld>(REL::RelocationID(100424, 107142));
+		// Deferred owns the 1.7.104 whole-function detour to bracket PIXL's
+		// world passes safely; avoid attaching a second detour to the same entry.
+		if (REL::Module::get().version() != SKSE::RUNTIME_SSE_1_7_104)
+			stl::detour_thunk<Main_RenderWorld>(REL::RelocationID(100424, 107142));
 		stl::detour_thunk<Main_RenderFirstPersonView>(REL::RelocationID(100411, 107129));
-		stl::detour_thunk<Main_RenderPlayerView>(REL::RelocationID(35560, 36559));
+		if (REL::Module::get().version() != SKSE::RUNTIME_SSE_1_7_104)
+			stl::detour_thunk<Main_RenderPlayerView>(REL::RelocationID(35560, 36559));
 		stl::detour_thunk<Main_RenderWaterEffects>(REL::RelocationID(35561, 36560));
 		stl::detour_thunk<BSShaderAccumulator_RenderBatches>(REL::RelocationID(99963, 106609));
 		stl::detour_thunk<BSShaderAccumulator_RenderPersistentPassList>(REL::RelocationID(100840, 107630));

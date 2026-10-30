@@ -83,7 +83,7 @@ function Apply-QualityContract([object]$Config, [int]$Tier) {
     $Config.'Contact Shadows'.SampleCount = @(1, 1, 3, 6)[$Tier]
     $Config.'Contact Shadows'.FalloffStart = @(3072, 3584, 4608, 6144)[$Tier]
     $Config.'Contact Shadows'.FalloffEnd = @(6144, 7168, 8192, 10240)[$Tier]
-    $Config.'Material Forge'.LocalContactShadowLightCount = @(1, 1, 2, 2)[$Tier]
+    $Config.'Material Forge'.LocalContactShadowLightCount = @(1, 1, 2, 4)[$Tier]
     $Config.'Light Volumes'.ExteriorQuality = [Math]::Min($Tier, 2)
     $Config.'Light Volumes'.InteriorQuality = [Math]::Min($Tier, 2)
 
@@ -130,19 +130,6 @@ function Apply-QualityContract([object]$Config, [int]$Tier) {
     $ground.GeometryTessellationFar = @(1.25, 2.0, 2.5, 6.0)[$Tier]
     $ground.SessionSurfaceHistoryTileBudget = @(48, 96, 192, 512)[$Tier]
     $Config.'Terrain Detail'.enableLODTerrainTilingFix = 1
-
-    $foliage = $Config.'Foliage Optimizer'
-    $foliage.EnableOcclusionCulling = $true
-    $foliage.EnableMidLOD = $true
-    $foliage.EnableFarLOD = $true
-    $foliage.MinPixelSize = @(6.0, 3.5, 2.0, 1.0)[$Tier]
-    $foliage.FullDetailPixelSize = @(48.0, 28.0, 16.0, 8.0)[$Tier]
-    $foliage.MinDensity = @(0.01, 0.02, 0.03, 0.08)[$Tier]
-    $foliage.SimpleShadingPixelSize = @(16.0, 9.0, 0.0, 0.0)[$Tier]
-    $foliage.MeshCostBias = @(0.85, 0.60, 0.40, 0.0)[$Tier]
-    $foliage.CostBiasStartDistance = @(3000.0, 5000.0, 6000.0, 20000.0)[$Tier]
-    $foliage.CollisionDistance = @(1024.0, 1536.0, 2048.0, 4096.0)[$Tier]
-    $foliage.EnableMeshLOD = $Tier -le 1
 
     $skin = $Config.'Skin Optics'
     $skin.EnableSkin = $true

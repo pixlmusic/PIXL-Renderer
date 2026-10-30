@@ -30,6 +30,7 @@
 #include <atomic>
 #include <functional>
 #include <mutex>
+#include <limits>
 #include <unordered_map>
 #include <utility>
 #define I18N_KEY_PREFIX "feature.material_forge."
@@ -38,6 +39,11 @@ namespace
 {
 	uint32_t gEnableProceduralFurShells = 1;
 	float gFurShellLength = 1.8f;
+
+	float FiniteClamp(float value, float fallback, float minimum, float maximum) noexcept
+	{
+		return std::isfinite(value) ? std::clamp(value, minimum, maximum) : fallback;
+	}
 	std::atomic_flag gFurClassificationLogged = ATOMIC_FLAG_INIT;
 
 	bool SupportsAutomaticFurTechnique(SIE::ShaderCache::LightingShaderTechniques a_technique)
@@ -234,7 +240,7 @@ namespace PNState
 			auto configs = clib_util::distribution::get_configs(rootPath, "", ".json");
 
 			if (configs.empty()) {
-				logger::warn("[MaterialForge] no .json files were found within the {} folder, aborting...", rootPath);
+				logger::info("[MaterialForge] No optional JSON overrides found in {}; retaining built-in/default materials", rootPath);
 				return;
 			}
 
@@ -257,6 +263,10 @@ namespace PNState
 					continue;
 				}
 
+				if (!config.is_object()) {
+					logger::warn("[MaterialForge] {} is not a JSON object; ignoring", path);
+					continue;
+				}
 				const auto editorId = std::filesystem::path(path).stem().string();
 				recordReader(editorId, config);
 			}
@@ -265,8 +275,19 @@ namespace PNState
 
 	void SavePBRRecordConfig(const std::string& rootPath, const std::string& editorId, const json& config)
 	{
-		std::filesystem::create_directory(rootPath);
-
+		// Never interpret a game editor ID as a directory traversal or an
+		// absolute path while saving developer-edited material records.
+		if (editorId.empty() || editorId.find_first_of("/\\:<>|?*\"") != std::string::npos ||
+			editorId == "." || editorId == "..") {
+			logger::error("[MaterialForge] refusing invalid material record name");
+			return;
+		}
+		std::error_code error;
+		std::filesystem::create_directories(rootPath, error);
+		if (error) {
+			logger::error("[MaterialForge] cannot create {}: {}", rootPath, error.message());
+			return;
+		}
 		const std::string outputPath = std::format("{}\\{}.json", rootPath, editorId);
 		std::ofstream fileStream(outputPath);
 		if (!fileStream.is_open()) {
@@ -419,6 +440,11 @@ namespace
 			return false;
 
 		if (gMaterialForgeTessellationDevice.get() != device) {
+			// Old device state objects must not accumulate across device recreation.
+			{
+				std::scoped_lock lock(gMaterialForgeDepthVariantsMutex);
+				gMaterialForgeDepthVariants.clear();
+			}
 			gMaterialForgeHullShader = nullptr;
 			gMaterialForgeDomainShader = nullptr;
 			gMaterialForgeTessellationConstants = nullptr;
@@ -877,9 +903,9 @@ void MaterialForge::DrawSettings()
 		DrawTooltip("Traces a short, temporally stable screen-space visibility ray for the strongest local lights. Updates in real time; disable for the lowest GPU cost.");
 		if (settings.EnableLocalContactShadows != 0) {
 			int contactLightCount = static_cast<int>(settings.LocalContactShadowLightCount);
-			if (ImGui::SliderInt("Contact-Shadow Lights / Pixel", &contactLightCount, 1, 2, "%d", ImGuiSliderFlags_AlwaysClamp))
-				settings.LocalContactShadowLightCount = static_cast<uint>(std::clamp(contactLightCount, 1, 2));
-			DrawTooltip("Number of strongest local lights eligible for a contact-shadow ray per pixel. Two is the bounded quality maximum.");
+			if (ImGui::SliderInt("Contact-Shadow Lights / Pixel", &contactLightCount, 1, 4, "%d", ImGuiSliderFlags_AlwaysClamp))
+				settings.LocalContactShadowLightCount = static_cast<uint>(std::clamp(contactLightCount, 1, 4));
+			DrawTooltip("Number of strongest local lights eligible for a short screen-space contact-shadow ray per pixel. Higher values shadow more nearby lights and increase GPU cost; full shadow maps remain limited by Skyrim.");
 			ImGui::SliderFloat("Contact-Shadow Length", &settings.LocalContactShadowLength,
 				16.0f, 256.0f, "%.0f units", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
 			DrawTooltip("Maximum world-space reach of each local-light contact ray. Long rays cover more geometry but can expose screen-space misses.");
@@ -1201,7 +1227,12 @@ void MaterialForge::SaveSettings(json& o_json)
 
 void MaterialForge::LoadSettings(json& o_json)
 {
-	settings = o_json;
+	try {
+		settings = o_json.get<Settings>();
+	} catch (const std::exception& e) {
+		logger::warn("[MaterialForge] Invalid physical-material settings; applying safe defaults: {}", e.what());
+		settings = {};
+	}
 	if (const auto it = o_json.find("Procedural Fur Shells"); it != o_json.end() && it->is_number())
 		gEnableProceduralFurShells = it->get<uint32_t>() != 0 ? 1u : 0u;
 	if (const auto it = o_json.find("Fur Shell Length"); it != o_json.end() && it->is_number_float()) {
@@ -1209,18 +1240,71 @@ void MaterialForge::LoadSettings(json& o_json)
 		if (std::isfinite(value)) gFurShellLength = std::clamp(value, 0.2f, 4.0f);
 	}
 	FurShells::SetShellLength(gFurShellLength);
-	settings.EnablePhysicalLocalLightFalloff = settings.EnablePhysicalLocalLightFalloff ? 1u : 0u;
-	settings.LocalLightMinimumDistance = std::clamp(
-		std::isfinite(settings.LocalLightMinimumDistance) ? settings.LocalLightMinimumDistance : 28.0f,
-		1.0f, 256.0f);
-	settings.PhysicalLocalLightFalloffStrength = std::clamp(
-		std::isfinite(settings.PhysicalLocalLightFalloffStrength) ? settings.PhysicalLocalLightFalloffStrength : 0.65f,
-		0.0f, 1.0f);
-	if (const auto it = o_json.find("Legacy Conversion Tuning"); it != o_json.end() && it->is_object())
-		legacyTuningSettings = it->get<LegacyTuningSettings>();
+	// Sanitization applies to persistent data before any 80-byte GPU upload.
+	// Slider bounds are used for authored values; runtime snow is handled below.
+	auto bit = [](uint& v) { v = v ? 1u : 0u; };
+	bit(settings.EnableLegacyPhysicalDirectLighting);
+	settings.LegacyPhysicalDebugMode = (std::min)(settings.LegacyPhysicalDebugMode, 15u);
+	bit(settings.EnableLegacyMetalInference);
+	bit(settings.EnablePhysicalLocalLightFalloff);
+	bit(settings.EnableLocalContactShadows);
+	settings.LocalContactShadowLightCount = std::clamp(settings.LocalContactShadowLightCount, 1u, 4u);
+	bit(settings.EnableSpecularAA);
+	bit(settings.EnableGGXMultiScatter);
+	settings.VertexAOStrength = FiniteClamp(settings.VertexAOStrength,
+		static_cast<float>(PIXL::Metadata::Settings::MaterialVertexAO.defaultValue),
+		static_cast<float>(PIXL::Metadata::Settings::MaterialVertexAO.minimum),
+		static_cast<float>(PIXL::Metadata::Settings::MaterialVertexAO.maximum));
+	settings.LegacyPhysicalSpecularScale = FiniteClamp(settings.LegacyPhysicalSpecularScale, 0.35f, 0.f, 1.5f);
+	settings.LegacyMetalInferenceStrength = FiniteClamp(settings.LegacyMetalInferenceStrength, 0.85f, 0.f, 1.f);
+	settings.LegacyMetalInferenceThreshold = FiniteClamp(settings.LegacyMetalInferenceThreshold, 0.32f, 0.05f, 0.8f);
+	settings.LegacyMetalInferenceMaximum = FiniteClamp(settings.LegacyMetalInferenceMaximum, 0.55f, 0.f, 1.f);
+	settings.LocalContactShadowLength = FiniteClamp(settings.LocalContactShadowLength, 96.f, 16.f, 256.f);
+	settings.LocalContactShadowStrength = FiniteClamp(settings.LocalContactShadowStrength, 0.7f, 0.f, 1.f);
+	settings.SpecularAAStrength = FiniteClamp(settings.SpecularAAStrength, 0.75f, 0.f, 2.f);
+	settings.SpecularAAVarianceClamp = FiniteClamp(settings.SpecularAAVarianceClamp, 0.18f, 0.01f, 0.5f);
+	settings.GGXMultiScatterStrength = FiniteClamp(settings.GGXMultiScatterStrength, 1.f, 0.f, 1.f);
+	settings.LocalLightMinimumDistance = FiniteClamp(settings.LocalLightMinimumDistance, 28.f, 1.f, 256.f);
+	settings.PhysicalLocalLightFalloffStrength = FiniteClamp(settings.PhysicalLocalLightFalloffStrength, 0.65f, 0.f, 1.f);
+	if (const auto it = o_json.find("Legacy Conversion Tuning"); it != o_json.end() && it->is_object()) {
+		try {
+			legacyTuningSettings = it->get<LegacyTuningSettings>();
+		} catch (const std::exception& e) {
+			logger::warn("[MaterialForge] Invalid legacy tuning data; applying defaults: {}", e.what());
+			legacyTuningSettings = {};
+		}
+	}
 	legacyTuningSettings.Magic = LegacyTuningMagic;
 	legacyTuningSettings.Version = LegacyTuningVersion;
-	auto finiteRange = [](float value, float fallback, float low, float high) { return std::isfinite(value) ? std::clamp(value, low, high) : fallback; };
+	bit(legacyTuningSettings.EnableTuning);
+	bit(legacyTuningSettings.EnableWeatherSnow);
+	bit(legacyTuningSettings.EnableProceduralDetail);
+	const auto finiteRange = FiniteClamp;
+	legacyTuningSettings.ConversionStrength = finiteRange(legacyTuningSettings.ConversionStrength, 1.f, 0.f, 1.f);
+	legacyTuningSettings.ShininessScale = finiteRange(legacyTuningSettings.ShininessScale, 1.f, 0.25f, 4.f);
+	legacyTuningSettings.RoughnessCurve = finiteRange(legacyTuningSettings.RoughnessCurve, 1.f, 0.35f, 2.5f);
+	legacyTuningSettings.RoughnessScale = finiteRange(legacyTuningSettings.RoughnessScale, 1.f, 0.5f, 1.5f);
+	legacyTuningSettings.RoughnessBias = finiteRange(legacyTuningSettings.RoughnessBias, 0.f, -0.35f, 0.35f);
+	legacyTuningSettings.MinRoughness = finiteRange(legacyTuningSettings.MinRoughness, 0.04f, 0.02f, 0.4f);
+	legacyTuningSettings.MaxRoughness = (std::max)(legacyTuningSettings.MinRoughness + 0.01f,
+		finiteRange(legacyTuningSettings.MaxRoughness, 1.f, 0.4f, 1.f));
+	legacyTuningSettings.DielectricF0 = finiteRange(legacyTuningSettings.DielectricF0, 0.04f, 0.01f, 0.08f);
+	legacyTuningSettings.F0Scale = finiteRange(legacyTuningSettings.F0Scale, 1.f, 0.25f, 2.f);
+	legacyTuningSettings.SpecularColorInfluence = finiteRange(legacyTuningSettings.SpecularColorInfluence, 1.f, 0.f, 2.f);
+	legacyTuningSettings.SpecularStrengthInfluence = finiteRange(legacyTuningSettings.SpecularStrengthInfluence, 1.f, 0.f, 2.f);
+	legacyTuningSettings.BaseColorEnergy = finiteRange(legacyTuningSettings.BaseColorEnergy, 1.f, 0.5f, 1.5f);
+	legacyTuningSettings.MetallicDiffuseSuppression = finiteRange(legacyTuningSettings.MetallicDiffuseSuppression, 1.f, 0.f, 1.25f);
+	legacyTuningSettings.MetalEnvironmentWeight = finiteRange(legacyTuningSettings.MetalEnvironmentWeight, 0.30f, 0.f, 1.f);
+	legacyTuningSettings.MetalSpecularWeight = finiteRange(legacyTuningSettings.MetalSpecularWeight, 0.28f, 0.f, 1.f);
+	legacyTuningSettings.MetalSmoothnessWeight = finiteRange(legacyTuningSettings.MetalSmoothnessWeight, 0.24f, 0.f, 1.f);
+	legacyTuningSettings.MetalColorWeight = finiteRange(legacyTuningSettings.MetalColorWeight, 0.18f, 0.f, 1.f);
+	legacyTuningSettings.MetalNoMaskPenalty = finiteRange(legacyTuningSettings.MetalNoMaskPenalty, 0.72f, 0.f, 1.f);
+	legacyTuningSettings.MetalNeutralPrior = finiteRange(legacyTuningSettings.MetalNeutralPrior, 0.58f, 0.f, 1.f);
+	legacyTuningSettings.MetalCrossEvidenceFloor = finiteRange(legacyTuningSettings.MetalCrossEvidenceFloor, 0.55f, 0.f, 1.f);
+	legacyTuningSettings.MetalTintChromaLow = finiteRange(legacyTuningSettings.MetalTintChromaLow, 0.06f, 0.f, 0.30f);
+	legacyTuningSettings.MetalTintChromaHigh = finiteRange(legacyTuningSettings.MetalTintChromaHigh, 0.32f, 0.10f, 0.75f);
+	legacyTuningSettings.MetalColorCorrelationLow = finiteRange(legacyTuningSettings.MetalColorCorrelationLow, 0.76f, 0.30f, 0.95f);
+	legacyTuningSettings.MetalColorCorrelationHigh = finiteRange(legacyTuningSettings.MetalColorCorrelationHigh, 0.97f, 0.60f, 1.f);
 	legacyTuningSettings.SnowStrength = finiteRange(legacyTuningSettings.SnowStrength, 0.8f, 0.f, 1.f);
 	legacyTuningSettings.ProceduralDetailStrength = finiteRange(legacyTuningSettings.ProceduralDetailStrength, 0.25f, 0.f, 1.f);
 	legacyTuningSettings.SnowSlopeMinimum = finiteRange(legacyTuningSettings.SnowSlopeMinimum, 0.3f, 0.f, 0.8f);
@@ -1287,9 +1371,12 @@ void MaterialForge::Prepass()
 			const auto& ground = globals::pipeline::groundResponse;
 			const bool snowAvailable = ground.loaded && ground.settings.EnableDeformableGround &&
 				ground.settings.EnableWeatherSnowAccumulation && ground.currentPerFrame.EnvironmentExterior > 0.5f;
-			legacyTuningSettings.WeatherSnowCoverage = snowAvailable ? std::clamp(ground.weatherSnowRaiseState / std::max(ground.settings.WeatherSnowMaximumRaise, 0.25f), 0.f, 1.f) : 0.f;
+			const float maximumRaise = FiniteClamp(ground.settings.WeatherSnowMaximumRaise, 0.25f, 0.25f, 10000.f);
+			legacyTuningSettings.WeatherSnowCoverage = snowAvailable ?
+				FiniteClamp(ground.weatherSnowRaiseState / maximumRaise, 0.f, 0.f, 1.f) : 0.f;
 			legacyTuningSettings.WeatherSnowMeltWetness = snowAvailable ?
-				std::clamp(ground.surfaceMoistureState * (1.f - ground.weatherSnowIntensityState) * legacyTuningSettings.WeatherSnowCoverage, 0.f, 1.f) : 0.f;
+				FiniteClamp(ground.surfaceMoistureState * (1.f - ground.weatherSnowIntensityState) *
+					legacyTuningSettings.WeatherSnowCoverage, 0.f, 0.f, 1.f) : 0.f;
 			legacyTuningCB->Update(legacyTuningSettings);
 			auto* legacyTuningBuffer = legacyTuningCB->CB();
 			context->PSSetConstantBuffers(10, 1, &legacyTuningBuffer);
@@ -1303,99 +1390,146 @@ void MaterialForge::Prepass()
 			legacyTuningCB = nullptr;
 		}
 	}
-	if (!glintsNoiseTexture)
-		SetupGlintsTexture();
-	ID3D11ShaderResourceView* srv = glintsNoiseTexture->srv.get();
+	if (!glintsNoiseTexture) {
+		static std::uint32_t lastRetryFrame = (std::numeric_limits<std::uint32_t>::max)() - 120u;
+		if (static_cast<std::uint32_t>(globals::state->frameCount - lastRetryFrame) >= 120u) {
+			lastRetryFrame = globals::state->frameCount;
+			SetupGlintsTexture();
+		}
+	}
+	// A missing noise shader is recoverable: bind null instead of dereferencing
+	// a missing/partially created texture. Re-attempt on a later prepass.
+	ID3D11ShaderResourceView* srv = glintsNoiseTexture ? glintsNoiseTexture->srv.get() : nullptr;
 	context->PSSetShaderResources(20, 1, &srv);
 }
 
 void MaterialForge::SetupGlintsTexture()
 {
-	constexpr uint noiseTexSize = 128;
+	constexpr UINT noiseTexSize = 128;
+	if (!globals::d3d::device || !globals::d3d::context)
+		return;
 
-	D3D11_TEXTURE2D_DESC tex_desc{
-		.Width = noiseTexSize,
-		.Height = noiseTexSize,
-		.MipLevels = 1,
-		.ArraySize = 1,
-		.Format = DXGI_FORMAT_R32G32B32A32_FLOAT,
-		.SampleDesc = { .Count = 1, .Quality = 0 },
-		.Usage = D3D11_USAGE_DEFAULT,
-		.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS,
-		.CPUAccessFlags = 0,
-		.MiscFlags = 0
-	};
-	D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc = {
-		.Format = tex_desc.Format,
-		.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D,
-		.Texture2D = {
-			.MostDetailedMip = 0,
-			.MipLevels = 1 }
-	};
-	D3D11_UNORDERED_ACCESS_VIEW_DESC uav_desc = {
-		.Format = tex_desc.Format,
-		.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D,
-		.Texture2D = { .MipSlice = 0 }
-	};
-
-	glintsNoiseTexture = eastl::make_unique<Texture2D>(tex_desc);
-	glintsNoiseTexture->CreateSRV(srv_desc);
-	glintsNoiseTexture->CreateUAV(uav_desc);
-
-	// Compile
-	auto noiseGenProgram = reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(L"Data\\PIXL-Shaders\\Common\\Glints\\noisegen.cs.hlsl", {}, "cs_5_0"));
-	if (!noiseGenProgram) {
-		logger::error("Failed to compile glints noise generation shader!");
+	// Compile before allocating. A failed permutation must not publish a texture
+	// containing uninitialized VRAM or leave a bogus SRV in PS slot 20.
+	winrt::com_ptr<ID3D11ComputeShader> noiseShader;
+	noiseShader.attach(reinterpret_cast<ID3D11ComputeShader*>(
+		Util::CompileShader(L"Data\\PIXL-Shaders\\Common\\Glints\\noisegen.cs.hlsl", {}, "cs_5_0")));
+	if (!noiseShader) {
+		static bool reported = false;
+		if (!reported) {
+			logger::error("[MaterialForge] Glint noise shader compilation failed; glints will be disabled until it succeeds");
+			reported = true;
+		}
 		return;
 	}
 
-	// Generate the noise
+	D3D11_TEXTURE2D_DESC desc{};
+	desc.Width = noiseTexSize;
+	desc.Height = noiseTexSize;
+	desc.MipLevels = 1;
+	desc.ArraySize = 1;
+	desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+	desc.SampleDesc.Count = 1;
+	desc.Usage = D3D11_USAGE_DEFAULT;
+	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+
+	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+	srvDesc.Format = desc.Format;
+	srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+	srvDesc.Texture2D.MipLevels = 1;
+
+	D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
+	uavDesc.Format = desc.Format;
+	uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+
+	// Keep the allocation private until its SRV/UAV and contents are valid.
+	auto texture = eastl::make_unique<Texture2D>(desc, "MaterialForge::GlintsNoise");
+	texture->CreateSRV(srvDesc);
+	texture->CreateUAV(uavDesc);
+
+	auto context = globals::d3d::context;
+	winrt::com_ptr<ID3D11ComputeShader> oldShader;
+	winrt::com_ptr<ID3D11UnorderedAccessView> oldUav;
+	// CSGetShader can return multiple class instances; passing the address of a
+	// single pointer with an uninitialized count previously risked stack writes.
+	std::array<ID3D11ClassInstance*, 256> oldInstances{};
+	UINT instanceCount = static_cast<UINT>(oldInstances.size());
+	context->CSGetShader(oldShader.put(), oldInstances.data(), &instanceCount);
+	context->CSGetUnorderedAccessViews(0, 1, oldUav.put());
+
+	ID3D11UnorderedAccessView* output = texture->uav.get();
+	context->CSSetShader(noiseShader.get(), nullptr, 0);
+	context->CSSetUnorderedAccessViews(0, 1, &output, nullptr);
+	context->Dispatch((noiseTexSize + 31) / 32, (noiseTexSize + 31) / 32, 1);
+
+	// Explicitly unbind the generated UAV before exposing the resource as a PS
+	// SRV; restore the existing compute state, including optional class instances.
+	ID3D11UnorderedAccessView* nullUav = nullptr;
+	context->CSSetUnorderedAccessViews(0, 1, &nullUav, nullptr);
+	context->CSSetShader(oldShader.get(), instanceCount ? oldInstances.data() : nullptr, instanceCount);
+	ID3D11UnorderedAccessView* restoredUav = oldUav.get();
+	context->CSSetUnorderedAccessViews(0, 1, &restoredUav, nullptr);
+	for (UINT i = 0; i < (std::min)(instanceCount, static_cast<UINT>(oldInstances.size())); ++i) {
+		if (oldInstances[i]) oldInstances[i]->Release();
+	}
+	glintsNoiseTexture = std::move(texture);
+}
+
+namespace
+{
+	void SanitizeGlints(GlintParameters& glint) noexcept
 	{
-		auto context = globals::d3d::context;
-
-		struct OldState
-		{
-			ID3D11ComputeShader* shader;
-			ID3D11UnorderedAccessView* uav[1];
-			ID3D11ClassInstance* instance;
-			UINT numInstances;
-		};
-
-		OldState newer{}, old{};
-		context->CSGetShader(&old.shader, &old.instance, &old.numInstances);
-		context->CSGetUnorderedAccessViews(0, ARRAYSIZE(old.uav), old.uav);
-
-		{
-			newer.uav[0] = glintsNoiseTexture->uav.get();
-			context->CSSetShader(noiseGenProgram, nullptr, 0);
-			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(newer.uav), newer.uav, nullptr);
-			context->Dispatch((noiseTexSize + 31) >> 5, (noiseTexSize + 31) >> 5, 1);
-		}
-
-		context->CSSetShader(old.shader, &old.instance, old.numInstances);
-		context->CSSetUnorderedAccessViews(0, ARRAYSIZE(old.uav), old.uav, nullptr);
-
-		// Release COM objects to prevent memory leaks
-		if (old.shader)
-			old.shader->Release();
-		for (auto& uav : old.uav) {
-			if (uav)
-				uav->Release();
-		}
+		glint.screenSpaceScale = FiniteClamp(glint.screenSpaceScale, 1.5f, 0.f, 3.f);
+		glint.logMicrofacetDensity = FiniteClamp(glint.logMicrofacetDensity, 40.f, 0.f, 40.f);
+		glint.microfacetRoughness = FiniteClamp(glint.microfacetRoughness, 0.015f, 0.f, 1.f);
+		glint.densityRandomization = FiniteClamp(glint.densityRandomization, 2.f, 0.f, 5.f);
 	}
 
-	noiseGenProgram->Release();
+	void SanitizeColor(RE::NiColor& color, float fallback) noexcept
+	{
+		color.red = FiniteClamp(color.red, fallback, 0.f, 1.f);
+		color.green = FiniteClamp(color.green, fallback, 0.f, 1.f);
+		color.blue = FiniteClamp(color.blue, fallback, 0.f, 1.f);
+	}
+
+	void SanitizeTextureSet(MaterialForge::PBRTextureSetData& data) noexcept
+	{
+		data.roughnessScale = FiniteClamp(data.roughnessScale, 1.f, 0.f, 3.f);
+		data.displacementScale = FiniteClamp(data.displacementScale, 1.f, 0.f, 3.f);
+		data.specularLevel = FiniteClamp(data.specularLevel, 0.04f, 0.f, 3.f);
+		data.subsurfaceOpacity = FiniteClamp(data.subsurfaceOpacity, 0.f, 0.f, 1.f);
+		data.coatStrength = FiniteClamp(data.coatStrength, 1.f, 0.f, 1.f);
+		data.coatRoughness = FiniteClamp(data.coatRoughness, 1.f, 0.f, 1.f);
+		data.coatSpecularLevel = FiniteClamp(data.coatSpecularLevel, 0.04f, 0.f, 1.f);
+		data.innerLayerDisplacementOffset = FiniteClamp(data.innerLayerDisplacementOffset, 0.f, 0.f, 3.f);
+		data.fuzzWeight = FiniteClamp(data.fuzzWeight, 0.f, 0.f, 1.f);
+		SanitizeColor(data.subsurfaceColor, 0.f);
+		SanitizeColor(data.coatColor, 1.f);
+		SanitizeColor(data.fuzzColor, 0.f);
+		SanitizeGlints(data.glintParameters);
+	}
+
+	void SanitizeMaterialObject(MaterialForge::PBRMaterialObjectData& data) noexcept
+	{
+		for (auto& channel : data.baseColorScale)
+			channel = FiniteClamp(channel, 1.f, 0.f, 10.f);
+		data.roughness = FiniteClamp(data.roughness, 1.f, 0.f, 1.f);
+		data.specularLevel = FiniteClamp(data.specularLevel, 1.f, 0.f, 1.f);
+		SanitizeGlints(data.glintParameters);
+	}
 }
 
 void MaterialForge::SetupTextureSetData()
 {
 	logger::info("[MaterialForge] loading PBR texture set configs");
 
-	pbrTextureSets.clear();
-
+	// insert_or_assign preserves pointers to existing records referenced by
+	// already-live PBR material instances across repeated setup calls.
 	PNState::ReadPBRRecordConfigs("Data\\PBRTextureSets", [this](const std::string& editorId, const json& config) {
 		try {
-			pbrTextureSets.insert_or_assign(editorId, config);
+			auto data = config.get<PBRTextureSetData>();
+			SanitizeTextureSet(data);
+			pbrTextureSets.insert_or_assign(editorId, std::move(data));
 		} catch (const std::exception& e) {
 			logger::error("Failed to deserialize config for {}: {}.", editorId, e.what());
 		}
@@ -1409,13 +1543,17 @@ void MaterialForge::ReloadTextureSetData()
 	PNState::ReadPBRRecordConfigs("Data\\PBRTextureSets", [this](const std::string& editorId, const json& config) {
 		try {
 			if (auto it = pbrTextureSets.find(editorId); it != pbrTextureSets.cend()) {
-				it->second = config;
+				auto data = config.get<PBRTextureSetData>();
+				SanitizeTextureSet(data);
+				it->second = std::move(data);
 			}
 		} catch (const std::exception& e) {
 			logger::error("Failed to deserialize config for {}: {}.", editorId, e.what());
 		}
 	});
 
+	if (!globals::game::graphicsState)
+		return;
 	const auto& textureDefaults = globals::game::graphicsState->GetRuntimeData();
 	for (const auto& [material, extensions] : BSLightingShaderMaterialPBR::All) {
 		if (extensions.textureSetData != nullptr) {
@@ -1452,7 +1590,10 @@ MaterialForge::PBRTextureSetData* MaterialForge::GetPBRTextureSetData(const RE::
 		return nullptr;
 	}
 
-	auto it = pbrTextureSets.find(textureSet->GetFormEditorID());
+	const char* editorID = textureSet->GetFormEditorID();
+	if (!editorID || !*editorID)
+		return nullptr;
+	const auto it = pbrTextureSets.find(editorID);
 	if (it == pbrTextureSets.end()) {
 		return nullptr;
 	}
@@ -1468,11 +1609,12 @@ void MaterialForge::SetupMaterialObjectData()
 {
 	logger::info("[MaterialForge] loading PBR material object configs");
 
-	pbrMaterialObjects.clear();
-
+	// Never clear live records here; loaded meshes cache pointers to them.
 	PNState::ReadPBRRecordConfigs("Data\\PBRMaterialObjects", [this](const std::string& editorId, const json& config) {
 		try {
-			pbrMaterialObjects.insert_or_assign(editorId, config);
+			auto data = config.get<PBRMaterialObjectData>();
+			SanitizeMaterialObject(data);
+			pbrMaterialObjects.insert_or_assign(editorId, std::move(data));
 		} catch (const std::exception& e) {
 			logger::error("Failed to deserialize config for {}: {}.", editorId, e.what());
 		}
@@ -1485,7 +1627,10 @@ MaterialForge::PBRMaterialObjectData* MaterialForge::GetPBRMaterialObjectData(co
 		return nullptr;
 	}
 
-	auto it = pbrMaterialObjects.find(materialObject->GetFormEditorID());
+	const char* editorID = materialObject->GetFormEditorID();
+	if (!editorID || !*editorID)
+		return nullptr;
+	const auto it = pbrMaterialObjects.find(editorID);
 	if (it == pbrMaterialObjects.end()) {
 		return nullptr;
 	}
@@ -1504,13 +1649,18 @@ namespace Permutations
 	{
 		std::vector<uint32_t> flagValues;
 		std::ranges::transform(flags, std::back_inserter(flagValues), [](auto flag) { return static_cast<uint32_t>(flag); });
-		const uint32_t size = static_cast<uint32_t>(flagValues.size());
+		const auto size = flagValues.size();
+		if (size >= 32) {
+			logger::error("[MaterialForge] Refusing to generate more than 31 independent shader flags");
+			return {};
+		}
 
 		std::unordered_set<uint32_t> result;
+		result.reserve(std::size_t{ 1 } << size);
 		for (uint32_t mask = 0; mask < (1u << size); ++mask) {
 			uint32_t flag = constantFlags;
 			for (size_t index = 0; index < size; ++index) {
-				if (mask & (1 << index)) {
+				if (mask & (1u << index)) {
 					flag |= flagValues[index];
 				}
 			}
@@ -1568,7 +1718,9 @@ void MaterialForge::GenerateShaderPermutations(RE::BSShader* shader)
 	auto state = globals::state;
 	auto shaderCache = globals::shaderCache;
 	if (shader->shaderType == RE::BSShader::Type::Lighting) {
-		const auto pixelPermutations = Permutations::GeneratePBRLightingPixelPermutations();
+		// Stable permutation descriptors do not depend on runtime settings.
+		// Reuse the generated set across repeated cache warmups/rebuilds.
+		static const auto pixelPermutations = Permutations::GeneratePBRLightingPixelPermutations();
 		for (auto descriptor : pixelPermutations) {
 			auto vertexShaderDesriptor = descriptor;
 			auto pixelShaderDescriptor = descriptor;
@@ -1588,12 +1740,12 @@ struct ExtendedRendererState
 
 	void SetPSTexture(size_t textureIndex, RE::BSGraphics::Texture* newTexture)
 	{
-		ID3D11ShaderResourceView* resourceView = newTexture ? REX::W32::AsReal(newTexture->resourceView) : nullptr;
-		//if (PSTexture[textureIndex] != resourceView)
-		{
-			PSTexture[textureIndex] = resourceView;
-			PSResourceModifiedBits |= (1 << textureIndex);
-		}
+		if (textureIndex >= PSTexture.size())
+			return;
+		// An engine reset can invalidate bindings without changing the texture
+		// pointer, so deliberately mark each requested slot dirty.
+		PSTexture[textureIndex] = newTexture ? REX::W32::AsReal(newTexture->resourceView) : nullptr;
+		PSResourceModifiedBits |= 1u << textureIndex;
 	}
 
 	ExtendedRendererState()
@@ -2401,9 +2553,14 @@ bool MaterialForge::TESObjectLAND_SetupMaterial(RE::TESObjectLAND* land)
 
 	auto memoryManager = RE::MemoryManager::GetSingleton();
 
-	if (land->loadedData != nullptr && land->loadedData->mesh[0] != nullptr) {
-		land->data.flags.set(static_cast<RE::OBJ_LAND::Flag>(8));
+	if (land->loadedData != nullptr) {
+		bool applied = false;
 		for (uint32_t quadIndex = 0; quadIndex < 4; ++quadIndex) {
+			if (!land->loadedData->mesh[quadIndex])
+				continue;
+			const auto& activeChildren = land->loadedData->mesh[quadIndex]->GetChildren();
+			if (activeChildren.empty() || !activeChildren[0].get())
+				continue;
 			// PIXL_GROUND_SNOW_METADATA_V2_CAPTURE
 			// The outer MaterialForge hook calls Skyrim's vanilla LAND setup first, so
 			// the quad still owns the authoritative vanilla landscape material here.
@@ -2460,8 +2617,8 @@ bool MaterialForge::TESObjectLAND_SetupMaterial(RE::TESObjectLAND* land)
 
 			if (auto defTexture = land->loadedData->defQuadTextures[quadIndex]) {
 				SetupLandscapeTexture(*material, *defTexture, 0, textureSets);
-			} else {
-				SetupLandscapeTexture(*material, *GetDefaultLandTexture(), 0, textureSets);
+			} else if (auto* defaultTexture = GetDefaultLandTexture()) {
+				SetupLandscapeTexture(*material, *defaultTexture, 0, textureSets);
 			}
 			for (uint32_t textureIndex = 0; textureIndex < BSLightingShaderMaterialPBRLandscape::NumTiles - 1; ++textureIndex) {
 				if (auto landTexture = land->loadedData->quadTextures[quadIndex][textureIndex]) {
@@ -2494,12 +2651,15 @@ bool MaterialForge::TESObjectLAND_SetupMaterial(RE::TESObjectLAND* land)
 			shaderProperty->SetupGeometry(geometry);
 			if (geometry != nullptr) {
 				geometry->GetGeometryRuntimeData().shaderProperty = RE::NiPointer(shaderProperty);
+				applied = true;
 			}
 
-			globals::game::smState->shadowSceneNode[0]->AttachObject(geometry);
+			if (geometry && globals::game::smState && globals::game::smState->shadowSceneNode[0])
+				globals::game::smState->shadowSceneNode[0]->AttachObject(geometry);
 		}
-
-		return true;
+		if (applied)
+			land->data.flags.set(static_cast<RE::OBJ_LAND::Flag>(8));
+		return applied;
 	}
 
 	return false;
@@ -2810,7 +2970,9 @@ void MaterialForge::SetupDefaultPBRLandTextureSet()
 
 void MaterialForge::SetShaderResources(ID3D11DeviceContext* a_context)
 {
-	uint32_t mask = extendedRendererState.PSResourceModifiedBits;
+	if (!a_context)
+		return;
+	uint32_t mask = std::exchange(extendedRendererState.PSResourceModifiedBits, 0u);
 
 	if (mask == 0) [[likely]] {
 		// No dirty slots, early exit
@@ -2839,6 +3001,5 @@ void MaterialForge::SetShaderResources(ID3D11DeviceContext* a_context)
 		mask &= ~clearMask;
 	}
 
-	// Reset modified bits
-	extendedRendererState.PSResourceModifiedBits = 0;
+	// Dirty bits added by nested state changes remain queued for the next flush.
 }

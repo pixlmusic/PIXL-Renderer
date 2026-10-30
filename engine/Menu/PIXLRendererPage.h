@@ -102,7 +102,6 @@ namespace PIXLRendererPage
 			Name{ "TissueDiffusion", "SKIN DIFFUSION" }, Name{ "StrandShading", "HAIR SHADING" },
 			Name{ "ThinSurface", "THIN MATERIALS" }, Name{ "GroundResponse", "GROUND INTERACTION" },
 			Name{ "FoliageDynamics", "FOLIAGE LIGHT & WIND" }, Name{ "TerrainDetail", "TERRAIN DETAIL" },
-			Name{ "FoliageOptimizer", "FOLIAGE OPTIMIZER" },
 			Name{ "TerrainField", "TERRAIN DATA" }, Name{ "TerrainSeam", "TERRAIN BLEND" },
 			Name{ "TerrainOcclusion", "TERRAIN SHADOW" }, Name{ "Waterbody", "WATER GEOMETRY" },
 			Name{ "WaterOptics", "WATER OPTICS" }, Name{ "OceanDynamics", "OCEAN DYNAMICS" }, Name{ "RainResponse", "WET SURFACES" }, Name{ "PixelCapture", "PIXL DIRECTOR" },

@@ -28,26 +28,26 @@ namespace WindowLife
         float4 Interior0;
         float4 Geometry0;
         float4 Asset0;
-		// x room contrast, y room emission, z occupant opacity,
-		// w automatic room-art scale
-		float4 Presentation0;
-		// x stable instance salt, y cached material layout policy,
-		// z night blend, w snow-weather state
-		float4 Layout0;
-		// x environment reflection, y interior lighting response,
-		// z weather glass response, w sun glint
-		float4 Fidelity0;
-		// x directional reveal, y room variation, z close cutout feather
-		float4 Fidelity1;
+        // x room contrast, y room emission, z occupant opacity,
+        // w automatic room-art scale
+        float4 Presentation0;
+        // x stable instance salt, y cached material layout policy,
+        // z night blend, w snow-weather state
+        float4 Layout0;
+        // x environment reflection, y interior lighting response,
+        // z weather glass response, w sun glint
+        float4 Fidelity0;
+        // x directional reveal, y room variation, z close cutout feather
+        float4 Fidelity1;
         // x authored-room softness, y room-box blend, z recess, w reserved.
         float4 Presentation1;
     };
 
-	float WindowSmootherStep(float edge0, float edge1, float value)
-	{
-		float t = saturate((value - edge0) / max(edge1 - edge0, 1.0e-5f));
-		return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
-	}
+    float WindowSmootherStep(float edge0, float edge1, float value)
+    {
+        float t = saturate((value - edge0) / max(edge1 - edge0, 1.0e-5f));
+        return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+    }
 
     Texture2D<float4> WindowLifeGlassGrime : register(t122);
     Texture2D<float4> WindowLifeOccupantAtlas : register(t123);
@@ -67,10 +67,10 @@ namespace WindowLife
     float4 GetInterior0() { return WindowLifePerDraw[0].Interior0; }
     float4 GetGeometry0() { return WindowLifePerDraw[0].Geometry0; }
     float4 GetAsset0() { return WindowLifePerDraw[0].Asset0; }
-	float4 GetPresentation0() { return WindowLifePerDraw[0].Presentation0; }
-	float4 GetLayout0() { return WindowLifePerDraw[0].Layout0; }
-	float4 GetFidelity0() { return WindowLifePerDraw[0].Fidelity0; }
-	float4 GetFidelity1() { return WindowLifePerDraw[0].Fidelity1; }
+    float4 GetPresentation0() { return WindowLifePerDraw[0].Presentation0; }
+    float4 GetLayout0() { return WindowLifePerDraw[0].Layout0; }
+    float4 GetFidelity0() { return WindowLifePerDraw[0].Fidelity0; }
+    float4 GetFidelity1() { return WindowLifePerDraw[0].Fidelity1; }
     float4 GetPresentation1() { return WindowLifePerDraw[0].Presentation1; }
 
     struct SurfaceResult
@@ -195,9 +195,9 @@ namespace WindowLife
 
     float ShapeMask(float distanceValue, float softness)
     {
-		softness = max(softness, 5.0e-4f);
-		float antialiasWidth = max(fwidth(distanceValue), softness * 0.15f);
-		return 1.0f - smoothstep(-softness - antialiasWidth, softness + antialiasWidth, distanceValue);
+        softness = max(softness, 5.0e-4f);
+        float antialiasWidth = max(fwidth(distanceValue), softness * 0.15f);
+        return 1.0f - smoothstep(-softness - antialiasWidth, softness + antialiasWidth, distanceValue);
     }
 
     float TaperedCapsuleDistance(float2 p, float2 a, float2 b, float radiusA, float radiusB)
@@ -223,9 +223,9 @@ namespace WindowLife
         p /= max(scale, 0.25f);
 
         float side = direction > 0.5f ? 1.0f : -1.0f;
-		float gaitPhase = motionPhase * 12.5663706f + pose * 5.7f;
-		float gait = sin(gaitPhase) * (0.86f + 0.14f * sin(gaitPhase * 0.5f + variant * 4.1f));
-		float gaitOpposite = sin(gaitPhase + 3.1415927f);
+        float gaitPhase = motionPhase * 12.5663706f + pose * 5.7f;
+        float gait = sin(gaitPhase) * (0.86f + 0.14f * sin(gaitPhase * 0.5f + variant * 4.1f));
+        float gaitOpposite = sin(gaitPhase + 3.1415927f);
         float lean = side * ((pose - 0.5f) * 0.055f + gait * 0.012f);
         p.y += abs(gait) * 0.008f;
 
@@ -297,20 +297,20 @@ namespace WindowLife
 
     float ActivityEnvelope(float phase)
     {
-		phase = saturate(phase);
-		return WindowSmootherStep(0.03f, 0.18f, phase) * (1.0f - WindowSmootherStep(0.80f, 0.98f, phase));
+        phase = saturate(phase);
+        return WindowSmootherStep(0.03f, 0.18f, phase) * (1.0f - WindowSmootherStep(0.80f, 0.98f, phase));
     }
 
     float MotionX(float phase, float mode, float direction)
     {
-		phase = saturate(phase);
+        phase = saturate(phase);
         float eased = phase * phase * (3.0f - 2.0f * phase);
-		eased = eased * eased * (3.0f - 2.0f * eased);
+        eased = eased * eased * (3.0f - 2.0f * eased);
         if (mode < 0.55f)
             return lerp(-0.62f, 0.62f, direction > 0.5f ? eased : 1.0f - eased);
         if (mode < 0.80f) {
-			float arrive = WindowSmootherStep(0.04f, 0.28f, phase);
-			float leave = WindowSmootherStep(0.68f, 0.94f, phase);
+            float arrive = WindowSmootherStep(0.04f, 0.28f, phase);
+            float leave = WindowSmootherStep(0.68f, 0.94f, phase);
             float side = direction > 0.5f ? 1.0f : -1.0f;
             return lerp(side * -0.62f, side * 0.04f, arrive) + side * 0.58f * leave;
         }
@@ -438,10 +438,10 @@ namespace WindowLife
         float sourceFloorV = RoomFloorSourceV(roomTile);
         floorLocalY = 1.0f - sourceFloorV;
 
-		// Keep aperture detection and room identity stable, but allow the same art
-		// framing control in both automatic and manual sizing modes. Increasing the
-		// value crops/magnifies the authored interior without atlas-edge bleed.
-		float magnification = clamp(magnificationScale, 1.0f, 2.50f);
+        // Keep aperture detection and room identity stable, but allow the same art
+        // framing control in both automatic and manual sizing modes. Increasing the
+        // value crops/magnifies the authored interior without atlas-edge bleed.
+        float magnification = clamp(magnificationScale, 1.0f, 2.50f);
         float baseSpan = rcp(magnification);
         float apertureAspect = clamp(
             roomSize.x / max(roomSize.y, 1.0f), 0.72f, 1.45f);
@@ -517,11 +517,11 @@ namespace WindowLife
         // ornate or metallic. Combine tangent-normal slope with local continuity
         // so bright mullions and carved frames do not become pane pixels.
         float2 tangentSlope = normalSample.xy * 2.0f - 1.0f;
-		float flatness = 1.0f - WindowSmootherStep(0.20f, 0.62f, length(tangentSlope));
+        float flatness = 1.0f - WindowSmootherStep(0.20f, 0.62f, length(tangentSlope));
         float normalVariation =
             length(ddx_coarse(normalSample.xy)) +
             length(ddy_coarse(normalSample.xy));
-		float continuity = 1.0f - WindowSmootherStep(0.035f, 0.24f, normalVariation);
+        float continuity = 1.0f - WindowSmootherStep(0.035f, 0.24f, normalVariation);
         return saturate(flatness * lerp(0.72f, 1.0f, continuity));
     }
 
@@ -540,7 +540,10 @@ namespace WindowLife
         float lumaX1 = dot(max(colorX1, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
         float lumaY0 = dot(max(colorY0, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
         float lumaY1 = dot(max(colorY1, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
-        return min(min(lumaX0, lumaX1), min(lumaY0, lumaY1));
+        // The original all-four minimum erased narrow panes near a mullion.
+        // Require continuity in at least one complete axis. Frames still fail
+        // the independent tangent-normal and diffuse centre tests.
+        return max(min(lumaX0, lumaX1), min(lumaY0, lumaY1));
     }
 
     float ProceduralPaneMask(float3 baseColor, float4 normalSample, float2 materialUV)
@@ -558,13 +561,17 @@ namespace WindowLife
         // Keep user threshold control, but cap the procedural feather: a broad
         // transition can let frame texels partially suppress POM or receive glass.
         float proceduralFeather = clamp(GetSurface0().w, 0.01f, 0.10f);
-        float diffusePane = smoothstep(GetSurface0().z, GetSurface0().z + proceduralFeather, luma);
+        // Explicitly named dark glass should not need the luminance of a lit
+        // window. Keep the stronger threshold for generic architectural glass.
+        float threshold = HasDiffuseNamedGlass()
+            ? min(GetSurface0().z, 0.045f) : GetSurface0().z;
+        float diffusePane = smoothstep(threshold, threshold + proceduralFeather, luma);
         if (diffusePane <= 1.0e-4f)
             return 0.0f;
 
         float neighborLuma = ProceduralPaneLuma(materialUV, uvDx, uvDy);
         float neighborPane = smoothstep(
-            GetSurface0().z, GetSurface0().z + proceduralFeather, neighborLuma);
+            threshold, threshold + proceduralFeather, neighborLuma);
         float paneCore = smoothstep(0.35f, 0.80f, neighborPane);
         float smoothEvidence = smoothstep(0.10f, 0.64f, saturate(normalSample.w));
         float flatEvidence = PaneNormalEvidence(normalSample);
@@ -599,103 +606,69 @@ namespace WindowLife
 
     float PaneMask(float3 baseColor, float4 normalSample, float glowLuma, float2 materialUV)
     {
-        float pre = PreParallaxPaneMask(baseColor, normalSample, materialUV);
+        const float procedural = PreParallaxPaneMask(baseColor, normalSample, materialUV);
         if (!HasAuthoredPaneTexture())
-            return pre;
+            return procedural;
 
-        uint glowWidth;
-        uint glowHeight;
-        uint glowMipCount;
-        GetAuthoredPaneTextureDimensions(glowWidth, glowHeight, glowMipCount);
-        if (glowWidth < 8u || glowHeight < 8u || glowMipCount == 0u) {
-            // A path in Skyrim's texture set does not prove the game bound t6
-            // for this Lighting permutation. Only an explicitly named window
-            // or glass may fall back to diffuse/normal evidence. A generic
-            // facade must stay opaque instead of promoting bright masonry.
+        uint texWidth, texHeight, mipCount;
+        GetAuthoredPaneTextureDimensions(texWidth, texHeight, mipCount);
+        if (texWidth < 8u || texHeight < 8u || mipCount == 0u)
             return (HasDiffuseNamedWindow() || HasDiffuseNamedGlass())
-                ? ProceduralPaneMask(baseColor, normalSample, materialUV)
-                : 0.0f;
-        }
+                ? ProceduralPaneMask(baseColor, normalSample, materialUV) : 0.0f;
 
-        // Calculate derivatives before the per-pixel coverage early-out. Border
-        // samples below use explicit LOD, including inside divergent flow.
-        float2 maskSize = float2((float)glowWidth, (float)glowHeight);
-        float maskFootprint = max(length(ddx_coarse(materialUV) * maskSize),
-                                  length(ddy_coarse(materialUV) * maskSize));
-        float maskMip = clamp(log2(max(maskFootprint, 1.0f)),
-                              0.0f, (float)(glowMipCount - 1u));
+        // Derivatives are evaluated uniformly, before the conditional samples.
+        // Camera jitter only changes the filter width, never the room or pane UV.
+        const float2 textureSize = float2((float)texWidth, (float)texHeight);
+        const float2 uvDx = ddx_coarse(materialUV);
+        const float2 uvDy = ddy_coarse(materialUV);
+        const float footprint = max(length(uvDx * textureSize), length(uvDy * textureSize));
+        const float maskMip = clamp(log2(max(footprint, 1.0f)),
+            0.0f, (float)(mipCount - 1u));
 
-        // Native glow and exact masks remain authoritative. Expose a bounded
-        // threshold/feather adjustment; the erosion and normal guards below
-        // continue to keep authored rooms off frames and masonry.
-        float authoredLuma = max(glowLuma, 0.0f);
+        const float3 native = SampleAuthoredPaneTextureLevel(materialUV, maskMip);
+        const float authoredLuma = dot(max(native, 0.0f.xxx),
+            float3(0.2126f, 0.7152f, 0.0722f));
+        const float2 texel = rcp(textureSize);
+        const float2 tile = floor(materialUV);
+
         if (HasExternalAuthoredMask()) {
-            float3 authoredMask = SampleAuthoredPaneTexture(materialUV);
-            authoredLuma = dot(max(authoredMask, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
+            // Artist-authored diffuse-matched masks already separate glass from
+            // mullions and framing. The old 12-tap erosion removed entire small
+            // panes. Filter exactly at the pixel footprint with only a bounded
+            // transition; no normal or diffuse brightness requirement is needed.
+            const float edgeWidth = max(fwidth(authoredLuma) * 0.80f, 0.008f);
+            const float threshold = clamp(GetSurface0().z * 0.30f, 0.015f, 0.10f);
+            return smoothstep(threshold - edgeWidth,
+                              threshold + max(edgeWidth, 0.014f), authoredLuma);
         }
-        float paneCentre = clamp(0.0865f + (GetSurface0().z - 0.15f) * 0.075f, 0.055f, 0.14f);
-        float paneHalfWidth = 0.0585f * clamp(GetSurface0().w / 0.15f, 0.55f, 1.65f);
-        float paneLow = max(paneCentre - paneHalfWidth, 0.006f);
-        float glowPane = smoothstep(paneLow, max(paneCentre + paneHalfWidth, paneLow + 0.02f), authoredLuma);
-        // The surrounding erode stencil has twelve additional samples. On a
-        // facade, most pixels are not luminous panes and can reject here.
-        [branch] if (glowPane <= 1.0e-4f)
+
+        // Game glow maps are *not* glass masks: trim and building lights can
+        // glow as well. Test the local area without requiring every cardinal
+        // and diagonal sample to be lit (which excluded leaded/minor panes).
+        const float centre = clamp(0.0865f + (GetSurface0().z - 0.15f) * 0.075f,
+                                   0.055f, 0.14f);
+        const float halfWidth = 0.0585f *
+            clamp(GetSurface0().w / 0.15f, 0.55f, 1.65f);
+        const float low = max(centre - halfWidth, 0.006f);
+        const float lit = smoothstep(low, max(centre + halfWidth, low + 0.02f), authoredLuma);
+        [branch] if (lit <= 1.0e-4f)
             return 0.0f;
 
-        // Erode only the outer two authored texels. This rejects luminous stone,
-        // trim and window-frame halos while retaining the much larger glass
-        // islands and every dark lead/mullion encoded by the glow map itself.
-        float2 glowTexel = 1.0f / max(float2((float)glowWidth, (float)glowHeight), 1.0f.xx);
-        float2 atlasTile = floor(materialUV);
-        float neighborFloor = min(
-            min(
-                SamplePaneGlowEvidence(materialUV - float2(glowTexel.x * 2.0f, 0.0f), atlasTile, maskMip),
-                SamplePaneGlowEvidence(materialUV + float2(glowTexel.x * 2.0f, 0.0f), atlasTile, maskMip)),
-            min(
-                SamplePaneGlowEvidence(materialUV - float2(0.0f, glowTexel.y * 2.0f), atlasTile, maskMip),
-                SamplePaneGlowEvidence(materialUV + float2(0.0f, glowTexel.y * 2.0f), atlasTile, maskMip)));
-        float authoredCore = smoothstep(0.10f, 0.68f, neighborFloor);
-
-        // Native glow maps are often authored with a one-texel bloom/antialias
-        // halo around the pane.  The coarse four-neighbour test above is useful
-        // for joining leaded sub-panes, but it can still promote that halo (and
-        // therefore a thin slice of the wooden/stone frame) into glass.  Require
-        // the immediate neighbours to remain pane evidence as well.  This keeps
-        // the procedural path inside the visible frame while leaving installed
-        // exact masks authoritative and untouched.
-        float immediateFloor = min(
-            min(
-                SamplePaneGlowEvidence(materialUV - float2(glowTexel.x, 0.0f), atlasTile, maskMip),
-                SamplePaneGlowEvidence(materialUV + float2(glowTexel.x, 0.0f), atlasTile, maskMip)),
-            min(
-                SamplePaneGlowEvidence(materialUV - float2(0.0f, glowTexel.y), atlasTile, maskMip),
-                SamplePaneGlowEvidence(materialUV + float2(0.0f, glowTexel.y), atlasTile, maskMip)));
-        float borderGuard = smoothstep(0.18f, 0.72f, immediateFloor);
-        // Corners of arches and diagonal frames need the diagonal stencil too.
-        float diagonalFloor = min(
-            min(SamplePaneGlowEvidence(materialUV + glowTexel, atlasTile, maskMip),
-                SamplePaneGlowEvidence(materialUV - glowTexel, atlasTile, maskMip)),
-            min(SamplePaneGlowEvidence(materialUV + float2(glowTexel.x, -glowTexel.y), atlasTile, maskMip),
-                SamplePaneGlowEvidence(materialUV + float2(-glowTexel.x, glowTexel.y), atlasTile, maskMip)));
-        borderGuard *= smoothstep(0.18f, 0.72f, diagonalFloor);
-        authoredCore *= borderGuard;
-
-        // Some architectural glow atlases include luminous trim, frames, or even
-        // broad facade texels. The glow map says where a pane may exist; the
-        // locally flat tangent normal confirms that the texel is glass. This is
-        // deliberately evaluated at full resolution so mullions remain excluded
-        // even though the coarse layout guide bridges them below.
-        // A separately authored *_mask atlas is already exact glass/frame data;
-        // do not reject its panes because intentionally rippled old-glass normals
-        // are non-flat. Native glow atlases still need the normal guard because
-        // some of them contain luminous trim or facade texels.
-        float glassSurface = HasExternalAuthoredMask()
-            ? 1.0f
-            : smoothstep(0.22f, 0.80f, PaneNormalEvidence(normalSample));
-        float diffuseLuma = dot(max(baseColor, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
-        float diffuseSupport = smoothstep(0.012f, 0.105f, diffuseLuma);
-        return saturate(
-            glowPane * authoredCore * glassSurface * lerp(0.42f, 1.0f, diffuseSupport));
+        const float x0 = SamplePaneGlowEvidence(materialUV - float2(texel.x, 0.0f), tile, maskMip);
+        const float x1 = SamplePaneGlowEvidence(materialUV + float2(texel.x, 0.0f), tile, maskMip);
+        const float y0 = SamplePaneGlowEvidence(materialUV - float2(0.0f, texel.y), tile, maskMip);
+        const float y1 = SamplePaneGlowEvidence(materialUV + float2(0.0f, texel.y), tile, maskMip);
+        const float neighborCoverage = (x0 + x1 + y0 + y1) * 0.25f;
+        // At least two strong adjacent samples: a small pane survives, while
+        // isolated hot pixels and most glowing trim fail alongside normal tests.
+        const float topology = smoothstep(0.31f, 0.66f, neighborCoverage);
+        const float glassNormal = smoothstep(0.22f, 0.80f,
+            PaneNormalEvidence(normalSample));
+        const float diffuseLuma = dot(max(baseColor, 0.0f.xxx),
+            float3(0.2126f, 0.7152f, 0.0722f));
+        const float diffuseSupport = smoothstep(0.012f, 0.105f, diffuseLuma);
+        return saturate(lit * topology * glassNormal *
+                        lerp(0.42f, 1.0f, diffuseSupport));
     }
 
     float GlowFootprintMip(float2 materialUV, float2 textureSize, float mipCount)
@@ -717,19 +690,34 @@ namespace WindowLife
         float confidence;
     };
 
-    float SampleAuthoredPaneGuide(float2 materialUV, float mipLevel, float2 tile)
+    void GetLayoutGuideDimensions(out uint width, out uint height,
+                                  out uint mipCount, out bool useExternal)
     {
-        // Never let a wrapping material sampler join opposite sides of an atlas.
-        // The actual pane mask remains full resolution; this deliberately coarse
-        // guide only closes narrow mullion gaps into one logical window group.
+        width = 0u; height = 0u; mipCount = 0u;
+        useExternal = false;
+        if (HasGameGlowTexture()) {
+            TexGlowSampler.GetDimensions(0, width, height, mipCount);
+            if (width >= 8u && height >= 8u && mipCount > 0u)
+                return;
+        }
+        if (HasExternalAuthoredMask()) {
+            WindowLifeAuthoredPaneMask.GetDimensions(0, width, height, mipCount);
+            useExternal = true;
+        }
+    }
+
+    float SampleAuthoredPaneGuide(float2 materialUV, float mipLevel,
+                                  float2 tile, bool useExternal)
+    {
         if (any(abs(floor(materialUV) - tile) > 0.5f))
             return 0.0f;
-
-        // Raw samples are sufficient for binary layout evidence. Layout follows
-        // the currently installed native glow texture; optional external masks
-        // remain final glass clips and can never resize, seed or move a room.
-        float3 glow = TexGlowSampler.SampleLevel(SampGlowSampler, materialUV, mipLevel).xyz;
-        float luma = dot(max(glow, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
+        // The guide source is chosen ONCE for the layout, not for every sample
+        // in the bounded edge search. This avoids repeated texture GetDimensions.
+        float3 value = useExternal
+            ? WindowLifeAuthoredPaneMask.SampleLevel(SampGlowSampler, materialUV, mipLevel).xyz
+            : TexGlowSampler.SampleLevel(SampGlowSampler, materialUV, mipLevel).xyz;
+        const float luma = dot(max(value, 0.0f.xxx),
+            float3(0.2126f, 0.7152f, 0.0722f));
         return smoothstep(0.0040f, 0.060f, luma);
     }
 
@@ -738,56 +726,74 @@ namespace WindowLife
         float2 stepUV,
         float mipLevel,
         float2 tile,
+        bool useExternal,
         out float found)
     {
-        const float guideThreshold = 0.50f;
-        float insideUnits = 0.0f;
-        float outsideUnits = 12.0f;
-        float outsideRun = 0.0f;
+        const float threshold = 0.50f;
+        float lastInside = 0.0f;
+        float firstOutside = 12.0f;
+        int gap = 0;
+        int bridges = 0;
         found = 0.0f;
 
-        // Twelve fractional-mip guide texels span a complete repeated UV tile.
-        // This is the important distinction between a pane and an aperture: a
-        // sample that starts in the upper-left pane can cross the centre mullions
-        // and still discover the opposite outer frame instead of fitting a room to
-        // that single quadrant.
-        [unroll]
+        // Scan only the current atlas tile. Bridge a two-texel run of dark
+        // lead/mullion only when followed by broad, confirmed pane evidence. Never bridge
+        // more than two gaps on one axis or jump across an atlas tile boundary.
+        [loop]
         for (int i = 1; i <= 12; ++i) {
-            if (found < 0.5f) {
-                float guide = SampleAuthoredPaneGuide(
-                    materialUV + stepUV * (float)i, mipLevel, tile);
-                if (guide > guideThreshold) {
-                    insideUnits = (float)i;
-                    outsideRun = 0.0f;
-                } else {
-                    outsideRun += 1.0f;
-                    // A single dark guide texel is normally a lead/wood mullion.
-                    // Require a two-texel gutter before declaring the edge so all
-                    // sub-panes of one authored window resolve to one room.
-                    if (outsideRun >= 2.0f) {
-                        outsideUnits = max((float)i - 1.0f, insideUnits + 0.25f);
-                        found = 1.0f;
-                    }
-                }
+            if (found > 0.5f)
+                break;
+            const float t = (float)i;
+            const float value = SampleAuthoredPaneGuide(
+                materialUV + stepUV * t, mipLevel, tile, useExternal);
+            if (value > threshold) {
+                lastInside = t;
+                gap = 0;
+                continue;
+            }
+            ++gap;
+            if (gap < 2)
+                continue;
+
+            // If two adjacent guide samples beyond the narrow dark run are
+            // clearly pane, it was likely a mullion within ONE aperture. A
+            // wide stone gutter or neighbouring unrelated window is an edge.
+            bool recovered = false;
+            if (bridges < 2 && i <= 10 && gap == 2) {
+                float next1 = SampleAuthoredPaneGuide(
+                    materialUV + stepUV * (t + 1.0f), mipLevel, tile, useExternal);
+                float next2 = SampleAuthoredPaneGuide(
+                    materialUV + stepUV * (t + 2.0f), mipLevel, tile, useExternal);
+                recovered = min(next1, next2) > 0.70f;
+            }
+            if (recovered) {
+                ++bridges;
+                lastInside = t + 2.0f;
+                gap = 0;
+            } else {
+                firstOutside = max(t - (float)gap + 1.0f, lastInside + 0.25f);
+                found = 1.0f;
             }
         }
 
         if (found < 0.5f)
-            return outsideUnits * length(stepUV);
+            return 12.0f * length(stepUV);
 
-        // Two bounded refinements remove the coarse-mip stair stepping that would
-        // otherwise make silhouettes change scale while crossing a pane.
+        // Refine the final exterior boundary, NOT a retained internal mullion.
+        // Keep the search on the exterior side of the last confirmed pane.
+        float inside = max(lastInside, firstOutside - 1.0f);
+        float outside = max(firstOutside, inside + 0.25f);
         [unroll]
-        for (int refine = 0; refine < 2; ++refine) {
-            float middle = (insideUnits + outsideUnits) * 0.5f;
-            float guide = SampleAuthoredPaneGuide(
-                materialUV + stepUV * middle, mipLevel, tile);
-            if (guide > guideThreshold)
-                insideUnits = middle;
+        for (int r = 0; r < 2; ++r) {
+            const float middle = (inside + outside) * 0.5f;
+            const float guide = SampleAuthoredPaneGuide(
+                materialUV + stepUV * middle, mipLevel, tile, useExternal);
+            if (guide > threshold)
+                inside = middle;
             else
-                outsideUnits = middle;
+                outside = middle;
         }
-        return ((insideUnits + outsideUnits) * 0.5f) * length(stepUV);
+        return ((inside + outside) * 0.5f) * length(stepUV);
     }
 
     float2 FindNearbyAuthoredPaneSeed(
@@ -795,10 +801,11 @@ namespace WindowLife
         float2 stepUV,
         float mipLevel,
         float2 tile,
+        bool useExternal,
         out float bestGuide)
     {
         float2 bestSeed = materialUV;
-        bestGuide = SampleAuthoredPaneGuide(materialUV, mipLevel, tile);
+        bestGuide = SampleAuthoredPaneGuide(materialUV, mipLevel, tile, useExternal);
 
         // A narrow leaded pane can disappear at the coarse guide mip even though
         // its full-resolution glow is valid. Search only the immediately adjacent
@@ -809,7 +816,7 @@ namespace WindowLife
             [unroll]
             for (int x = -1; x <= 1; ++x) {
                 float2 candidate = materialUV + float2((float)x, (float)y) * stepUV;
-                float guide = SampleAuthoredPaneGuide(candidate, mipLevel, tile);
+                float guide = SampleAuthoredPaneGuide(candidate, mipLevel, tile, useExternal);
                 float proximityBias = (abs((float)x) + abs((float)y)) * 0.006f;
                 if (guide - proximityBias > bestGuide) {
                     bestSeed = candidate;
@@ -841,31 +848,34 @@ namespace WindowLife
     PaneLayout ResolveAuthoredPaneLayout(float2 materialUV, float2 plane)
     {
         PaneLayout result = (PaneLayout)0;
-        if (!HasGameGlowTexture() || GetInterior0().z < 0.5f)
+        if ((!HasGameGlowTexture() && !HasExternalAuthoredMask()) || GetInterior0().z < 0.5f)
             return result;
 
         uint textureWidth;
         uint textureHeight;
         uint mipCount;
-        TexGlowSampler.GetDimensions(0, textureWidth, textureHeight, mipCount);
+        bool externalGuide = false;
+        GetLayoutGuideDimensions(textureWidth, textureHeight, mipCount, externalGuide);
         if (textureWidth < 8u || textureHeight < 8u || mipCount == 0u)
             return result;
 
         float2 textureSize = float2((float)textureWidth, (float)textureHeight);
-        // Work at about twelve guide texels across the longest atlas dimension.
-        // A fractional mip merges thin lead/cross mullions without losing the
-        // broader dark frame that separates genuinely neighbouring windows.
+        // Preserve small windows on large 1K/2K facade atlases. The old
+        // textureSize / 12 mip often downsampled an entire window to less than
+        // one guide texel, so each surviving lead segment became its own room.
+        // A five-mip ceiling retains roughly 32-source-texel topology, while
+        // bounded directional scans still refuse long frame/facade gutters.
         float desiredMip = log2(max(max(textureSize.x, textureSize.y) / 12.0f, 1.0f));
-        float guideMip = clamp(desiredMip, 0.0f, (float)(mipCount - 1u));
+        float guideMip = clamp(min(desiredMip, 5.0f), 0.0f, (float)(mipCount - 1u));
         float2 stepUV = exp2(guideMip) / textureSize;
         float2 tile = floor(materialUV);
-        float initialGuide = SampleAuthoredPaneGuide(materialUV, guideMip, tile);
+        float initialGuide = SampleAuthoredPaneGuide(materialUV, guideMip, tile, externalGuide);
         float2 initialSeed = materialUV;
         // Normal panes retain the original one-sample fast path. Only narrow
         // sub-panes lost by the coarse mip pay for the local recovery search.
         [branch] if (initialGuide <= 0.25f) {
             initialSeed = FindNearbyAuthoredPaneSeed(
-                materialUV, stepUV, guideMip, tile, initialGuide);
+                materialUV, stepUV, guideMip, tile, externalGuide, initialGuide);
         }
         if (initialGuide <= 0.25f)
             return result;
@@ -874,10 +884,10 @@ namespace WindowLife
         float foundRight;
         float foundDown;
         float foundUp;
-        float left = FindAuthoredPaneEdge(initialSeed, float2(-stepUV.x, 0.0f), guideMip, tile, foundLeft);
-        float right = FindAuthoredPaneEdge(initialSeed, float2(stepUV.x, 0.0f), guideMip, tile, foundRight);
-        float down = FindAuthoredPaneEdge(initialSeed, float2(0.0f, -stepUV.y), guideMip, tile, foundDown);
-        float up = FindAuthoredPaneEdge(initialSeed, float2(0.0f, stepUV.y), guideMip, tile, foundUp);
+        float left = FindAuthoredPaneEdge(initialSeed, float2(-stepUV.x, 0.0f), guideMip, tile, externalGuide, foundLeft);
+        float right = FindAuthoredPaneEdge(initialSeed, float2(stepUV.x, 0.0f), guideMip, tile, externalGuide, foundRight);
+        float down = FindAuthoredPaneEdge(initialSeed, float2(0.0f, -stepUV.y), guideMip, tile, externalGuide, foundDown);
+        float up = FindAuthoredPaneEdge(initialSeed, float2(0.0f, stepUV.y), guideMip, tile, externalGuide, foundUp);
 
         float2 spanUV = float2(left + right, down + up);
         if (min(spanUV.x, spanUV.y) <= min(stepUV.x, stepUV.y) * 1.25f)
@@ -906,9 +916,9 @@ namespace WindowLife
             abs(spanU.y) + abs(spanV.y));
 
         float radius = max(GetGeometry0().w, 1.0f);
-        // Native glow maps can contain lit stone, trim or a complete facade, so
-        // reconstructed size remains tightly related to the draw bounds. External
-        // exact masks deliberately do not relax any layout test: they clip only.
+        // Native glow maps can contain lit stone, trim or a complete facade.
+        // Exact masks may rescue an absent glow guide, but neither guide type
+        // relaxes the geometry-relative shape and bounds validation.
         float nativeSaneSize = max(rawRoomSize.x, rawRoomSize.y) < radius * 3.25f ? 1.0f : 0.0f;
         float saneSize = nativeSaneSize;
         float usefulSize = min(rawRoomSize.x, rawRoomSize.y) >= 8.0f ? 1.0f : 0.0f;
@@ -1672,6 +1682,12 @@ namespace WindowLife
         const uint debugMode = GetDebugMode();
         if (debugMode == 2u || debugMode == 3u)
             result.debugColor = float3(frac(baseRoomLocal), 0.0f);
+        else if (debugMode == 11u)
+            result.debugColor = GetPresentation1().w > 0.5f
+                ? float3(0.10f, 0.85f, 0.32f)   // shared parent-window anchor
+                : (singleAperture
+                    ? float3(0.20f, 0.47f, 1.0f) // dedicated geometry
+                    : float3(0.95f, 0.47f, 0.14f)); // facade/grid
         else if (debugMode == 5u)
             result.debugColor = float3(
                 Hash11(roomSeed * 17.0f + 0.13f),
@@ -1685,8 +1701,9 @@ namespace WindowLife
         bool allowCurtains = !SharedData::InInterior;
         float nativeLayerWeight = 1.0f;
 
-        // A native texture-derived guide is not an authored dependency: it follows
-        // whatever compatible window/glow texture is actually installed. At a
+        // A native texture-derived guide follows the installed glow atlas. A
+        // diffuse-matched exact mask can rescue the guide only when no native
+        // glow SRV is bound; the final glass stencil stays independent. At a
         // coarse mip, wood/lead mullions disappear into one connected aperture.
         // All room layers then share the same reconstructed world-space centre,
         // size and seed. If reconstruction is uncertain, the room keeps the safe
@@ -1702,7 +1719,7 @@ namespace WindowLife
         // islands and split one room into wedges.  The geometry-centred layout
         // remains continuous across every pane and preserves the illusion.
         bool attemptedNativeLayout = GetAsset0().w < -0.5f && GetInterior0().z > 0.5f &&
-            HasGameGlowTexture() && GetLayout0().y > 0.5f;
+            (HasGameGlowTexture() || HasExternalAuthoredMask()) && GetLayout0().y > 0.5f;
         PaneLayout paneLayout = (PaneLayout)0;
         [branch] if (attemptedNativeLayout)
             paneLayout = ResolveAuthoredPaneLayout(materialUV, plane);
@@ -2201,19 +2218,19 @@ namespace WindowLife
                 float3(1.0f + colorJitter * 0.08f, 1.0f, 1.0f - colorJitter * 0.06f),
                 roomVariation);
 
-			// User-facing presentation controls operate only on the recessed room.
-			// Pane classification, masks, glass response and silhouettes remain
-			// untouched. A neutral 1.0/1.0 exactly preserves the accepted baseline.
-			float contrast = clamp(GetPresentation0().x, 0.50f, 2.0f);
-			float emission = clamp(GetPresentation0().y, 0.0f, 6.0f);
-			// Lit interiors need a small radiance lift after the recessed side/
-			// floor shading. Preserve authored contrast instead of flattening the
-			// atlas toward a constant window glow.
-			float litRoomLift = lerp(1.06f, 1.20f, nightBlend);
-			layeredRoomColor = max(
-				(layeredRoomColor - 0.18f.xxx) * contrast + 0.18f.xxx,
-				0.0f.xxx) * emission * litRoomLift;
-			result.roomColor = layeredRoomColor;
+            // User-facing presentation controls operate only on the recessed room.
+            // Pane classification, masks, glass response and silhouettes remain
+            // untouched. A neutral 1.0/1.0 exactly preserves the accepted baseline.
+            float contrast = clamp(GetPresentation0().x, 0.50f, 2.0f);
+            float emission = clamp(GetPresentation0().y, 0.0f, 6.0f);
+            // Lit interiors need a small radiance lift after the recessed side/
+            // floor shading. Preserve authored contrast instead of flattening the
+            // atlas toward a constant window glow.
+            float litRoomLift = lerp(1.06f, 1.20f, nightBlend);
+            layeredRoomColor = max(
+                (layeredRoomColor - 0.18f.xxx) * contrast + 0.18f.xxx,
+                0.0f.xxx) * emission * litRoomLift;
+            result.roomColor = layeredRoomColor;
             result.roomColorWeight =
                 roomSample.a * insideRoom * interiorPane * verticalSurface * grazingFade * distanceFade *
                 GetAsset0().z * (roomLayoutSafe ? 1.0f : 0.0f) *

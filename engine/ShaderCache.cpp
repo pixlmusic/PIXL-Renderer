@@ -105,7 +105,6 @@ namespace SIE
 
 	namespace SShaderCache
 	{
-		static void GetShaderDefines(const RE::BSShader&, uint32_t, D3D_SHADER_MACRO*);
 		static std::string GetShaderString(ShaderClass, const RE::BSShader&, uint32_t, bool = false);
 		/**
 		 * @brief Resolve image-space shader descriptor when applicable.
@@ -717,7 +716,7 @@ namespace SIE
 			return;
 		}
 
-		static void GetShaderDefines(const RE::BSShader& shader, uint32_t descriptor, std::span<D3D_SHADER_MACRO> defines)
+		static void GetShaderDefines(const RE::BSShader& shader, uint32_t descriptor, CachedShaderStage shaderStage, std::span<D3D_SHADER_MACRO> defines)
 		{
 			switch (shader.shaderType.get()) {
 			case RE::BSShader::Type::Grass:
@@ -751,6 +750,40 @@ namespace SIE
 				GetUtilityShaderDefines(descriptor, defines);
 				break;
 			}
+
+			// Module version invalidation already uses AffectsCachedShader as the
+			// authoritative descriptor/stage dependency contract. Apply the same
+			// contract to injected defines so irrelevant module implementations do
+			// not enter (or split) shader compilation units. Keep a define whenever
+			// any loaded module that owns it says the current permutation consumes it.
+			auto next = defines.begin();
+			for (auto current = defines.begin(); current != defines.end() && current->Name; ++current) {
+				bool moduleOwned = false;
+				bool moduleApplicable = false;
+				for (auto* feature : RenderModule::GetModuleList()) {
+					if (!feature || !feature->loaded || !feature->HasShaderDefine(shader.shaderType.get()))
+						continue;
+					auto ownsName = [&](std::string_view name) {
+						return !name.empty() && name == current->Name;
+					};
+					bool owns = ownsName(feature->GetShaderDefineName());
+					if (!owns) {
+						for (const auto& option : feature->GetShaderDefineOptions()) {
+							if (ownsName(option.first)) {
+								owns = true;
+								break;
+							}
+						}
+					}
+					if (owns) {
+						moduleOwned = true;
+						moduleApplicable |= feature->AffectsCachedShader(shader.shaderType.get(), descriptor, shaderStage);
+					}
+				}
+				if (!moduleOwned || moduleApplicable)
+					*next++ = *current;
+			}
+			*next = { nullptr, nullptr };
 		}
 
 		static std::array<std::array<std::unordered_map<std::string, int32_t>,
@@ -1354,7 +1387,10 @@ namespace SIE
 		{
 			auto sourceShaderFile = shader.fxpFilename;
 			std::array<D3D_SHADER_MACRO, 64> defines{};
-			SIE::SShaderCache::GetShaderDefines(shader, descriptor, std::span{ defines });
+			SIE::SShaderCache::GetShaderDefines(shader, descriptor,
+				shaderClass == ShaderClass::Vertex ? CachedShaderStage::Vertex :
+				shaderClass == ShaderClass::Compute ? CachedShaderStage::Compute : CachedShaderStage::Pixel,
+				std::span{ defines });
 			std::string result;
 			if (hashkey)  // generate hashkey so don't include descriptor
 				result = fmt::format("{}:{}:{}", sourceShaderFile, magic_enum::enum_name(shaderClass), SIE::SShaderCache::MergeDefinesString(defines, true));
@@ -1416,7 +1452,10 @@ namespace SIE
 			// Keep the engine's fixed-size macro contract separate from user input.
 			// Custom defines must not consume its capacity or write past the array.
 			std::array<D3D_SHADER_MACRO, 64> engineDefines{};
-			GetShaderDefines(shader, descriptor, std::span{ engineDefines });
+			GetShaderDefines(shader, descriptor,
+				shaderClass == ShaderClass::Vertex ? CachedShaderStage::Vertex :
+				shaderClass == ShaderClass::Compute ? CachedShaderStage::Compute : CachedShaderStage::Pixel,
+				std::span{ engineDefines });
 			const auto engineDefinesEnd = std::ranges::find_if(engineDefines,
 				[](const D3D_SHADER_MACRO& macro) { return macro.Name == nullptr; });
 			auto shaderDefines = globals::state->GetDefines();
@@ -1469,6 +1508,21 @@ namespace SIE
 			bool fromDisk = false;
             const HRESULT compileResult = cache.GetCompilationArtifacts().Compile(path, defines.data(), includeHandler, "main",
                 GetShaderProfile(shaderClass), flags, diskPath, useDiskCache, &shaderBlob, &errorBlob, &fromDisk);
+			// Aggregate timings separate preprocessing from FXC execution. Emit a
+			// low-frequency snapshot so slow shader families can be diagnosed without
+			// adding per-frame or per-compile log traffic.
+			static std::atomic<uint64_t> lastArtifactSummary{};
+			const auto timing = cache.GetCompilationArtifacts().GetTimingSnapshot();
+			auto lastSummary = lastArtifactSummary.load(std::memory_order_relaxed);
+			if (timing.requests >= lastSummary + 128 &&
+			    lastArtifactSummary.compare_exchange_strong(lastSummary, timing.requests, std::memory_order_relaxed)) {
+				logger::debug("[ShaderCompiler] requests={} coalesced={} preprocessCalls={} FXC={} failures={} memoryHits={} diskHits={} preprocessTotal={:.2f}s FXCTotal={:.2f}s preprocessed={:.1f}MiB",
+					timing.requests, timing.coalescedRequests, timing.preprocessingCalls,
+					timing.actualCompiles, timing.failures, timing.inMemoryHits, timing.diskHits,
+					static_cast<double>(timing.preprocessingNanoseconds) / 1.0e9,
+					static_cast<double>(timing.compilerNanoseconds) / 1.0e9,
+					static_cast<double>(timing.preprocessedBytes) / (1024.0 * 1024.0));
+			}
 			// If the include handler captured any includes, register them so the watcher
 			// can invalidate dependents even if this compilation fails. Do NOT clear
 			// mappings when there are no captured includes to avoid removing prior
@@ -1478,6 +1532,20 @@ namespace SIE
 			}
 
 			if (FAILED(compileResult)) {
+				// Cache invalidation intentionally cancels in-flight work. Do not
+				// report that expected generation change as a shader source/compiler
+				// failure; the next request will compile against the new generation.
+				if (compileResult == E_ABORT &&
+					compileGeneration != cache.GetCompilationArtifacts().Generation()) {
+					if (errorBlob)
+						errorBlob->Release();
+					if (shaderBlob)
+						shaderBlob->Release();
+					logger::debug("Cancelled superseded {} shader {}::{:X} (generation {} -> {})",
+						magic_enum::enum_name(shaderClass), magic_enum::enum_name(type), descriptor,
+						compileGeneration, cache.GetCompilationArtifacts().Generation());
+					return nullptr;
+				}
 				if (errorBlob != nullptr) {
 					logger::error("Failed to compile {} shader {}::{:X} (HRESULT 0x{:08X}, defines: {}):\n{}",
 						magic_enum::enum_name(shaderClass), magic_enum::enum_name(type), descriptor,
@@ -1565,6 +1633,10 @@ namespace SIE
 			memcpy(rawPtr + sizeof(RE::BSGraphics::VertexShader), shaderData.GetBufferPointer(),
 				shaderData.GetBufferSize());
 			std::unique_ptr<RE::BSGraphics::VertexShader> newShader{ shaderPtr };
+			// The engine struct is default-initialized in raw storage; its COM
+			// shader pointer is not guaranteed to start null. Create*Shader may
+			// leave the output untouched on failure, so initialize before passing it.
+			newShader->shader = nullptr;
 			newShader->byteCodeSize = (uint32_t)shaderData.GetBufferSize();
 			newShader->id = descriptor;
 			newShader->vertexDesc = 0;
@@ -1618,6 +1690,7 @@ namespace SIE
 			static const auto bufferData = REL::Relocation<void*>(RELOCATION_ID(524967, 411448));
 
 			auto newShader = std::make_unique<RE::BSGraphics::PixelShader>();
+			newShader->shader = nullptr;
 			newShader->id = descriptor;
 
 			winrt::com_ptr<ID3D11ShaderReflection> reflector;
@@ -1663,6 +1736,7 @@ namespace SIE
 			[[maybe_unused]] const RE::BSShader& shader, uint32_t descriptor)
 		{
 			auto newShader = std::make_unique<RE::BSGraphics::ComputeShader>();
+			newShader->shader = nullptr;
 			newShader->id = descriptor;
 			return newShader;
 		}
@@ -1844,6 +1918,14 @@ namespace SIE
 	RE::BSGraphics::VertexShader* ShaderCache::GetVertexShader(const RE::BSShader& shader,
 		uint32_t descriptor)
 	{
+		if (REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104 &&
+			shader.shaderType.get() == RE::BSShader::Type::Utility &&
+			(descriptor & static_cast<uint32_t>(UtilityShaderFlags::RenderShadowmask))) {
+			// The PIXL depth-reconstruction shadow mask is black across sunlit
+			// geometry on 1.7.104. Keep this one native VS/PS pair together while
+			// its versioned projection inputs are investigated.
+			return nullptr;
+		}
 		if (!SShaderCache::ResolveImageSpaceDescriptor(shader, descriptor)) {
 			return nullptr;
 		}
@@ -1889,6 +1971,14 @@ namespace SIE
 	RE::BSGraphics::PixelShader* ShaderCache::GetPixelShader(const RE::BSShader& shader,
 		uint32_t descriptor)
 	{
+		if (REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104 &&
+			shader.shaderType.get() == RE::BSShader::Type::Utility &&
+			(descriptor & static_cast<uint32_t>(UtilityShaderFlags::RenderShadowmask))) {
+			static std::atomic_flag loggedNativeShadowMask = ATOMIC_FLAG_INIT;
+			if (!loggedNativeShadowMask.test_and_set(std::memory_order_relaxed))
+				logger::warn("[PIXL][Sun] Skyrim 1.7.104: using native directional shadow-mask shaders after PIXL mask readback was black on sunlit geometry.");
+			return nullptr;
+		}
 		auto state = globals::state;
 
 		if (!((ShaderCache::IsSupportedShader(shader) || state->IsDeveloperMode() && state->IsShaderEnabled(shader)) && state->enablePShaders)) {
@@ -2848,8 +2938,10 @@ namespace SIE
 			const auto result = device->CreateVertexShader(shaderBlob->GetBufferPointer(),
 				newShader->byteCodeSize, nullptr, reinterpret_cast<ID3D11VertexShader**>(&newShader->shader));
 			if (FAILED(result)) {
-				logger::error("Failed to create vertex shader {}::{:X}",
-					magic_enum::enum_name(shader.shaderType.get()), descriptor);
+				const auto deviceReason = device->GetDeviceRemovedReason();
+				logger::error("Failed to create vertex shader {}::{:X} (HRESULT 0x{:08X}, device 0x{:08X})",
+					magic_enum::enum_name(shader.shaderType.get()), descriptor,
+					static_cast<std::uint32_t>(result), static_cast<std::uint32_t>(deviceReason));
 				if (newShader->shader != nullptr) {
 					newShader->shader->Release();
 				}
@@ -2879,9 +2971,10 @@ namespace SIE
 			const auto result = device->CreatePixelShader(shaderBlob->GetBufferPointer(),
 				shaderBlob->GetBufferSize(), nullptr, reinterpret_cast<ID3D11PixelShader**>(&newShader->shader));
 			if (FAILED(result)) {
-				logger::error("Failed to create pixel shader {}::{:X}",
+				const auto deviceReason = device->GetDeviceRemovedReason();
+				logger::error("Failed to create pixel shader {}::{:X} (HRESULT 0x{:08X}, device 0x{:08X})",
 					magic_enum::enum_name(shader.shaderType.get()),
-					descriptor);
+					descriptor, static_cast<std::uint32_t>(result), static_cast<std::uint32_t>(deviceReason));
 				if (newShader->shader != nullptr) {
 					newShader->shader->Release();
 				}
@@ -2911,9 +3004,10 @@ namespace SIE
 			const auto result = device->CreateComputeShader(shaderBlob->GetBufferPointer(),
 				shaderBlob->GetBufferSize(), nullptr, reinterpret_cast<ID3D11ComputeShader**>(&newShader->shader));
 			if (FAILED(result)) {
-				logger::error("Failed to create pixel shader {}::{:X}",
+				const auto deviceReason = device->GetDeviceRemovedReason();
+				logger::error("Failed to create compute shader {}::{:X} (HRESULT 0x{:08X}, device 0x{:08X})",
 					magic_enum::enum_name(shader.shaderType.get()),
-					descriptor);
+					descriptor, static_cast<std::uint32_t>(result), static_cast<std::uint32_t>(deviceReason));
 				if (newShader->shader != nullptr) {
 					newShader->shader->Release();
 				}
@@ -2929,7 +3023,7 @@ namespace SIE
 	std::string ShaderCache::GetDefinesString(const RE::BSShader& shader, uint32_t descriptor)
 	{
 		std::array<D3D_SHADER_MACRO, 64> defines{};
-		SIE::SShaderCache::GetShaderDefines(shader, descriptor, std::span{ defines });
+		SIE::SShaderCache::GetShaderDefines(shader, descriptor, CachedShaderStage::Pixel, std::span{ defines });
 
 		return SIE::SShaderCache::MergeDefinesString(defines, true);
 	}
@@ -3314,7 +3408,7 @@ namespace SIE
 		if (elapsedMs >= kVerySlowMs) {
 			compilationSet.verySlowTasks++;
 			compilationSet.slowTasks++;
-			logger::info("[ShaderTiming] Very slow {:.0f}ms | queue_wait={:.0f}ms | remaining={} | defines={} | src={}B | prio={} | {}",
+			logger::debug("[ShaderTiming] Very slow {:.0f}ms | queue_wait={:.0f}ms | remaining={} | defines={} | src={}B | prio={} | {}",
 				elapsedMs, queueWaitMs, remaining, descriptorComplexity, sourceBytes, task.GetPriority(), taskKey);
 		} else if (elapsedMs >= kSlowMs) {
 			compilationSet.slowTasks++;

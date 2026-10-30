@@ -29,7 +29,6 @@
 #include "Renderer/TemporalContext.h"
 #include "Renderer/PixelAnnotations.h"
 #include "Renderer/GPUWorkloadBudgeter.h"
-#include "Renderer/VisibilityContext.h"
 #include "Modules/SkinOptics.h"
 #include "Modules/SkyContinuity.h"
 #include "Modules/SkyBounce.h"
@@ -151,8 +150,7 @@ void State::Draw()
 				}
 			}
 		}
-
-		if (globals::menu->overlayVisible && globals::pipeline::pulseProfiler.loaded && globals::pipeline::pulseProfiler.IsOverlayVisible())
+if (globals::menu->overlayVisible && globals::pipeline::pulseProfiler.loaded && globals::pipeline::pulseProfiler.IsOverlayVisible())
 			Debug();
 
 		updateShader = false;
@@ -934,7 +932,6 @@ void State::SetupResources()
 
 	globals::profiler->Initialize(globals::d3d::device, globals::d3d::context);
 	PIXL::Renderer::GPUResourceServices::Get().Initialize(globals::d3d::device, globals::d3d::context);
-	PIXL::Renderer::VisibilityContext::Get().SetupResources();
 
 	if (frameAnnotations) {
 		globals::profiler->SetPerfEventCallbacks(
@@ -1087,7 +1084,7 @@ void State::SetAdapterDescription(const std::wstring& description)
 	adapterDescription = converter.to_bytes(description);
 }
 
-void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] bool a_prepass)
+void State::UpdateSharedData(bool a_inWorld, bool a_prepass)
 {
 	{
 		SharedDataCB data{};
@@ -1097,17 +1094,95 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 
 		auto shadowSceneNode = shaderManager->shadowSceneNode[0];
 		auto dirLight = skyrim_cast<RE::NiDirectionalLight*>(shadowSceneNode->GetRuntimeData().sunLight->light.get());
+		const bool isSkyrim117104 = REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104;
+
+		// 1.7.104 may expose a black sun light through scene node 0 while another
+		// world shadow scene node still has the active directional source. Keep the
+		// normal node-0 path unless it is black in daylight, then use a matching
+		// directional source from the remaining scene nodes.
+		if (isSkyrim117104 && dirLight) {
+			const auto& primaryDirection = dirLight->GetWorldDirection();
+			const float primarySunZ = -primaryDirection.z;
+			const auto& primaryRuntime = dirLight->GetLightRuntimeData();
+			const float primaryLuminance =
+				(0.2126f * primaryRuntime.diffuse.red + 0.7152f * primaryRuntime.diffuse.green + 0.0722f * primaryRuntime.diffuse.blue) *
+				primaryRuntime.fade;
+			if (primarySunZ > 0.05f && primaryLuminance <= 1.0e-5f) {
+				float bestLuminance = primaryLuminance;
+				for (uint32_t sceneNodeIndex = 1; sceneNodeIndex < std::size(shaderManager->shadowSceneNode); ++sceneNodeIndex) {
+				auto* candidateNode = shaderManager->shadowSceneNode[sceneNodeIndex];
+				if (!candidateNode)
+					continue;
+				auto* candidateSource = candidateNode->GetRuntimeData().sunLight;
+				if (!candidateSource || !candidateSource->light)
+					continue;
+				auto* candidate = skyrim_cast<RE::NiDirectionalLight*>(candidateSource->light.get());
+				if (!candidate)
+					continue;
+				const auto& candidateRuntime = candidate->GetLightRuntimeData();
+				const float candidateLuminance =
+					(0.2126f * candidateRuntime.diffuse.red + 0.7152f * candidateRuntime.diffuse.green + 0.0722f * candidateRuntime.diffuse.blue) *
+					candidateRuntime.fade;
+				const auto& candidateDirection = candidate->GetWorldDirection();
+				const float directionDot =
+					primaryDirection.x * candidateDirection.x +
+					primaryDirection.y * candidateDirection.y +
+					primaryDirection.z * candidateDirection.z;
+				if (candidateLuminance > bestLuminance && directionDot > 0.98f) {
+					bestLuminance = candidateLuminance;
+					dirLight = candidate;
+					logger::warn("[PIXL][Sun] 1.7.104 scene node 0 has a black daylight sun; using directional light from scene node {}.", sceneNodeIndex);
+				}
+			}
+		}
+		}
 
 		auto& lightRuntimeData = dirLight->GetLightRuntimeData();
 		data.DirLightColor = { lightRuntimeData.diffuse.red, lightRuntimeData.diffuse.green, lightRuntimeData.diffuse.blue, 1.0f };
 		data.DirLightColor *= lightRuntimeData.fade;
 
-		if (auto imageSpaceManager = globals::game::imageSpaceManager)
-			data.DirLightColor *= imageSpaceManager->GetRuntimeData().data.baseData.hdr.sunlightScale;
-
 		const auto& direction = dirLight->GetWorldDirection();
 		data.DirLightDirection = { -direction.x, -direction.y, -direction.z, 0.0f };
 		data.DirLightDirection.Normalize();
+		// 1.7.104 reports a per-object b2 sun vector whose axes follow the
+		// object's local frame. PIXL's lighting normals are world-space, so the
+		// shader selects this world-space direction for that runtime only.
+		data.DirLightDirection.w = isSkyrim117104 ? 1.0f : 0.0f;
+
+		float sunlightScale = 1.0f;
+		if (auto imageSpaceManager = globals::game::imageSpaceManager) {
+			const float runtimeScale = imageSpaceManager->GetImageSpaceData().baseData.hdr.sunlightScale;
+			sunlightScale = runtimeScale;
+
+			if (isSkyrim117104) {
+				// 1.7.104 can expose a zero/stale aggregate HDR sun scale during world
+				// startup. Prefer the active image-space base in that case; preserve
+				// the aggregate value whenever it is valid so image-space blending stays intact.
+				const auto* currentBase = imageSpaceManager->GetCurrentBaseData();
+				const float activeBaseScale = currentBase ? currentBase->hdr.sunlightScale : 1.0f;
+				if ((!std::isfinite(sunlightScale) || sunlightScale <= 1.0e-4f) &&
+					std::isfinite(activeBaseScale) && activeBaseScale > 1.0e-4f) {
+					sunlightScale = activeBaseScale;
+				}
+
+				// A sun-facing direction plus a live directional-light fade indicates
+				// daytime. If both runtime HDR sources are invalid here, retain neutral
+				// intensity rather than multiplying the entire deferred sun to black.
+				if ((!std::isfinite(sunlightScale) || sunlightScale <= 1.0e-4f) &&
+					data.DirLightDirection.z > 0.05f && lightRuntimeData.fade > 1.0e-3f) {
+					static std::atomic_flag loggedSunScaleFallback = ATOMIC_FLAG_INIT;
+					if (!loggedSunScaleFallback.test_and_set(std::memory_order_relaxed))
+						logger::warn("[PIXL][Sun] 1.7.104 returned no usable HDR sunlight scale in daylight; using neutral scale.");
+					sunlightScale = 1.0f;
+				}
+
+			}
+
+			if (!std::isfinite(sunlightScale))
+				sunlightScale = 1.0f;
+			data.DirLightColor *= sunlightScale;
+		}
+
 		currentDirectionalLightDirection = {
 			data.DirLightDirection.x,
 			data.DirLightDirection.y,
@@ -1126,8 +1201,10 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 		auto& renderOrigin = PIXL::RenderOrigin::Get();
 		// The Experimental workspace owns the persisted user opt-in. DeveloperMode
 		// remains independent so testing Render Origin never changes compiler flags.
-		if (globals::menu)
-			renderOrigin.requestedEnabled = globals::menu->GetSettings().ExperimentalRenderOriginEnabled;
+		// World-origin shifting is retired for the 1.0.9 release line. Keep the
+		// zero-origin snapshot active for shared-buffer compatibility and consumers
+		// that still use its coordinate conversion helpers.
+		renderOrigin.requestedEnabled = false;
 		const auto& previousAdjust = globals::game::frameBufferCached.GetCameraPreviousPosAdjust();
 		const PIXL::RenderOrigin::AbsoluteWorldPosition engineOrigin{
 			PIXL::RenderOrigin::Position{ cameraPosAdjust.x, cameraPosAdjust.y, cameraPosAdjust.z }
@@ -1170,7 +1247,12 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 					cameraAbsolute.x, cameraAbsolute.y, cameraAbsolute.z, renderOrigin.Discontinuity());
 			}
 		}
-		{
+		PIXL::Renderer::PixelAnnotations::Get().BeginFrame(frameCount);
+		// Shadow and reflection passes also refresh the shared frame buffer, but
+		// their camera is not the view reconstructed for presentation. Publish
+		// temporal camera state only from the main view so history, DLSS motion
+		// guidance, and photo-camera reprojection all share the rendered camera.
+		if (!a_prepass && !activeReflections) {
 			auto copyMatrix = [](const Matrix& source) {
 				std::array<float, 16> result{};
 				static_assert(sizeof(Matrix) >= sizeof(result));
@@ -1182,8 +1264,8 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 			const auto outputHeight = graphics ? graphics->screenHeight : 0u;
 			const auto renderSize = Util::ConvertToDynamic(float2{ static_cast<float>(outputWidth), static_cast<float>(outputHeight) });
 			auto* renderer = globals::game::renderer;
-				ID3D11ShaderResourceView* motionVectors = renderer ?
-					REX::W32::AsReal(renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR].SRV) : nullptr;
+			ID3D11ShaderResourceView* motionVectors = renderer ?
+				REX::W32::AsReal(renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR].SRV) : nullptr;
 			const auto* playerCamera = RE::PlayerCamera::GetSingleton();
 			const std::uint32_t cameraMode = playerCamera && playerCamera->IsInFirstPerson() ? 1u : 2u;
 			const auto& frame = globals::game::frameBufferCached;
@@ -1208,7 +1290,6 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 				.verticalFov = Util::GetVerticalFOVRad(),
 				.renderOriginShifted = renderOrigin.ShiftedThisFrame()
 			});
-			PIXL::Renderer::PixelAnnotations::Get().BeginFrame(frameCount);
 		}
 		data.RenderCoordinates = renderOrigin.GetGPUData(engineOrigin, previousEngineOrigin);
 		data.Timer = timer;

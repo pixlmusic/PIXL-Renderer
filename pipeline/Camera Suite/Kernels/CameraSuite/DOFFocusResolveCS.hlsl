@@ -19,7 +19,9 @@ bool DofFinite(float value)
 float ReadFocusDepth(float2 uv, out bool valid)
 {
     float raw = SharedData::DepthTexture.SampleLevel(LinearClampSampler, saturate(uv), 0.0f).x;
-    valid = DofFinite(raw) && raw > 1.0e-5f && raw < 0.999998f;
+    // Exact clear depth denotes sky. Far LOD geometry remains a valid focus
+    // candidate even when its device-depth value is very close to one.
+    valid = DofFinite(raw) && raw > 1.0e-5f && raw < 1.0f;
     if (!valid)
         return 0.0f;
     float viewDepth = SharedData::GetScreenDepth(raw);
@@ -45,13 +47,13 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
         float2(-0.012, 0.012), float2(0.012, 0.012),
         float2(-0.024, 0), float2(0.024, 0), float2(0, -0.024), float2(0, 0.024)
     };
-    float weightedDepth = 0.0f;
-    float weight = 0.0f;
     float nearestDepth = 1.0e20f;
     float centreDepth = 0.0f;
 	float worldWeightedDepth = 0.0f;
 	float worldWeight = 0.0f;
     float validDepths[13];
+    float sortedDepths[13];
+    uint validDepthCount = 0u;
     [unroll]
     for (uint i = 0; i < 13; ++i) {
         bool valid;
@@ -64,11 +66,10 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 		if (DofThirdPersonView() && depth < 520.0f)
 			continue;
 		validDepths[i] = depth;
+		sortedDepths[validDepthCount++] = depth;
 		if (i == 0)
 			centreDepth = depth;
 		float sampleWeight = i == 0 ? 3.0f : (i < 5 ? 1.5f : 1.0f);
-        weightedDepth += depth * sampleWeight;
-        weight += sampleWeight;
 		// Keep a hand-safe fallback, but do not discard the near samples yet: a
 		// genuinely close object should be allowed to own focus when it forms a
 		// coherent centre cluster rather than a single weapon/hand fragment.
@@ -78,18 +79,32 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 		}
         nearestDepth = min(nearestDepth, depth);
     }
-    float target = weight > 0.0f ? weightedDepth / weight : 0.0f;
+    // A moving snowflake can occupy the centre tap for one frame and become the
+    // nearest depth. Use the ROI median as the stable scene estimate; a foreground
+    // subject only overrides it below when several taps agree on that depth.
+    [loop]
+    for (uint sortIndex = 1u; sortIndex < validDepthCount; ++sortIndex) {
+        float value = sortedDepths[sortIndex];
+        int insertIndex = int(sortIndex) - 1;
+        [loop]
+        while (insertIndex >= 0 && sortedDepths[insertIndex] > value) {
+            sortedDepths[insertIndex + 1] = sortedDepths[insertIndex];
+            --insertIndex;
+        }
+        sortedDepths[insertIndex + 1] = value;
+    }
+    float target = validDepthCount > 0u ? sortedDepths[validDepthCount / 2u] : 0.0f;
     // At ridgelines the centre ROI can be entirely sky. In that case, sample a
     // compact lower-centre region to acquire the visible terrain instead of
     // snapping focus back to a near manual distance.
-    if (weight <= 0.0f) {
+    if (validDepthCount < 3u) {
         const float2 lowerOffsets[8] = {
             float2(-0.04, 0.08), float2(0.0, 0.08), float2(0.04, 0.08),
             float2(-0.04, 0.14), float2(0.0, 0.14), float2(0.04, 0.14),
             float2(-0.02, 0.20), float2(0.02, 0.20)
         };
-        float lowerDepthSum = 0.0f;
-        float lowerWeight = 0.0f;
+        float lowerDepths[8];
+        uint lowerDepthCount = 0u;
         [unroll]
         for (uint k = 0; k < 8; ++k) {
             bool lowerValid;
@@ -100,11 +115,23 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
                 continue;
             if (DofFirstPersonView() && lowerDepth < 220.0f)
                 continue;
-            lowerDepthSum += lowerDepth;
-            lowerWeight += 1.0f;
+            lowerDepths[lowerDepthCount++] = lowerDepth;
         }
-        if (lowerWeight > 0.0f)
-            target = lowerDepthSum / lowerWeight;
+        // The sky fallback can see the same transient flakes as the centre ROI.
+        // Require a few independent valid samples and use their median so a lone
+        // particle cannot acquire focus when the camera points into open sky.
+        [loop]
+        for (uint sortIndex = 1u; sortIndex < lowerDepthCount; ++sortIndex) {
+            float value = lowerDepths[sortIndex];
+            int insertIndex = int(sortIndex) - 1;
+            [loop]
+            while (insertIndex >= 0 && lowerDepths[insertIndex] > value) {
+                lowerDepths[insertIndex + 1] = lowerDepths[insertIndex];
+                --insertIndex;
+            }
+            lowerDepths[insertIndex + 1] = value;
+        }
+        target = lowerDepthCount >= 3u ? lowerDepths[lowerDepthCount / 2u] : 0.0f;
     }
     float4 previousFocus = PreviousFocus.Load(int3(0, 0, 0));
 	float previousDistance = previousFocus.x;
@@ -117,6 +144,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
     // but requires either the centre sample or multiple nearby supporting hits.
     float clusterSum = 0.0f;
     float clusterWeight = 0.0f;
+    uint clusterSupportCount = 0u;
     float clusterLimit = nearestDepth * 1.20f + 8.0f;
     [unroll]
     for (uint j = 0; j < 13; ++j) {
@@ -124,10 +152,12 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
             float sampleWeight = j == 0 ? 3.0f : (j < 5 ? 1.5f : 1.0f);
             clusterSum += validDepths[j] * sampleWeight;
             clusterWeight += sampleWeight;
+			++clusterSupportCount;
         }
     }
-    bool centredSubject = centreDepth > 0.0f && centreDepth < target * 0.92f;
-    bool supportedThinSubject = clusterWeight >= 2.5f && nearestDepth < target * 0.80f;
+	bool supportedForeground = clusterSupportCount >= 2u && clusterWeight >= 4.0f;
+	bool centredSubject = supportedForeground && centreDepth > 0.0f && centreDepth < target * 0.92f;
+	bool supportedThinSubject = supportedForeground && nearestDepth < target * 0.80f;
 	bool closeFirstPersonCandidate = DofFirstPersonView() && nearestDepth < 220.0f;
 	bool supportedCloseSubject = centreDepth > 0.0f && centreDepth <= clusterLimit &&
 		clusterWeight >= 6.0f;
@@ -142,9 +172,9 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 		centredSubject = false;
 		supportedThinSubject = false;
 	}
-    if (centredSubject || supportedThinSubject)
+	if (centredSubject || supportedThinSubject)
         target = clusterSum / max(clusterWeight, 1.0f);
-    else if (!rejectedNearCameraFragment && nearestDepth < target * 0.72f)
+	else if (!rejectedNearCameraFragment && supportedForeground && nearestDepth < target * 0.72f)
         target = lerp(target, nearestDepth, 0.30f);
 
 

@@ -92,8 +92,8 @@ struct WindowLife : RenderModule
         float RoomDepthStrength = 0.27f;
         bool EnableAuthoredRooms = true;
         float AuthoredRoomStrength = 1.0f;
-		float InteriorContrast = 0.99f;
-		float InteriorEmission = 0.57f;
+        float InteriorContrast = 0.99f;
+        float InteriorEmission = 0.57f;
         // Magnifies authored room art inside an automatically reconstructed
         // aperture without changing the physical window bounds or room identity.
         float InteriorScale = 2.0f;
@@ -110,6 +110,9 @@ struct WindowLife : RenderModule
         // retile, seed or otherwise move the recessed interior.
         bool AutomaticRoomSizing = true;
         bool UseExactGlassMasks = false;
+        // Stable parent-aperture ownership: multiple glass meshes in a bounded
+        // window NiNode share one room, occupant timeline and projected backdrop.
+        bool GroupMultiPaneWindows = true;
         bool EnableInteriorPassers = true;
 
         // Distance LOD and pane discrimination.
@@ -183,24 +186,24 @@ struct WindowLife : RenderModule
         // c10: x regional room family, y atlas ready/enabled, z authored-room blend,
         //      w geometry layout hint (-1 facade, 0 unknown, 1 dedicated aperture)
         float4 Asset0{};
-		// c11: x authored-room contrast, y exterior-room or interior-outdoor emission,
-		//      z authored-occupant opacity, w automatic room-art scale
-		float4 Presentation0{};
-		// c12: x stable per-instance salt, y cached material layout policy,
-		//      z day/night blend, w active snow-weather state
-		float4 Layout0{};
-		// c13: x environment reflection, y interior lighting response,
-		//      z weathered glass response, w sun glint strength
-		float4 Fidelity0{};
-		// c14: x directional reveal, y per-room variation,
-		//      z close cutout feather, w outdoor atlas selected (interior view)
-		float4 Fidelity1{};
+        // c11: x authored-room contrast, y exterior-room or interior-outdoor emission,
+        //      z authored-occupant opacity, w automatic room-art scale
+        float4 Presentation0{};
+        // c12: x stable per-instance salt, y cached material layout policy,
+        //      z day/night blend, w active snow-weather state
+        float4 Layout0{};
+        // c13: x environment reflection, y interior lighting response,
+        //      z weathered glass response, w sun glint strength
+        float4 Fidelity0{};
+        // c14: x directional reveal, y per-room variation,
+        //      z close cutout feather, w outdoor atlas selected (interior view)
+        float4 Fidelity1{};
         // c15: x authored-room softness, y room-box blend,
-        //      z glass-to-room recess (Skyrim units), w reserved.
-        // Spare lanes preserve the 256-byte per-draw SRV ABI.
+        //      z glass-to-room recess (Skyrim units), w grouped-parent flag.
+        // Reuses the spare lane without changing the 256-byte GPU ABI.
         float4 Presentation1{};
     };
-	static_assert(sizeof(PerGeometryData) == 256, "WindowLife per-draw payload must be exactly 256 bytes.");
+    static_assert(sizeof(PerGeometryData) == 256, "WindowLife per-draw payload must be exactly 256 bytes.");
     static_assert(sizeof(PerGeometryData) % 16 == 0, "WindowLife constant-buffer payload must remain 16-byte sized.");
 
     virtual void DrawSettings() override;

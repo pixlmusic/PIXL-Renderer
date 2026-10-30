@@ -1,187 +1,99 @@
 #pragma once
+
+#include <DirectXMath.h>
+
+// PIXL supplies float3 (typically via the renderer's shared/precompiled header).
+// Retain the public alias and all signatures for existing source/binary consumers.
 using float3x3 = DirectX::XMFLOAT3X3;
 
 namespace SphericalHarmonics
 {
-	/** @brief Second-order (L=0..1) spherical harmonics with 4 scalar coefficients. */
-	struct SH2
-	{
-		float c0;      /**< @brief L=0 (DC / constant) coefficient. */
-		float c1[3];   /**< @brief L=1 coefficients for M=-1, M=0, M=1. */
+    /**
+     * Two-band real SH (l = 0, 1), four coefficients in PIXL's existing order:
+     *   c0    = Y(0, 0)
+     *   c1[0] = Y(1,-1) = -sqrt(3 / 4pi) * y
+     *   c1[1] = Y(1, 0) =  sqrt(3 / 4pi) * z
+     *   c1[2] = Y(1, 1) = -sqrt(3 / 4pi) * x
+     *
+     * The coefficient layout is intentionally unchanged (4 contiguous floats).
+     * "SH2" is the established PIXL name; it represents two bands, NOT l = 0..2.
+     */
+    struct SH2
+    {
+        float c0;
+        float c1[3];
 
-		SH2() : c0(0.0f), c1{ 0.0f, 0.0f, 0.0f } {}
-		SH2(float _c0, float _c1_0, float _c1_1, float _c1_2) : c0(_c0), c1{ _c1_0, _c1_1, _c1_2 } {}
-	};
+        constexpr SH2() noexcept : c0(0.0f), c1{ 0.0f, 0.0f, 0.0f } {}
+        constexpr SH2(float dc, float yNeg, float z, float xNeg) noexcept
+            : c0(dc), c1{ yNeg, z, xNeg } {}
+    };
 
-	/** @brief Per-channel (RGB) second-order spherical harmonics. */
-	struct SH2Color
-	{
-		SH2 r;
-		SH2 g;
-		SH2 b;
+    /** Three independent SH2 functions, ordered R, G, B (12 floats total). */
+    struct SH2Color
+    {
+        SH2 r;
+        SH2 g;
+        SH2 b;
 
-		SH2Color() : r(), g(), b() {}
+        constexpr SH2Color() noexcept : r(), g(), b() {}
+        constexpr explicit SH2Color(const SH2& sh) noexcept : r(sh), g(sh), b(sh) {}
+        constexpr SH2Color(SH2 red, SH2 green, SH2 blue) noexcept
+            : r(red), g(green), b(blue) {}
+    };
 
-		/** @brief Construct with the same SH coefficients for all three channels. */
-		explicit SH2Color(const SH2& sh) : r(sh), g(sh), b(sh) {}
+    static_assert(sizeof(SH2) == 4 * sizeof(float), "SH2 storage/layout changed");
+    static_assert(sizeof(SH2Color) == 12 * sizeof(float), "SH2Color storage/layout changed");
 
-		SH2Color(SH2 _r, SH2 _g, SH2 _b) : r(_r), g(_g), b(_b) {}
-	};
+    // All directional arguments use renderer/world-space XYZ and should be unit
+    // length. These low-level basis evaluators do not renormalize their inputs.
+    SH2 Evaluate(float3 dir);
+    SH2 EvaluateCosineLobe(float3 dir);           // Unnormalized max(dot(n,w),0).
+    SH2 EvaluatePhaseHG(float3 dir, float g);      // l<=1 HG projection; g in [-1,1].
 
-	/**
-	 * @brief Evaluate the SH2 basis functions for a given direction.
-	 * @param dir Unit direction vector.
-	 * @return SH2 coefficients representing a delta in that direction.
-	 */
-	SH2 Evaluate(float3 dir);
+    float Dot(SH2 a, SH2 b);
+    float3 Dot(SH2Color a, SH2Color b);
+    float Unproject(float3 dir, SH2 sh);
+    float3 Unproject(float3 dir, SH2Color sh);
 
-	/**
-	 * @brief Compute the dot product of two SH2 coefficient sets.
-	 * @param a First SH2 operand.
-	 * @param b Second SH2 operand.
-	 * @return The scalar dot product.
-	 */
-	float Dot(SH2 a, SH2 b);
+    SH2 Add(SH2 a, SH2 b);
+    SH2Color Add(SH2Color a, SH2Color b);
+    SH2 Scale(SH2 sh, float scale);
+    SH2Color Scale(SH2Color sh, float scale);
 
-	/**
-	 * @brief Compute per-channel dot products of two SH2Color coefficient sets.
-	 * @param a First SH2Color operand.
-	 * @param b Second SH2Color operand.
-	 * @return Per-channel (RGB) dot products.
-	 */
-	float3 Dot(SH2Color a, SH2Color b);
+    // Rotate the physical l=1 XYZ vector, then restore the PIXL SH sign/order.
+    // rotMatrix follows DirectXMath's row-vector (v * M) convention; l=0 unchanged.
+    // Matrix must be orthonormal for an actual SH rotation.
+    SH2 Rotate(SH2 sh, float3x3 rotMatrix);
+    SH2Color Rotate(SH2Color sh, float3x3 rotMatrix);
 
-	/**
-	 * @brief Reconstruct the scalar value of an SH function in a given direction.
-	 * @param dir Unit direction to sample.
-	 * @param sh The SH2 coefficients to unproject.
-	 * @return The reconstructed scalar value.
-	 */
-	float Unproject(float3 dir, SH2 sh);
+    float FuncProductIntegral(SH2 shL, SH2 shR);
+    float3 FuncProductIntegral(SH2Color shL, SH2Color shR);
 
-	/**
-	 * @brief Reconstruct the RGB value of an SH colour function in a given direction.
-	 * @param dir Unit direction to sample.
-	 * @param sh The SH2Color coefficients to unproject.
-	 * @return The reconstructed RGB value.
-	 */
-	float3 Unproject(float3 dir, SH2Color sh);
+    // Orthogonal projection of a product back onto l <= 1; omits l=2 terms.
+    SH2 Product(SH2 shL, SH2 shR);
+    SH2Color Product(SH2Color shL, SH2Color shR);
 
-	/**
-	 * @brief Evaluate a clamped cosine lobe oriented along the given direction in SH.
-	 * @param dir Unit direction of the lobe axis.
-	 * @return SH2 representation of the cosine lobe.
-	 */
-	SH2 EvaluateCosineLobe(float3 dir);
+    // w <= 0 disables filtering. 0 < w <= 1 fully removes the l=1 band;
+    // w > 1 progressively retains it. A non-finite/disabled width is ignored.
+    SH2 HanningConvolution(SH2 sh, float w);
+    SH2Color HanningConvolution(SH2Color sh, float w);
 
-	/**
-	 * @brief Evaluate the Henyey-Greenstein phase function in SH.
-	 * @param dir Unit direction of the phase function axis.
-	 * @param g Asymmetry parameter in [-1, 1].
-	 * @return SH2 representation of the phase function.
-	 */
-	SH2 EvaluatePhaseHG(float3 dir, float g);
+    // Irradiance (NOT irradiance / pi): l=0 * pi, l=1 * 2pi/3.
+    SH2 DiffuseConvolution(SH2 sh);
+    SH2Color DiffuseConvolution(SH2Color sh);
 
-	/**
-	 * @brief Add two SH2 coefficient sets together.
-	 * @param a First operand.
-	 * @param b Second operand.
-	 * @return The coefficient-wise sum.
-	 */
-	SH2 Add(SH2 a, SH2 b);
+    // Energy-preserving l<=1 approximation of a GGX-like lobe. In SH2 even a
+    // perfectly smooth reflection remains low-frequency; it is not full GGX.
+    // V points from the surface toward the viewer; N is the surface normal.
+    SH2 FauxSpecularLobe(float3 N, float3 V, float roughness);
 
-	/** @brief Add two SH2Color coefficient sets together, per channel. */
-	SH2Color Add(SH2Color a, SH2Color b);
+    // Heuristically infer missing l=2 directional structure and estimate
+    // NON-NEGATIVE irradiance. Inputs must represent (primarily) nonnegative
+    // radiance; this reconstruction is not an exact higher-order projection.
+    float SHHallucinateZH3Irradiance(SH2 sh, float3 direction);
+    float3 SHHallucinateZH3Irradiance(SH2Color sh, float3 direction);
 
-	/**
-	 * @brief Uniformly scale all SH2 coefficients.
-	 * @param sh The coefficients to scale.
-	 * @param scale The scalar multiplier.
-	 * @return The scaled SH2.
-	 */
-	SH2 Scale(SH2 sh, float scale);
-
-	/** @brief Uniformly scale all SH2Color coefficients, per channel. */
-	SH2Color Scale(SH2Color sh, float scale);
-
-	/**
-	 * @brief Rotate SH2 coefficients by a 3x3 rotation matrix.
-	 * @param sh The coefficients to rotate.
-	 * @param rotMatrix The rotation matrix to apply (L=1 band only; L=0 is invariant).
-	 * @return The rotated SH2.
-	 */
-	SH2 Rotate(SH2 sh, float3x3 rotMatrix);
-
-	/** @brief Rotate SH2Color coefficients by a 3x3 rotation matrix, per channel. */
-	SH2Color Rotate(SH2Color sh, float3x3 rotMatrix);
-
-	/**
-	 * @brief Compute the integral of the product of two SH functions over the sphere.
-	 * @param shL Left SH2 operand.
-	 * @param shR Right SH2 operand.
-	 * @return The scalar integral value (equivalent to Dot).
-	 */
-	float FuncProductIntegral(SH2 shL, SH2 shR);
-
-	/** @brief Compute per-channel product integrals of two SH2Color functions. */
-	float3 FuncProductIntegral(SH2Color shL, SH2Color shR);
-
-	/**
-	 * @brief Approximate the product of two SH functions in SH space.
-	 * @param shL Left SH2 operand.
-	 * @param shR Right SH2 operand.
-	 * @return The SH2 product approximation.
-	 */
-	SH2 Product(SH2 shL, SH2 shR);
-
-	/** @brief Approximate the per-channel product of two SH2Color functions. */
-	SH2Color Product(SH2Color shL, SH2Color shR);
-
-	/**
-	 * @brief Apply a Hanning windowed convolution to attenuate higher SH bands.
-	 * @param sh The coefficients to filter.
-	 * @param w Window width parameter (larger values preserve more of band 1).
-	 * @return The filtered SH2.
-	 */
-	SH2 HanningConvolution(SH2 sh, float w);
-
-	/** @brief Apply a Hanning windowed convolution per channel. */
-	SH2Color HanningConvolution(SH2Color sh, float w);
-
-	/**
-	 * @brief Convolve SH coefficients with the normalised clamped cosine kernel for diffuse irradiance.
-	 * @param sh The radiance SH to convolve.
-	 * @return The diffuse irradiance SH.
-	 */
-	SH2 DiffuseConvolution(SH2 sh);
-
-	/** @brief Convolve SH2Color coefficients with the cosine kernel for diffuse irradiance, per channel. */
-	SH2Color DiffuseConvolution(SH2Color sh);
-
-	/**
-	 * @brief Construct an approximate specular lobe in SH space using the dominant GGX reflection direction.
-	 * @param N Surface normal.
-	 * @param V View direction.
-	 * @param roughness Surface roughness in [0, 1].
-	 * @return SH2 representing the specular lobe.
-	 */
-	SH2 FauxSpecularLobe(float3 N, float3 V, float roughness);
-
-	/**
-	 * @brief Estimate irradiance from SH2 by hallucinating a third-order zonal harmonic term.
-	 * @param sh The SH2 radiance coefficients.
-	 * @param direction The surface normal direction to evaluate irradiance for.
-	 * @return The estimated non-negative irradiance value.
-	 */
-	float SHHallucinateZH3Irradiance(SH2 sh, float3 direction);
-
-	/** @brief Estimate per-channel irradiance from SH2Color with hallucinated ZH3 terms. */
-	float3 SHHallucinateZH3Irradiance(SH2Color sh, float3 direction);
-
-	/**
-	 * @brief Convert six directional ambient light colours (DALC) to second-order colour SH.
-	 * @param dalcColors Array of 6 RGB colours for X+, X-, Y+, Y-, Z+, Z- directions.
-	 * @return The SH2Color representation of the directional ambient lighting.
-	 */
-	SH2Color DALCToSH(const float3 dalcColors[6]);
+    // Six equally-weighted axis samples ordered +X,-X,+Y,-Y,+Z,-Z.
+    // Exact projection for constant and linear angular functions on these axes.
+    SH2Color DALCToSH(const float3 dalcColors[6]);
 }

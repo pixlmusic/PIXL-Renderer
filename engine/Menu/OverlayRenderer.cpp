@@ -39,6 +39,11 @@ namespace
 	bool s_startupCurtainStarted = false;
 	float s_startupCurtainEnterTime = 0.0f;
 	float s_startupCurtainExitTime = -1.0f;
+	constexpr float kPanelFadeOutSeconds = 0.28f;
+	constexpr float kCurtainFadeOutStartSeconds = 0.24f;
+	constexpr float kCurtainFadeOutSeconds = 0.58f;
+	constexpr float kCurtainTransitionSeconds = kCurtainFadeOutStartSeconds + kCurtainFadeOutSeconds;
+	constexpr float kQuickSetupFadeInSeconds = 0.46f;
 
 	float SmoothStep01(float value)
 	{
@@ -229,6 +234,18 @@ void OverlayRenderer::RenderOverlay(
 
 	RenderShaderCompilationStatus(keyIdToString);
 	if (IsStartupCurtainActive()) {
+		// Crossfade Quick Start in after the compiler card begins leaving, while
+		// the same black curtain still masks the transition back to Skyrim.
+		if (s_startupCurtainExitTime >= 0.0f &&
+			LaunchExperienceRenderer::ShouldShowFirstTimeSetup()) {
+			const float elapsed = std::max(0.0f,
+				static_cast<float>(ImGui::GetTime()) - s_startupCurtainExitTime);
+			const float alpha = SmoothStep01(elapsed / kQuickSetupFadeInSeconds);
+			ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
+			RenderFirstTimeSetupOverlay();
+			ImGui::PopStyleVar();
+		}
+
 		// Keep all other PIXL windows behind the full-screen startup curtain.
 		s_windowOverlapAlpha.clear();
 		FinalizeImGuiFrame();
@@ -289,6 +306,7 @@ bool OverlayRenderer::ShouldSkipRendering()
 	const bool hide = shaderCache ? shaderCache->IsHideErrors() : true;
 
 	return !(foregroundCompilation ||
+			 IsStartupCurtainActive() ||
 			 (menu && menu->IsEnabled) ||
 			 TuningWorkspaceRenderer::IsDirectorPhotoModeActive() ||
 			 (shaderCache && failed && !hide && !shaderCache->backgroundCompilation) ||
@@ -373,11 +391,6 @@ void OverlayRenderer::RenderShaderCompilationStatus(const std::function<const ch
 		s_startupCurtainExitTime = now;
 
 	if (IsStartupCurtainActive()) {
-		constexpr float kPanelFadeOutSeconds = 0.28f;
-		constexpr float kCurtainFadeOutStartSeconds = 0.24f;
-		constexpr float kCurtainFadeOutSeconds = 0.58f;
-		constexpr float kCurtainTransitionSeconds = kCurtainFadeOutStartSeconds + kCurtainFadeOutSeconds;
-
 		const float enterElapsed = std::max(0.0f, now - s_startupCurtainEnterTime);
 		const float exitElapsed = s_startupCurtainExitTime >= 0.0f ? now - s_startupCurtainExitTime : 0.0f;
 		if (s_startupCurtainExitTime >= 0.0f && exitElapsed >= kCurtainTransitionSeconds) {

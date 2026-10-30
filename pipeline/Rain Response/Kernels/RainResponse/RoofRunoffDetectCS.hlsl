@@ -208,6 +208,16 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 	float centreLinear = SharedData::GetScreenDepth(depth);
 	float3 posC = ReconstructCameraRelativePosition(p, depth);
 	float sourceDistance = length(posC);
+	// The old distance rejection happened after the eave search, plane tests, and
+	// five precipitation-blocker samples. Reject out-of-range pixels as soon as
+	// their camera distance is known; the same smooth gate is retained for pixels
+	// inside the active range, so the rendered result is unchanged.
+	float maxDistance = max(RunoffMaxDistance, 600.0f);
+	float distanceGate = 1.0f - smoothstep(maxDistance * 0.88f, maxDistance, sourceDistance);
+	if (distanceGate <= 0.001f) {
+		RoofEdgeMask[dispatchID.xy] = 0.0f.xx;
+		return;
+	}
 
 	// Choose screen offsets from a world-space footprint. Fixed 8/16-pixel tests
 	// collapse to only a few world units near the camera and reject otherwise valid
@@ -390,21 +400,6 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 	if (precipitationRoof <= 0.018f) {
 		RoofEdgeMask[dispatchID.xy] =
 			debugMode ? float2(0.78f, depth) : 0.0f.xx;
-		return;
-	}
-
-	// ---------------------------------------------------------------------
-	// 5. USER DISTANCE
-	// ---------------------------------------------------------------------
-	float maxDistance = max(RunoffMaxDistance, 600.0f);
-	float distanceGate =
-		1.0f - smoothstep(
-			maxDistance * 0.88f,
-			maxDistance,
-			sourceDistance);
-
-	if (distanceGate <= 0.001f) {
-		RoofEdgeMask[dispatchID.xy] = 0.0f.xx;
 		return;
 	}
 

@@ -122,8 +122,10 @@ public:
 	struct UpscalingDataCB
 	{
 		float2 trueSamplingDim;
-		float2 pad0;
+		float cloudMaskAvailable;
+		float pad0;
 	};
+	static_assert(sizeof(UpscalingDataCB) == 16);
 
 	ConstantBuffer* jitterCB = nullptr;
 	ConstantBuffer* upscalingDataCB = nullptr;

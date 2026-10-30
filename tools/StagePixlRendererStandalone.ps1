@@ -10,7 +10,7 @@ param(
     [string]$AllowedOutputRoot = "",
     [ValidateSet("LIVE-TEST", "RELEASE-CANDIDATE", "RELEASE")]
     [string]$Channel = "LIVE-TEST",
-    [ValidateSet("", "r2", "r3")]
+    [ValidateSet("", "r2", "r3", "r4")]
     [string]$PackageRevision = "",
     [string]$ProductVersion = "",
     [ValidateRange(0, 9)]
@@ -24,7 +24,7 @@ if (-not [string]::IsNullOrWhiteSpace($NeuralRuntimePath)) {
     throw 'NR runtimes are manual-install only and cannot be bundled. Omit -NeuralRuntimePath.'
 }
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$revisionVersion = "1.0.8$PackageRevision"
+$revisionVersion = "1.0.9$PackageRevision"
 if ([string]::IsNullOrWhiteSpace($ProductVersion)) { $ProductVersion = $revisionVersion }
 elseif ($PackageRevision -and $ProductVersion -ne $revisionVersion) { throw 'ProductVersion conflicts with PackageRevision.' }
 if ($ProductVersion -notmatch '^\d+\.\d+\.\d+(?:r\d+)?$') { throw "Invalid package product version: $ProductVersion" }
@@ -179,7 +179,7 @@ New-Item -ItemType Directory -Path $shaderRoot,$moduleCatalog,$configRoot,$profi
 Copy-Tree (Join-Path $sourceRoot "distribution\PIXL-Shaders") $shaderRoot
 if ($Channel -ne 'LIVE-TEST') {
     # Experimental modules stay available in local live-test packages, but are
-    # not part of the public 1.0.8 installer until their release gate is lifted.
+    # not part of the public 1.0.9 installer until their release gate is lifted.
     # Water.hlsl still uses the shared wave-band math, so retain that include
     # while excluding only the ocean-only spray and breaker entry points.
     foreach ($experimentalShader in @('OceanSpray.hlsl', 'OceanBreakers.hlsl')) {

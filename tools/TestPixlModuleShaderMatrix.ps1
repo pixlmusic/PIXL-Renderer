@@ -45,10 +45,6 @@ Add-Case 'VolumeOcclusion.BlurHorizontal' 'VolumeOcclusion/BlurShadowCS.hlsl' 'c
 Add-Case 'VolumeOcclusion.BlurVertical' 'VolumeOcclusion/BlurShadowCS.hlsl' 'cs_5_0' ($compute + @('BLUR_VERTICAL'))
 Add-Case 'TerrainSeam.DepthBlend' 'TerrainSeam/DepthBlend.hlsl' 'cs_5_0' $compute
 Add-Case 'TerrainOcclusion.ShadowUpdate' 'TerrainOcclusion/ShadowUpdate.cs.hlsl' 'cs_5_0' $compute
-Add-Case 'FoliageOptimizer.DetectComplex' 'FoliageOptimizer/DetectComplexCS.hlsl' 'cs_5_0' $compute
-Add-Case 'FoliageOptimizer.HiZ' 'FoliageOptimizer/GrassHiZCS.hlsl' 'cs_5_0' $compute
-Add-Case 'FoliageOptimizer.SPD' 'FoliageOptimizer/SPD/SPD.hlsl' 'cs_5_0' $compute
-Add-Case 'FoliageOptimizer.Cull' 'FoliageOptimizer/GrassCullingCS.hlsl' 'cs_5_0' $compute
 Add-Case 'DistantLife.BuildMask' 'DistantLife/DistantLifeCS.hlsl' 'cs_5_0' $compute 'BuildMaskCS'
 Add-Case 'DistantLife.Composite' 'DistantLife/DistantLifeCS.hlsl' 'cs_5_0' $compute 'CompositeCS'
 

@@ -145,11 +145,12 @@ void main(uint3 dtid : SV_DispatchThreadID)
     target = PixlCameraFinite(target) && target > 0.0f ? target : exp2(clamp(safeExposureCompensationEV, safeMinExposureEV, safeMaxExposureEV));
     float targetEV = clamp(log2(max(target, 1e-6f)), safeMinExposureEV, safeMaxExposureEV);
 
-	// A bright object must not meter the entire playable scene into near-black.
-    // Keep the wide manual range, but bound automatic metering relative to the
-    // photographer's intentional compensation.
+	// Keep automatic gameplay exposure close to the user's intended scene level.
+	// The wider configured EV limits remain useful for manual exposure, but letting
+	// auto metering fall two stops below compensation made interiors and night play
+	// unnecessarily dark when a large bright region entered the frame.
     if (cameraAutoExposure > 0.5f)
-		targetEV = max(targetEV, min(safeMaxExposureEV, max(safeMinExposureEV, safeExposureCompensationEV - 2.0f)));
+		targetEV = max(targetEV, min(safeMaxExposureEV, max(safeMinExposureEV, safeExposureCompensationEV - 1.0f)));
 
     if (bodycamEnabled > 0.5f) {
         float safeBodyStrength = PixlCameraFinite(bodycamStrength) ? saturate(bodycamStrength) : 0.0f;

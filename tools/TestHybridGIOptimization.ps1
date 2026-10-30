@@ -5,6 +5,15 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $source = Join-Path $repo 'pipeline\Hybrid GI\Kernels\HybridGI\gi.cs.hlsl'
+$sourceText = Get-Content -LiteralPath $source -Raw
+if ($sourceText -notmatch 'smoothstep\(0\.006f,\s*0\.045f,\s*absoluteRadianceChange\)' -or
+	$sourceText -notmatch 'historyReactivity\s*=\s*smoothstep\(0\.10f,\s*0\.45f,\s*relativeRadianceChange\)\s*\*') {
+	throw 'HybridGI temporal reactivity must suppress sub-threshold radiance noise while retaining relative-change response.'
+}
+if ($sourceText -notmatch 'WorldCacheStrength\s*\*\s*0\.60f\s*\*\s*cacheConfidence' -or
+	$sourceText -match 'screenMiss\s*=\s*1\.0f\s*-\s*saturate\(giCoverage') {
+	throw 'HybridGI world-cache contribution must use stable confidence weighting, independent of the stochastic horizon mask.'
+}
 $output = Join-Path $repo 'build\gi-optimization\permutations'
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 $count = 0

@@ -1,3 +1,17 @@
+# PIXL Renderer 1.0.9 Changelog
+
+Changes since 1.0.8:
+
+- Preserved more directional sunlight through cloud cover and reduced stacked shadowing from volumetric and layered cloud systems.
+- Broadened volumetric and analytical fog scattering so small camera turns no longer produce a sharp sun-facing brightness swing.
+- Reduced cloud and fog history persistence during reprojection to limit trails around sky silhouettes and vegetation.
+- Raised the default interior ambient probe fill modestly while retaining existing Hybrid GI and local-light controls.
+- Updated plugin, package, installer and developer tooling version metadata to 1.0.9.
+
+Shader permutations changed in this version compile on first launch. Allow compilation to finish before evaluating visuals or performance.
+
+---
+
 # PIXL Renderer 1.0.6 Changelog
 
 Changes since 1.0.5:

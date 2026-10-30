@@ -1,7 +1,15 @@
 #pragma once
 
 #include <d3d11.h>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <Windows.Foundation.h>
 #include <stdio.h>
@@ -34,14 +42,14 @@ namespace detail
 /** @brief Rounds a buffer size up to the next 64-byte boundary for constant buffer alignment. */
 static constexpr std::uint32_t GetCBufferSize(std::uint32_t buffer_size)
 {
-	return (buffer_size + (64 - 1)) & ~(64 - 1);
+	// A wraparound must never turn an oversized request into a tiny buffer.
+	return buffer_size > (std::numeric_limits<std::uint32_t>::max)() - 63u ? 0u : (buffer_size + 63u) & ~63u;
 }
 
 /** @brief Creates a D3D11 buffer descriptor for a constant buffer of the given byte size. */
 inline D3D11_BUFFER_DESC ConstantBufferDesc(uint32_t size, bool dynamic = true)
 {
 	D3D11_BUFFER_DESC desc{};
-	ZeroMemory(&desc, sizeof(desc));
 	desc.Usage = dynamic ? D3D11_USAGE_DYNAMIC : D3D11_USAGE_DEFAULT;
 	desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 	desc.CPUAccessFlags = dynamic ? D3D11_CPU_ACCESS_WRITE : 0;
@@ -79,15 +87,40 @@ public:
 	 */
 	void Update(void const* src_data, size_t data_size)
 	{
+		// UpdateSubresource reads the entire ByteWidth, even if the caller has
+		// supplied only sizeof(T). Guard both the read and the GPU-visible padding.
+		if (data_size > desc.ByteWidth)
+			throw std::out_of_range("ConstantBuffer::Update exceeds buffer capacity");
+		if (data_size != 0 && src_data == nullptr)
+			throw std::invalid_argument("ConstantBuffer::Update received null data");
+
 		auto ctx = globals::d3d::context;
 		if (desc.Usage == D3D11_USAGE_DYNAMIC) {
-			D3D11_MAPPED_SUBRESOURCE mapped_buffer{};
-			ZeroMemory(&mapped_buffer, sizeof(D3D11_MAPPED_SUBRESOURCE));
-			DX::ThrowIfFailed(ctx->Map(resource.get(), 0u, D3D11_MAP_WRITE_DISCARD, 0u, &mapped_buffer));
-			memcpy(mapped_buffer.pData, src_data, data_size);
+			D3D11_MAPPED_SUBRESOURCE mapped{};
+			DX::ThrowIfFailed(ctx->Map(resource.get(), 0u, D3D11_MAP_WRITE_DISCARD, 0u, &mapped));
+			if (data_size != 0)
+				std::memcpy(mapped.pData, src_data, data_size);
+			if (data_size < desc.ByteWidth)
+				std::memset(static_cast<std::byte*>(mapped.pData) + data_size, 0, desc.ByteWidth - data_size);
 			ctx->Unmap(resource.get(), 0);
-		} else
+		} else if (data_size == desc.ByteWidth) {
 			ctx->UpdateSubresource(resource.get(), 0, nullptr, src_data, 0, 0);
+		} else {
+			// DEFAULT buffers cannot be mapped. Pad to the full GPU ByteWidth.
+			// Most PIXL constant buffers fit in the small, allocation-free path.
+			constexpr std::size_t kStackCapacity = 256;
+			if (desc.ByteWidth <= kStackCapacity) {
+				std::array<std::byte, kStackCapacity> padded{};
+				if (data_size != 0)
+					std::memcpy(padded.data(), src_data, data_size);
+				ctx->UpdateSubresource(resource.get(), 0, nullptr, padded.data(), 0, 0);
+			} else {
+				std::vector<std::byte> padded(desc.ByteWidth);
+				if (data_size != 0)
+					std::memcpy(padded.data(), src_data, data_size);
+				ctx->UpdateSubresource(resource.get(), 0, nullptr, padded.data(), 0, 0);
+			}
+		}
 	}
 
 	/** @brief Uploads a typed value to the constant buffer. */
@@ -121,7 +154,9 @@ public:
 	void CreateSRV(D3D11_SHADER_RESOURCE_VIEW_DESC const& a_desc)
 	{
 		auto device = globals::d3d::device;
-		DX::ThrowIfFailed(device->CreateShaderResourceView(resource.get(), &a_desc, srv.put()));
+		winrt::com_ptr<ID3D11ShaderResourceView> view;
+		DX::ThrowIfFailed(device->CreateShaderResourceView(resource.get(), &a_desc, view.put()));
+		srv = std::move(view);
 		detail::SetD3DName(srv.get(), name_, " SRV");
 	}
 
@@ -129,7 +164,9 @@ public:
 	void CreateUAV(D3D11_UNORDERED_ACCESS_VIEW_DESC const& a_desc)
 	{
 		auto device = globals::d3d::device;
-		DX::ThrowIfFailed(device->CreateUnorderedAccessView(resource.get(), &a_desc, uav.put()));
+		winrt::com_ptr<ID3D11UnorderedAccessView> view;
+		DX::ThrowIfFailed(device->CreateUnorderedAccessView(resource.get(), &a_desc, view.put()));
+		uav = std::move(view);
 		detail::SetD3DName(uav.get(), name_, " UAV");
 	}
 
@@ -161,7 +198,9 @@ public:
 	void CreateSRV(D3D11_SHADER_RESOURCE_VIEW_DESC const& a_desc)
 	{
 		auto device = globals::d3d::device;
-		DX::ThrowIfFailed(device->CreateShaderResourceView(resource.get(), &a_desc, srv.put()));
+		winrt::com_ptr<ID3D11ShaderResourceView> view;
+		DX::ThrowIfFailed(device->CreateShaderResourceView(resource.get(), &a_desc, view.put()));
+		srv = std::move(view);
 		detail::SetD3DName(srv.get(), name_, " SRV");
 	}
 
@@ -169,7 +208,9 @@ public:
 	void CreateUAV(D3D11_UNORDERED_ACCESS_VIEW_DESC const& a_desc)
 	{
 		auto device = globals::d3d::device;
-		DX::ThrowIfFailed(device->CreateUnorderedAccessView(resource.get(), &a_desc, uav.put()));
+		winrt::com_ptr<ID3D11UnorderedAccessView> view;
+		DX::ThrowIfFailed(device->CreateUnorderedAccessView(resource.get(), &a_desc, view.put()));
+		uav = std::move(view);
 		detail::SetD3DName(uav.get(), name_, " UAV");
 	}
 
@@ -177,7 +218,9 @@ public:
 	void CreateRTV(D3D11_RENDER_TARGET_VIEW_DESC const& a_desc)
 	{
 		auto device = globals::d3d::device;
-		DX::ThrowIfFailed(device->CreateRenderTargetView(resource.get(), &a_desc, rtv.put()));
+		winrt::com_ptr<ID3D11RenderTargetView> view;
+		DX::ThrowIfFailed(device->CreateRenderTargetView(resource.get(), &a_desc, view.put()));
+		rtv = std::move(view);
 		detail::SetD3DName(rtv.get(), name_, " RTV");
 	}
 
@@ -208,7 +251,10 @@ public:
 
 	explicit Texture2D(ID3D11Texture2D* a_resource, const char* name = nullptr)
 	{
+		if (!a_resource)
+			throw std::invalid_argument("Texture2D requires a non-null resource");
 		a_resource->GetDesc(&desc);
+		// attach() takes ownership of the existing COM reference (not AddRef).
 		resource.attach(a_resource);
 		if (name) {
 			name_ = name;
@@ -220,7 +266,9 @@ public:
 	void CreateSRV(D3D11_SHADER_RESOURCE_VIEW_DESC const& a_desc)
 	{
 		auto device = globals::d3d::device;
-		DX::ThrowIfFailed(device->CreateShaderResourceView(resource.get(), &a_desc, srv.put()));
+		winrt::com_ptr<ID3D11ShaderResourceView> view;
+		DX::ThrowIfFailed(device->CreateShaderResourceView(resource.get(), &a_desc, view.put()));
+		srv = std::move(view);
 		detail::SetD3DName(srv.get(), name_, " SRV");
 	}
 
@@ -228,7 +276,9 @@ public:
 	void CreateUAV(D3D11_UNORDERED_ACCESS_VIEW_DESC const& a_desc)
 	{
 		auto device = globals::d3d::device;
-		DX::ThrowIfFailed(device->CreateUnorderedAccessView(resource.get(), &a_desc, uav.put()));
+		winrt::com_ptr<ID3D11UnorderedAccessView> view;
+		DX::ThrowIfFailed(device->CreateUnorderedAccessView(resource.get(), &a_desc, view.put()));
+		uav = std::move(view);
 		detail::SetD3DName(uav.get(), name_, " UAV");
 	}
 
@@ -236,7 +286,9 @@ public:
 	void CreateRTV(D3D11_RENDER_TARGET_VIEW_DESC const& a_desc)
 	{
 		auto device = globals::d3d::device;
-		DX::ThrowIfFailed(device->CreateRenderTargetView(resource.get(), &a_desc, rtv.put()));
+		winrt::com_ptr<ID3D11RenderTargetView> view;
+		DX::ThrowIfFailed(device->CreateRenderTargetView(resource.get(), &a_desc, view.put()));
+		rtv = std::move(view);
 		detail::SetD3DName(rtv.get(), name_, " RTV");
 	}
 
@@ -244,7 +296,9 @@ public:
 	void CreateDSV(D3D11_DEPTH_STENCIL_VIEW_DESC const& a_desc)
 	{
 		auto device = globals::d3d::device;
-		DX::ThrowIfFailed(device->CreateDepthStencilView(resource.get(), &a_desc, dsv.put()));
+		winrt::com_ptr<ID3D11DepthStencilView> view;
+		DX::ThrowIfFailed(device->CreateDepthStencilView(resource.get(), &a_desc, view.put()));
+		dsv = std::move(view);
 		detail::SetD3DName(dsv.get(), name_, " DSV");
 	}
 
@@ -278,7 +332,9 @@ public:
 	void CreateSRV(D3D11_SHADER_RESOURCE_VIEW_DESC const& a_desc)
 	{
 		auto device = globals::d3d::device;
-		DX::ThrowIfFailed(device->CreateShaderResourceView(resource.get(), &a_desc, srv.put()));
+		winrt::com_ptr<ID3D11ShaderResourceView> view;
+		DX::ThrowIfFailed(device->CreateShaderResourceView(resource.get(), &a_desc, view.put()));
+		srv = std::move(view);
 		detail::SetD3DName(srv.get(), name_, " SRV");
 	}
 
@@ -286,7 +342,9 @@ public:
 	void CreateUAV(D3D11_UNORDERED_ACCESS_VIEW_DESC const& a_desc)
 	{
 		auto device = globals::d3d::device;
-		DX::ThrowIfFailed(device->CreateUnorderedAccessView(resource.get(), &a_desc, uav.put()));
+		winrt::com_ptr<ID3D11UnorderedAccessView> view;
+		DX::ThrowIfFailed(device->CreateUnorderedAccessView(resource.get(), &a_desc, view.put()));
+		uav = std::move(view);
 		detail::SetD3DName(uav.get(), name_, " UAV");
 	}
 
@@ -294,7 +352,9 @@ public:
 	void CreateRTV(D3D11_RENDER_TARGET_VIEW_DESC const& a_desc)
 	{
 		auto device = globals::d3d::device;
-		DX::ThrowIfFailed(device->CreateRenderTargetView(resource.get(), &a_desc, rtv.put()));
+		winrt::com_ptr<ID3D11RenderTargetView> view;
+		DX::ThrowIfFailed(device->CreateRenderTargetView(resource.get(), &a_desc, view.put()));
+		rtv = std::move(view);
 		detail::SetD3DName(rtv.get(), name_, " RTV");
 	}
 

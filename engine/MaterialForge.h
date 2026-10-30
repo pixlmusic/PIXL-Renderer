@@ -48,7 +48,7 @@ public:
 	virtual std::pair<std::string, std::vector<std::string>> GetModuleSummary() override
 	{
 		return std::make_pair(
-			"PIXL PBR SKYRIM unifies legacy and authored materials under physical rendering and extends PIXL Renderer' proven screen-space GI with a fast world-space radiance cache.",
+			"PIXL PBR SKYRIM unifies legacy and authored materials under physical rendering and extends PIXL Renderer's proven screen-space GI with a fast world-space radiance cache.",
 			std::vector<std::string>{
 				"Physically-based BRDF (energy-conserving specular & diffuse)",
 				"Roughness, metallic, and displacement map support",
@@ -103,8 +103,8 @@ public:
 		uint EnablePhysicalLocalLightFalloff = 1;
 		/** Enables a short depth-buffer contact ray for the most influential local lights. */
 		uint EnableLocalContactShadows = 1;
-		/** Maximum number of local contact-shadow rays evaluated per pixel (one or two). */
-		uint LocalContactShadowLightCount = 2;
+		/** Maximum number of local contact-shadow rays evaluated per pixel (one through four). */
+		uint LocalContactShadowLightCount = 4;
 		/** Maximum world-space length of each local contact-shadow ray. */
 		float LocalContactShadowLength = 96.0f;
 		/** Opacity of local contact shadows. */
@@ -126,6 +126,7 @@ public:
 	};
 	STATIC_ASSERT_ALIGNAS_16(Settings);
 	static_assert(sizeof(Settings) == PIXL::Metadata::ABI::MaterialForge.sizeBytes, "MaterialForge::Settings must match its five-register shader ABI.");
+	static_assert(alignof(Settings) == 16 && sizeof(Settings) == 80, "MaterialForge FeatureData must occupy precisely five float4 registers");
 	// distribution/PIXL-Shaders/Common/SharedData.hlsli::MaterialForgeSettings mirrors this exact
 	// layout. PipelineBuffer.cpp copies this complete struct immediately before
 	// SkinOpticsData, so any CPU/HLSL size drift corrupts every following feature.

@@ -27,7 +27,6 @@
 #include "Renderer/GPUWorkloadBudgeter.h"
 #include "Renderer/ReflectionContext.h"
 #include "Renderer/VolumetricContext.h"
-#include "Renderer/VisibilityContext.h"
 #include "Util.h"
 #include "Utils/Format.h"
 #include "Utils/UI.h"
@@ -935,14 +934,6 @@ void WorkshopToolsRenderer::RenderDeveloperSection()
 				(volumeFrame.lightingFlags & 8u) ? "yes" : "no",
 				(volumeFrame.lightingFlags & 32u) ? "yes" : "no");
 		}
-		const auto visibilityStats = PIXL::Renderer::VisibilityContext::Get().GetDiagnostics();
-		ImGui::Text("Visibility: %s | %ux%u | %u mips | %.2f px/texel | builds %llu",
-			visibilityStats.valid ? "valid" : "fail-open",
-			visibilityStats.width, visibilityStats.height, visibilityStats.mipCount,
-			visibilityStats.texelPixels,
-			static_cast<unsigned long long>(visibilityStats.buildCount));
-		if (!visibilityStats.invalidationReason.empty())
-			ImGui::TextDisabled("Visibility status: %s", visibilityStats.invalidationReason.c_str());
 		const auto lightingStats = PIXL::Renderer::LightTransportWorld::Get().GetDiagnostics();
 		ImGui::Text("Light transport: %u lights / %u emitters | %u probe resources | epoch %llu",
 			lightingStats.localLightCount, lightingStats.localEmitterCount, lightingStats.validProbeCount,

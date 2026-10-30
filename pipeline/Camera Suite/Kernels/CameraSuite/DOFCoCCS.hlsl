@@ -25,7 +25,10 @@ float ReadLinearDepth(float2 uv, out bool valid, out bool sky)
 		sky = false;
 		return 0.0f;
 	}
-	sky = raw >= 0.999998f;
+	// The depth clear value is exactly 1.0. A near-far tolerance also classifies
+	// distant LOD mountains and canopy cards as sky, suppressing their CoC and
+	// creating a sudden sharp band along the skyline.
+	sky = raw >= 1.0f;
 	// Give sky pixels a finite optical distance. Including the configured far
 	// fade keeps mountains/sky in the same CoC domain instead of creating a hard
 	// silhouette where the depth buffer changes to its clear value.
@@ -146,6 +149,64 @@ float SkyDofProtection(float2 uv)
 	return smoothstep(2500.0f, 28000.0f, rayDirection.z * SKY_DOME_RADIUS);
 }
 
+float FeatherSkyCoCAgainstFarGeometry(float2 uv, float skyCoC)
+{
+	// Sky protection should not change the bokeh radius abruptly at a mountain
+	// ridge or tree canopy. Borrow only positive (far-layer) CoC from nearby
+	// geometry; foreground leaves remain the responsibility of the near gather.
+	const float2 directions[8] = {
+		float2(1.0f, 0.0f), float2(-1.0f, 0.0f),
+		float2(0.0f, 1.0f), float2(0.0f, -1.0f),
+		float2(0.7071f, 0.7071f), float2(-0.7071f, 0.7071f),
+		float2(0.7071f, -0.7071f), float2(-0.7071f, -0.7071f)
+	};
+	float2 pixelStep = float2(dofControlInvRenderWidth, dofControlInvRenderHeight);
+	float nearCoCSum = 0.0f;
+	float nearCoCWeight = 0.0f;
+	[unroll] for (uint i = 0u; i < 8u; ++i) {
+		bool depthValid;
+		bool sampleIsSky;
+		float sampleDepth = ReadLinearDepth(uv + directions[i] * pixelStep, depthValid, sampleIsSky);
+		if (depthValid && !sampleIsSky) {
+			float sampleCoC = SignedCircleOfConfusionPixels(sampleDepth);
+			if (sampleCoC > 0.0f) {
+				nearCoCSum += sampleCoC;
+				nearCoCWeight += 1.0f;
+			}
+		}
+	}
+	if (nearCoCWeight > 0.0f) {
+		float edgeCoC = nearCoCSum / nearCoCWeight;
+		return lerp(skyCoC, edgeCoC, 0.72f);
+	}
+
+	// A second, sparse ring feathers the protected value a few pixels beyond the
+	// silhouette so the half-resolution aperture gather does not expose a narrow
+	// sharp fringe. The lower weight keeps open sky protected away from the edge.
+	float outerCoCSum = 0.0f;
+	float outerCoCWeight = 0.0f;
+	[unroll] for (uint axis = 0u; axis < 4u; ++axis) {
+		float2 direction = axis == 0u ? float2(1.0f, 0.0f) :
+			axis == 1u ? float2(-1.0f, 0.0f) :
+			axis == 2u ? float2(0.0f, 1.0f) : float2(0.0f, -1.0f);
+		bool depthValid;
+		bool sampleIsSky;
+		float sampleDepth = ReadLinearDepth(uv + direction * pixelStep * 3.0f, depthValid, sampleIsSky);
+		if (depthValid && !sampleIsSky) {
+			float sampleCoC = SignedCircleOfConfusionPixels(sampleDepth);
+			if (sampleCoC > 0.0f) {
+				outerCoCSum += sampleCoC;
+				outerCoCWeight += 1.0f;
+			}
+		}
+	}
+	if (outerCoCWeight > 0.0f) {
+		float edgeCoC = outerCoCSum / outerCoCWeight;
+		return lerp(skyCoC, edgeCoC, 0.32f);
+	}
+	return skyCoC;
+}
+
 float StabilizeCoCWithReconstruction(float2 uv, float currentCoC)
 {
 	if (!DofTemporalReconstructionEnabled() || dofControlHistoryValid == 0u)
@@ -182,6 +243,10 @@ float StabilizeCoCWithReconstruction(float2 uv, float currentCoC)
 	bool historyDepthValid;
 	bool historySky;
 	float historyDepth = ReadLinearDepth(historyUV, historyDepthValid, historySky);
+	// A reprojected history sample from clear sky is not valid for a foliage or
+	// mountain pixel, even when both CoCs happen to have the same sign.
+	if (currentDepthValid && historyDepthValid && currentSky != historySky)
+		return currentCoC;
 	if (currentDepthValid && historyDepthValid && !currentSky && !historySky) {
 		float depthScale = max(max(currentDepth, historyDepth), 128.0f);
 		float depthMismatch = abs(currentDepth - historyDepth) / depthScale;
@@ -198,9 +263,13 @@ float StabilizeCoCWithReconstruction(float2 uv, float currentCoC)
 		bool neighbourValid;
 		bool neighbourSky;
 		float neighbourDepth = ReadLinearDepth(uv + direction * depthTexel, neighbourValid, neighbourSky);
-		if (currentDepthValid && neighbourValid && !currentSky && !neighbourSky) {
-			float edgeScale = max(max(currentDepth, neighbourDepth), 128.0f);
-			depthEdge = max(depthEdge, abs(currentDepth - neighbourDepth) / edgeScale);
+		if (currentDepthValid && neighbourValid) {
+			if (currentSky != neighbourSky) {
+				depthEdge = 1.0f;
+			} else if (!currentSky && !neighbourSky) {
+				float edgeScale = max(max(currentDepth, neighbourDepth), 128.0f);
+				depthEdge = max(depthEdge, abs(currentDepth - neighbourDepth) / edgeScale);
+			}
 		}
 	}
 	// Do not carry near coverage into a far surface (or vice versa). Around the
@@ -246,6 +315,7 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 		// a sharp blurred-geometry / protected-sky boundary in the bokeh passes.
 		float skyFade = SkyDofProtection(uv);
 		coc *= 1.0f - skyFade * 0.55f;
+		coc = FeatherSkyCoCAgainstFarGeometry(uv, coc);
 	}
 	// Cloud exclusion applies only to distant cloud volume on clear-depth sky
 	// pixels. Nearby cloud layers retain normal gameplay DOF, and a cloud mask

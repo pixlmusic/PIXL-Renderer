@@ -113,15 +113,30 @@ float4 GetReflectionColorLegacy(
 				// Compute camera motion vector
 				float2 cameraMotionVector = MotionBlur::GetSSMotionVector(positionWS, positionWS);
 
-				// Reproject alpha from previous frame
+				// Reproject reflection history from the previous frame. Preserve its
+				// confidence and reject samples close to the active viewport edge, where
+				// dynamic-resolution history can otherwise import stale border pixels.
 				float2 reprojectedRaySample = finalSampleUV + cameraMotionVector;
 				float4 alpha = 0.0;
+				bool validReprojection = all(isfinite(cameraMotionVector)) && all(isfinite(reprojectedRaySample));
+				float2 previousEdgeDistance = min(reprojectedRaySample, 1.0f.xx - reprojectedRaySample);
+				float previousEdgeConfidence = validReprojection
+					? smoothstep(0.03f, 0.15f, min(previousEdgeDistance.x, previousEdgeDistance.y))
+					: 0.0f;
+				if (validReprojection && !FrameBuffer::IsOutsideFrame(reprojectedRaySample) && previousEdgeConfidence > 0.0f)
+					alpha = AlphaTex.SampleLevel(AlphaSampler, ConvertRaySamplePrevious(reprojectedRaySample), 0);
 
-				// Check that the reprojected data is within the frame
-				if (!FrameBuffer::IsOutsideFrame(reprojectedRaySample.xy))
-					alpha = float4(AlphaTex.SampleLevel(AlphaSampler, ConvertRaySamplePrevious(reprojectedRaySample.xy), 0).xyz, 1.0);
-
-				float3 reflectionColor = color + SSRParams.z * alpha.xyz * alpha.w;
+				float motionPixels = validReprojection
+					? length(cameraMotionVector * SharedData::BufferDim.xy)
+					: 1e6f;
+				float2 currentEdgeDistance = min(finalSampleUV, 1.0f.xx - finalSampleUV);
+				float historyWeight = saturate(SSRParams.z * alpha.w) * exp2(-motionPixels * 0.075f) *
+					previousEdgeConfidence * smoothstep(0.03f, 0.15f,
+						min(currentEdgeDistance.x, currentEdgeDistance.y));
+				// History is a replacement estimate, not additive light. Normalized
+				// blending prevents the legacy fallback from recursively amplifying a
+				// stale reflection while the camera moves.
+				float3 reflectionColor = lerp(color, alpha.xyz, historyWeight);
 				return float4(reflectionColor, fadeFactor);
 			}
 
@@ -228,14 +243,22 @@ float4 GetReflectionColorEnhanced(float3 projReflectionDirection, float3 projPos
 			float2 cameraMotionVector = MotionBlur::GetSSMotionVector(positionWS, positionWS);
 			float2 reprojectedUV = binarySample.xy + cameraMotionVector;
 			float4 history = 0.0f;
-			if (!FrameBuffer::IsOutsideFrame(reprojectedUV))
+			float2 previousEdgeDistance = min(reprojectedUV, 1.0f.xx - reprojectedUV);
+			float previousEdgeConfidence = smoothstep(0.03f, 0.15f,
+				min(previousEdgeDistance.x, previousEdgeDistance.y));
+			if (!FrameBuffer::IsOutsideFrame(reprojectedUV) && previousEdgeConfidence > 0.0f)
 				history = float4(AlphaTex.SampleLevel(AlphaSampler, ConvertRaySamplePrevious(reprojectedUV), 0).xyz, 1.0f);
 
 			float confidence = thicknessConfidence * edgeConfidence * distanceConfidence * validity;
 			history.xyz = clamp(history.xyz, neighborhoodMin, neighborhoodMax);
 			float motionPixels = length(cameraMotionVector * SharedData::BufferDim.xy);
 			float historyStability = exp2(-motionPixels * 0.075f);
-			float historyWeight = saturate(SSRParams.z * history.w * historyStability);
+			// A hit may remain on screen while its previous-frame sample slides
+			// through the active viewport edge. Fade that history before it can
+			// appear as a delayed inset reflection during camera movement.
+			float historyWeight = saturate(SSRParams.z * history.w * historyStability) *
+				previousEdgeConfidence * smoothstep(0.03f, 0.15f,
+					min(edgeDistance.x, edgeDistance.y));
 			// History is a replacement estimate, not additive light. Normalized
 			// temporal blending prevents each accepted frame from increasing energy.
 			float3 resolvedColor = lerp(color, history.xyz, historyWeight);

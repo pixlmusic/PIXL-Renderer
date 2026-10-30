@@ -11,6 +11,15 @@
 using V = std::array<float, 3>;
 using SH = std::array<float, 4>;
 float dot(V a, V b) { return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
+float smoothstep(float a, float b, float x) { const float t=std::clamp((x-a)/(b-a),0.0f,1.0f); return t*t*(3.0f-2.0f*t); }
+float radialCascadeBlend(V delta, float nearExtent) {
+    const float radius=std::sqrt(dot(delta,delta))/std::max(nearExtent,1.0f);
+    return smoothstep(0.62f,1.08f,radius);
+}
+float reactiveHistoryBudget(float historyFrames, float maxFrames, float lightingChange, float acceptedHistory) {
+    const float responsive=std::lerp(maxFrames,1.0f,std::clamp(lightingChange,0.0f,1.0f));
+    return std::min(historyFrames,std::lerp(maxFrames,responsive,std::clamp(acceptedHistory,0.0f,1.0f)));
+}
 V scale(V a, float b) { for(auto& v:a) v*=b; return a; }
 V rotate(V a, float angle) {
     const float s=std::sin(angle), c=std::cos(angle);
@@ -36,6 +45,23 @@ float irradiance(SH sh, V direction, bool guarded) {
     return std::max(0.0f, result);
 }
 int main() {
+    // The voxel near/far transition is radial and continuous in every camera
+    // direction; it must not retain the old axis-aligned cube signature.
+    const float extent=1000.0f;
+    for (V delta : {V{720,0,0},V{0,720,0},V{0,0,720},V{415.692f,415.692f,415.692f}})
+        assert(std::abs(radialCascadeBlend(delta,extent)-radialCascadeBlend({720,0,0},extent))<1e-4f);
+    float previousBlend=0.0f;
+    for(int i=0;i<=200;++i) {
+        const float blend=radialCascadeBlend({extent*(float)i/100.0f,0,0},extent);
+        assert(blend>=previousBlend);
+        previousBlend=blend;
+    }
+    // Stable direct lighting keeps full GI history, while a large local-light
+    // or shadow change retires it monotonically and without exceeding its cap.
+    assert(reactiveHistoryBudget(24.0f,24.0f,0.0f,1.0f)==24.0f);
+    assert(reactiveHistoryBudget(24.0f,24.0f,1.0f,1.0f)==1.0f);
+    assert(reactiveHistoryBudget(24.0f,24.0f,0.5f,1.0f)<24.0f);
+    assert(reactiveHistoryBudget(1.0f,24.0f,0.0f,0.0f)==1.0f);
     std::mt19937 random(42);
     std::uniform_real_distribution<float> unit(-1,1), energy(0,8);
     float maximumRelativeError=0;

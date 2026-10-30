@@ -1,4 +1,6 @@
 function(add_cxx_files TARGET)
+	target_compile_definitions(${TARGET} PRIVATE PIXL_DISABLE_RENDER_ORIGIN_SHIFT=1)
+
 	file(GLOB_RECURSE INCLUDE_FILES
 		LIST_DIRECTORIES false
 		CONFIGURE_DEPENDS
@@ -22,6 +24,11 @@ function(add_cxx_files TARGET)
 		"engine/*.hxx"
 		"engine/*.inl"
 	)
+	# FoliageOptimizer and its private visibility pyramid are retired for the
+	# 1.0.9 line. Keep their source available for later research, but never compile
+	# their hooks/resources into new renderer builds.
+	list(FILTER HEADER_FILES EXCLUDE REGEX "[/\\\\]Modules[/\\\\]FoliageOptimizer([/\\\\]|\\.h$)")
+	list(FILTER HEADER_FILES EXCLUDE REGEX "[/\\\\]Renderer[/\\\\]VisibilityContext\\.h$")
 
 	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/engine
 		PREFIX "Header Files"
@@ -35,6 +42,8 @@ function(add_cxx_files TARGET)
 		"engine/*.cpp"
 		"engine/*.cxx"
 	)
+	list(FILTER SOURCE_FILES EXCLUDE REGEX "[/\\\\]Modules[/\\\\]FoliageOptimizer([/\\\\]|\\.cpp$)")
+	list(FILTER SOURCE_FILES EXCLUDE REGEX "[/\\\\]Renderer[/\\\\]VisibilityContext\\.cpp$")
 
 	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/engine
 		PREFIX "Source Files"
@@ -50,6 +59,7 @@ function(add_cxx_files TARGET)
 		"distribution/PIXL-Shaders/*.hlsl"
 		"distribution/PIXL-Shaders/*.hlsli"
 	)
+	list(FILTER HLSL_FILES EXCLUDE REGEX "[/\\\\]Foliage Optimizer[/\\\\]")
 
 	set(HLSL_FILES ${HLSL_FILES} PARENT_SCOPE)
 

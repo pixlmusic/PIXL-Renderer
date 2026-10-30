@@ -37,7 +37,8 @@ PS_OUTPUT main(PS_INPUT input)
 
 	float2 screenPosition = FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(input.TexCoord);
 	float depth = DepthTex.Sample(DepthSampler, screenPosition).x;
-	bool validCurrentDepth = isfinite(depth);
+	bool validCurrentDepth = isfinite(depth) && depth >= 0.0f && depth <= 1.0f;
+	bool currentIsSky = validCurrentDepth && depth >= 0.999998f;
 
 	float repartition = RepartitionTex.SampleLevel(RepartitionSampler, validCurrentDepth ? depth : 0.0f, 0).x;
 	repartition = isfinite(repartition) ? clamp(repartition, 0.0f, 0.9999f) : 0.0f;
@@ -59,10 +60,16 @@ PS_OUTPUT main(PS_INPUT input)
 
 	float adjustedVl = max(0.0f, (isfinite(noiseGrad) ? noiseGrad : 0.0f) + vl - kVLThresholdBias);
 
-	if (0.001 < g_IntensityX_TemporalY.y) {
+	float temporalResponse = isfinite(g_IntensityX_TemporalY.y)
+		? saturate(g_IntensityX_TemporalY.y)
+		: 0.0f;
+	if (temporalResponse > 0.001f) {
 		float2 motionVector = MotionVectorsTex.Sample(MotionVectorsSampler, screenPosition).xy;
 		float2 previousTexCoord = input.TexCoord + motionVector;
-		bool isValid = validCurrentDepth && all(isfinite(previousTexCoord)) &&
+		// Vanilla motion vectors describe opaque surfaces, not PIXL's independently
+		// advected cloud layer. Do not drag the prior screen-space volume over sky
+		// pixels; cloud silhouettes and sky lighting can change without depth motion.
+		bool isValid = validCurrentDepth && !currentIsSky && all(isfinite(motionVector)) && all(isfinite(previousTexCoord)) &&
 			previousTexCoord.x >= 0.0f && previousTexCoord.x < 1.0f &&
 			previousTexCoord.y >= 0.0f && previousTexCoord.y < 1.0f;
 		float previousVl = adjustedVl;
@@ -71,11 +78,22 @@ PS_OUTPUT main(PS_INPUT input)
 			float2 previousScreenPosition = FrameBuffer::GetPreviousDynamicResolutionAdjustedScreenPosition(previousTexCoord);
 			previousVl = PreviousFrameTex.Sample(PreviousFrameSampler, previousScreenPosition).x;
 			float previousDepth = PreviousDepthTex.Sample(PreviousDepthSampler, previousScreenPosition).x;
-			if (isfinite(previousVl) && isfinite(previousDepth))
-				temporalContribution = g_IntensityX_TemporalY.y *
-					(1.0f - smoothstep(0.0f, 1.0f, min(1.0f, 100.0f * abs(depth - previousDepth))));
-			else
+			if (isfinite(previousVl) && previousVl >= 0.0f && isfinite(previousDepth) &&
+				previousDepth >= 0.0f && previousDepth < 0.999998f) {
+				float depthDelta = abs(depth - previousDepth);
+				float depthTolerance = max(0.0005f, depth * 0.003f);
+				float depthConfidence = 1.0f - smoothstep(depthTolerance, depthTolerance * 4.0f, depthDelta);
+				// Large per-pixel movement and abrupt light-volume changes need less
+				// old radiance. This keeps slow motion stable but rejects camera pans,
+				// disocclusions, and rapidly changing fog/cloud illumination.
+				float motionConfidence = 1.0f - smoothstep(0.001f, 0.012f, length(motionVector));
+				float radianceDelta = abs(adjustedVl - previousVl);
+				float radianceTolerance = max(0.06f, max(adjustedVl, previousVl) * 0.50f);
+				float radianceConfidence = 1.0f - smoothstep(radianceTolerance, radianceTolerance * 3.0f, radianceDelta);
+				temporalContribution = temporalResponse * depthConfidence * motionConfidence * radianceConfidence;
+			} else {
 				previousVl = adjustedVl;
+			}
 		}
 		psout.VL = lerp(adjustedVl, previousVl, saturate(temporalContribution));
 	} else {

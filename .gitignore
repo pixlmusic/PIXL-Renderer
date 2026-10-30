@@ -118,3 +118,8 @@ nr.dll
 # Local release-polish report generators.
 /tools/WriteReleasePolishFileMatrix.ps1
 /tools/WriteReleasePolishModuleReview.ps1
+
+# Local review and architecture inventory output; regenerate when needed.
+/docs/architecture/
+/tools/GeneratePixlArchitecture.ps1
+**/AGENTS.md

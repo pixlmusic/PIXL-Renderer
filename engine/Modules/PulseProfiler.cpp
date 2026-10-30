@@ -429,7 +429,7 @@ void PulseProfiler::DrawOverlay()
 			ImGui::SameLine(205.0f * scale);
 			ImGui::TextDisabled("PIXL %.2f ms  /  AVG %.2f ms", pixlTime, pixlAverage);
 			if (this->state.isFrameGenerationActive)
-				ImGui::TextDisabled("PRESENTED %.1f FPS   /   RENDER CADENCE %.1f FPS", this->state.postFGSmoothFps, this->state.smoothFps);
+				ImGui::TextDisabled("FG OUTPUT ~%.1f FPS (EST.)   /   RENDER CADENCE %.1f FPS", this->state.postFGSmoothFps, this->state.smoothFps);
 		}
 
 		if (this->settings.ShowPreFGFrameTimeGraph) {
@@ -707,7 +707,7 @@ void PulseProfiler::DrawFPS()
 
 		if (this->state.isFrameGenerationActive) {
 			ImGui::TableNextColumn();
-			ImGui::Text(T(TKEY("post_fg_fps"), "Post-FG FPS:"));
+			ImGui::Text(T(TKEY("post_fg_fps"), "Estimated FG output:"));
 			ImGui::TableNextColumn();
 			ImGui::Text("%.1f (%.2f ms)", this->state.postFGSmoothFps, this->state.postFGSmoothFrameTimeMs);
 		}
@@ -814,7 +814,7 @@ void PulseProfiler::DrawPostFGFrameTimeGraph()
 	// Prepare overlay text
 	char overlay_text[128];
 	snprintf(overlay_text, IM_ARRAYSIZE(overlay_text),
-		"Post-FG: %.2f ms (%.1f FPS)",
+		"Estimated FG: %.2f ms (%.1f FPS)",
 		state.postFGSmoothFrameTimeMs, state.postFGSmoothFps);
 
 	// ProfilerStyleScope owns the PIXL graph signal colour.
@@ -2266,19 +2266,11 @@ void PulseProfiler::UpdateGraphValues()
 	state.smoothedMaxFrameTime = state.smoothedMaxFrameTime + Settings::kSmoothingFactor * (graphMax - state.smoothedMaxFrameTime);
 
 	if (state.isFrameGenerationActive) {
-		// Get frametime directly from the Frame Generation system
-		const float fgDeltaTime = globals::pipeline::imageReconstruction.GetFrameGenerationFrameTime();
-
-		// A valid measured presentation interval takes priority over the estimated
-		// multiplier for every active frame-generation provider.
-		if (std::isfinite(fgDeltaTime) && fgDeltaTime > 0.0f) {
-			state.postFGFrameTimeMs = fgDeltaTime * 1000.0f;
-			state.postFGFps = 1000.0f / std::max(state.postFGFrameTimeMs, 1.0e-4f);
-		} else {
-			// Fallback if FG time is not available
-			state.postFGFrameTimeMs = state.frameTimeMs / Settings::kFrameGenerationMultiplier;
-			state.postFGFps = state.fps * Settings::kFrameGenerationMultiplier;
-		}
+		// The sidecar's GetFrameTime() is sampled when this overlay draws, not
+		// when generated frames reach the display. Estimate output from render
+		// cadence until a presentation counter is available.
+		state.postFGFrameTimeMs = state.frameTimeMs / Settings::kFrameGenerationMultiplier;
+		state.postFGFps = state.fps * Settings::kFrameGenerationMultiplier;
 
 		// Update post-FG smooth values when timer elapses
 		if (state.updateTimer <= 0.0f) {

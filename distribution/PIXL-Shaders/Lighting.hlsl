@@ -410,7 +410,7 @@ typedef VS_OUTPUT PS_INPUT;
 #	define PIXL_AUTO_PARALLAX_SELF_SHADOWS 0
 #endif
 #if USE_PIXL_AUTO_PARALLAX && !defined(LANDSCAPE) && !defined(LOD) && !defined(LODLANDSCAPE) && !defined(LOD_LAND_BLEND) && \
-	!defined(PARALLAX) && !defined(MATERIAL_FORGE) && !defined(MULTI_LAYER_PARALLAX) && \
+	!defined(PARALLAX) && !defined(MULTI_LAYER_PARALLAX) && \
 	!defined(SKIN) && !defined(HAIR) && !defined(EYE) && !defined(TREE_ANIM) && \
 	!defined(SPARKLE) && !defined(PROJECTED_UV) && !defined(DO_ALPHA_TEST) && !defined(DEPTH_WRITE_DECALS)
 #	define PIXL_AUTO_PARALLAX
@@ -456,18 +456,9 @@ typedef VS_OUTPUT PS_INPUT;
 #	define PIXL_PARALLAX_DEPTH_AUTHORED 0
 #endif
 #ifndef PIXL_PARALLAX_DEPTH_LANDSCAPE
-// Generic terrain-POM hardware depth is deliberately opt-in. Ground deformation
-// has its own bounded world-space depth path below and must not depend on UV POM.
+// Generic terrain-POM hardware depth is deliberately opt-in. GroundResponse
+// writes actual displaced geometry depth and does not need a UV-derived override.
 #	define PIXL_PARALLAX_DEPTH_LANDSCAPE 0
-#endif
-
-// Dedicated snow/mud depth output. This remains available even when generic
-// landscape POM depth is disabled, preventing the two unrelated systems from
-// corrupting each other's SV_Depth result.
-// PIXL_GR_13AW_RASTER_DEPTH_ONLY_DIAGNOSTIC_V1
-#if 0 && defined(DEFERRED) && defined(GROUND_RESPONSE) && defined(LANDSCAPE) && \
-	!defined(DO_ALPHA_TEST) && !defined(DEPTH_WRITE_DECALS) && !defined(WORLD_MAP)
-#	define PIXL_GROUND_DEFORMATION_DEPTH
 #endif
 
 #if USE_PIXL_PARALLAX_DEPTH_CORRECTION && defined(DEFERRED) && !defined(DO_ALPHA_TEST) && !defined(DEPTH_WRITE_DECALS) && \
@@ -484,7 +475,7 @@ typedef VS_OUTPUT PS_INPUT;
 #	define PIXL_PARALLAX_EFFECTS_DEPTH
 #endif
 
-#if defined(PIXL_PARALLAX_DEPTH) || defined(PIXL_GROUND_DEFORMATION_DEPTH)
+#if defined(PIXL_PARALLAX_DEPTH)
 #	define PIXL_VIRTUAL_DEPTH_OUTPUT
 #endif
 
@@ -1281,6 +1272,11 @@ float3 PixlResolveParallaxDepthPosition(
 #	endif
 #endif
 
+	// Invalid UV derivatives must not propagate NaNs into temporal or depth buffers.
+	if ((asuint(rayTravel) & 0x7f800000u) == 0x7f800000u ||
+		(asuint(maximumTravel) & 0x7f800000u) == 0x7f800000u)
+		return baseWorldPosition;
+
 	rayTravel *= grazingFade;
 	confidence =
 		grazingFade *
@@ -1303,7 +1299,7 @@ float PixlProjectVirtualDepth(
 			FrameBuffer::CameraViewProj,
 			float4(worldPosition, 1.0f));
 
-	if (abs(clipPosition.w) <= 1e-6f)
+	if (!all((asuint(clipPosition) & 0x7f800000u) != 0x7f800000u) || clipPosition.w <= 1e-6f)
 		return fallbackDepth;
 
 	float projectedDepth =
@@ -1311,7 +1307,7 @@ float PixlProjectVirtualDepth(
 
 	// Reject impossible projections rather than letting saturate turn them into a
 	// full-screen near/far plane. Valid D3D11 hardware depth is [0,1].
-	if (projectedDepth < 0.0f ||
+	if ((asuint(projectedDepth) & 0x7f800000u) == 0x7f800000u || projectedDepth < 0.0f ||
 		projectedDepth > 1.0f)
 		return fallbackDepth;
 
@@ -1319,80 +1315,9 @@ float PixlProjectVirtualDepth(
 }
 #	endif
 
-#	if defined(PIXL_GROUND_DEFORMATION_DEPTH)
-// Convert a vertical snow/mud compression into a depth value at the *same raster
-// pixel*. The virtual point is moved along the camera ray until that ray reaches
-// the lowered world-Z plane. This avoids the off-ray projection that produced
-// large triangular depth wedges at oblique camera angles.
-float PixlResolveGroundDeformationDepth(
-	float3 baseWorldPosition,
-	float compressionDepth,
-	float deformationAmount,
-	float fallbackDepth)
-{
-	float safeCompression =
-		clamp(compressionDepth, 0.0f, 40.0f);
-	if (safeCompression <= 1e-4f ||
-		deformationAmount <= 1e-4f)
-		return fallbackDepth;
 
-	float distanceToCamera =
-		length(baseWorldPosition);
-	if (distanceToCamera <= 1e-3f)
-		return fallbackDepth;
-
-	float3 rayIntoSurface =
-		baseWorldPosition / distanceToCamera;
-
-	// Landscape receiving the camera ray from above has a negative ray Z.
-	// Near-horizontal rays require enormous travel for a tiny vertical drop, so
-	// smoothly remove hardware-depth recession there while retaining normal and
-	// material relief.
-	float downwardIncidence =
-		saturate(-rayIntoSurface.z);
-	float incidenceFade =
-		smoothstep(0.16f, 0.38f, downwardIncidence);
-	float distanceFade =
-		1.0f -
-		smoothstep(768.0f, 1536.0f, distanceToCamera);
-	float amountFade =
-		smoothstep(0.025f, 0.22f, deformationAmount);
-
-	float visibleCompression =
-		safeCompression *
-		incidenceFade *
-		distanceFade *
-		amountFade;
-	if (visibleCompression <= 1e-4f)
-		return fallbackDepth;
-
-	float rayTravel =
-		visibleCompression /
-		max(downwardIncidence, 0.20f);
-
-	// Extra protection against pathological views/data. Real snow/mud depth is
-	// small; there is no visual benefit in moving the virtual hit tens of metres.
-	rayTravel =
-		min(
-			rayTravel,
-			min(64.0f, visibleCompression * 4.0f));
-
-	float3 virtualWorldPosition =
-		baseWorldPosition +
-		rayIntoSurface * rayTravel;
-	float resolvedDepth =
-		PixlProjectVirtualDepth(
-			virtualWorldPosition,
-			fallbackDepth);
-
-	// rayTravel is strictly positive, so virtualWorldPosition is farther along
-	// the same camera ray regardless of the projection's depth convention.
-	return resolvedDepth;
-}
-#	endif
 
 #if defined(GROUND_RESPONSE) && defined(LANDSCAPE)
-// PIXL_GR_13Z_EMBEDDED_MICROSURFACE_V1
 //
 // Stable absolute-world procedural detail acts like an embedded detail texture
 // without consuming another terrain SRV slot.
@@ -1605,12 +1530,17 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 	const bool inReflection = Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::InReflection;
 
-	float nearFactor = smoothstep(4096.0 * 2.5, 0.0, viewPosition.z);
+	// Skyrim 1.7.104 exposes a per-object sun direction in b2 while PIXL's
+	// normals are world-space. b5.w selects the world-space sun on that runtime.
+	const float3 pixlWorldDirLightDirection = SharedData::DirLightDirection.w > 0.5f ?
+		SharedData::DirLightDirection.xyz : DirLightDirection;
+
+	// Keep edge ordering valid for smoothstep. This preserves the intended
+	// near-to-far fade while avoiding undefined reversed-edge behavior in HLSL.
+	float nearFactor = 1.0f - smoothstep(0.0f, 4096.0f * 2.5f, max(viewPosition.z, 0.0f));
 
 #	if defined(SKINNED) || !defined(MODELSPACENORMALS)
 	float3x3 tbn = float3x3(input.TBN0.xyz, input.TBN1.xyz, input.TBN2.xyz);
-
-	// PIXL_GR_13BB_FRONTFACE_TBN_PROOF_V1
 	//
 	// 13AP makes the physical TOP of the GroundResponse shell SV_IsFrontFace.
 	// TerrainSurface 13X still negates the interpolated landscape TBN before it
@@ -1669,7 +1599,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		// Preserve the ten-unit contact region while removing slope jumps at
 		// either end of the object/terrain transition.
 		float separation = depthSampledLinear - depthPixelLinear;
-		blendFactorTerrain = isfinite(separation) ? smoothstep(0.0f, 10.0f, separation) : 1.0f;
+		// A slightly broader contact band hides the hard material transition at
+		// terrain intersections while keeping the fade local to the contact area.
+		blendFactorTerrain = isfinite(separation) ? smoothstep(0.0f, 24.0f, separation) : 1.0f;
 
 		if (input.Position.z == depthSampled)
 			blendFactorTerrain = 1;
@@ -2000,7 +1932,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		if defined(EMAT_ENVMAP) || defined(MATERIAL_FORGE)
 	// Incomplete PBR/CM sets still receive synthetic relief. A valid authored
 	// displacement path wins so the two techniques are never double-stacked.
-	autoParallaxAllowed = autoParallaxAllowed && !authoredParallaxAvailable;
+	autoParallaxAllowed = autoParallaxAllowed &&
+			!authoredParallaxAvailable && !geometryDisplacementActive;
 #		endif
 
 #	if defined(PIXL_WINDOW_LIFE_ACTIVE)
@@ -2243,7 +2176,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		if ((doTerrainPom || hasTerrainParallaxShadow) && SharedData::materialLayerSettings.EnableShadows && terrainDirectionalShadowQuality > 0.0) {
 			hasCachedTerrainShadowBaseHeight = COMPUTE_TERRAIN_SHADOW_BASE(sh0);
 			if (doTerrainPom && hasCachedTerrainShadowBaseHeight) {
-				float3 dirLightDirectionTS = mul(DirLightDirection, tbn).xyz;
+				float3 dirLightDirectionTS = mul(pixlWorldDirLightDirection, tbn).xyz;
 				cachedDirectionalTerrainParallaxShadow = EVAL_TERRAIN_DIR_SHADOW(sh0, dirLightDirectionTS);
 				hasCachedDirectionalTerrainParallaxShadow = true;
 			}
@@ -2652,7 +2585,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float3 hairTint = 0;
 
 	if (SharedData::strandShadingSettings.Enabled) {
-		hairTint = lerp(1, Color::Diffuse(TintColor.xyz), Color::ColorToLinear(input.Color.y));
+		float tintWeight = Color::ColorToLinear(input.Color.y).x;
+		// Some native hair cards arrive with a zero vertex tint weight even when
+		// their actor hair colour is dark. Preserve authored weights elsewhere,
+		// but apply the actor colour to these otherwise white cards.
+		if (tintWeight < 1.0e-3f && dot(saturate(TintColor.xyz), float3(0.2126f, 0.7152f, 0.0722f)) < 0.5f)
+			tintWeight = 1.0f;
+		hairTint = lerp(1, Color::Diffuse(TintColor.xyz), tintWeight);
 		baseColor.xyz *= hairTint;
 		baseColor.xyz = Hair::Saturation(baseColor.xyz, SharedData::strandShadingSettings.HairSaturation);
 		baseColor.xyz *= SharedData::strandShadingSettings.BaseColorMult;
@@ -2719,8 +2658,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float4 rimSoftLightColor = TexRimSoftLightWorldMapOverlaySampler.Sample(SampRimSoftLightWorldMapOverlaySampler, uv);
 #	endif  // RIM_LIGHTING || SOFT_LIGHTING
 
-	uint numLights = min(7, uint(NumLightNumShadowLight.x));
-	uint numShadowLights = min(4, uint(NumLightNumShadowLight.y));
+	// Engine counters are floats; reject non-finite values before integer conversion.
+	uint numLights = (asuint(NumLightNumShadowLight.x) & 0x7f800000u) == 0x7f800000u
+		? 0u : (uint)clamp(NumLightNumShadowLight.x, 0.0f, 7.0f);
+	uint numShadowLights = (asuint(NumLightNumShadowLight.y) & 0x7f800000u) == 0x7f800000u
+		? 0u : (uint)clamp(NumLightNumShadowLight.y, 0.0f, 4.0f);
 
 #	if defined(MODELSPACENORMALS) && !defined(SKINNED)
 	float3 worldNormal = normal.xyz;
@@ -2824,8 +2766,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		float2 shadowUV = FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(adjustedShadowUV);
 		shadowColor = TexShadowMaskSampler.Sample(SampShadowMaskSampler, shadowUV);
 	}
-
-	// PIXL_GR_13BE_WORLDSPACE_SHADOW_RECEIVER_V1
 	//
 	// TerrainSeam replays the GroundResponse shell after Skyrim's screen-space
 	// shadow mask was generated for the undisplaced/base landscape receiver.
@@ -2994,6 +2934,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	bool groundPixelUsesGeometricSurface = false;
 #	if defined(GROUND_RESPONSE) && defined(LANDSCAPE)
 	if (SharedData::deformableGroundSettings.EnableDeformableGround != 0) {
+		// The settings gate is draw-uniform; evaluate gradients before material-specific branches.
+		float2 pixlGroundWorldDx = ddx(input.WorldPosition.xy);
+		float2 pixlGroundWorldDy = ddy(input.WorldPosition.xy);
 		groundSnowClassificationValid =
 			GroundResponseRuntime::HasExactTerrainClassification();
 
@@ -3121,33 +3064,29 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 						groundSample.normal,
 						groundMaterialActivation));
 
-		// PIXL_GR_13Z_MICROSURFACE_EVALUATION_V1
-		groundAbsoluteXY =
-			groundReceiverPosition.xy +
-			FrameBuffer::CameraPosAdjust.xy;
-		float4 groundMark = PixlGroundMarkSample(groundAbsoluteXY);
+		// World-anchored detail work is skipped for inactive and distant surfaces.
+		groundAbsoluteXY = groundReceiverPosition.xy + FrameBuffer::CameraPosAdjust.xy;
+		float localSnowWeight = saturate(groundSnowMix);
+		float localMudWeight = 1.0f - localSnowWeight;
+		float groundMicroDistanceFade =
+			1.0f - smoothstep(720.0f, 1700.0f, length(groundReceiverPosition));
+
+		float4 groundMark = 0.0f.xxxx;
+		[branch] if (groundMaterialActivation > 1.0e-4f)
+			groundMark = PixlGroundMarkSample(groundAbsoluteXY);
 		groundMarkFootprint = saturate(groundMark.x * groundMaterialActivation);
 		groundMarkBlood = saturate(groundMark.y * groundMaterialActivation);
 		groundMarkElement = clamp(groundMark.z, -1.0f, 1.0f) * groundMaterialActivation;
 
-		float groundMicroDistanceFade =
-			1.0f -
-			smoothstep(
-				720.0f,
-				1700.0f,
-				length(groundReceiverPosition));
-
-		groundSnowMicroDetail =
-			PixlGroundSnowMicro(
-				groundAbsoluteXY);
-		groundMudMicroDetail =
-			PixlGroundMudMicro(
-				groundAbsoluteXY);
-
-		float localSnowWeight =
-			saturate(groundSnowMix);
-		float localMudWeight =
-			1.0f - localSnowWeight;
+		groundSnowMicroDetail = 0.5f;
+		groundMudMicroDetail = 0.5f;
+		[branch] if (groundDeformationAmount > 1.0e-4f && groundMicroDistanceFade > 1.0e-3f)
+		{
+			if (localSnowWeight > 1.0e-3f)
+				groundSnowMicroDetail = lerp(0.5f, PixlGroundSnowMicro(groundAbsoluteXY), groundMicroDistanceFade);
+			if (localMudWeight > 1.0e-3f)
+				groundMudMicroDetail = lerp(0.5f, PixlGroundMudMicro(groundAbsoluteXY), groundMicroDistanceFade);
+		}
 
 		// PIXL_GR_SNOW_MICROSURFACE_V1
 		// Reconstruct a stable world-space detail normal from the supplied packed
@@ -3169,8 +3108,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			const float snowTextureWorldPeriod = 640.0f;
 			const float snowTextureTexel = 1.0f / 512.0f;
 			float2 snowMicroUV = groundAbsoluteXY / snowTextureWorldPeriod;
-			float2 snowMicroUVdx = ddx(snowMicroUV);
-			float2 snowMicroUVdy = ddy(snowMicroUV);
+			float2 snowMicroUVdx = pixlGroundWorldDx / snowTextureWorldPeriod;
+			float2 snowMicroUVdy = pixlGroundWorldDy / snowTextureWorldPeriod;
 			float2 snowTexelX = float2(snowTextureTexel, 0.0f);
 			float2 snowTexelY = float2(0.0f, snowTextureTexel);
 
@@ -3213,8 +3152,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 					worldNormal +
 					snowDetailSlope * snowMicroSurfaceWeight);
 		}
-
-		// PIXL_GR_13BI_MUD_RESERVOIR_V1
 		float mudRain =
 			saturate(
 				SharedData::rainResponseSettings.Raining);
@@ -3226,9 +3163,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 				? saturate(GroundRuntimeSurfaceMoisture)
 				: 0.0f;
 
-		float mudBasin =
-			PixlGroundMudBasin(
-				groundAbsoluteXY);
+		float mudBasin = 0.5f;
+		[branch] if (groundDeformationAmount > 1.0e-4f && localMudWeight > 1.0e-3f &&
+			max(mudRain, max(mudWetness, mudEnvironmentalMoisture)) > 1.0e-3f)
+			mudBasin = PixlGroundMudBasin(groundAbsoluteXY);
 
 		// Deep rut centres collect first; shoulders and steep surfaces drain.
 		float waterDepthSignal =
@@ -3283,8 +3221,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			mudFlatness *
 			mudReservoir *
 			mudRetreatingFill;
-
-		// PIXL_GR_13BI_SNOW_THICKNESS_BACKSCATTER_INPUT_V1
 		// TerrainSurface raises the hull vertically, therefore raised Z above the
 		// preserved base receiver is an inexpensive real thickness proxy. Thin or
 		// heavily compacted snow loses porous scattering.
@@ -3318,24 +3254,15 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 					1.0f,
 					groundSnowPorosity));
 
-		// Water flattens the mud's micro-normal as the rut fills.
-		float2 groundMicroVector =
-			PixlGroundMicroVector(
-				groundAbsoluteXY);
-
-		float snowMicroNormalStrength =
-			0.080f *
-			localSnowWeight;
-		float mudMicroNormalStrength =
-			0.105f *
-			localMudWeight *
-			(1.0f -
-				groundMudWaterAccumulation * 0.88f);
-		float groundMicroNormalStrength =
-			groundDeformationAmount *
-			groundMicroDistanceFade *
-			(snowMicroNormalStrength +
-			 mudMicroNormalStrength);
+		// Water flattens the mud micro-normal as the rut fills.
+		float snowMicroNormalStrength = 0.080f * localSnowWeight;
+		float mudMicroNormalStrength = 0.105f * localMudWeight *
+			(1.0f - groundMudWaterAccumulation * 0.88f);
+		float groundMicroNormalStrength = groundDeformationAmount *
+			groundMicroDistanceFade * (snowMicroNormalStrength + mudMicroNormalStrength);
+		float2 groundMicroVector = 0.0f.xx;
+		[branch] if (groundMicroNormalStrength > 1.0e-4f)
+			groundMicroVector = PixlGroundMicroVector(groundAbsoluteXY);
 
 		worldNormal =
 			normalize(
@@ -3345,22 +3272,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 						groundMicroNormalStrength,
 					0.0f));
 
-#		if defined(PIXL_GROUND_DEFORMATION_DEPTH)
-		// The unified geometric snow/mud pass already rasterizes the displaced surface.
-		// Virtual recession is retained only when the geometric path is unavailable.
-		[branch] if (!groundPixelUsesGeometricSurface &&
-			groundDeformationDepth > 0.001f &&
-			groundDeformationAmount > 0.001f &&
-			inWorld && !inReflection && !SharedData::InMapMenu)
-		{
-			pixlVirtualDepth =
-				PixlResolveGroundDeformationDepth(
-					groundReceiverPosition,
-					groundDeformationDepth,
-					groundDeformationAmount,
-					pixlVirtualDepth);
-		}
-#		endif
+
 	}
 #	endif
 
@@ -3661,8 +3573,6 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 			(1.0f - mudDarkening * mudWeight);
 		material.BaseColor *=
 			1.0f + groundDeformationEdge * 0.055f * snowWeight;
-
-		// PIXL_GR_13Z_TRAIL_MICRO_ALBEDO_V1
 		float snowMicroAlbedo =
 			(groundSnowMicroDetail - 0.5f) *
 			0.105f *
@@ -3707,8 +3617,6 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 				lerp(1.0f, 0.85f, snowWeight));
 		material.Roughness =
 			lerp(material.Roughness, compressionRoughness, roughnessWeight);
-
-		// PIXL_GR_13Z_MICRO_ROUGHNESS_AND_WATER_V1
 		float snowMicroRoughness =
 			(groundSnowMicroDetail - 0.5f) *
 			0.11f *
@@ -4041,9 +3949,20 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 
 	float pixlWeatherSnowMask = 0.0f;
 	float pixlSnowMeltWetness = 0.0f;
-#	if !defined(SKINNED) && !defined(SKIN) && !defined(HAIR) && !defined(EYE) && !defined(TREE_ANIM) && !defined(AUTO_FUR) && !defined(GLOWMAP) && !defined(DO_ALPHA_TEST) && !defined(LOD) && !defined(LODLANDSCAPE)
+#	if !defined(SKINNED) && !defined(SKIN) && !defined(HAIR) && !defined(EYE) && !defined(TREE_ANIM) && !defined(AUTO_FUR) && !defined(GLOWMAP) && (!defined(DO_ALPHA_TEST) || defined(MATERIAL_FORGE)) && !defined(LOD) && !defined(LODLANDSCAPE)
 	float3 surfacePosition = input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust.xyz;
 	float surfaceFootprint = max(length(ddx(surfacePosition)), length(ddy(surfacePosition)));
+	float3 previousSurfacePosition =
+		input.PreviousWorldPosition.xyz + FrameBuffer::CameraPreviousPosAdjust.xyz;
+	float3 previousNormalDx = ddx(previousSurfacePosition);
+	float3 previousNormalDy = ddy(previousSurfacePosition);
+	float3 previousSurfaceNormal = cross(previousNormalDx, previousNormalDy);
+	float previousNormalLengthSq = dot(previousSurfaceNormal, previousSurfaceNormal);
+	previousSurfaceNormal = previousNormalLengthSq > 1e-8f
+		? previousSurfaceNormal * rsqrt(previousNormalLengthSq)
+		: vertexNormal.xyz;
+	if (dot(previousSurfaceNormal, vertexNormal.xyz) < 0.0f)
+		previousSurfaceNormal = -previousSurfaceNormal;
 	float surfaceEligibility = inWorld && !SharedData::InMapMenu ? 1.0f : 0.0f;
 #		if defined(MATERIAL_FORGE) && !defined(LANDSCAPE)
 	if ((PBRFlags & (PBR::Flags::HasEmissive | PBR::Flags::HairMarschner)) != 0u) surfaceEligibility = 0;
@@ -4053,16 +3972,33 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 #		endif
 	[branch] if (MaterialForgeTuning::SurfaceControlsValid() && surfaceEligibility > 0.0f)
 	{
-		// Keep the configured upper slope cutoff, but ease snow onto moderately
-		// pitched roof faces instead of restricting coverage to their shallow edges.
-		float slope = smoothstep(PIXLMF_SnowSlopeMinimum * 0.65f,
-			min(PIXLMF_SnowSlopeMinimum + PIXLMF_SnowSlopeFeather, 1.0f), vertexNormal.z);
-		float3 coarsePosition = surfacePosition * 0.035f;
 		float dustStrength = SharedData::InInterior ? PIXLMF_IndoorDustStrength : PIXLMF_ExteriorDirtStrength;
 		bool snowWanted = PIXLMF_EnableWeatherSnow != 0 && PIXLMF_WeatherSnowCoverage > 0 && !SharedData::InInterior;
 #		if !defined(SKY_BOUNCE)
 		snowWanted = false; // No roof/exposure information: retain the authored surface.
 #		endif
+		float materialSnowMotion = 0.0f;
+		float stableSnowNormalZ = saturate(vertexNormal.z);
+		float3 depositPosition = surfacePosition;
+		if (snowWanted) {
+			materialSnowMotion = MaterialSurface::SurfaceMotionWeight(
+				surfacePosition, previousSurfacePosition, surfaceFootprint);
+
+			// The previous position stream retains the last rendered object pose.
+			// Its derivatives recover the prior face orientation without a history
+			// texture or a change to the shader ABI.
+			stableSnowNormalZ = MaterialSurface::StableSnowNormalZ(
+				vertexNormal.z, previousSurfaceNormal.z, materialSnowMotion);
+			depositPosition = lerp(surfacePosition, input.ModelPosition.xyz, materialSnowMotion);
+		}
+		// Ease settled snow onto moderately pitched roof faces.
+		float slopeStart = PIXLMF_SnowSlopeMinimum * 0.65f;
+		float slopeEnd = min(PIXLMF_SnowSlopeMinimum + PIXLMF_SnowSlopeFeather, 1.0f);
+		float slopeCenter = 0.5f * (slopeStart + slopeEnd);
+		float slopeHalfWidth = 0.60f * max(slopeEnd - slopeStart, 1e-3f);
+		float slope = smoothstep(max(slopeCenter - slopeHalfWidth, 0.0f),
+			min(slopeCenter + slopeHalfWidth, 1.0f), stableSnowNormalZ);
+		float3 coarsePosition = depositPosition * 0.035f;
 		[branch] if (dustStrength > 0 || (snowWanted && slope > 0))
 		{
 			float depositNoise = MaterialSurface::DepositPattern(coarsePosition, surfaceFootprint * 0.035f);
@@ -4088,9 +4024,31 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 #				if defined(GROUND_RESPONSE) && defined(LANDSCAPE)
 			snowCoverage *= 1.0f - saturate(groundSnowCoverage);
 #				endif
-			pixlWeatherSnowMask = snowWanted ? MaterialSurface::SnowMask(snowCoverage, slope, shelter, depositNoise, surfaceFootprint * 0.035f) * surfaceEligibility : 0;
+			float snowGrain = depositNoise;
+			[branch] if (snowWanted && slope > 0.0f)
+				snowGrain = MaterialSurface::DepositPattern(
+					depositPosition * 0.42f + float3(17.3f, 4.9f, 29.1f),
+					surfaceFootprint * 0.42f);
+			pixlWeatherSnowMask = snowWanted ? MaterialSurface::SnowMask(
+				snowCoverage, slope, shelter, depositNoise, snowGrain, surfaceFootprint * 0.035f) * surfaceEligibility : 0;
+			float groundSnowCompaction = 0.0f;
+#			if defined(GROUND_RESPONSE) && defined(LANDSCAPE)
+			// GroundResponse darkens the procedural blanket before MaterialForge's
+			// weather layer is composited. Carry that same compaction into the added
+			// snow so a displaced track cannot reveal a pristine white overlay.
+			if (groundSnowClassificationValid)
+				groundSnowCompaction = MaterialSurface::GroundSnowCompaction(
+					groundDeformationAmount, groundSnowMix);
+			pixlWeatherSnowMask *= 1.0f - groundSnowCompaction * 0.85f;
+#			endif
 			pixlSnowMeltWetness = snowWanted ? PIXLMF_WeatherSnowMeltWetness * slope * shelter * materialSnowReception * surfaceEligibility : 0;
-			float3 snowColor = PIXLMF_SnowAlbedo.xxx * lerp(0.96f,1.0f,depositNoise);
+			// Keep the procedural layer within the reflectance range of the authored
+			// landscape snow while adding stable, world-anchored grain. Color remains
+			// an albedo: direct and ambient illumination continue through the normal
+			// PIXL lighting path instead of being baked into this texture variation.
+			float snowAlbedo = PIXLMF_SnowAlbedo * lerp(0.70f, 1.02f, snowGrain) * 0.72f;
+			float3 snowColor = snowAlbedo.xxx * lerp(0.96f, 1.0f, depositNoise);
+			snowColor *= 1.0f - groundSnowCompaction * saturate(SharedData::deformableGroundSettings.SnowCompactionDarkening);
 #				if !defined(MATERIAL_FORGE)
 			snowColor = Color::LinearToSrgb(snowColor);
 #				endif
@@ -4279,11 +4237,21 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 	}
 #		endif
 	float shoreWetness = shoreFactor * SharedData::rainResponseSettings.MaxShoreWetness;
+	// Rain should darken and gloss world materials without making every stone,
+	// wood, and ground surface read as a freshly polished coating.
+#	if !defined(SKINNED) && !defined(SKIN) && !defined(HAIR)
+	const float worldRainWetnessScale = 0.84f;
+	rainWetness *= worldRainWetnessScale;
+	shoreWetness *= worldRainWetnessScale;
+#	endif
 	rainWetness *= saturate(wetnessOcclusion * 2.0f);
 	wetness = max(max(shoreWetness, rainWetness), pixlSnowMeltWetness) * surfaceWetResponse;
 
 	// Calculate puddle effects
 	float puddleWetness = SharedData::rainResponseSettings.PuddleWetness * minWetnessAngle * surfaceWetResponse;
+#	if !defined(SKINNED) && !defined(SKIN) && !defined(HAIR)
+	puddleWetness *= worldRainWetnessScale;
+#	endif
 	float puddle = wetness;
 
 #		if !defined(SKINNED) && !(defined(SKIN) && defined(PIXL_SKIN))
@@ -4296,8 +4264,24 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 #		endif
 
 	// Apply occlusion and distance factors
-	puddle *= saturate(wetnessOcclusion * 2.0) * nearFactor;
-	wetnessNormal = RainResponse::SafeNormalizeRain(lerp(worldNormal.xyz, wetnessNormal, saturate(puddle) * flatnessAmount), worldNormal.xyz);
+	puddle *= saturate(wetnessOcclusion * 2.0);
+	// Keep all wet-surface contributions on full-detail terrain. The LOD material
+	// has different normals, roughness, and texture response, so fading only the
+	// final reflection lobe leaves a camera-following dark/specular band as the
+	// land blend changes. Apply the same transition to the wet albedo, puddle
+	// normal, and shore response before they feed the lighting calculations.
+#		if defined(LOD_LAND_BLEND)
+	const float terrainDetailWetnessWeight = 1.0f - saturate(lodLandBlendFactor);
+	wetness *= terrainDetailWetnessWeight;
+	puddle *= terrainDetailWetnessWeight;
+	puddleWetness *= terrainDetailWetnessWeight;
+	shoreWetness *= terrainDetailWetnessWeight;
+#		endif
+	// Fade only fine puddle-normal detail with view depth. Fading the puddle
+	// coverage itself makes rain-film reflectivity camera-relative and creates a
+	// moving horizon band; the material/LOD transition controls coverage instead.
+	float puddleNormalWeight = saturate(puddle) * nearFactor;
+	wetnessNormal = RainResponse::SafeNormalizeRain(lerp(worldNormal.xyz, wetnessNormal, puddleNormalWeight * flatnessAmount), worldNormal.xyz);
 
 	// Calculate wetness glossiness factors
 	float wetnessGlossinessAlbedo = saturate(max(wetness, puddle));
@@ -4334,9 +4318,19 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 	// roughness puddles. Real water has ripples and surface tension that keep it from being
 	// optically perfect; the ripple normal map adds micro-variation but GGX still peaks
 	// sharply without this floor.
-	static const float wetnessMinPuddleRoughness = 0.08;
+#		if defined(LANDSCAPE) || defined(LODLANDSCAPE)
+	static const float wetnessMinPuddleRoughness = 0.14f;
+#		else
+	static const float wetnessMinPuddleRoughness = 0.08f;
+#		endif
 	waterFilmCoverage = MaterialSurface::FilmCoverage(wetnessGlossinessSpecular, porosity);
 	waterFilmCoverage *= 1.0f - pixlWeatherSnowMask;
+#		if defined(LOD_LAND_BLEND)
+	// Terrain LOD has no matching micro-normal/material response for a thin
+	// rain film. Fade the film with the authored full-detail/LOD blend to avoid
+	// a moving specular band as the landscape streaming boundary follows camera.
+	waterFilmCoverage *= 1.0f - saturate(lodLandBlendFactor);
+#		endif
 	waterRoughnessSpecular = max(
 		saturate(1.0 - wetnessGlossinessSpecular),
 		max(wetnessMinPuddleRoughness, wetMaterialRoughnessFloor));
@@ -4378,14 +4372,14 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 	if (inWorld || inReflection)
 		dirLightColor *= ShadowSampling::GetWorldShadow(input.WorldPosition.xyz, FrameBuffer::CameraPosAdjust.xyz);
 
-	float dirLightAngle = dot(worldNormal.xyz, DirLightDirection.xyz);
+	float dirLightAngle = dot(worldNormal.xyz, pixlWorldDirLightDirection.xyz);
 
-	float3 refractedDirLightDirection = DirLightDirection;
+	float3 refractedDirLightDirection = pixlWorldDirLightDirection;
 #	if defined(MATERIAL_FORGE) && !defined(LANDSCAPE) && !defined(LODLANDSCAPE)
 	[branch] if ((PBRFlags & PBR::Flags::InterlayerParallax) != 0)
 	{
-		if (dot(DirLightDirection, coatWorldNormal) > 0)
-			refractedDirLightDirection = -refract(-DirLightDirection, coatWorldNormal, eta);
+		if (dot(pixlWorldDirLightDirection, coatWorldNormal) > 0)
+			refractedDirLightDirection = -refract(-pixlWorldDirLightDirection, coatWorldNormal, eta);
 	}
 #	endif
 
@@ -4403,8 +4397,6 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 #	endif
 
 	float dirDetailedShadow = 1.0;
-
-	// PIXL_GR_13BE_WORLDSPACE_DIRECTIONAL_SHADOW_V1 + 13BG_EXACT_UTILITY_DETAIL
 	// The raised GroundResponse receiver did not exist when Skyrim produced the
 	// screen-space shadow mask. Re-evaluate the directional shadow against the
 	// actual displaced world-space receiver instead of sampling shadowColor.x.
@@ -4536,12 +4528,12 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 	DirectContext dirLightContext;
 	DirectLightingOutput dirLightOutput;
 #	if defined(MATERIAL_FORGE)
-	dirLightContext = CreateDirectLightingContext(worldNormal.xyz, coatWorldNormal, vertexNormal.xyz, refractedViewDirection, viewDirection, refractedDirLightDirection, DirLightDirection, dirLightColor, dirDetailedShadow, dirSoftShadow);
+	dirLightContext = CreateDirectLightingContext(worldNormal.xyz, coatWorldNormal, vertexNormal.xyz, refractedViewDirection, viewDirection, refractedDirLightDirection, pixlWorldDirLightDirection, dirLightColor, dirDetailedShadow, dirSoftShadow);
 #	else
-	dirLightContext = CreateDirectLightingContext(worldNormal.xyz, vertexNormal.xyz, viewDirection, DirLightDirection, dirLightColor, dirDetailedShadow, dirSoftShadow);
+	dirLightContext = CreateDirectLightingContext(worldNormal.xyz, vertexNormal.xyz, viewDirection, pixlWorldDirLightDirection, dirLightColor, dirDetailedShadow, dirSoftShadow);
 #		if defined(HAIR) && defined(STRAND_SHADING)
 	if (SharedData::strandShadingSettings.Enabled) {
-		float hairShadow = Hair::HairSelfShadow(input.WorldPosition.xyz, DirLightDirection, screenNoise);
+		float hairShadow = Hair::HairSelfShadow(input.WorldPosition.xyz, pixlWorldDirLightDirection, screenNoise);
 		// Close-up hair receives slightly better strand separation without extra ray samples.
 		const float pixlDialogueHairShadow =
 			0.12f * pixlDialogueFocus * DialogueFocus::HairQuality();
@@ -4591,7 +4583,6 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 #	endif
 	transmissionColor += dirLightOutput.transmission;
 #	if defined(GROUND_RESPONSE) && defined(LANDSCAPE)
-	// PIXL_GR_13BI_SHADOW_AWARE_SNOW_BACKSCATTER_V1
 	// This is deliberately injected into transmission rather than emissive light.
 	// The same corrected 13BE/13BH directional shadow terms used by the raised hull
 	// gate the effect, so actors/objects/terrain can still occlude it correctly.
@@ -4660,24 +4651,24 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 	if (SharedData::foliageDynamicsSettings.EnableEnhancedVegetation != 0) {
 		float treeShadow = min(dirDetailedShadow, dirSoftShadow);
 		transmissionColor += FoliageDynamics::GetTransmissionInput(
-			DirLightDirection.xyz, viewDirection, worldNormal.xyz, dirLightColor, material.BaseColor,
+			pixlWorldDirLightDirection.xyz, viewDirection, worldNormal.xyz, dirLightColor, material.BaseColor,
 			SharedData::foliageDynamicsSettings.TissueDiffusionAmount) * treeShadow;
 		transmissionColor += FoliageDynamics::GetFoliageDiffuseWrap(
-			DirLightDirection.xyz, worldNormal.xyz, dirLightColor, material.BaseColor, treeShadow);
+			pixlWorldDirLightDirection.xyz, worldNormal.xyz, dirLightColor, material.BaseColor, treeShadow);
 	}
 #	endif
 
 #	if !defined(LOD)
 #		if !defined(RADIANT_GRID)
-	uint2 localContactLightIndices = uint2(0xFFFFFFFFu, 0xFFFFFFFFu);
+	uint4 localContactLightIndices = 0xFFFFFFFFu;
 #			if defined(CONTACT_SHADOWS) && defined(DEFERRED)
-	const uint localContactLightCount = clamp(SharedData::materialForgeSettings.LocalContactShadowLightCount, 1u, 2u);
+	const uint localContactLightCount = clamp(SharedData::materialForgeSettings.LocalContactShadowLightCount, 1u, 4u);
 	const bool localContactShadowsActive =
 		SharedData::materialForgeSettings.EnableLocalContactShadows != 0 &&
 		SharedData::materialForgeSettings.LocalContactShadowStrength > 0.0f &&
 		SharedData::materialForgeSettings.LocalContactShadowLength > 4.0f;
 	if (localContactShadowsActive) {
-		float2 bestContactScores = float2(-1.0f, -1.0f);
+		float4 bestContactScores = -1.0f;
 		[unroll] for (uint candidateIndex = 0; candidateIndex < 7; ++candidateIndex) {
 			if (candidateIndex >= numLights)
 				break;
@@ -4686,13 +4677,29 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 			float candidateAttenuation = GetLocalLightAttenuation(candidateDistance, PointLightPosition[candidateIndex].w, 0.0f, 0.0f);
 			float candidateScore = Color::RGBToLuminance(Color::PointLight(PointLightColor[candidateIndex].xyz)) * candidateAttenuation;
 			if (candidateScore > bestContactScores.x) {
+				bestContactScores.w = bestContactScores.z;
+				localContactLightIndices.w = localContactLightIndices.z;
+				bestContactScores.z = bestContactScores.y;
+				localContactLightIndices.z = localContactLightIndices.y;
 				bestContactScores.y = bestContactScores.x;
 				localContactLightIndices.y = localContactLightIndices.x;
 				bestContactScores.x = candidateScore;
 				localContactLightIndices.x = candidateIndex;
 			} else if (candidateScore > bestContactScores.y) {
+				bestContactScores.w = bestContactScores.z;
+				localContactLightIndices.w = localContactLightIndices.z;
+				bestContactScores.z = bestContactScores.y;
+				localContactLightIndices.z = localContactLightIndices.y;
 				bestContactScores.y = candidateScore;
 				localContactLightIndices.y = candidateIndex;
+			} else if (candidateScore > bestContactScores.z) {
+				bestContactScores.w = bestContactScores.z;
+				localContactLightIndices.w = localContactLightIndices.z;
+				bestContactScores.z = candidateScore;
+				localContactLightIndices.z = candidateIndex;
+			} else if (candidateScore > bestContactScores.w) {
+				bestContactScores.w = candidateScore;
+				localContactLightIndices.w = candidateIndex;
 			}
 		}
 	}
@@ -4734,7 +4741,9 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 #			if defined(CONTACT_SHADOWS) && defined(DEFERRED)
 		bool useLocalContactShadow = localContactShadowsActive && (
 			lightIndex == localContactLightIndices.x ||
-			(localContactLightCount > 1u && lightIndex == localContactLightIndices.y));
+			(localContactLightCount > 1u && lightIndex == localContactLightIndices.y) ||
+			(localContactLightCount > 2u && lightIndex == localContactLightIndices.z) ||
+			(localContactLightCount > 3u && lightIndex == localContactLightIndices.w));
 		[branch] if (!pixlGroundRaisedShell &&
 			useLocalContactShadow &&
 			dot(worldNormal.xyz, normalizedLightDirection) > 0.0f)
@@ -4803,25 +4812,26 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 	uint totalLightCount = RadiantGrid::NumStrictLights;
 	uint clusterIndex = 0;
 	uint lightOffset = 0;
-	uint2 clusteredContactCandidates = uint2(0xFFFFFFFFu, 0xFFFFFFFFu);
+	uint4 clusteredContactCandidates = 0xFFFFFFFFu;
 	if (inWorld && RadiantGrid::GetClusterIndex(screenUV, viewPosition.z, clusterIndex)) {
 		RadiantGrid::LightGrid pixelLightGrid = RadiantGrid::lightGrid[clusterIndex];
 		numClusteredLights = pixelLightGrid.lightCount;
 		totalLightCount += numClusteredLights;
 		lightOffset = pixelLightGrid.offset;
-		clusteredContactCandidates = uint2(pixelLightGrid.contactLight0, pixelLightGrid.contactLight1);
+		clusteredContactCandidates = uint4(pixelLightGrid.contactLight0, pixelLightGrid.contactLight1,
+			pixelLightGrid.contactLight2, pixelLightGrid.contactLight3);
 	}
 
-	uint2 localContactLightIndices = uint2(0xFFFFFFFFu, 0xFFFFFFFFu);
+	uint4 localContactLightIndices = 0xFFFFFFFFu;
 #			if defined(CONTACT_SHADOWS) && defined(DEFERRED)
-	const uint localContactLightCount = clamp(SharedData::materialForgeSettings.LocalContactShadowLightCount, 1u, 2u);
+	const uint localContactLightCount = clamp(SharedData::materialForgeSettings.LocalContactShadowLightCount, 1u, 4u);
 	const bool localContactShadowsActive =
 		SharedData::materialForgeSettings.EnableLocalContactShadows != 0 &&
 		SharedData::materialForgeSettings.LocalContactShadowStrength > 0.0f &&
 		SharedData::materialForgeSettings.LocalContactShadowLength > 4.0f;
 	if (localContactShadowsActive) {
-		float2 bestContactScores = float2(-1.0f, -1.0f);
-		uint contactCandidateCount = RadiantGrid::NumStrictLights + 2u;
+		float4 bestContactScores = -1.0f;
+		uint contactCandidateCount = RadiantGrid::NumStrictLights + 4u;
 		[loop] for (uint candidateIndex = 0; candidateIndex < contactCandidateCount; ++candidateIndex) {
 			RadiantGrid::Light candidateLight;
 			uint candidateKey;
@@ -4856,13 +4866,29 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 				candidateLight.color.xyz, (candidateLight.lightFlags & RadiantGrid::LightFlags::Linear) != 0)) *
 				candidateAttenuation * candidateLight.fade;
 			if (candidateScore > bestContactScores.x) {
+				bestContactScores.w = bestContactScores.z;
+				localContactLightIndices.w = localContactLightIndices.z;
+				bestContactScores.z = bestContactScores.y;
+				localContactLightIndices.z = localContactLightIndices.y;
 				bestContactScores.y = bestContactScores.x;
 				localContactLightIndices.y = localContactLightIndices.x;
 				bestContactScores.x = candidateScore;
 				localContactLightIndices.x = candidateKey;
 			} else if (candidateScore > bestContactScores.y) {
+				bestContactScores.w = bestContactScores.z;
+				localContactLightIndices.w = localContactLightIndices.z;
+				bestContactScores.z = bestContactScores.y;
+				localContactLightIndices.z = localContactLightIndices.y;
 				bestContactScores.y = candidateScore;
 				localContactLightIndices.y = candidateKey;
+			} else if (candidateScore > bestContactScores.z) {
+				bestContactScores.w = bestContactScores.z;
+				localContactLightIndices.w = localContactLightIndices.z;
+				bestContactScores.z = candidateScore;
+				localContactLightIndices.z = candidateKey;
+			} else if (candidateScore > bestContactScores.w) {
+				bestContactScores.w = candidateScore;
+				localContactLightIndices.w = candidateKey;
 			}
 		}
 	}
@@ -4936,7 +4962,9 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 #			if defined(CONTACT_SHADOWS) && defined(DEFERRED)
 		bool useLocalContactShadow = localContactShadowsActive && (
 			lightContactKey == localContactLightIndices.x ||
-			(localContactLightCount > 1u && lightContactKey == localContactLightIndices.y));
+			(localContactLightCount > 1u && lightContactKey == localContactLightIndices.y) ||
+			(localContactLightCount > 2u && lightContactKey == localContactLightIndices.z) ||
+			(localContactLightCount > 3u && lightContactKey == localContactLightIndices.w));
 		[branch] if (!pixlGroundRaisedShell &&
 			useLocalContactShadow &&
 			lightAngle > 0.0f)
@@ -5226,7 +5254,9 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 	float3 layerNormal = MultiLayerParallaxData.yyy * (normalColor.xyz * 2.0.xxx + float3(-1, -1, -2)) + float3(0, 0, 1);
 	float layerViewAngle = dot(-tangentViewDirection.xyz, layerNormal.xyz) * 2;
 	float3 layerViewProjection = -layerNormal.xyz * layerViewAngle.xxx - tangentViewDirection.xyz;
-	float2 layerUv = uv * MultiLayerParallaxData.zw + (0.0009765625 * (layerValue / abs(layerViewProjection.z))).xx * layerViewProjection.xy;
+	float layerProjectionDenominator = max(abs(layerViewProjection.z), 0.05f);
+	float2 layerUv = uv * MultiLayerParallaxData.zw +
+		(0.0009765625f * (layerValue / layerProjectionDenominator)).xx * layerViewProjection.xy;
 
 	float3 layerColor = TexLayerSampler.Sample(SampLayerSampler, layerUv).xyz;
 
@@ -5329,13 +5359,11 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 	lodLandDiffuseColor += directionalAmbientColor;
 #	endif
 
-#	if defined(PIXL_PARALLAX_DEPTH)
-	float4 pixlMotionWorldPosition = input.WorldPosition;
-	pixlMotionWorldPosition.xyz = pixlParallaxWorldPosition;
-	float2 screenMotionVector = MotionBlur::GetSSMotionVector(pixlMotionWorldPosition, input.PreviousWorldPosition);
-#	else
-	float2 screenMotionVector = MotionBlur::GetSSMotionVector(input.WorldPosition, input.PreviousWorldPosition);
-#	endif
+	// Previous-frame virtual UV displacement is unavailable. Keep velocity on the
+	// matched geometric positions rather than pairing a virtual current point
+	// with an undisplaced previous point and manufacturing temporal motion.
+	float2 screenMotionVector = MotionBlur::GetSSMotionVector(
+		input.WorldPosition, input.PreviousWorldPosition);
 
 	float4 color = 0;
 
@@ -5701,7 +5729,7 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 #if defined(PIXL_LIQUID_ACTIVE)
     if (inWorld && !inReflection && !SharedData::InMapMenu)
         ContainedLiquids::Composite(input.WorldPosition.xyz, input.Position.xy,
-            directionalAmbientColor, dirLightColor * min(dirSoftShadow, dirDetailedShadow), DirLightDirection.xyz,
+            directionalAmbientColor, dirLightColor * min(dirSoftShadow, dirDetailedShadow), pixlWorldDirLightDirection.xyz,
             psout.Diffuse.xyz, psout.Diffuse.w);
 #endif
 	psout.MotionVectors.xy = screenMotionVector.xy;
@@ -5947,32 +5975,6 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 	}
 #	endif
 
-// PIXL_GR_13BA_REAL_LIGHTING_RAW_ALBEDO_DIAGNOSTIC_V1
-//
-// 13AZ proved raw landscape sampling/blending is valid.
-//
-// Preserve the REAL PIXL/Skyrim lit Diffuse output and every normal/specular/
-// roughness/reflectance output. Override ONLY the deferred albedo with the
-// known-good raw landscape colour.
-//
-// This isolates:
-//   - direct lighting / normals / shadows -> psout.Diffuse remains untouched
-//   - broken indirect material albedo     -> replaced with known-good texture
-//
-// 13AW raster depth remains authoritative.
-#if defined(DEFERRED) && defined(GROUND_RESPONSE) && defined(LANDSCAPE)
-    [branch] if (GroundResponseRuntime::IsGeometryPass())
-    {
-        // DO NOT modify psout.Diffuse here.
-        // It already contains the real calculated Lighting result.
-
-        psout.Albedo =
-            float4(
-                saturate(rawBaseColor.rgb),
-                1.0f);
-    }
-#endif
-
 #	if defined(PIXL_VIRTUAL_DEPTH_OUTPUT)
 	psout.Depth = pixlVirtualDepth;
 #	endif
@@ -5987,9 +5989,6 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 #	endif
 #	if defined(PIXL_PARALLAX_DEPTH)
 #		undef PIXL_PARALLAX_DEPTH
-#	endif
-#	if defined(PIXL_GROUND_DEFORMATION_DEPTH)
-#		undef PIXL_GROUND_DEFORMATION_DEPTH
 #	endif
 #	if defined(PIXL_VIRTUAL_DEPTH_OUTPUT)
 #		undef PIXL_VIRTUAL_DEPTH_OUTPUT

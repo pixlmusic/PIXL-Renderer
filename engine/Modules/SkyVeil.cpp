@@ -108,6 +108,11 @@ SkyVeil::Settings SkyVeil::GetCommonBufferData()
 	const bool useVolumetricClouds = volumetricClouds.loaded && volumetricClouds.settings.Enabled;
 	data.pad[0] = useVolumetricClouds ?
 		1.0f - std::clamp(volumetricClouds.settings.VanillaCloudVisibility, 0.0f, 1.0f) : 0.0f;
+	// Volumetric clouds already contribute their own world-space shadow estimate.
+	// Scale the legacy cloud-cubemap shadow with the retained vanilla cloud layer
+	// so both systems can coexist without stacking a broad second sun mask.
+	if (useVolumetricClouds)
+		data.Opacity *= std::clamp(volumetricClouds.settings.VanillaCloudVisibility, 0.0f, 1.0f);
 
 	return data;
 }

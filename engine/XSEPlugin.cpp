@@ -223,7 +223,12 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 				FrameAnnotations::OnDataLoaded();
 
 				auto shaderCache = globals::shaderCache;
-				shaderCache->menuLoaded = true;
+				shaderCache->menuLoaded.store(true, std::memory_order_release);
+				// Keep the startup curtain until the queued PIXL permutations finish.
+				// Switching to background mode here caused the curtain to disappear at
+				// DataLoaded while the same work continued into gameplay, where pending
+				// draws fell back to Skyrim shaders. ENTER SKYRIM remains the explicit
+				// user-controlled way to opt into background compilation.
 				FinalizeRendererDataLoadedAfterCompilation();
 			}
 

@@ -6482,8 +6482,6 @@ void GroundResponse::DataLoaded()
 
 void GroundResponse::PostPostLoad()
 {
-	logger::debug("[GroundResponse] v3.0.13P authoritative-raised-depth build ACTIVE");
-	logger::debug("PIXL GroundResponse 13BH reliable-projectiles + live-elemental-magic build ACTIVE");
 	Hooks::Install();
 }
 
@@ -7277,11 +7275,6 @@ ID3D11RasterizerState* GroundResponse::GetTerrainNoCullRasterizer(const D3D11_RA
 	noCullDesc.FrontCounterClockwise =
 		a_sourceDesc.FrontCounterClockwise == FALSE ? TRUE : FALSE;
 
-	logger::info(
-		"PIXL GroundResponse v3.0.13AP frontface-classification ACTIVE sourceFrontCCW={} shellFrontCCW={}",
-		a_sourceDesc.FrontCounterClockwise != FALSE,
-		noCullDesc.FrontCounterClockwise != FALSE);
-
 	// The raised snow/mud shell is rendered against Skyrim/TerrainSeam's
 	// already-populated vanilla terrain depth. At long range or grazing camera
 	// angles, a physically small vertical raise (especially the 1.5-8u mud
@@ -7376,19 +7369,12 @@ static ID3D11DepthStencilState* GroundShellGetAuthoritativeDepthState(
 
 	if (FAILED(hr) || !shellState) {
 		logger::warn(
-			"[GroundResponse] 13P failed to create authoritative shell depth state (HRESULT 0x{:08X})",
+			"[GroundResponse] Failed to create the terrain shell depth state (HRESULT 0x{:08X})",
 			static_cast<std::uint32_t>(hr));
 		return nullptr;
 	}
 
 	g_groundShellDepthStates.push_back({ sourceDesc, shellState });
-
-	logger::info(
-		"[GroundResponse] 13P shell depth state created: srcEnable={} srcWrite={} srcFunc={} stencil={}",
-		sourceDesc.DepthEnable ? 1 : 0,
-		static_cast<std::uint32_t>(sourceDesc.DepthWriteMask),
-		static_cast<std::uint32_t>(sourceDesc.DepthFunc),
-		sourceDesc.StencilEnable ? 1 : 0);
 
 	return shellState;
 }
@@ -8031,45 +8017,7 @@ void GroundResponse::TerrainPassShaderHacks()
 		g_groundResponseMainDepthRebound = true;
 	}
 
-	static bool gr13AVLogged = false;
-	if (!gr13AVLogged) {
-		logger::info(
-			"PIXL GroundResponse v3.0.13AV authoritative-main-depth ACTIVE currentDSV={} mainDSV={} same={} rebound={}",
-			static_cast<const void*>(g_savedGroundResponseDSV),
-			static_cast<const void*>(grMainDSV),
-			g_savedGroundResponseDSV == grMainDSV,
-			g_groundResponseMainDepthRebound);
-		gr13AVLogged = true;
-	}
-	// PIXL_GR_13AW_TERRAIN_PS_DESCRIPTOR_CAPTURE_V1
-	//
-	// Capture the exact *modified* Lighting PS descriptor used by the shader cache
-	// for a real GroundResponse HS/DS shell draw. Hooks.cpp requests cached/custom
-	// pixels with state->modifiedPixelDescriptor, not currentPixelDescriptor.
-	// Keep only a tiny unique set so normal gameplay logging stays effectively free.
-	if (state) {
-		const std::uint32_t gr13AWDescriptor = state->modifiedPixelDescriptor;
-		static std::array<std::uint32_t, 32> gr13AWSeenDescriptors{};
-		static std::uint32_t gr13AWSeenCount = 0u;
-
-		bool gr13AWSeen = false;
-		for (std::uint32_t i = 0u; i < gr13AWSeenCount; ++i) {
-			if (gr13AWSeenDescriptors[i] == gr13AWDescriptor) {
-				gr13AWSeen = true;
-				break;
-			}
-		}
-
-		if (!gr13AWSeen && gr13AWSeenCount < gr13AWSeenDescriptors.size()) {
-			gr13AWSeenDescriptors[gr13AWSeenCount++] = gr13AWDescriptor;
-			logger::info(
-				"PIXL GroundResponse v3.0.13AW terrain-ps-descriptor modified=0x{:08X} original=0x{:08X} shader={}",
-				gr13AWDescriptor,
-				state->currentPixelDescriptor,
-				state->currentShader ? state->currentShader->fxpFilename : "<null>");
-		}
-	}
-context->RSSetState(noCullRasterizer);
+	context->RSSetState(noCullRasterizer);
 	context->HSSetShader(hs, nullptr, 0);
 	context->DSSetShader(ds, nullptr, 0);
 	context->IASetPrimitiveTopology(

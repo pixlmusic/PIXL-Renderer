@@ -143,7 +143,7 @@ void Atmosphere::LoadSettings(json& o_json)
 	// Froxel scattering depends on view direction as well as world position.
 	// A near-unity history weight leaves old sky-facing scattering visible during
 	// camera rotation, so cap persistence while retaining lower user values.
-	settings.volumetricHistoryWeight = std::clamp(finiteOr(settings.volumetricHistoryWeight, 0.82f), 0.0f, 0.88f);
+	settings.volumetricHistoryWeight = std::clamp(finiteOr(settings.volumetricHistoryWeight, 0.65f), 0.0f, 0.88f);
 	settings.volumetricHistoryMissSampleCount = std::clamp(settings.volumetricHistoryMissSampleCount, 1u, 16u);
 	settings.volumetricSampleJitterMultiplier = std::clamp(finiteOr(settings.volumetricSampleJitterMultiplier, 0.0f), 0.0f, 1.0f);
 	settings.volumetricUpsampleJitterMultiplier = std::clamp(finiteOr(settings.volumetricUpsampleJitterMultiplier, 0.0f), 0.0f, 1.0f);
@@ -302,12 +302,14 @@ Atmosphere::Settings Atmosphere::ResolveRuntimeSettings() const
 	// produces a visible old-weather veil and occasional colour pumping.  A bounded
 	// reduction in the middle of the engine's blend window lets the new scattering
 	// settle without throwing history away on ordinary frames.
+	// Keep miss-sample work within its authored budget: the old forced six-sample
+	// transition override amplified cost precisely when history was already reduced.
 	const float weatherTransitionWindow = 4.0f * weatherPct * (1.0f - weatherPct);
 	resolved.volumetricHistoryWeight *=
 		std::lerp(1.0f, 0.72f, weatherTransitionWindow * strength);
 	resolved.volumetricHistoryMissSampleCount = std::clamp(
 		static_cast<uint>(std::lround(std::lerp(
-			static_cast<float>(settings.volumetricHistoryMissSampleCount), 6.0f,
+			static_cast<float>(settings.volumetricHistoryMissSampleCount), 4.0f,
 			weatherTransitionWindow * strength))), 1u, 16u);
 	resolved.directionalInscatteringAnisotropy = std::lerp(
 		settings.directionalInscatteringAnisotropy, targetMie, mieBlend);

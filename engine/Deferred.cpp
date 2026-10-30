@@ -27,6 +27,11 @@
 
 #include "Hooks.h"
 
+#include <array>
+#include <cmath>
+#include <memory>
+#include <iterator>
+
 struct DepthStates
 {
 	ID3D11DepthStencilState* a[6][40];
@@ -43,65 +48,49 @@ struct BlendStates
 	}
 };
 
+// Rebuild off to the side. The original target is not released until all views
+// have been created, so a D3D allocation error cannot leave a half-valid GBuffer.
 void SetupRenderTarget(RE::RENDER_TARGET target, D3D11_TEXTURE2D_DESC texDesc, D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc, D3D11_RENDER_TARGET_VIEW_DESC rtvDesc, D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc, DXGI_FORMAT format, uint bindFlags)
 {
 	auto renderer = globals::game::renderer;
 	auto device = globals::d3d::device;
-
 	texDesc.BindFlags = bindFlags;
 	texDesc.Format = format;
 	srvDesc.Format = format;
 	rtvDesc.Format = format;
 	uavDesc.Format = format;
 
+	winrt::com_ptr<ID3D11Texture2D> newTexture;
+	winrt::com_ptr<ID3D11ShaderResourceView> newSRV;
+	winrt::com_ptr<ID3D11RenderTargetView> newRTV;
+	winrt::com_ptr<ID3D11UnorderedAccessView> newUAV;
+	DX::ThrowIfFailed(device->CreateTexture2D(&texDesc, nullptr, newTexture.put()));
+	if (bindFlags & D3D11_BIND_SHADER_RESOURCE)
+		DX::ThrowIfFailed(device->CreateShaderResourceView(newTexture.get(), &srvDesc, newSRV.put()));
+	if (bindFlags & D3D11_BIND_RENDER_TARGET)
+		DX::ThrowIfFailed(device->CreateRenderTargetView(newTexture.get(), &rtvDesc, newRTV.put()));
+	if (bindFlags & D3D11_BIND_UNORDERED_ACCESS)
+		DX::ThrowIfFailed(device->CreateUnorderedAccessView(newTexture.get(), &uavDesc, newUAV.put()));
+
 	auto& data = renderer->GetRuntimeData().renderTargets[target];
-
-	if (data.UAV) {
-		data.UAV->Release();
-		data.UAV = nullptr;
-	}
-	if (data.RTV) {
-		data.RTV->Release();
-		data.RTV = nullptr;
-	}
-	if (data.SRVCopy) {
-		data.SRVCopy->Release();
-		data.SRVCopy = nullptr;
-	}
-	if (data.SRV) {
-		data.SRV->Release();
-		data.SRV = nullptr;
-	}
-	if (data.textureCopy) {
-		data.textureCopy->Release();
-		data.textureCopy = nullptr;
-	}
-	if (data.texture) {
-		data.texture->Release();
-		data.texture = nullptr;
-	}
-
-	ID3D11Texture2D* createdTexture = nullptr;
-	DX::ThrowIfFailed(device->CreateTexture2D(&texDesc, nullptr, &createdTexture));
-	data.texture = REX::W32::AsW32(createdTexture);
-
-	if (texDesc.BindFlags & D3D11_BIND_SHADER_RESOURCE) {
-		ID3D11ShaderResourceView* createdView = nullptr;
-		DX::ThrowIfFailed(device->CreateShaderResourceView(REX::W32::AsReal(data.texture), &srvDesc, &createdView));
-		data.SRV = REX::W32::AsW32(createdView);
-	}
-
-	if (texDesc.BindFlags & D3D11_BIND_RENDER_TARGET) {
-		ID3D11RenderTargetView* createdView = nullptr;
-		DX::ThrowIfFailed(device->CreateRenderTargetView(REX::W32::AsReal(data.texture), &rtvDesc, &createdView));
-		data.RTV = REX::W32::AsW32(createdView);
-	}
-
-	if (texDesc.BindFlags & D3D11_BIND_UNORDERED_ACCESS) {
-		ID3D11UnorderedAccessView* createdView = nullptr;
-		DX::ThrowIfFailed(device->CreateUnorderedAccessView(REX::W32::AsReal(data.texture), &uavDesc, &createdView));
-		data.UAV = REX::W32::AsW32(createdView);
-	}
+	// The engine stores these pointers using its wrapper type. Retain the native
+	// COM reference and transfer ownership exactly once, as the original did.
+	auto release = [](auto& pointer) {
+		if (pointer) {
+			pointer->Release();
+			pointer = nullptr;
+		}
+	};
+	release(data.UAV);
+	release(data.RTV);
+	release(data.SRVCopy);
+	release(data.SRV);
+	release(data.textureCopy);
+	release(data.texture);
+	data.texture = REX::W32::AsW32(newTexture.detach());
+	if (newSRV) data.SRV = REX::W32::AsW32(newSRV.detach());
+	if (newRTV) data.RTV = REX::W32::AsW32(newRTV.detach());
+	if (newUAV) data.UAV = REX::W32::AsW32(newUAV.detach());
 }
 
 void Deferred::SetupResources()
@@ -117,10 +106,17 @@ void Deferred::SetupResources()
 		D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
 		D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
 
+		if (!main.texture) {
+			logger::error("[Deferred] Main render target is unavailable during SetupResources");
+			return;
+		}
 		main.texture->GetDesc(REX::W32::AsW32(&texDesc));
-		main.SRV->GetDesc(REX::W32::AsW32(&srvDesc));
-		main.RTV->GetDesc(REX::W32::AsW32(&rtvDesc));
-		main.UAV->GetDesc(REX::W32::AsW32(&uavDesc));
+		if (main.SRV) main.SRV->GetDesc(REX::W32::AsW32(&srvDesc));
+		else { srvDesc.Format = texDesc.Format; srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; srvDesc.Texture2D.MipLevels = texDesc.MipLevels; }
+		if (main.RTV) main.RTV->GetDesc(REX::W32::AsW32(&rtvDesc));
+		else { rtvDesc.Format = texDesc.Format; rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D; }
+		if (main.UAV) main.UAV->GetDesc(REX::W32::AsW32(&uavDesc));
+		else { uavDesc.Format = texDesc.Format; uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D; }
 
 		// Available targets:
 		// MAIN ONLY ALPHA
@@ -175,12 +171,18 @@ void Deferred::SetupResources()
 		samplerDesc.MaxAnisotropy = 1;
 		samplerDesc.MinLOD = 0;
 		samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
-		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, &linearSampler));
-		Util::SetResourceName(linearSampler, "Deferred::LinearSampler");
+		winrt::com_ptr<ID3D11SamplerState> newLinearSampler;
+		winrt::com_ptr<ID3D11SamplerState> newPointSampler;
+		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, newLinearSampler.put()));
+		Util::SetResourceName(newLinearSampler.get(), "Deferred::LinearSampler");
 
 		samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
-		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, &pointSampler));
-		Util::SetResourceName(pointSampler, "Deferred::PointSampler");
+		DX::ThrowIfFailed(device->CreateSamplerState(&samplerDesc, newPointSampler.put()));
+		Util::SetResourceName(newPointSampler.get(), "Deferred::PointSampler");
+		if (linearSampler) linearSampler->Release();
+		if (pointSampler) pointSampler->Release();
+		linearSampler = newLinearSampler.detach();
+		pointSampler = newPointSampler.detach();
 	}
 
 	// Directional shadow structured buffer (t98): CPU-written each frame, read-only on GPU.
@@ -200,9 +202,10 @@ void Deferred::SetupResources()
 		srvDesc.Buffer.FirstElement = 0;
 		srvDesc.Buffer.NumElements = 1;
 
+		auto newShadowBuffer = std::make_unique<Buffer>(sbDesc, nullptr, "Deferred::DirectionalShadowLights");
+		newShadowBuffer->CreateSRV(srvDesc);
 		delete directionalShadowLights;
-		directionalShadowLights = new Buffer(sbDesc, nullptr, "Deferred::DirectionalShadowLights");
-		directionalShadowLights->CreateSRV(srvDesc);
+		directionalShadowLights = newShadowBuffer.release();
 	}
 }
 
@@ -280,9 +283,14 @@ void Deferred::PrepassPasses()
 
 void Deferred::StartDeferred()
 {
-	if (!globals::state->inWorld)
+	if (!globals::state->inWorld || deferredPass)
 		return;
 	globals::state->UpdateSharedData(true, false);
+	// Freeze Image Reconstruction camera history while the main gameplay view is
+	// active. Later reflection, UI, and post-display camera updates may overwrite
+	// Skyrim's cached per-frame camera buffer before post-processing evaluates DLSS.
+	if (globals::pipeline::imageReconstruction.loaded)
+		globals::pipeline::imageReconstruction.CaptureCameraFrame();
 
 	auto shadowState = globals::game::shadowState;
 	auto& renderTargets = shadowState->GetRuntimeData().renderTargets;
@@ -387,12 +395,12 @@ void Deferred::DeferredPasses()
 	if (worldProbes.loaded)
 		worldProbes.UpdateCubemap();
 
-		auto& ambientProbe = globals::pipeline::ambientProbe;
-		auto* environmentProbeSRV = ambientProbe.loaded && ambientProbe.envIBLTexture && ambientProbe.envIBLTexture->srv ?
-		                              ambientProbe.envIBLTexture->srv.get() : nullptr;
-		auto* skyProbeSRV = ambientProbe.loaded && ambientProbe.skyIBLTexture && ambientProbe.skyIBLTexture->srv ?
-		                      ambientProbe.skyIBLTexture->srv.get() : nullptr;
-		// Deferred Composite
+	auto& ambientProbe = globals::pipeline::ambientProbe;
+	auto* environmentProbeSRV = ambientProbe.loaded && ambientProbe.envIBLTexture && ambientProbe.envIBLTexture->srv ?
+		ambientProbe.envIBLTexture->srv.get() : nullptr;
+	auto* skyProbeSRV = ambientProbe.loaded && ambientProbe.skyIBLTexture && ambientProbe.skyIBLTexture->srv ?
+		ambientProbe.skyIBLTexture->srv.get() : nullptr;
+	// Deferred Composite
 	{
 		TracyD3D11Zone(globals::state->tracyCtx, "Deferred Composite");
 
@@ -403,16 +411,16 @@ void Deferred::DeferredPasses()
 			REX::W32::AsReal(masks.SRV),                                                                    // t3  MasksTexture
 			globals::pipeline::materialLayers.GetEffectsDepth(Util::GetCurrentSceneDepthSRV(false)), // t4 effects depth, raster fallback
 			worldProbes.loaded ? REX::W32::AsReal(reflectance.SRV) : nullptr,                            // t5  ReflectanceTexture
-			worldProbes.loaded ? REX::W32::AsReal(worldProbes.envTexture->srv.get()) : nullptr,          // t6  EnvTexture
-			worldProbes.loaded ? REX::W32::AsReal(worldProbes.envReflectionsTexture->srv.get()) : nullptr, // t7 EnvReflectionsTexture
-			worldProbes.loaded && skyBounce.loaded ? REX::W32::AsReal(skyBounce.texProbeArray->srv.get()) : nullptr, // t8 SkyBounceProbeArray
+			worldProbes.loaded && worldProbes.envTexture ? worldProbes.envTexture->srv.get() : nullptr,          // t6  EnvTexture
+			worldProbes.loaded && worldProbes.envReflectionsTexture ? worldProbes.envReflectionsTexture->srv.get() : nullptr, // t7 EnvReflectionsTexture
+			worldProbes.loaded && skyBounce.loaded && skyBounce.texProbeArray ? skyBounce.texProbeArray->srv.get() : nullptr, // t8 SkyBounceProbeArray
 			REX::W32::AsReal(masks2.SRV),                                                                 // t9  Masks2Texture (vertexAO in .x)
 			ssgi_ao,                                                                                        // t10 SsgiAoTexture
 			ssgi_y,                                                                                         // t11 SsgiYTexture (diffuse GI is independent of HQ specular GI)
 			ssgi_cocg,                                                                                      // t12 SsgiCoCgTexture
 			ssgi_hq_spec ? ssgi_gi_spec : nullptr,                                                          // t13 SsgiSpecularTexture
-				environmentProbeSRV,                                                                            // t14 EnvironmentProbeTexture
-				skyProbeSRV,                                                                                    // t15 SkyProbeTexture
+			environmentProbeSRV,                                                                            // t14 EnvironmentProbeTexture
+			skyProbeSRV,                                                                                    // t15 SkyProbeTexture
 			ssgi.GetInputRadianceSRV(),                                                                      // t16 PIXL lighting input diagnostic
 			ssgi_bent_visibility,                                                                             // t17 PIXL bent normal + directional visibility
 		};
@@ -429,8 +437,7 @@ void Deferred::DeferredPasses()
 
 		auto shader = interior ? GetComputeMainCompositeInterior() : GetComputeMainComposite();
 		context->CSSetShader(shader, nullptr, 0);
-
-		{
+		if (shader && dispatchCount.x > 0 && dispatchCount.y > 0) {
 			TracyD3D11Zone(globals::state->tracyCtx, "Deferred Composite - Dispatch");
 			globals::profiler->BeginPass("DeferredComposite");
 			context->Dispatch(dispatchCount.x, dispatchCount.y, 1);
@@ -485,12 +492,9 @@ void Deferred::DeferredPasses()
 
 void Deferred::EndDeferred()
 {
-	if (!globals::state->inWorld)
-		return;
-
-	auto shaderCache = globals::shaderCache;
-
-	if (!shaderCache->IsEnabled())
+	// A module/cache toggle between StartDeferred and EndDeferred must never
+	// strand overridden MRTs or engine blend states.
+	if (!deferredPass)
 		return;
 
 	auto shadowState = globals::game::shadowState;
@@ -509,7 +513,8 @@ void Deferred::EndDeferred()
 	auto context = globals::d3d::context;
 	context->OMSetRenderTargets(0, nullptr, nullptr);  // Unbind all bound render targets
 
-	DeferredPasses();  // Perform deferred passes and composite forward buffers
+	if (globals::shaderCache && globals::shaderCache->IsEnabled())
+		DeferredPasses();  // Preserve restoration even if cache was disabled mid-frame.
 
 	stateUpdateFlags.set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);  // Run OMSetRenderTargets again
 
@@ -609,12 +614,16 @@ void Deferred::ResetBlendStates()
 template <typename T>
 void Deferred::SetShadowCascadeParameters(T& lightData, DirectionalShadowLightData& dd)
 {
-	const auto count = std::min(lightData.shadowmapDescriptors.size(), static_cast<uint32_t>(std::size(dd.ShadowProj)));
+	const auto count = (std::min)(static_cast<std::size_t>(lightData.shadowmapDescriptors.size()), std::size(dd.ShadowProj));
 	for (uint32_t i = 0; i < count; i++) {
 		auto proj = DirectX::XMLoadFloat4x4(reinterpret_cast<const DirectX::XMFLOAT4X4*>(&lightData.shadowmapDescriptors[i].lightTransform));
 		DirectX::XMStoreFloat4x4(&dd.ShadowProj[i], proj);
 
-		DirectX::XMMATRIX invProj = DirectX::XMMatrixInverse(nullptr, proj);
+		const auto determinant = DirectX::XMMatrixDeterminant(proj);
+		const float det = DirectX::XMVectorGetX(determinant);
+		const auto invProj = std::isfinite(det) && std::abs(det) > 1.0e-12f
+			? DirectX::XMMatrixInverse(nullptr, proj)
+			: DirectX::XMMatrixIdentity();
 		DirectX::XMStoreFloat4x4(&dd.InvShadowProj[i], invProj);
 	}
 }
@@ -624,16 +633,18 @@ void Deferred::CopyShadowLightData()
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "CopyShadowLightData");
 
-	auto* shadowSceneNode = globals::game::smState->shadowSceneNode[0];
-	if (!shadowSceneNode)
+	auto context = globals::d3d::context;
+	if (!context)
 		return;
-
-	auto* sunShadowLight = shadowSceneNode->GetRuntimeData().sunShadowDirLight;
-	if (!sunShadowLight)
+	auto* shadowSceneNode = globals::game::smState ? globals::game::smState->shadowSceneNode[0] : nullptr;
+	auto* sunShadowLight = shadowSceneNode ? shadowSceneNode->GetRuntimeData().sunShadowDirLight : nullptr;
+	if (!sunShadowLight || !directionalShadowLights || !directionalShadowLights->resource || !directionalShadowLights->srv) {
+		ID3D11ShaderResourceView* empty = nullptr;
+		context->PSSetShaderResources(98, 1, &empty);
 		return;
+	}
 
 	DirectionalShadowLightData dd{};
-	auto context = globals::d3d::context;
 
 	auto& dirData = sunShadowLight->GetShadowDirectionalLightRuntimeData();
 	dd.EndSplitDistances = { dirData.endSplitDistances[0], dirData.endSplitDistances[1] };
@@ -724,15 +735,56 @@ void Deferred::Hooks::Main_RenderShadowMaps::thunk()
 	globals::deferred->EarlyPrepasses();
 };
 
+void Deferred::Hooks::Main_RenderPlayerView::thunk(void* a1, bool a2, bool a3)
+{
+	auto* state = globals::state;
+	if (state && state->frameAnnotations)
+		state->BeginPerfEvent("Player View");
+
+	if (state && globals::pipeline::imageReconstruction.loaded && globals::game::graphicsState) {
+		static std::uint32_t lastConfiguredFrame = std::numeric_limits<std::uint32_t>::max();
+		if (lastConfiguredFrame != state->frameCount) {
+			lastConfiguredFrame = state->frameCount;
+			auto& reconstruction = globals::pipeline::imageReconstruction;
+			reconstruction.ConfigureTAA();
+			reconstruction.ConfigureUpscaling(globals::game::graphicsState);
+			static bool firstConfigurationLogged = false;
+			if (!firstConfigurationLogged) {
+				firstConfigurationLogged = true;
+				logger::info("[ImageReconstruction] 1.7.104 player-view setup: method={}, output={}x{}, render scale={:.3f}x{:.3f}.",
+					static_cast<unsigned>(reconstruction.GetUpscaleMethod()),
+					globals::game::graphicsState->screenWidth, globals::game::graphicsState->screenHeight,
+					reconstruction.resolutionScale.x, reconstruction.resolutionScale.y);
+			}
+		}
+	}
+
+	func(a1, a2, a3);
+	if (state && state->frameAnnotations)
+		state->EndPerfEvent();
+}
+
 void Deferred::Hooks::Main_RenderWorld::thunk(bool a1)
 {
 	auto* const state = globals::state;
+	const bool runtime117104 = REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104;
+	const bool frameAnnotations = state->frameAnnotations;
+	if (frameAnnotations)
+		state->BeginPerfEvent("World");
+
 	state->permutationData.ExtraShaderDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::InWorld);
 	state->inWorld = true;
+	// The verified RenderPlayerView call site is unavailable on 1.7.104.
+	if (runtime117104) {
+		globals::deferred->EarlyPrepasses();
+	}
+
 	func(a1);
 
 	state->inWorld = false;
 	state->permutationData.ExtraShaderDescriptor &= ~static_cast<uint32_t>(State::ExtraShaderDescriptors::InWorld);
+	if (frameAnnotations)
+		state->EndPerfEvent();
 };
 
 void Deferred::Hooks::Main_RenderWorld_Start::thunk(RE::BSBatchRenderer* This, uint32_t StartRange, uint32_t EndRanges, uint32_t RenderFlags, int GeometryGroup)
@@ -786,6 +838,17 @@ static void SyncGroundResponseFinalDepthToTerrainSeam()
 		return;
 	}
 
+	// Preserve compute-stage ownership as well as OM targets: this conversion
+	// runs between engine draw calls and cannot assume CS slots 0..1 are empty.
+	winrt::com_ptr<ID3D11ComputeShader> previousComputeShader;
+	std::array<ID3D11ClassInstance*, 256> previousComputeClasses{};
+	UINT previousComputeClassCount = static_cast<UINT>(previousComputeClasses.size());
+	context->CSGetShader(previousComputeShader.put(), previousComputeClasses.data(), &previousComputeClassCount);
+	ID3D11ShaderResourceView* previousComputeViews[2]{};
+	ID3D11UnorderedAccessView* previousComputeUAVs[2]{};
+	context->CSGetShaderResources(0, 2, previousComputeViews);
+	context->CSGetUnorderedAccessViews(0, 2, previousComputeUAVs);
+
 	// The main depth texture is currently the active DSV. D3D11 cannot expose the
 	// same subresource for depth output and shader input simultaneously, so retain
 	// the exact MRT/DSV set, unbind it for the tiny compute resolve, then restore it.
@@ -818,13 +881,11 @@ static void SyncGroundResponseFinalDepthToTerrainSeam()
 	context->CSSetUnorderedAccessViews(0, 2, depthUAVs, nullptr);
 
 	auto* depthBlendCS = terrainSeam.GetDepthBlendShader();
-	bool resolved = false;
 	if (depthBlendCS) {
 		context->CSSetShader(depthBlendCS, nullptr, 0);
 
 		const auto dispatchCount = Util::GetScreenDispatchCount();
 		context->Dispatch(dispatchCount.x, dispatchCount.y, 1);
-		resolved = true;
 	}
 
 	ID3D11ShaderResourceView* nullDepthViews[2] = { nullptr, nullptr };
@@ -838,6 +899,21 @@ static void SyncGroundResponseFinalDepthToTerrainSeam()
 		D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT,
 		savedRTVs,
 		savedDSV);
+
+	context->CSSetShaderResources(0, 2, previousComputeViews);
+	context->CSSetUnorderedAccessViews(0, 2, previousComputeUAVs, nullptr);
+	context->CSSetShader(previousComputeShader.get(),
+		previousComputeClassCount ? previousComputeClasses.data() : nullptr,
+		previousComputeClassCount);
+	for (auto*& view : previousComputeViews) {
+		if (view) view->Release();
+	}
+	for (auto*& uav : previousComputeUAVs) {
+		if (uav) uav->Release();
+	}
+	for (UINT i = 0; i < (std::min)(previousComputeClassCount, static_cast<UINT>(previousComputeClasses.size())); ++i) {
+		if (previousComputeClasses[i]) previousComputeClasses[i]->Release();
+	}
 
 	for (auto*& rtv : savedRTVs) {
 		if (rtv) {
@@ -855,14 +931,6 @@ static void SyncGroundResponseFinalDepthToTerrainSeam()
 		Util::GetCurrentSceneDepthSRV(true);
 	context->PSSetShaderResources(17, 1, &finalDepth16);
 
-	if (resolved) {
-		static bool logged = false;
-		if (!logged) {
-			logger::info(
-				"[GroundResponse] v3.0.13N final displaced-depth sync ACTIVE");
-			logged = true;
-		}
-	}
 }
 void Deferred::Hooks::Main_RenderWorld_BlendedDecals::thunk(RE::BSShaderAccumulator* This, uint32_t RenderFlags)
 {
@@ -904,10 +972,15 @@ void Deferred::Hooks::BSCubeMapCamera_RenderCubemap::thunk(RE::NiAVObject* camer
 	auto deferred = globals::deferred;
 	auto state = globals::state;
 
+	const bool previousActiveReflections = state->activeReflections;
+	const uint32_t reflectionFlag = static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections);
+	const bool previousReflectionFlag = (state->permutationData.ExtraShaderDescriptor & reflectionFlag) != 0;
 	deferred->ReflectionsPrepasses();
-	state->permutationData.ExtraShaderDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections);
+	state->permutationData.ExtraShaderDescriptor |= reflectionFlag;
 	func(camera, a2, a3, a4, a5);
-	state->permutationData.ExtraShaderDescriptor &= ~static_cast<uint32_t>(State::ExtraShaderDescriptors::IsReflections);
+	state->activeReflections = previousActiveReflections;
+	if (!previousReflectionFlag)
+		state->permutationData.ExtraShaderDescriptor &= ~reflectionFlag;
 }
 
 void Deferred::Hooks::Main_RenderFirstPersonView::thunk(bool a1, bool a2)

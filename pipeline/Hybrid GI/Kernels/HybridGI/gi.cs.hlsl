@@ -516,7 +516,6 @@ void CalculateGI(
 	float4 radianceY = 0;
 	float2 radianceCoCg = 0;
 	float3 radianceSpecular = 0;
-	float giCoverage = 0;
 	float3 bentDirectionAccum = 0.0f;
 	float bentWeightAccum = 0.0f;
 	float contactDepthAccum = 0.0f;
@@ -780,9 +779,6 @@ void CalculateGI(
 #if defined(GI) && defined(GI_SPECULAR) && !defined(HYBRID_REFLECTIONS)
 		visibilitySpecular += countbits(bitmaskGISpecular) * 0.03125;
 #endif
-#ifdef GI
-		giCoverage += countbits(bitmaskGI) * 0.03125;
-#endif
 	}
 
 	float depthFade = GetDepthFade(viewspaceZ);
@@ -859,14 +855,15 @@ void CalculateGI(
 	float cacheDirectionalOcclusion = 0.0;
 	float3 cacheReflectionRadiance = 0.0;
 	float cacheReflectionHit = 0.0;
-	float screenMiss = 1.0f - saturate(giCoverage * rcpNumSlices);
 	if (WorldCacheEnabled != 0u) {
 		// Keep cache-only world coordinates out of the long horizon-loop lifetime.
 		float3 cameraWS = ViewToWorldPosition(0.0, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
 		float3 receiverPositionWS = ViewToWorldPosition(pixCenterPos, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
 		float3 receiverNormalWS = normalize(ViewToWorldVector(viewspaceNormal, FrameBuffer::CameraViewInverse));
-		// Keep a restrained cache contribution beside screen-space GI; screen
-		// coverage scales its influence but must not abruptly switch it off.
+		// Keep cache contribution stable across horizon-mask changes. giCoverage
+		// was geometric angular occlusion, not valid screen-space irradiance; using
+		// it as screen-miss confidence made cache strength pump as the camera or
+		// stochastic horizon samples changed.
 		const bool needCacheDiffuse = WorldCacheStrength > 1e-4f;
 		const bool needCacheDirectional = WorldCacheDirectionalOcclusionEnabled != 0u &&
 			WorldCacheDirectionalOcclusionStrength > 1e-4f;
@@ -878,10 +875,12 @@ void CalculateGI(
 		}
 
 		if (needCacheDiffuse) {
-			// The cache is intentionally low-weight to avoid double-counting, but
-			// retains a nonzero floor so stable off-screen/world lighting assists GI.
+			// Use a fixed overlap weight. The horizon bitmask measures blocked angular
+			// area, not whether screen-space GI found useful radiance. Modulating cache
+			// energy by that noisy mask caused temporal pumping at higher cache
+			// strengths. Confidence still suppresses unwarmed or stale voxels.
 			float cacheConfidence = saturate(cacheHitRatio * 2.2f);
-			float cacheBlend = WorldCacheStrength * lerp(0.16f, 0.76f, screenMiss) * cacheConfidence;
+			float cacheBlend = WorldCacheStrength * 0.60f * cacheConfidence;
 			radianceY += cacheY * cacheBlend;
 			radianceCoCg += cacheCoCg * cacheBlend * GISaturation;
 		}
@@ -1002,6 +1001,17 @@ void CalculateGI(
 	effectiveNumSlices = max(1u, min(NumSlices, (uint)ceil((float)NumSlices * workFraction)));
 	effectiveNumSteps = max(1u, min(NumSteps, (uint)ceil((float)NumSteps * workFraction)));
 #endif
+	// Screen-space GI/AO is already faded to zero over DepthFadeRange. Reduce
+	// horizon samples in proportion to that diminishing contribution instead of
+	// tracing the full near-field budget for nearly invisible far-field results.
+	// The square root scales both loop dimensions, so their product tracks the
+	// remaining signal weight. World-cache sampling and debug views stay intact.
+	if (insideFrame && DebugView == 0u && viewspaceZ > DepthFadeRange.x) {
+		float remainingContribution = 1.0f - GetDepthFade(viewspaceZ);
+		float distanceWorkScale = sqrt(saturate(remainingContribution));
+		effectiveNumSlices = max(1u, (uint)ceil((float)effectiveNumSlices * distanceWorkScale));
+		effectiveNumSteps = max(1u, (uint)ceil((float)effectiveNumSteps * distanceWorkScale));
+	}
 
 	half2 encodedWorldNormal = GBuffer::EncodeNormal(ViewToWorldVector(viewspaceNormal, FrameBuffer::CameraViewInverse));
 	outPrevGeo[pxCoord] = PackPrevGeometry(viewspaceZ, encodedWorldNormal);
@@ -1117,10 +1127,19 @@ void CalculateGI(
 #	endif
 		}
 
-		half luminanceDelta = abs(currY.x - prevY.x);
-		half luminanceScale = max(max(abs(currY.x), abs(prevY.x)), 0.02h);
-		half historyReactivity = saturate(luminanceDelta / luminanceScale);
-		lerpFactor = max(lerpFactor, historyReactivity * 0.65h);
+		float luminanceDelta = abs((float)currY.x - (float)prevY.x);
+		float luminanceScale = max(max(abs((float)currY.x), abs((float)prevY.x)), 0.02f);
+		float chromaDelta = length((float2)currCoCg - (float2)prevCoCg);
+		float chromaScale = max(max(length((float2)currCoCg), length((float2)prevCoCg)), 0.03f);
+		float relativeRadianceChange = max(luminanceDelta / luminanceScale, chromaDelta / chromaScale);
+		float absoluteRadianceChange = max(luminanceDelta, chromaDelta * 0.5f);
+		// Relative-only reactivity made tiny stochastic differences in dark rooms
+		// refresh most of the GI history, producing visible flicker while standing
+		// still. Require a meaningful absolute signal change as well; direct-light
+		// changes already reduce accepted history in radianceDisocc.
+		float historyReactivity = smoothstep(0.10f, 0.45f, relativeRadianceChange) *
+			smoothstep(0.006f, 0.045f, absoluteRadianceChange);
+		lerpFactor = max(lerpFactor, historyReactivity * 0.55f);
 
 		// The horizon AO was already motion/depth/normal reprojected by
 		// radianceDisocc, but historically that remapped value was never consumed.

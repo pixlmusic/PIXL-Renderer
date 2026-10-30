@@ -1,5 +1,15 @@
 ﻿#pragma once
 #include <mutex>
+#include <bit>
+#include <cfloat>
+#include <cstdint>
+#include <memory>
+#include <atomic>
+#include <thread>
+#include <vector>
+#include <unordered_map>
+#include <string>
+#include <chrono>
 
 #include <BS_thread_pool.hpp>
 
@@ -10,6 +20,8 @@ private:
 	struct RuntimeCache;
 
 public:
+	~WaterCache();  // Join asynchronous workers while cache members are still alive.
+
 	/** @brief Describes a single water tile placement with position, size, and water form data. */
 	struct Instruction
 	{
@@ -28,6 +40,10 @@ public:
 		float waterHeight{};
 		uint32_t flags{};
 	};
+
+	// Serialized WTC2 instruction layout is x64-specific. The form union is an ID
+	// on disk and a pointer at runtime; never reorder these fields without a new version.
+	static_assert(sizeof(Instruction) == 40, "WTC2 instruction layout changed; bump cache format and migrate it");
 
 	/** @brief Instruction list for a LOD chunk, plus the runtime cache instance backing it so the caller can keep it alive. */
 	struct InstructionResult
@@ -101,11 +117,15 @@ private:
 		int32_t dataCount{};
 	};
 
+	static_assert(sizeof(WorldSpaceHeader) == 32, "WTCH / WTC2 header wire format changed");
+
 	struct Heights
 	{
 		float land = FLT_MAX;
 		float water = FLT_MAX;
 	};
+
+	static_assert(sizeof(Heights) == 8, "WTCH height wire format changed");
 
 	struct CellData
 	{
@@ -154,14 +174,22 @@ private:
 		std::atomic<uint32_t> completed{ 0 };
 		std::atomic<uint32_t> failed{ 0 };
 		std::atomic<bool> active{ false };
-		std::chrono::steady_clock::time_point t0{};
+		std::atomic<int64_t> startedNs{ 0 };
+		std::atomic<int64_t> finishedElapsedMs{ 0 };
+
+		static int64_t NowNs()
+		{
+			return std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count();
+		}
 
 		void Start(uint32_t tot)
 		{
 			total.store(tot, std::memory_order_relaxed);
 			completed.store(0, std::memory_order_relaxed);
 			failed.store(0, std::memory_order_relaxed);
-			t0 = std::chrono::steady_clock::now();
+			startedNs.store(NowNs(), std::memory_order_relaxed);
+			finishedElapsedMs.store(0, std::memory_order_relaxed);
 			active.store(true, std::memory_order_relaxed);
 		}
 
@@ -173,7 +201,11 @@ private:
 				failed.fetch_add(1, std::memory_order_relaxed);
 		}
 
-		void Stop() { active.store(false, std::memory_order_relaxed); }
+		void Stop()
+		{
+			finishedElapsedMs.store((NowNs() - startedNs.load(std::memory_order_relaxed)) / 1'000'000, std::memory_order_relaxed);
+			active.store(false, std::memory_order_release);
+		}
 
 		uint32_t DoneCount() const
 		{
@@ -182,7 +214,9 @@ private:
 
 		int64_t ElapsedMs() const
 		{
-			return duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+			return active.load(std::memory_order_acquire) ?
+				(NowNs() - startedNs.load(std::memory_order_relaxed)) / 1'000'000 :
+				finishedElapsedMs.load(std::memory_order_relaxed);
 		}
 
 		BuildProgressSnapshot Snapshot() const
@@ -193,7 +227,9 @@ private:
 			s.failed = failed.load(std::memory_order_relaxed);
 			s.done = s.completed + s.failed;
 			s.active = active.load(std::memory_order_relaxed);
-			s.elapsedMs = duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+			s.elapsedMs = s.active ?
+				(NowNs() - startedNs.load(std::memory_order_relaxed)) / 1'000'000 :
+				finishedElapsedMs.load(std::memory_order_relaxed);
 			return s;
 		}
 	};

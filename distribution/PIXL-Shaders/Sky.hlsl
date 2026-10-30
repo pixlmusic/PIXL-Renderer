@@ -433,14 +433,14 @@ PS_OUTPUT main(PS_INPUT input)
 
 	// Keep sun behind scene depth to prevent halo leaks through geometry.
 	float depth = TexDepthSampler.Load(int3(input.Position.xy, 0));
-	if (depth < input.Position.z)
+	if (depth + 1.0e-5f < input.Position.z)
 		psout.Color.w = 0;
 
 #	else
 	// Even without cloud shadows enabled, sun disc should be occluded by scene depth (clouds, terrain, etc.)
 	if ((Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsSun)) {
 		float depth = TexDepthSampler.Load(int3(input.Position.xy, 0));
-		if (depth < input.Position.z)
+		if (depth + 1.0e-5f < input.Position.z)
 			psout.Color.w = 0;
 	}
 #	endif

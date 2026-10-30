@@ -88,6 +88,16 @@ namespace stl
 	}
 
 	template <class T>
+	void detour_thunk(std::uintptr_t a_address)
+	{
+		T::func = a_address;
+		DetourTransactionBegin();
+		DetourUpdateThread(GetCurrentThread());
+		DetourAttach(reinterpret_cast<PVOID*>(&T::func), reinterpret_cast<PVOID>(T::thunk));
+		DetourTransactionCommit();
+	}
+
+	template <class T>
 	void detour_thunk_ignore_func(REL::RelocationID a_relId)
 	{
 		auto target = reinterpret_cast<PVOID>(a_relId.address());

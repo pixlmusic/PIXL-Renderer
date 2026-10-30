@@ -147,8 +147,18 @@ void SampleHybridGISpecular(uint2 pixCoord, sh2 lobe, out float3 legacyIl, out f
 	positionWS = mul(FrameBuffer::CameraViewProjInverse, positionWS);
 	positionWS.xyz = positionWS.xyz / positionWS.w;
 
-	if (depth == 1.0)
-		MotionVectorsRW[dispatchID.xy] = MotionBlur::GetSSMotionVector(positionWS, positionWS);  // Apply sky motion vectors
+	// The standard-depth clear value is exactly 1.0. A broad tolerance marks
+	// distant LOD geometry as sky, replacing its world-space motion with a
+	// rotation-only sky vector and producing trails at the skyline.
+	if (depth >= 1.0f) {
+		// Sky is infinitely distant: camera translation must not create parallax
+		// in its motion vectors. Project a direction (w = 0) through both camera
+		// transforms so only camera rotation contributes to the sky flow.
+		float3 cameraPosition = mul(FrameBuffer::CameraViewInverse, float4(0.0f, 0.0f, 0.0f, 1.0f)).xyz;
+		float3 skyDirection = positionWS.xyz - cameraPosition;
+		MotionVectorsRW[dispatchID.xy] = MotionBlur::GetSSMotionVector(
+			float4(skyDirection, 0.0f), float4(skyDirection, 0.0f));
+	}
 
 	float glossiness = normalGlossiness.z;
 

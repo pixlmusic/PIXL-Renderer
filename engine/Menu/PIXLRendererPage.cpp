@@ -1044,12 +1044,16 @@ namespace
 		// is deliberately compact: it explains the current state without turning
 		// the user-facing page into the engineering tuner.
 		{
+			const char* qualityNames[] = { "Native AA", "Quality", "Balanced", "Performance", "Ultra Performance" };
+			const int selectedQuality = std::clamp(static_cast<int>(settings.qualityMode), 0, 4);
 			PIXLUI::PanelScope reconstructionSummary("##ReconstructionSummary", ImVec2(0, PIXLUI::Ref(50.0f)), true);
 			if (reconstructionSummary && ImGui::BeginTable("##ReconstructionSummaryTable", 2,
 				ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings)) {
 				ImGui::TableNextColumn();
 				ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::CyanBright), "%s", methods[methodValue]);
-				ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "ACTIVE RECONSTRUCTION");
+				ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "%s",
+					methodValue >= static_cast<int>(ImageReconstruction::UpscaleMethod::kFSR)
+						? qualityNames[selectedQuality] : "NATIVE RESOLUTION");
 				ImGui::TableNextColumn();
 				ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextMuted), "RESTART AFTER PATH CHANGE");
 				ImGui::TextColored(PIXLUI::ToVec4(PIXLUI::Colors::TextDim), "Current delivery remains stable while you browse.");

@@ -44,7 +44,6 @@
 #include "Modules/DistanceBlend.h"
 #include "Modules/GroundResponse.h"
 #include "Modules/FoliageDynamics.h"
-#include "Modules/FoliageOptimizer.h"
 #include "Modules/TerrainDetail.h"
 #include "Modules/WaterOptics.h"
 #include "Modules/RainResponse.h"
@@ -79,7 +78,6 @@
 #include "State.h"
 #include "Renderer/ExternalPostProcessing.h"
 #include "Renderer/QualityProfiles.h"
-#include "Renderer/RenderOrigin.h"
 #include "Renderer/TemporalContext.h"
 #include "Util.h"
 #include "Utils/UI.h"
@@ -95,7 +93,6 @@ namespace
 		"Original", "Nordic Neutral", "Saga", "Dramatic", "Hearthfire", "Bleak",
 		"Bleach", "Winter", "Sunset", "Fantasy Green", "Nightfall", "Cinematic"
 	};
-	constexpr std::string_view kRenderOriginTool = "RenderOrigin";
 	constexpr std::string_view kENBTranslatorTool = "ENBTranslator";
 	std::optional<size_t> g_pendingExperimentalMenu;
 	bool g_openExperimentalWarning = false;
@@ -6252,13 +6249,12 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 		std::holds_alternative<CategoryPage>(menuList[selectedMenu])) {
 		const auto& page = std::get<CategoryPage>(menuList[selectedMenu]);
 		const bool experimentalTool = page.name == kExperimentalCategory &&
-			(g_tunerSelectedFeature == kRenderOriginTool || g_tunerSelectedFeature == kENBTranslatorTool);
+			g_tunerSelectedFeature == kENBTranslatorTool;
 		const bool stillVisible = experimentalTool || std::ranges::any_of(
 			page.features,
 			[](RenderModule* feature) { return feature && feature->GetShortName() == g_tunerSelectedFeature; });
 		if (!stillVisible)
-			g_tunerSelectedFeature = page.name == kExperimentalCategory ? std::string(kRenderOriginTool) :
-				(page.features.empty() ? "" : page.features.front()->GetShortName());
+			g_tunerSelectedFeature = page.features.empty() ? "" : page.features.front()->GetShortName();
 	}
 	const bool characterCategorySelected = selectedMenu < menuList.size() &&
 		std::holds_alternative<CategoryPage>(menuList[selectedMenu]) &&
@@ -6366,8 +6362,7 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 									} else {
 										selectedMenu = menuIndex;
 										const auto& page = std::get<CategoryPage>(menuList[menuIndex]);
-										g_tunerSelectedFeature = experimentalEntry ? std::string(kRenderOriginTool) :
-											(page.features.empty() ? "" : page.features.front()->GetShortName());
+										g_tunerSelectedFeature = page.features.empty() ? "" : page.features.front()->GetShortName();
 									}
 								}
 								selectedTarget = true;
@@ -6499,7 +6494,8 @@ void TuningWorkspaceRenderer::RenderFeatureList(
 		if (PIXLUI::ActionButton("ENTER EXPERIMENTAL", ImVec2(PIXLUI::Ref(190.0f), PIXLUI::Ref(30.0f)), true)) {
 			if (g_pendingExperimentalMenu) {
 				selectedMenu = *g_pendingExperimentalMenu;
-				g_tunerSelectedFeature = std::string(kRenderOriginTool);
+				const auto& page = std::get<CategoryPage>(menuList[selectedMenu]);
+				g_tunerSelectedFeature = page.features.empty() ? "" : page.features.front()->GetShortName();
 				g_tunerPanelCollapsed = false;
 				g_tunerDrawerCollapsed = false;
 			}
@@ -6909,8 +6905,6 @@ std::vector<TuningWorkspaceRenderer::MenuFuncInfo> TuningWorkspaceRenderer::Buil
 			experimentalFeatures.push_back(&globals::pipeline::containedLiquids);
 		if (globals::pipeline::reactiveFX.installed || globals::pipeline::reactiveFX.loaded)
 			experimentalFeatures.push_back(&globals::pipeline::reactiveFX);
-		if (globals::pipeline::foliageOptimizer.installed || globals::pipeline::foliageOptimizer.loaded)
-			experimentalFeatures.push_back(&globals::pipeline::foliageOptimizer);
 		menuList.push_back(CategoryPage{ std::string(kExperimentalCategory), std::move(experimentalFeatures) });
 	} else {
 		for (const auto category : PIXLRendererPage::CategoryOrder)
@@ -7118,7 +7112,6 @@ void TuningWorkspaceRenderer::RenderLeftColumn(
 				};
 
 				group("ExperimentalWorld", "WORLD", [&] {
-					experimentalItem(kRenderOriginTool.data(), "RENDER ORIGIN");
 					experimentalItem("DistantLife", "DISTANT LIFE");
 				});
 				group("ExperimentalMaterials", "MATERIALS", [&] {
@@ -7231,8 +7224,7 @@ void TuningWorkspaceRenderer::RenderRightColumn(
 			const auto& page = std::get<CategoryPage>(menuList[selectedMenu]);
 			if (page.name == "CHARACTER")
 				DrawCharacterOrbitControls();
-			if (page.name == kExperimentalCategory &&
-				(selectedFeatureName == kRenderOriginTool || selectedFeatureName == kENBTranslatorTool)) {
+			if (page.name == kExperimentalCategory && selectedFeatureName == kENBTranslatorTool) {
 				ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
 				if (ImGui::BeginChild("##PIXLExperimentalCanvas", { 0, 0 }, ImGuiChildFlags_None, ImGuiWindowFlags_None)) {
 					PIXLUI::PageTitle("EXPERIMENTAL", "Controlled access to renderer systems that are still being validated for visual stability, compatibility, and performance.");
@@ -7245,10 +7237,7 @@ void TuningWorkspaceRenderer::RenderRightColumn(
 						ImGuiWindowFlags_None, PIXLUI::Ref(12.0f));
 					if (surface) {
 						PIXLUI::EngineeringStyleScope style;
-						if (selectedFeatureName == kRenderOriginTool)
-							PIXL::RenderOrigin::DrawExperimentalPanel();
-						else
-							ExternalPostProcessing::DrawSettings();
+						ExternalPostProcessing::DrawSettings();
 					}
 				}
 				ImGui::EndChild();

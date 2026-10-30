@@ -54,10 +54,11 @@ namespace HDRSun
 
 		float weight = saturate(highlight * alphaWeight * radialWeight);
 
-		// pow(maxBoost, weight) grows the boosted footprint as maxBoost rises (same weight → more
-		// gain → sun reads larger). Tighten with wCurve = weight^sharpen; sharpen == 1 when
-		// maxBoost == kMinHdrSunBoost so low-boost paths match plain pow(maxBoost, weight).
-		float sharpen = max(1.0f, 1.0f + log2(maxBoost / kMinHdrSunBoost));
+		// Keep the HDR sun's transition soft as display peak luminance changes. A
+		// boost-proportional exponent made the disc's bright footprint contract too
+		// aggressively on HDR displays, so it could appear to switch on near the
+		// edge of the view. Limit the extra shaping while retaining the authored rim.
+		float sharpen = 1.0f + min(0.15f * log2(maxBoost / kMinHdrSunBoost), 0.6f);
 		float wCurve = pow(saturate(weight), sharpen);
 
 		return pow(maxBoost, wCurve);

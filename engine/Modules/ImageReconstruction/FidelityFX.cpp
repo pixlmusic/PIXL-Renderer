@@ -265,6 +265,13 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 
 	// Set isFrameGenActive based on whether FSR3 frame generation is enabled
 	isFrameGenActive = a_useFrameGeneration && frameGenerationSucceeded;
+	if (isFrameGenActive) {
+		static bool firstActiveFrameLogged = false;
+		if (!firstActiveFrameLogged) {
+			firstActiveFrameLogged = true;
+			logger::info("[FidelityFX] FSR frame generation configured and first frame prepared successfully.");
+		}
+	}
 }
 
 void FidelityFX::CreateFSRResources()

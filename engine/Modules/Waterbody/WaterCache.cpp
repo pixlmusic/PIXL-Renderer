@@ -3,6 +3,13 @@
 #include <BS_thread_pool.hpp>
 #include <cmath>
 #include <limits>
+#include <filesystem>
+#include <fstream>
+#include <algorithm>
+#include <string_view>
+#include <bit>
+#include <unordered_set>
+#include <Windows.h>
 #include <type_traits>
 
 #include "Utils/WinApi.h"
@@ -21,6 +28,35 @@ namespace
 		       std::fabs(height) < kMaxValidCellHeight;
 	}
 
+	// Vanilla worldspace inheritance is shallow, but guard malformed mod cycles.
+	template <class T>
+	T* ResolveWaterParent(T* worldSpace)
+	{
+		for (unsigned depth = 0; worldSpace && worldSpace->parentWorld &&
+			worldSpace->parentUseFlags.all(RE::TESWorldSpace::ParentUseFlag::kUseWaterData); ++depth) {
+			if (depth == 64 || worldSpace->parentWorld == worldSpace)
+				return nullptr;
+			worldSpace = worldSpace->parentWorld;
+		}
+		return worldSpace;
+	}
+
+	// Exact negative floor division, including INT32_MIN (without x-(lod-1) overflow).
+	constexpr int32_t FloorDiv(const int32_t value, const int32_t divisor) noexcept
+	{
+		const int32_t quotient = value / divisor;
+		return quotient - (value % divisor < 0 ? 1 : 0);
+	}
+
+	bool IsSafeCacheKey(std::string_view key)
+	{
+		return !key.empty() && key.find("..") == std::string_view::npos &&
+			std::none_of(key.begin(), key.end(), [](unsigned char c) {
+				return c < 32 || c == '/' || c == '\\' || c == ':' || c == '*' ||
+					c == '?' || c == '"' || c == '<' || c == '>' || c == '|';
+			});
+	}
+
 	RE::TESWaterForm* LookupWaterForm(const RE::FormID formID)
 	{
 		if (!formID)
@@ -32,6 +68,18 @@ namespace
 
 		return form;
 	}
+}
+
+WaterCache::~WaterCache()
+{
+	// The monitor is declared before several objects it accesses; relying on
+	// default reverse member destruction would destroy those objects first.
+	if (async.monitor.joinable()) {
+		async.monitor.request_stop();
+		async.monitor.join();
+	}
+	if (async.pool)
+		async.pool->wait();
 }
 
 bool WaterCache::SetCurrentWorldSpace(const RE::TESWorldSpace* worldSpace)
@@ -49,22 +97,29 @@ bool WaterCache::SetCurrentWorldSpaceLocked(const RE::TESWorldSpace* worldSpace)
 		return false;
 	}
 
-	while (worldSpace->parentWorld && worldSpace->parentUseFlags.all(RE::TESWorldSpace::ParentUseFlag::kUseWaterData))
-		worldSpace = worldSpace->parentWorld;
+	worldSpace = ResolveWaterParent(worldSpace);
+	if (!worldSpace)
+		return false;
 	if (currentCache && currentWorldSpaceFormID == worldSpace->GetFormID())
 		return true;
 
-	const auto newWorldSpace = worldSpace->GetFormEditorID();
+	const char* editorID = worldSpace->GetFormEditorID();
+	if (!editorID || !*editorID)
+		return false;
+	const std::string newWorldSpace{ editorID };
+	if (!IsSafeCacheKey(newWorldSpace))
+		return false;
 	if (currentCache && currentWorldSpace == newWorldSpace) {
 		currentWorldSpaceFormID = worldSpace->GetFormID();
 		return true;
 	}
 
-	currentWorldSpace = newWorldSpace;
-
 	const auto snap = std::atomic_load_explicit(&cacheMap, std::memory_order_acquire);
 	if (!snap) {
 		logger::error("[Waterbody] [Cache] Failed to get cache snapshot");
+		currentCache.reset();
+		currentWorldSpace.clear();
+		currentWorldSpaceFormID = 0;
 		return false;
 	}
 
@@ -78,7 +133,7 @@ bool WaterCache::SetCurrentWorldSpaceLocked(const RE::TESWorldSpace* worldSpace)
 	}
 
 	currentCache = it->second;
-	currentWorldSpace = std::move(newWorldSpace);
+	currentWorldSpace = newWorldSpace;
 	currentWorldSpaceFormID = worldSpace->GetFormID();
 	logger::debug("[Waterbody] [Cache] Runtime cache for {} activated", currentWorldSpace);
 
@@ -89,16 +144,16 @@ WaterCache::InstructionResult WaterCache::GetInstructions(const RE::TESWorldSpac
 {
 	std::scoped_lock lock(currentCacheMutex);
 
-	if (!SetCurrentWorldSpaceLocked(worldSpace)) {
-		logger::error("[Waterbody] [Cache] Failed to set current cache to {} while getting instructions",
-			worldSpace ? worldSpace->GetFormEditorID() : "<none>");
+	if (!SetCurrentWorldSpaceLocked(worldSpace) || !currentCache)
 		return {};
-	}
 
 	// Held alongside the pointer so a concurrent LoadCaches can't free it mid-use.
 	InstructionResult result;
 	result.cache = currentCache;
-	result.instructions = currentCache->GetInstructions(lodLevel, x, y);
+	// Original API carries signed cell coordinates in uint32_t fields.
+	// bit_cast makes the negative-cell contract explicit and portable on x64.
+	result.instructions = currentCache->GetInstructions(static_cast<int32_t>(lodLevel),
+		std::bit_cast<int32_t>(x), std::bit_cast<int32_t>(y));
 	return result;
 }
 
@@ -129,7 +184,7 @@ bool WaterCache::GetOpenOceanCellHeight(const RE::TESWorldSpace* worldSpace,
 		const auto right = static_cast<int64_t>(instruction.x) + instruction.size;
 		const auto top = static_cast<int64_t>(instruction.y) + instruction.size;
 		if (x >= instruction.x && x < right && y >= instruction.y && y < top &&
-			(instruction.flags & Instruction::kOpenOcean) != 0 && std::isfinite(instruction.waterHeight)) {
+			(instruction.flags & Instruction::kOpenOcean) != 0 && IsValidCellHeight(instruction.waterHeight)) {
 			height = instruction.waterHeight;
 			return true;
 		}
@@ -139,27 +194,28 @@ bool WaterCache::GetOpenOceanCellHeight(const RE::TESWorldSpace* worldSpace,
 
 std::vector<WaterCache::Instruction>* WaterCache::RuntimeCache::GetInstructions(const int32_t lodLevel, const int32_t x, const int32_t y)
 {
-	if (lodLevel <= 0)
+	// Only actual renderer LODs are legal; countr_zero(6), for example,
+	// silently selected the LOD4 bucket in the original implementation.
+	if (lodLevel != 4 && lodLevel != 8 && lodLevel != 16 && lodLevel != 32)
 		return nullptr;
 
-	const auto lodIndex = std::countr_zero(static_cast<uint32_t>(lodLevel)) - 2;
-	if (lodIndex < 0 || lodIndex >= instructions.size())
+	const auto lodIndex = std::countr_zero(static_cast<uint32_t>(lodLevel)) - 2u;
+	if (lodIndex >= instructions.size())
 		return nullptr;
 
 	auto& lodInstructions = instructions[lodIndex];
-
 	const auto& bounds = header.bounds;
 	int32_t lodCellX, lodCellY, lodMinX, lodMinY, lodMaxX, lodMaxY;
 	GetLODCoords(lodLevel, x, y, lodCellX, lodCellY);
 	GetLODCoords(lodLevel, bounds.minX, bounds.minY, lodMinX, lodMinY);
 	GetLODCoords(lodLevel, bounds.maxX, bounds.maxY, lodMaxX, lodMaxY);
-	const int32_t lodWidth = lodMaxX - lodMinX + 1;
-
-	const auto lodCellIndex = (lodCellY - lodMinY) * lodWidth + lodCellX - lodMinX;
-	if (lodCellIndex < 0 || lodCellIndex >= lodInstructions.size())
+	if (lodCellX < lodMinX || lodCellY < lodMinY || lodCellX > lodMaxX || lodCellY > lodMaxY)
 		return nullptr;
 
-	return &lodInstructions[lodCellIndex];
+	const auto lodWidth = static_cast<size_t>(static_cast<int64_t>(lodMaxX) - lodMinX + 1);
+	const auto index = static_cast<size_t>(static_cast<int64_t>(lodCellY) - lodMinY) * lodWidth +
+		static_cast<size_t>(static_cast<int64_t>(lodCellX) - lodMinX);
+	return index < lodInstructions.size() ? &lodInstructions[index] : nullptr;
 }
 
 void WaterCache::GenerateTamrielPrecache()
@@ -201,30 +257,15 @@ bool WaterCache::LoadOrGenerateCaches()
 
 bool WaterCache::RegenerateCaches()
 {
-	logger::info("[Waterbody] [Cache] Clearing and regenerating caches...");
+	logger::info("[Waterbody] [Cache] Regenerating caches (preserving last-good files)...");
 
-	namespace fs = std::filesystem;
-	const fs::path dir = Util::PathHelpers::GetWaterbodyCachePath();
-
-	std::error_code ec;
-	fs::create_directories(dir, ec);
-
-	for (const auto& entry : fs::directory_iterator(dir, ec)) {
-		if (ec)
-			break;
-		if (!entry.is_regular_file())
-			continue;
-
-		const auto& path = entry.path();
-		if (path.extension() != ".wc")
-			continue;
-		std::error_code rec;
-		fs::remove(path, rec);
-		if (rec) {
-			logger::warn("[Waterbody] [Cache] Failed to remove '{}': {}", path.string(), rec.message());
-		}
+	// Generate each replacement atomically. Deleting all good caches before a
+	// potentially failing regeneration caused worlds to lose water on next boot.
+	// Stale files not referenced by loaded worldspaces are harmless.
+	if (async.running.load(std::memory_order_acquire)) {
+		logger::warn("[Waterbody] [Cache] Regeneration already running");
+		return false;
 	}
-
 	return GenerateCaches();
 }
 
@@ -246,7 +287,7 @@ bool WaterCache::LoadCaches()
 
 		std::string key{ editorID };
 
-		if (newCacheMap->contains(key))
+		if (!IsSafeCacheKey(key) || newCacheMap->contains(key))
 			continue;
 
 		DiskCache diskCache;
@@ -277,22 +318,21 @@ bool WaterCache::LoadCaches()
 		return false;
 	}
 
-	std::atomic_store_explicit(&cacheMap, std::const_pointer_cast<const CacheMap>(newCacheMap), std::memory_order_release);
-
+	// Commit map + active cache together. Readers can never observe an active
+	// worldspace from one snapshot and its stale cache from another.
 	{
 		std::scoped_lock lock(currentCacheMutex);
 		if (!currentWorldSpace.empty()) {
-			if (const auto snap = std::atomic_load_explicit(&cacheMap, std::memory_order_acquire)) {
-				if (const auto it = snap->find(currentWorldSpace); it != snap->end()) {
-					currentCache = it->second;
-				} else {
-					// Dropped from the reloaded map - clear so a name match can't fast-return stale.
-					currentCache.reset();
-					currentWorldSpace.clear();
-					currentWorldSpaceFormID = 0;
-				}
+			if (const auto it = newCacheMap->find(currentWorldSpace); it != newCacheMap->end()) {
+				currentCache = it->second;
+			} else {
+				currentCache.reset();
+				currentWorldSpace.clear();
+				currentWorldSpaceFormID = 0;
 			}
 		}
+		std::atomic_store_explicit(&cacheMap,
+			std::static_pointer_cast<const CacheMap>(newCacheMap), std::memory_order_release);
 	}
 
 	const auto t1 = std::chrono::steady_clock::now();
@@ -304,79 +344,108 @@ bool WaterCache::LoadCaches()
 
 bool WaterCache::GenerateCaches()
 {
-	if (async.running.load()) {
+	// The gate covers the whole enqueue/monitor lifecycle, not just construction
+	// of the worker pool. A second invocation must not replace a running pool.
+	if (async.running.exchange(true, std::memory_order_acq_rel)) {
 		logger::warn("[Waterbody] [Cache] Build already running");
 		return false;
 	}
 
-	const auto worldSpaces = GetValidWorldSpaces();
-
-	{
-		namespace fs = std::filesystem;
-		std::error_code ec;
-		fs::create_directories(Util::PathHelpers::GetWaterbodyCachePath(), ec);
-		if (ec) {
-			logger::error("[Waterbody] [Cache] Failed to ensure output directory: {}", ec.message());
+	try {
+		const auto worldSpaces = GetValidWorldSpaces();
+		if (worldSpaces.empty()) {
+			async.running.store(false, std::memory_order_release);
 			return false;
 		}
-	}
 
-	// Use P-core logical count on Intel hybrid CPUs; falls back to hardware_concurrency() on non-hybrid.
-	const unsigned hw = Util::GetPerformanceCoreCount();
-	const unsigned threads = std::max(1u, hw > 4 ? hw - 4 : (hw * 3) / 4);
-	async.pool = std::make_unique<BS::thread_pool<>>(threads);
-
-	async.failed.store(false);
-	buildProgress.Start(static_cast<uint32_t>(worldSpaces.size()));
-	async.running.store(true);
-
-	logger::info("[Waterbody] [Cache] Starting async disk cache build for {} WorldSpaces on {} threads", buildProgress.total.load(), threads);
-
-	for (auto& worldSpace : worldSpaces) {
-		const char* editorID = worldSpace && worldSpace->editorID.c_str() ? worldSpace->editorID.c_str() : "";
-		if (!worldSpace || !editorID || !*editorID) {
-			logger::warn("[Waterbody] [Cache] WorldSpace has no EditorID - skipping");
-			buildProgress.Done(true);
-			continue;
+		std::error_code ec;
+		std::filesystem::create_directories(Util::PathHelpers::GetWaterbodyCachePath(), ec);
+		if (ec) {
+			logger::error("[Waterbody] [Cache] Cannot create cache directory: {}", ec.message());
+			async.running.store(false, std::memory_order_release);
+			return false;
 		}
 
-		async.pool->detach_task([this, worldSpace, editorID] {
-			DiskCache cache = {};
-			const auto name = std::format("{}_ocean2_cache.wc", editorID);
-			const auto success = BuildDiskCache(worldSpace, cache) && TryWriteCacheToFile(name, cache.header, cache.instructions);
-			if (success) {
-				logger::debug("[Waterbody] [Cache] {} generation complete", editorID);
-			} else {
+		// A completed jthread is still joinable. Join it before reassigning the
+		// pool or monitor to avoid racing the previous run's last instructions.
+		if (async.monitor.joinable())
+			async.monitor.join();
+
+		const unsigned hw = std::max(1u, Util::GetPerformanceCoreCount());
+		const unsigned threads = std::max(1u, hw > 4 ? hw - 4 : (hw * 3) / 4);
+		async.pool = std::make_unique<BS::thread_pool<>>(threads);
+		async.failed.store(false, std::memory_order_relaxed);
+		buildProgress.Start(static_cast<uint32_t>(worldSpaces.size()));
+
+		logger::info("[Waterbody] [Cache] Building {} worldspaces on {} threads",
+			worldSpaces.size(), threads);
+
+		for (auto* worldSpace : worldSpaces) {
+			const char* editorID = worldSpace ? worldSpace->GetFormEditorID() : nullptr;
+			if (!editorID || !IsSafeCacheKey(editorID)) {
+				buildProgress.Done(false);
 				async.failed.store(true, std::memory_order_relaxed);
-				logger::error("[Waterbody] [Cache] {} generation failed", editorID);
+				continue;
 			}
-
-			buildProgress.Done(success);
-		});
-	}
-
-	async.monitor = std::jthread([this](const std::stop_token& st) {
-		using namespace std::chrono_literals;
-		while (!st.stop_requested()) {
-			const auto bp = this->GetBuildProgressSnapshot();
-			if (bp.done >= bp.total)
-				break;
-			std::this_thread::sleep_for(50ms);
+			// Own the editor ID. Capturing the game's char* could dangle if
+			// plugin/WorldSpace metadata changes during an asynchronous pass.
+			const std::string worldName{ editorID };
+			async.pool->detach_task([this, worldSpace, worldName] {
+				bool success = false;
+				try {
+					DiskCache cache{};
+					const auto fileName = std::format("{}_ocean2_cache.wc", worldName);
+					success = BuildDiskCache(worldSpace, cache) &&
+						TryWriteCacheToFile(fileName, cache.header, cache.instructions);
+				} catch (const std::exception& e) {
+					logger::error("[Waterbody] [Cache] {} worker exception: {}", worldName, e.what());
+				} catch (...) {
+					logger::error("[Waterbody] [Cache] {} worker exception", worldName);
+				}
+				if (!success) {
+					async.failed.store(true, std::memory_order_relaxed);
+					logger::error("[Waterbody] [Cache] {} generation failed", worldName);
+				}
+				buildProgress.Done(success);
+			});
 		}
 
+		async.monitor = std::jthread([this](const std::stop_token& st) {
+			using namespace std::chrono_literals;
+			while (!st.stop_requested() && buildProgress.DoneCount() < buildProgress.total.load())
+				std::this_thread::sleep_for(50ms);
+
+			if (async.pool)
+				async.pool->wait();
+			buildProgress.Stop();
+			if (st.stop_requested()) {
+				async.running.store(false, std::memory_order_release);
+				return;  // Renderer shutdown: do not call game forms or reload caches.
+			}
+			logger::info("[Waterbody] [Cache] Build completed in {} ms ({} / {} succeeded, {} failed)",
+				buildProgress.ElapsedMs(), buildProgress.completed.load(), buildProgress.total.load(),
+				buildProgress.failed.load());
+			try {
+				if (!LoadCaches())
+					async.failed.store(true, std::memory_order_relaxed);
+			} catch (const std::exception& e) {
+				logger::error("[Waterbody] [Cache] Reload failed: {}", e.what());
+				async.failed.store(true, std::memory_order_relaxed);
+			} catch (...) {
+				logger::error("[Waterbody] [Cache] Reload failed");
+				async.failed.store(true, std::memory_order_relaxed);
+			}
+			async.running.store(false, std::memory_order_release);
+		});
+	} catch (const std::exception& e) {
+		logger::error("[Waterbody] [Cache] Failed to start workers: {}", e.what());
 		if (async.pool)
 			async.pool->wait();
-
 		buildProgress.Stop();
-
-		if (buildProgress.failed.load() != 0)
-			logger::warn("[Waterbody] [Cache] Disk cache generation finished in {} ms ({} / {} complete - {} failed)", buildProgress.ElapsedMs(), buildProgress.completed.load(), buildProgress.total.load(), buildProgress.failed.load());
-		else
-			logger::info("[Waterbody] [Cache] Disk caches generated in {} ms ({} / {} complete)", buildProgress.ElapsedMs(), buildProgress.completed.load(), buildProgress.total.load());
-		LoadCaches();
-		async.running.store(false);
-	});
-
+		async.failed.store(true, std::memory_order_relaxed);
+		async.running.store(false, std::memory_order_release);
+		return false;
+	}
 	return true;
 }
 
@@ -416,6 +485,16 @@ bool WaterCache::BuildDiskCache(RE::TESWorldSpace* worldSpace, DiskCache& diskCa
 
 	const auto wsMin = worldSpace->minimumCoords;
 	const auto wsMax = worldSpace->maximumCoords;
+	const auto validWorldCoord = [](float value) {
+		return std::isfinite(value) && value != FLT_MAX && value != FLT_MIN &&
+			std::fabs(value) < 1.0e8f;
+	};
+	if (!validWorldCoord(wsMin.x) || !validWorldCoord(wsMin.y) ||
+		!validWorldCoord(wsMax.x) || !validWorldCoord(wsMax.y) ||
+		wsMax.x <= wsMin.x || wsMax.y <= wsMin.y) {
+		logger::warn("[Waterbody] [Cache] {}: Invalid worldspace extents", editorID.c_str());
+		return false;
+	}
 
 	if (editorID == "Tamriel") {
 		if (TryReadCacheFromFile("Tamriel_precache.wpc", preCache.header, preCache.heights)) {
@@ -447,7 +526,7 @@ bool WaterCache::BuildDiskCache(RE::TESWorldSpace* worldSpace, DiskCache& diskCa
 	if (invalidWS) {
 		logger::warn("[Waterbody] [Cache] {}: Invalid WorldSpace - skipping", editorID.c_str());
 		diskCache = {};
-		return true;
+		return false;
 	}
 
 	logger::debug("[Waterbody] [Cache] {}: Building disk cache...", editorID.c_str());
@@ -565,7 +644,7 @@ bool WaterCache::BuildDiskCache(RE::TESWorldSpace* worldSpace, DiskCache& diskCa
 
 	const auto t1 = std::chrono::steady_clock::now();
 	const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-	logger::info("[Waterbody] [Cache] {}: Cache generated in {} ms", worldSpace->GetFormEditorID(), ms);
+	logger::debug("[Waterbody] [Cache] {}: Cache generated in {} ms", worldSpace->GetFormEditorID(), ms);
 	return true;
 }
 
@@ -851,14 +930,29 @@ bool WaterCache::TryBuildRuntimeCache(const DiskCache& diskCache, RuntimeCache& 
 		const int32_t lodWidth = lodMaxX - lodMinX + 1;
 		const int32_t lodHeight = lodMaxY - lodMinY + 1;
 
-		lodInstructions.resize(lodWidth * lodHeight);
+		if (lodWidth <= 0 || lodHeight <= 0 ||
+			static_cast<int64_t>(lodWidth) * lodHeight >
+				static_cast<int64_t>(hdr.width) * hdr.height)
+			return false;
+		lodInstructions.resize(static_cast<size_t>(lodWidth) * lodHeight);
 
 		while (diskReadIndex < diskCache.instructions.size()) {
 			auto instruction = diskCache.instructions[diskReadIndex];
 			if (instruction.lodLevel != static_cast<uint32_t>(lodLevel))
 				break;
 
-			if (!IsValidCellHeight(instruction.waterHeight)) {
+			// Malformed, mixed-LOD, or malicious cache records must not enter
+			// the runtime renderer's per-chunk placement vectors.
+			if (instruction.size == 0 || instruction.size > static_cast<uint32_t>(lodLevel) ||
+				(instruction.flags & ~Instruction::kOpenOcean) != 0 ||
+				static_cast<int64_t>(instruction.x) < minX || static_cast<int64_t>(instruction.y) < minY ||
+				static_cast<int64_t>(instruction.x) + instruction.size - 1 > maxX ||
+				static_cast<int64_t>(instruction.y) + instruction.size - 1 > maxY ||
+				FloorDiv(static_cast<int32_t>(static_cast<int64_t>(instruction.x) + instruction.size - 1), lodLevel) !=
+					FloorDiv(instruction.x, lodLevel) ||
+				FloorDiv(static_cast<int32_t>(static_cast<int64_t>(instruction.y) + instruction.size - 1), lodLevel) !=
+					FloorDiv(instruction.y, lodLevel) ||
+				!IsValidCellHeight(instruction.waterHeight)) {
 				// Keep old or malformed disk caches from restoring bad water tiles
 				skippedInvalidInstructionCount++;
 				diskReadIndex++;
@@ -876,11 +970,12 @@ bool WaterCache::TryBuildRuntimeCache(const DiskCache& diskCache, RuntimeCache& 
 				continue;
 			}
 
-			instruction.form.ptr = LookupWaterForm(instruction.form.id);
+			const RE::FormID serializedFormID = instruction.form.id;
+			instruction.form.ptr = LookupWaterForm(serializedFormID);
 			if (!instruction.form.ptr) {
 				if (!skippedUnresolvedFormCount) {
 					logger::warn("[Waterbody] [Cache] Failed to load WaterForm {:08X} at LOD{} cell {},{} - skipping instruction",
-						instruction.form.id, lodLevel, instruction.x, instruction.y);
+						serializedFormID, lodLevel, instruction.x, instruction.y);
 				}
 				skippedUnresolvedFormCount++;
 				diskReadIndex++;
@@ -888,15 +983,20 @@ bool WaterCache::TryBuildRuntimeCache(const DiskCache& diskCache, RuntimeCache& 
 			}
 
 			if (!instruction.form.ptr->IsInitialized()) {
-				logger::warn("[Waterbody] [Cache] WaterForm {:08X} is not initialized", instruction.form.id);
+				logger::warn("[Waterbody] [Cache] WaterForm {:08X} is not initialized", serializedFormID);
 				instruction.form.ptr->InitItemImpl();
 			}
 
-			lodInstructions[lodY * lodWidth + lodX].push_back(instruction);
+			lodInstructions[static_cast<size_t>(lodY) * lodWidth + lodX].push_back(instruction);
 
 			diskReadIndex++;
 		}
 	}
+
+	// The on-disk records are grouped by 4/8/16/32. Do not accept a
+	// truncated/misordered tail masquerading as a valid partial cache.
+	if (diskReadIndex != static_cast<int32_t>(diskCache.instructions.size()))
+		return false;
 
 	if (skippedInvalidInstructionCount) {
 		logger::debug("[Waterbody] [Cache] Skipped {} cached instructions with invalid water heights", skippedInvalidInstructionCount);
@@ -911,29 +1011,34 @@ bool WaterCache::TryBuildRuntimeCache(const DiskCache& diskCache, RuntimeCache& 
 
 std::vector<RE::TESWorldSpace*> WaterCache::GetValidWorldSpaces()
 {
-	auto worldSpaces = RE::TESDataHandler::GetSingleton()->GetFormArray<RE::TESWorldSpace>();
-	auto validWorldSpaces = std::vector<RE::TESWorldSpace*>();
-
-	for (auto& worldSpace : worldSpaces) {
-		while (worldSpace->parentWorld && worldSpace->parentUseFlags.all(RE::TESWorldSpace::ParentUseFlag::kUseWaterData))
-			worldSpace = worldSpace->parentWorld;
-
-		if (!worldSpace->worldWater)
+	std::vector<RE::TESWorldSpace*> validWorldSpaces;
+	auto* dataHandler = RE::TESDataHandler::GetSingleton();
+	if (!dataHandler)
+		return validWorldSpaces;
+	const auto worldSpaces = dataHandler->GetFormArray<RE::TESWorldSpace>();
+	std::unordered_set<RE::TESWorldSpace*> seen;
+	std::unordered_set<std::string> seenKeys;
+	seen.reserve(worldSpaces.size());
+	seenKeys.reserve(worldSpaces.size());
+	for (auto* worldSpace : worldSpaces) {
+		worldSpace = ResolveWaterParent(worldSpace);
+		if (!worldSpace || !worldSpace->worldWater || !seen.insert(worldSpace).second)
 			continue;
-
-		if (std::ranges::find(validWorldSpaces, worldSpace) != validWorldSpaces.end())
-			continue;
-
-		validWorldSpaces.push_back(worldSpace);
+		const char* key = worldSpace->GetFormEditorID();
+		if (key && IsSafeCacheKey(key) && seenKeys.emplace(key).second)
+			validWorldSpaces.push_back(worldSpace);
 	}
-
 	return validWorldSpaces;
 }
 
 void WaterCache::GetLODCoords(const int32_t lodLevel, const int32_t x, const int32_t y, int32_t& outX, int32_t& outY)
 {
-	outX = x >= 0 ? x / lodLevel : (x - (lodLevel - 1)) / lodLevel;
-	outY = y >= 0 ? y / lodLevel : (y - (lodLevel - 1)) / lodLevel;
+	if (lodLevel <= 0) {
+		outX = outY = 0;
+		return;
+	}
+	outX = FloorDiv(x, lodLevel);
+	outY = FloorDiv(y, lodLevel);
 }
 
 bool WaterCache::TryGetCellData(RE::TESWorldSpace* worldSpace, RE::TESFileArray* files, const int32_t x, const int32_t y, RE::FormID& outFormID, float& outWaterHeight, float& outLandHeight, bool resolveFormID)
@@ -942,11 +1047,20 @@ bool WaterCache::TryGetCellData(RE::TESWorldSpace* worldSpace, RE::TESFileArray*
 	outWaterHeight = FLT_MAX;
 	outLandHeight = FLT_MAX;
 
+	// Some custom worlds have no contributing TESFile records. Indexing
+	// data[-1] in that case previously crashed during cache generation.
+	if (!worldSpace || !files || files->empty())
+		return false;
 	const auto size = static_cast<int32_t>(files->size());
 	const auto arrayData = files->data();
+	if (!arrayData)
+		return false;
 
 	int32_t fileIndex = size - 1;
-	RE::TESFile* file = arrayData[fileIndex]->Duplicate();
+	auto duplicateAt = [&](int32_t index) -> RE::TESFile* {
+		return index >= 0 && arrayData[index] ? arrayData[index]->Duplicate() : nullptr;
+	};
+	RE::TESFile* file = duplicateAt(fileIndex);
 	bool foundWaterData = false;
 	bool foundLandData = false;
 
@@ -957,10 +1071,10 @@ bool WaterCache::TryGetCellData(RE::TESWorldSpace* worldSpace, RE::TESFileArray*
 			foundWaterData = true;
 			break;
 		}
-		file = --fileIndex >= 0 ? arrayData[fileIndex]->Duplicate() : nullptr;
+		file = duplicateAt(--fileIndex);
 	} while (fileIndex >= 0);
 
-	if (resolveFormID && outFormID)
+	if (resolveFormID && outFormID && file)
 		outFormID = file->GetRuntimeFormID(outFormID);
 
 	// Continue searching from the previous file to find the original record for the cell, this always has the landscape data - extract land height
@@ -970,7 +1084,7 @@ bool WaterCache::TryGetCellData(RE::TESWorldSpace* worldSpace, RE::TESFileArray*
 			foundLandData = true;
 			break;
 		}
-		file = --fileIndex >= 0 ? arrayData[fileIndex]->Duplicate() : nullptr;
+		file = duplicateAt(--fileIndex);
 	} while (fileIndex >= 0);
 
 	if (!foundWaterData || !foundLandData) {
@@ -1016,7 +1130,7 @@ void WaterCache::ReadMinLandHeightData(RE::TESFile* file, float& minHeight)
 		int8_t deltas[1089];
 		byte padding[3];
 	};
-	VHGTData data;
+	VHGTData data{};
 
 	file->ReadData(&data, 1096);
 
@@ -1046,9 +1160,15 @@ bool WaterCache::TryWriteCacheToFile(const std::string& name, const WorldSpaceHe
 	namespace fs = std::filesystem;
 	const fs::path path = Util::PathHelpers::GetWaterbodyCachePath() / name;
 
-	std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
+	std::error_code ec;
+	fs::create_directories(path.parent_path(), ec);
+	if (ec)
+		return false;
+	fs::path temporary = path;
+	temporary += L".tmp";
+	std::ofstream ofs(temporary, std::ios::binary | std::ios::trunc);
 	if (!ofs) {
-		logger::error("[Waterbody] [Cache] Failed to open '{}' for writing", path.string());
+		logger::error("[Waterbody] [Cache] Failed to open '{}' for writing", temporary.string());
 		return false;
 	}
 
@@ -1057,11 +1177,26 @@ bool WaterCache::TryWriteCacheToFile(const std::string& name, const WorldSpaceHe
 		cacheHeader.label = Util::FCC("WTC2");
 	else
 		cacheHeader.label = Util::FCC("WTCH");
-	ofs.write(reinterpret_cast<const char*>(&cacheHeader), sizeof(cacheHeader));
-	ofs.write(reinterpret_cast<const char*>(vec.data()), vec.size() * sizeof(T));
+	if (vec.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max()) ||
+		cacheHeader.dataCount != static_cast<int32_t>(vec.size()))
+		return false;
 
-	if (!ofs.good()) {
-		logger::error("[Waterbody] [Cache] Failed to write cache '{}'", path.string());
+	ofs.write(reinterpret_cast<const char*>(&cacheHeader), sizeof(cacheHeader));
+	if (!vec.empty())
+		ofs.write(reinterpret_cast<const char*>(vec.data()), vec.size() * sizeof(T));
+	ofs.flush();
+	const bool written = ofs.good();
+	ofs.close();
+	if (!written) {
+		logger::error("[Waterbody] [Cache] Failed to write cache '{}'", temporary.string());
+		fs::remove(temporary, ec);
+		return false;
+	}
+	// Atomic replacement on Windows: preserve last-good .wc on a failed write.
+	if (!::MoveFileExW(temporary.c_str(), path.c_str(),
+			MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+		logger::error("[Waterbody] [Cache] Failed to publish '{}' (Win32 {})", path.string(), ::GetLastError());
+		fs::remove(temporary, ec);
 		return false;
 	}
 	return true;

@@ -9,6 +9,21 @@
 #	include "Common/PBR.hlsli"
 #endif
 
+bool IsFiniteLightingScalar(float value)
+{
+	return (asuint(value) & 0x7f800000u) != 0x7f800000u;
+}
+
+float3 SafeNormalizeLighting(float3 value, float3 fallback)
+{
+	float lengthSq = dot(value, value);
+	bool finiteVector = all((asuint(value) & 0x7f800000u) != 0x7f800000u);
+	return finiteVector && IsFiniteLightingScalar(lengthSq) &&
+		lengthSq > 1.0e-8f && lengthSq < 1.0e30f
+		? value * rsqrt(lengthSq)
+		: fallback;
+}
+
 #if defined(MATERIAL_FORGE)
 DirectContext CreateDirectLightingContext(float3 worldNormal, float3 coatWorldNormal, float3 vertexNormal, float3 viewDir, float3 coatViewDir, float3 lightDir, float3 coatLightDir, float3 lightColor, float detailedShadow, float softShadow)
 #else
@@ -16,19 +31,19 @@ DirectContext CreateDirectLightingContext(float3 worldNormal, float3 vertexNorma
 #endif
 {
 	DirectContext context = (DirectContext)0;
-	context.worldNormal = normalize(worldNormal);
-	context.vertexNormal = normalize(vertexNormal);
-	context.viewDir = normalize(viewDir);
-	context.lightDir = normalize(lightDir);
-	context.halfVector = normalize(context.viewDir + context.lightDir);
+	context.worldNormal = SafeNormalizeLighting(worldNormal, float3(0.0f, 0.0f, 1.0f));
+	context.vertexNormal = SafeNormalizeLighting(vertexNormal, context.worldNormal);
+	context.viewDir = SafeNormalizeLighting(viewDir, float3(0.0f, 0.0f, -1.0f));
+	context.lightDir = SafeNormalizeLighting(lightDir, float3(0.0f, 0.0f, 1.0f));
+	context.halfVector = SafeNormalizeLighting(context.viewDir + context.lightDir, context.worldNormal);
 	context.lightColor = lightColor;
 	context.detailedShadow = detailedShadow;
 	context.softShadow = softShadow;
 #if defined(MATERIAL_FORGE)
-	context.coatWorldNormal = normalize(coatWorldNormal);
-	context.coatViewDir = normalize(coatViewDir);
-	context.coatLightDir = normalize(coatLightDir);
-	context.coatHalfVector = normalize(context.coatViewDir + context.coatLightDir);
+	context.coatWorldNormal = SafeNormalizeLighting(coatWorldNormal, context.worldNormal);
+	context.coatViewDir = SafeNormalizeLighting(coatViewDir, context.viewDir);
+	context.coatLightDir = SafeNormalizeLighting(coatLightDir, context.lightDir);
+	context.coatHalfVector = SafeNormalizeLighting(context.coatViewDir + context.coatLightDir, context.coatWorldNormal);
 	[branch] if ((PBRFlags & PBR::Flags::InterlayerParallax) != 0)
 	{
 		context.coatLightColor = lightColor * softShadow;
@@ -53,6 +68,10 @@ IndirectContext CreateIndirectLightingContext(float3 worldNormal, float3 vertexN
 /** PIXL's finite-emitter inverse-distance path before user blending. */
 float GetPhysicalLocalLightAttenuation(float distance, float radius, float fadeZone, float sizeBias)
 {
+	distance = IsFiniteLightingScalar(distance) ? max(distance, 0.0f) : 0.0f;
+	radius = IsFiniteLightingScalar(radius) ? max(radius, 1.0f) : 1.0f;
+	fadeZone = IsFiniteLightingScalar(fadeZone) ? max(fadeZone, 0.0f) : 0.0f;
+	sizeBias = IsFiniteLightingScalar(sizeBias) ? max(sizeBias, 0.0f) : 0.0f;
 	float emitterRadius = max(SharedData::materialForgeSettings.LocalLightMinimumDistance, 1.0f);
 	float denominator = sqrt(max(distance * distance + max(sizeBias, emitterRadius * emitterRadius), 1.0f));
 	// Use inverse-distance (1/d) attenuation. The source intensity is already
@@ -78,6 +97,8 @@ float GetPhysicalLocalLightFalloffStrength()
 
 float GetLocalLightAttenuation(float distance, float radius, float fadeZone, float sizeBias)
 {
+	distance = IsFiniteLightingScalar(distance) ? max(distance, 0.0f) : 0.0f;
+	radius = IsFiniteLightingScalar(radius) ? max(radius, 1.0f) : 1.0f;
 	float normalizedDistance = saturate(distance / max(radius, 1.0f));
 	float legacyAttenuation = 1.0f - normalizedDistance * normalizedDistance;
 	float physicalBlend = GetPhysicalLocalLightFalloffStrength();

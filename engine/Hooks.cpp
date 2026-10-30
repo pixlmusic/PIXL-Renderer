@@ -250,7 +250,7 @@ namespace GrassExtensions
 
 			RE::BSLightingShaderProperty* grassProperty = func(property);
 
-			if (lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kEffectLighting)) {
+			if (grassProperty && lightingProperty && lightingProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kEffectLighting)) {
 				grassProperty->SetFlags(RE::BSShaderProperty::EShaderPropertyFlag8::kEffectLighting, true);
 			}
 
@@ -1280,15 +1280,13 @@ namespace Hooks
 		logger::info("Installing SetupGeometry hooks");
 		stl::write_vfunc<0x6, EffectExtensions::BSEffectShader_SetupGeometry>(RE::VTABLE_BSEffectShader[0]);
 		stl::write_vfunc<0x6, SkyExtensions::BSSkyShader_SetupGeometry>(RE::VTABLE_BSSkyShader[0]);
-		if (REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104) {
-			// This constructor call-site offset has not been verified against 1.7.104's
-			// changed instruction layout. Leave Skyrim's grass property construction
-			// untouched on this runtime; add a verified relocation before re-enabling.
-			logger::warn("[PIXL Renderer] Skipping unverified grass property hook on Skyrim 1.7.104.");
-		} else {
-			stl::write_thunk_call<GrassExtensions::BSGrassShaderProperty_ctor>(
-				REL::RelocationID(15214, 15383).address() + REL::Relocate(0x45B, 0x4F5));
-		}
+		// The constructor call moved from +0x4F5 to +0x4FD in the installed
+		// Steam 1.7.104 executable (ID 15383). The source property remains at
+		// caller RSP+0x60, which the thunk reads via its return-address slot.
+		const auto grassCtorCallOffset =
+			REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104 ? 0x4FD : REL::Relocate(0x45B, 0x4F5);
+		stl::write_thunk_call<GrassExtensions::BSGrassShaderProperty_ctor>(
+			REL::RelocationID(15214, 15383).address() + grassCtorCallOffset);
 		stl::write_vfunc<0x6, GrassExtensions::BSGrassShader_SetupGeometry>(RE::VTABLE_BSGrassShader[0]);
 		stl::write_vfunc<0x6, PostProcessingExtensions::BSParticleShader_SetupGeometry>(RE::VTABLE_BSParticleShader[0]);
 

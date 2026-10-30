@@ -100,8 +100,13 @@ cbuffer PerTechnique : register(b0)
 
 	float3 viewToOrigin = -positionWS.xyz;
 	float LdotN = dot(viewToOrigin * rsqrt(max(dot(viewToOrigin, viewToOrigin), 1.0e-8f)), DirLightDirection);
-	float phaseDenominator = max(1.0f - LdotN * PhaseScattering, 1.0e-4f);
-	float phaseFactor = (1.0f - PhaseScattering * PhaseScattering) * rcp(4.0f * Math::PI * phaseDenominator);
+	// Henyey-Greenstein phase function. The prior squared (1-g*cos(theta))
+	// approximation skewed energy and under-shaped forward scattering. Keep g
+	// inside the stable physical range and guard the grazing/forward denominator.
+	float phaseG = clamp(PhaseScattering, -0.95f, 0.95f);
+	float phaseDenominator = max(1.0f + phaseG * phaseG - 2.0f * phaseG * LdotN, 1.0e-4f);
+	float phaseFactor = (1.0f - phaseG * phaseG) *
+		rcp(4.0f * Math::PI * phaseDenominator * sqrt(phaseDenominator));
 	float phaseContribution = lerp(1, phaseFactor, PhaseContribution);
 
 	float shadowContribution = noShadow;

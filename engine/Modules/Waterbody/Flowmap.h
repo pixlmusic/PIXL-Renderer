@@ -1,4 +1,5 @@
 ﻿#pragma once
+#include <filesystem>
 
 // Community Shaders Unified Water-derived file, retained and integrated by
 // PIXL Renderer. SPDX-License-Identifier: GPL-3.0-or-later
@@ -50,7 +51,9 @@ private:
 	float invHeight = 0.0f;
 	int32_t offsetX = 0;
 	int32_t offsetY = 0;
+	std::filesystem::path preferredCacheFile;  // Latest generated path; wins timestamp ties.
+	std::filesystem::path loadedCacheFile;  // Last successfully loaded DDS; used for safe pruning.
 
 	bool LoadFlowmap();
-	static bool GenerateFlowmap(bool useMips);
+	bool GenerateFlowmap(bool useMips);
 };

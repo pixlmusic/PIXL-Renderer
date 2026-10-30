@@ -35,7 +35,14 @@
 #if defined(LANDSCAPE)
 		maxTexDim = maxTexDim;
 #endif
-		float3 viewDirTS = normalize(mul(tbn, viewDir));
+		float3 viewDirTS = mul(tbn, viewDir);
+		float viewLengthSq = dot(viewDirTS, viewDirTS);
+		bool finiteView = all((asuint(viewDirTS) & 0x7f800000u) != 0x7f800000u);
+		bool finiteViewLength = (asuint(viewLengthSq) & 0x7f800000u) != 0x7f800000u;
+		viewDirTS = finiteView && finiteViewLength &&
+			viewLengthSq > 1.0e-8f && viewLengthSq < 1.0e30f
+			? viewDirTS * rsqrt(viewLengthSq)
+			: float3(0.0f, 0.0f, 1.0f);
 		float viewZ = abs(viewDirTS.z);
 #if defined(LANDSCAPE)
 		viewDirTS.xy /= max(viewZ * 0.7f + 0.3f + params[0].FlattenAmount, 0.08f);

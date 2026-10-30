@@ -13,7 +13,12 @@ namespace Atmosphere
 	float3 SafeNormalize(float3 value, float3 fallback)
 	{
 		float lengthSq = dot(value, value);
-		return lengthSq > 1.0e-8f ? value * rsqrt(lengthSq) : fallback;
+		bool finiteValue = all((asuint(value) & 0x7f800000u) != 0x7f800000u);
+		bool finiteLength = (asuint(lengthSq) & 0x7f800000u) != 0x7f800000u;
+		return finiteValue && finiteLength &&
+			lengthSq > 1.0e-8f && lengthSq < 1.0e30f
+			? value * rsqrt(lengthSq)
+			: fallback;
 	}
 
 	float HenyeyGreenstein(float cosTheta, float g)
@@ -28,13 +33,14 @@ namespace Atmosphere
 	float PIXLPhaseFunction(float cosTheta, float g)
 	{
 #if USE_PIXL_VOLUMETRIC_FOG
-		// A narrow forward lobe carries shafts while a weak reverse lobe keeps
-		// fog readable when looking away from the primary light. The normalized
-		// blend remains energy conserving and is stable for the full UI range.
+		// Keep directional shafts, but reserve a broad isotropic share for light
+		// scattered more than once. This prevents small camera turns from making
+		// sky-facing fog abruptly brighten or disappear while preserving energy.
 		g = clamp(g, -0.9f, 0.9f);
 		float forward = HenyeyGreenstein(cosTheta, g);
 		float backward = HenyeyGreenstein(cosTheta, -0.25f * g);
-		return lerp(backward, forward, 0.82f);
+		float directional = lerp(backward, forward, 0.82f);
+		return lerp(1.0f / (4.0f * Math::PI), directional, 0.72f);
 #else
 		return HenyeyGreenstein(cosTheta, g);
 #endif

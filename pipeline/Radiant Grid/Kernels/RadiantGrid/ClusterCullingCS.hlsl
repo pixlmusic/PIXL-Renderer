@@ -32,8 +32,8 @@ bool LightIntersectsCluster(float3 position, float radiusSquared, ClusterAABB cl
 		return;
 
 	uint visibleLightCount = 0;
-	uint2 contactLightIndices = uint2(0xffffffffu, 0xffffffffu);
-	float2 contactLightScores = float2(-1.0f, -1.0f);
+	uint4 contactLightIndices = 0xffffffffu;
+	float4 contactLightScores = -1.0f;
 
 	uint clusterIndex = dispatchThreadId.x +
 	                    dispatchThreadId.y * ClusterSize.x +
@@ -63,13 +63,29 @@ bool LightIntersectsCluster(float3 position, float radiusSquared, ClusterAABB cl
 			float score = luminance * max(light.fade, 0.0f) /
 				max(dot(toLight, toLight) + max(light.sizeBias, 1.0f), 1.0f);
 			if (score > contactLightScores.x) {
+				contactLightScores.w = contactLightScores.z;
+				contactLightIndices.w = contactLightIndices.z;
+				contactLightScores.z = contactLightScores.y;
+				contactLightIndices.z = contactLightIndices.y;
 				contactLightScores.y = contactLightScores.x;
 				contactLightIndices.y = contactLightIndices.x;
 				contactLightScores.x = score;
 				contactLightIndices.x = i;
 			} else if (score > contactLightScores.y) {
+				contactLightScores.w = contactLightScores.z;
+				contactLightIndices.w = contactLightIndices.z;
+				contactLightScores.z = contactLightScores.y;
+				contactLightIndices.z = contactLightIndices.y;
 				contactLightScores.y = score;
 				contactLightIndices.y = i;
+			} else if (score > contactLightScores.z) {
+				contactLightScores.w = contactLightScores.z;
+				contactLightIndices.w = contactLightIndices.z;
+				contactLightScores.z = score;
+				contactLightIndices.z = i;
+			} else if (score > contactLightScores.w) {
+				contactLightScores.w = score;
+				contactLightIndices.w = i;
 			}
 			if (visibleLightCount >= MAX_CLUSTER_LIGHTS)
 				break;
@@ -95,7 +111,8 @@ bool LightIntersectsCluster(float3 position, float radiusSquared, ClusterAABB cl
 	}
 
 	LightGrid output = {
-		offset, visibleLightCount, contactLightIndices.x, contactLightIndices.y
+		offset, visibleLightCount, contactLightIndices.x, contactLightIndices.y,
+		contactLightIndices.z, contactLightIndices.w, 0u, 0u
 	};
 
 	lightGrid[clusterIndex] = output;

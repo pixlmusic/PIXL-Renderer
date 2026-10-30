@@ -10,6 +10,11 @@ Texture2D<unorm float> TerrainDepthTexture : register(t1);
 	uint terrainWidth, terrainHeight;
 	TerrainDepthTexture.GetDimensions(terrainWidth, terrainHeight);
 	uint2 validSize = min(uint2(width, height), uint2(terrainWidth, terrainHeight));
+	uint blendedWidth, blendedHeight;
+	BlendedDepthTexture.GetDimensions(blendedWidth, blendedHeight);
+	uint blended16Width, blended16Height;
+	BlendedDepthTexture16.GetDimensions(blended16Width, blended16Height);
+	validSize = min(validSize, min(uint2(blendedWidth, blendedHeight), uint2(blended16Width, blended16Height)));
 	if (any(validSize == 0u) || any(DTid.xy >= validSize))
 		return;
 	float mainDepth = MainDepthTexture[DTid.xy];

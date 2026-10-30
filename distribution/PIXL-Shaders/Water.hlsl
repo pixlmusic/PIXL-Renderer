@@ -93,6 +93,12 @@ PS_OUTPUT main(PS_INPUT input)
 #		define USE_PIXL_WATER_OPTICS 1
 #	endif
 
+// Public builds never replace real water radiance with RainResponse debug colors.
+// An explicit development permutation can still opt into diagnostics.
+#	ifndef PIXL_WATER_RELEASE_DIAGNOSTICS
+#		define PIXL_WATER_RELEASE_DIAGNOSTICS 0
+#	endif
+
 #include "OceanDynamics/OceanWaveBands.hlsli"
 
 struct VS_INPUT
@@ -698,6 +704,8 @@ float2 GetOceanSurfaceSlope(PS_INPUT input)
 	float height = 0.0f;
 	[unroll]
 	for (uint cascade = 0; cascade < 3; ++cascade) {
+		if (weights[cascade] <= 1.0e-4f)
+			continue;
 		float2 uv = absoluteXY / extents[cascade] + 0.5f;
 		float sampledHeight = OceanDisplacementPS.SampleLevel(OceanTerrainSamplerPS,
 			float3(uv, cascade), 0.0f).z;
@@ -719,13 +727,17 @@ float2 GetOceanSurfaceSlope(PS_INPUT input)
 	return clamp(slope * max(OceanGeometrySettingsPS.x, 0.25f), -0.85f.xx, 0.85f.xx);
 }
 
-float2 SampleOceanFoamFilaments(float2 worldXY, float2 orbitalOffset);
+float2 SampleOceanFoamFilamentsGrad(float2 worldXY, float2 orbitalOffset,
+	float2 worldDx, float2 worldDy);
 
 float2 GetOceanShoreFoam(PS_INPUT input)
 {
 	if ((OceanShoreSettingsPS.x < 0.5f && OceanLocalTerrainPatchPS.w < 0.5f) || OceanShoreSettingsPS.w < 0.5f)
 		return 0.0f.xx;
 	float3 absolutePosition = input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz;
+	// Capture derivatives before the bathymetry/foam early-outs below.
+	float2 foamWorldDx = ddx_coarse(input.WPosition.xy);
+	float2 foamWorldDy = ddy_coarse(input.WPosition.xy);
 	float2 phasePosition = input.OceanBasePosition.xy + FrameBuffer::CameraPosAdjust.xy;
 	float terrainHeight;
 	float2 terrainStep;
@@ -841,7 +853,15 @@ float2 GetOceanShoreFoam(PS_INPUT input)
 	float frontWidth = clamp(lerp(34.0f, 58.0f, shoreBlend), 30.0f, 58.0f);
 	float frontBand = 1.0f - smoothstep(frontWidth * 0.55f, frontWidth * 1.45f,
 		abs(stillWaterDepth - frontDepth));
-	float2 foamDetail = SampleOceanFoamFilaments(absolutePosition.xy, currentWave.xy);
+	// If neither a crest nor shoreline wash can contribute, avoid reading
+	// the high-frequency whitewater stencil at all on this pixel.
+	float possibleWetEdge = 1.0f - smoothstep(18.0f, 156.0f, max(waterDepth, 0.0f));
+	float possibleFoam = max(crestFoam, max(frontBand, possibleWetEdge) *
+		coastActivation * inWaterMask * breakerStrength);
+	if (possibleFoam <= 1.0e-4f)
+		return saturate(float2(contact * 0.025f, 0.0f));
+	float2 foamDetail = SampleOceanFoamFilamentsGrad(absolutePosition.xy,
+		currentWave.xy, foamWorldDx, foamWorldDy);
 	float foamBreakup = lerp(0.22f, 1.0f, foamDetail.x);
 	float movingSwash = frontBand * coastActivation * inWaterMask * foamBreakup *
 		breakerStrength * 0.62f;
@@ -1222,7 +1242,20 @@ WaterNormalData GetWaterNormal(PS_INPUT input, float distanceFactor, float norma
 	float3 normalScalesRcp = rcp(max(abs(input.NormalsScale.xyz), 1e-5f.xxx));
 
 #			if defined(WATER_PARALLAX)
-	float2 parallaxOffset = WaterOptics::GetParallaxOffset(input, normalScalesRcp);
+	// Surface microrelief is UV-only: use it only where the normal field is
+	// visible. Far geometry and flat normal maps should not raymarch.
+	float cameraWaterDistance = length(input.WPosition.xyz);
+	float waterParallaxSceneWeight = saturate(normalsDepthFactor * 4.0f) *
+		(1.0f - smoothstep(2300.0f, 6200.0f, cameraWaterDistance)) *
+		smoothstep(0.005f, 0.05f, max(NormalsAmplitude.x,
+			max(NormalsAmplitude.y, NormalsAmplitude.z)));
+	float2 parallaxOffset = 0.0f.xx;
+	// Flowmap shading has its own POM intersection; non-Flowmap normals and
+	// optional rain ripples are the only consumers of the general UV offset.
+#				if !defined(FLOWMAP) || defined(RAIN_RESPONSE)
+	parallaxOffset = WaterOptics::GetParallaxOffsetScene(
+		input, normalScalesRcp, waterParallaxSceneWeight);
+#				endif
 #			endif
 
 #			if defined(FLOWMAP)
@@ -1238,13 +1271,17 @@ WaterNormalData GetWaterNormal(PS_INPUT input, float distanceFactor, float norma
 	PS_INPUT flowmapInput = input;
 	float2 flowmapParallaxOffset = float2(0, 0);
 #				if defined(WATER_PARALLAX) && !defined(LOD)
-	float parallaxAmount = WaterOptics::GetFlowmapParallaxAmount(input, flowmapDimensions, viewDirection);
-	float2 parallaxDir = viewDirection.xy / max(-viewDirection.z, 0.075f);
+	// v2: one Flowmap POM trace drives both the flow coordinate and base
+	// normal UV, replacing the prior independent second 16-step search.
+	float parallaxAmount = WaterOptics::GetFlowmapParallaxAmountScene(
+		input, flowmapDimensions, viewDirection, waterParallaxSceneWeight);
+	// Preserve the existing flowmap coordinate orientation (opposite the height ray).
+	float2 parallaxDir = -WaterOptics::SafeParallaxDirection(viewDirection);
 	parallaxDir.y = -parallaxDir.y;
-	float viewDotUp = -viewDirection.z;
-	parallaxDir *= 0.008 * saturate(viewDotUp * 2.0);
-	flowmapInput.TexCoord3.xy = input.TexCoord3.xy + parallaxAmount * parallaxDir;
-	flowmapParallaxOffset = WaterOptics::GetFlowmapParallaxOffset(input, flowmapDimensions, viewDirection, normalScalesRcp);
+	parallaxDir *= 0.008f * saturate(-viewDirection.z * 2.0f);
+	flowmapInput.TexCoord3.xy += parallaxAmount * parallaxDir;
+	flowmapParallaxOffset = WaterOptics::GetFlowmapNormalUVOffsetFromAmount(
+		viewDirection, parallaxAmount);
 #				endif
 
 	// Calculate cell blend weights using parallaxed input
@@ -1490,7 +1527,10 @@ float3 GetWaterSpecularColor(PS_INPUT input, float3 normal, float3 viewDirection
 		clamp(SharedData::waterOpticsSettings.SurfaceSSRStrength, 0.0f, 2.5f) : 1.0f;
 	// Keep night reflections tied to the fallback environment instead of allowing
 	// a bright screen-space source to exceed it by the former fixed 8x ceiling.
-	float ssrLuminanceCeiling = lerp(2.25f, 3.75f, saturate((surfaceSsrStrength - 1.0f) / 1.5f));
+	// A bright off-screen/sky hit against a dark enclosed-water fallback reads as
+	// a rectangular patch when its confidence changes at an occluder. Keep the
+	// fallback's luminance relationship while still allowing brighter real hits.
+	float ssrLuminanceCeiling = lerp(1.60f, 3.00f, saturate((surfaceSsrStrength - 1.0f) / 1.5f));
 	finalSsrReflectionColor *= min(1.0f, (luminanceReference * ssrLuminanceCeiling) / max(luminanceSSR, 1e-4f));
 	// Boost confidence rather than raw radiance, preserving reflected colour and
 	// the cubemap fallback while making valid on-screen detail more authoritative.
@@ -1648,7 +1688,10 @@ float GetDynamicSurfaceCausticFocus(float3 normal, float3 worldPosition, float r
 	// those resources are material-local t4-t6 bindings in this Water pass. Build
 	// a bounded first-order refractive footprint here instead, after the complete
 	// wave, flowmap and rain-ripple normal has been composed by GetWaterNormal().
-	float3 sunVector = SharedData::SunDirection.xyz;
+	// On 1.7.104 the per-water sun constants can lag the active scene light.
+	// State marks that runtime in DirLightDirection.w after resolving the live sun.
+	float useActiveSun = SharedData::DirLightDirection.w > 0.5f ? 1.0f : 0.0f;
+	float3 sunVector = lerp(SharedData::SunDirection.xyz, SharedData::DirLightDirection.xyz, useActiveSun);
 	float sunLengthSq = dot(sunVector, sunVector);
 	if (sunLengthSq < 1.0e-6f) {
 		sunVector = SunDir.xyz;
@@ -1665,7 +1708,15 @@ float GetDynamicSurfaceCausticFocus(float3 normal, float3 worldPosition, float r
 	float2 dPdy = ddy_coarse(worldPosition.xy);
 	float2 dSdx = ddx_coarse(raySlope);
 	float2 dSdy = ddy_coarse(raySlope);
+	// Coherent-screen and finite-basis gates prevent a single subpixel normal
+	// from injecting an isolated caustic hot spot at shoreline silhouettes.
+	if (!all(isfinite(float4(dPdx, dPdy))) ||
+		!all(isfinite(float4(dSdx, dSdy))))
+		return 1.0f;
+	float pixelFootprint = max(length(dPdx), length(dPdy));
 	float basisDet = dPdx.x * dPdy.y - dPdx.y * dPdy.x;
+	float basisConditioning = saturate(abs(basisDet) /
+		max(length(dPdx) * length(dPdy), 1.0e-5f));
 	float safeBasisDet = abs(basisDet) > 1e-5f ? basisDet : (basisDet < 0.0f ? -1e-5f : 1e-5f);
 	float invBasisDet = rcp(safeBasisDet);
 
@@ -1694,7 +1745,8 @@ float GetDynamicSurfaceCausticFocus(float3 normal, float3 worldPosition, float r
 	float focusStrength = saturate(SharedData::waterOpticsSettings.CausticsFocus * 0.42f) *
 		saturate(SharedData::waterOpticsSettings.CausticsStrength * 0.65f) *
 		saturate(SharedData::waterOpticsSettings.CausticsVisibility * 0.80f) *
-		validBasis * validTransmission * daylight * depthFade;
+		validBasis * validTransmission * daylight * depthFade *
+		basisConditioning * (1.0f - smoothstep(32.0f, 140.0f, pixelFootprint));
 	return lerp(1.0f, focusedLight, focusStrength);
 }
 
@@ -1706,7 +1758,8 @@ float OceanFoamHash(float2 cell)
 	return frac((p.x + p.y) * p.z);
 }
 
-float2 SampleOceanFoamFilaments(float2 worldXY, float2 orbitalOffset)
+float2 SampleOceanFoamFilamentsGrad(float2 worldXY, float2 orbitalOffset,
+	float2 worldDx, float2 worldDy)
 {
 	// t66 is WaterOptics' existing linear foam artwork, with generated mipmaps.
 	// Bounded orbital advection shares the swell phase; it never scrolls with
@@ -1716,8 +1769,12 @@ float2 SampleOceanFoamFilaments(float2 worldXY, float2 orbitalOffset)
 	float2 uv0 = position * (0.0045f * scale);
 	float2 uv1 = float2(position.x * 0.819152f - position.y * 0.573576f,
 		position.x * 0.573576f + position.y * 0.819152f) * (0.009f * scale) + 0.37f;
-	float2 dx0 = ddx_coarse(uv0), dy0 = ddy_coarse(uv0);
-	float2 dx1 = ddx_coarse(uv1), dy1 = ddy_coarse(uv1);
+	float2 dx0 = worldDx * (0.0045f * scale);
+	float2 dy0 = worldDy * (0.0045f * scale);
+	float2 dx1 = float2(worldDx.x * 0.819152f - worldDx.y * 0.573576f,
+		worldDx.x * 0.573576f + worldDx.y * 0.819152f) * (0.009f * scale);
+	float2 dy1 = float2(worldDy.x * 0.819152f - worldDy.y * 0.573576f,
+		worldDy.x * 0.573576f + worldDy.y * 0.819152f) * (0.009f * scale);
 	uint width, height;
 	WaterFoamStencil.GetDimensions(width, height);
 	float coarsePattern, finePattern;
@@ -1740,6 +1797,12 @@ float2 SampleOceanFoamFilaments(float2 worldXY, float2 orbitalOffset)
 	// Unresolved small cells converge to coverage rather than sparkling.
 	return lerp(0.55f.xx, float2(filaments, bubbles), resolve);
 }
+
+float2 SampleOceanFoamFilaments(float2 worldXY, float2 orbitalOffset)
+{
+	return SampleOceanFoamFilamentsGrad(worldXY, orbitalOffset,
+		ddx_coarse(worldXY), ddy_coarse(worldXY));
+}
 #endif
 
 float GetDynamicWaterFoam(PS_INPUT input, float3 surfaceNormal)
@@ -1757,6 +1820,8 @@ float GetDynamicWaterFoam(PS_INPUT input, float3 surfaceNormal)
 		return 0.0f;
 
 	float3 absolutePosition = input.WPosition.xyz + FrameBuffer::CameraPosAdjust.xyz;
+	float2 foamDx = ddx_coarse(input.WPosition.xy);
+	float2 foamDy = ddy_coarse(input.WPosition.xy);
 	float foamScale = max(SharedData::waterOpticsSettings.FoamScale, 0.5f);
 	float2 flowDirection = 0.0f.xx;
 	float flowStrength = 0.0f;
@@ -1795,6 +1860,11 @@ float GetDynamicWaterFoam(PS_INPUT input, float3 surfaceNormal)
 	float shallowContact =
 		(1.0f - smoothstep(5.0f, 92.0f, receiverSeparation)) * validReceiver;
 
+	// No contact, no flow convergence, no rapid-water source: skip all four
+	// foam/rapid texture samples. This is local and cannot hide shore activity.
+	if (shallowContact < 1.0e-4f && flowChange < 1.0e-4f && flowStrength < 0.015f)
+		return 0.0f;
+
 	// Sample two differently oriented, flow-advected layers. Derivative-aware
 	// sampling selects the generated mip chain and keeps thin stencil filaments
 	// stable under TAA/DLSS rather than crawling at distance.
@@ -1805,10 +1875,16 @@ float GetDynamicWaterFoam(PS_INPUT input, float3 surfaceNormal)
 		absolutePosition.x * 0.819152f - absolutePosition.y * 0.573576f,
 		absolutePosition.x * 0.573576f + absolutePosition.y * 0.819152f);
 	float2 foamUv1 = rotatedPosition * (0.0078f * foamScale) - flowAdvection.yx * float2(-0.73f, 0.73f);
+	float2 foamGradDx0 = foamDx * (0.0045f * foamScale);
+	float2 foamGradDy0 = foamDy * (0.0045f * foamScale);
+	float2 foamGradDx1 = float2(foamDx.x * 0.819152f - foamDx.y * 0.573576f,
+		foamDx.x * 0.573576f + foamDx.y * 0.819152f) * (0.0078f * foamScale);
+	float2 foamGradDy1 = float2(foamDy.x * 0.819152f - foamDy.y * 0.573576f,
+		foamDy.x * 0.573576f + foamDy.y * 0.819152f) * (0.0078f * foamScale);
 	float stencil0 = WaterFoamStencil.SampleGrad(
-		SampColorSampler, foamUv0, ddx_coarse(foamUv0), ddy_coarse(foamUv0));
+		SampColorSampler, foamUv0, foamGradDx0, foamGradDy0);
 	float stencil1 = WaterFoamStencil.SampleGrad(
-		SampColorSampler, foamUv1, ddx_coarse(foamUv1), ddy_coarse(foamUv1));
+		SampColorSampler, foamUv1, foamGradDx1, foamGradDy1);
 	float foamStencil = smoothstep(0.18f, 0.70f, stencil0 * 0.68f + stencil1 * 0.32f);
 
 	float surfaceActivity = saturate(
@@ -1828,9 +1904,11 @@ float GetDynamicWaterFoam(PS_INPUT input, float3 surfaceNormal)
 	float2 rapidUv0 = absolutePosition.xy * (0.0105f * foamScale) - rapidAdvection;
 	float2 rapidUv1 = absolutePosition.xy * (0.0165f * foamScale) + rapidAdvection.yx * float2(-0.62f, 0.62f) + 0.37f;
 	float rapid0 = dot(AuthoredRapidWater.SampleGrad(
-		SampColorSampler, rapidUv0, ddx_coarse(rapidUv0), ddy_coarse(rapidUv0)).rgb, 0.333333f.xxx);
+		SampColorSampler, rapidUv0, foamDx * (0.0105f * foamScale),
+		foamDy * (0.0105f * foamScale)).rgb, 0.333333f.xxx);
 	float rapid1 = dot(AuthoredRapidWater.SampleGrad(
-		SampColorSampler, rapidUv1, ddx_coarse(rapidUv1), ddy_coarse(rapidUv1)).rgb, 0.333333f.xxx);
+		SampColorSampler, rapidUv1, foamDx * (0.0165f * foamScale),
+		foamDy * (0.0165f * foamScale)).rgb, 0.333333f.xxx);
 	float rapidPattern = smoothstep(0.26f, 0.72f, rapid0 * 0.62f + rapid1 * 0.38f);
 	float rapidActivity = smoothstep(0.16f, 0.62f, flowStrength) *
 		saturate(0.38f + flowChange * 1.45f);
@@ -1855,7 +1933,10 @@ float3 GetSunColor(float3 normal, float3 viewDirection, float3 worldPosition)
 		return 0.0.xxx;
 
 	float3 reflectionDirection = reflect(viewDirection, normal);
-	float3 sunVector = SharedData::SunDirection.xyz;
+	// SharedData carries the resolved 1.7.104 directional source; water b2 can
+	// still hold a stale sun color or local-space direction on that runtime.
+	float useActiveSun = SharedData::DirLightDirection.w > 0.5f ? 1.0f : 0.0f;
+	float3 sunVector = lerp(SharedData::SunDirection.xyz, SharedData::DirLightDirection.xyz, useActiveSun);
 	float sunLengthSq = dot(sunVector, sunVector);
 	if (sunLengthSq < 1.0e-6f) {
 		sunVector = SunDir.xyz;
@@ -1878,7 +1959,7 @@ float3 GetSunColor(float3 normal, float3 viewDirection, float3 worldPosition)
 		0.035f,
 		0.42f);
 	float roughnessFactor = saturate((surfaceRoughness - 0.035f) / 0.385f);
-	float tightExponent = lerp(1400.0f, 96.0f, roughnessFactor);
+	float tightExponent = lerp(720.0f, 72.0f, roughnessFactor);
 	float tightGlint = exp2(tightExponent * log2(max(sunAlignment, 1e-6f)));
 	float NdotV = saturate(dot(-viewDirection, normal));
 	float dielectricF0 = clamp(FresnelRI.x, 0.0204f, 0.08f);
@@ -1894,7 +1975,10 @@ float3 GetSunColor(float3 normal, float3 viewDirection, float3 worldPosition)
 #			endif
 
 	float llDirLightMult = (SharedData::linearLightCoreSettings.enableLinearLightCore && !SharedData::linearLightCoreSettings.isDirLightLinear) ? SharedData::linearLightCoreSettings.dirLightMult : 1.0f;
-	float3 sunColor = Color::DirectionalLight((SunColor.xyz * SunDir.w) / max(llDirLightMult, 1e-5), SharedData::linearLightCoreSettings.isDirLightLinear) * (1.0 - exp(-DeepColor.w)) * llDirLightMult;
+	float3 waterSunRadiance = SunColor.xyz * SunDir.w;
+	if (useActiveSun > 0.5f)
+		waterSunRadiance = max(SharedData::DirLightColor.rgb, 0.0f.xxx);
+	float3 sunColor = Color::DirectionalLight(waterSunRadiance / max(llDirLightMult, 1e-5), SharedData::linearLightCoreSettings.isDirLightLinear) * (1.0 - exp(-DeepColor.w)) * llDirLightMult;
 	// Skyrim's active directional key light is refreshed in SharedData every
 	// frame. Add its lobe only when it is not the same source as the water
 	// technique's sun, avoiding a doubled daytime highlight while preserving a
@@ -1909,7 +1993,7 @@ float3 GetSunColor(float3 normal, float3 viewDirection, float3 worldPosition)
 	float keyLobe = exp2(clamp(VarAmounts.x, 4.0f, 512.0f) * log2(max(keyAlignment, 1.0e-6f)));
 	float3 activeKeyColor = Color::DirectionalLight(keyRadiance,
 		SharedData::linearLightCoreSettings.isDirLightLinear) * (1.0f - exp(-DeepColor.w));
-	float3 secondaryKey = activeKeyColor * keyLobe * distinctKey * 0.65f;
+	float3 secondaryKey = activeKeyColor * keyLobe * distinctKey * (1.0f - useActiveSun) * 0.65f;
 
 	// Masser and Secunda are independent world-space directional emitters in
 	// SharedData. Their phase-adjusted colors and directions are updated by the
@@ -2147,7 +2231,7 @@ PS_OUTPUT main(PS_INPUT input)
 #				endif
 
 	finalColor *= fresnel;
-#				if defined(RAIN_RESPONSE) && defined(DEBUG_RAIN_RESPONSE)
+#				if PIXL_WATER_RELEASE_DIAGNOSTICS && defined(RAIN_RESPONSE) && defined(DEBUG_RAIN_RESPONSE)
 	// DEBUG MODE: Override specular color with debug visualization
 	float3 debugColor = RainResponse::GetDebugWetnessColorSpecular(waterData.rippleInfo, 2.5, 4.0);
 	if (any(debugColor)) {
@@ -2259,7 +2343,7 @@ PS_OUTPUT main(PS_INPUT input)
 	float3 finalColor = saturate(1 - length(input.WPosition.xyz) * 0.002) * ((1 - fresnel) * (diffuseColor - finalSpecularColor)) + finalSpecularColor;
 #				endif
 	// Add ripple and splash color effects for underwater
-#					if defined(RAIN_RESPONSE) && defined(DEBUG_RAIN_RESPONSE)
+#					if PIXL_WATER_RELEASE_DIAGNOSTICS && defined(RAIN_RESPONSE) && defined(DEBUG_RAIN_RESPONSE)
 	// DEBUG MODE: Override water color with debug visualization (darker for underwater)
 	float3 debugColor = RainResponse::GetDebugWetnessColorUnderwater(waterData.rippleInfo, 1.5, 2.0);
 	if (any(debugColor)) {
@@ -2369,7 +2453,7 @@ PS_OUTPUT main(PS_INPUT input)
 	}
 #endif
 
-#						if defined(RAIN_RESPONSE) && defined(DEBUG_RAIN_RESPONSE)
+#						if PIXL_WATER_RELEASE_DIAGNOSTICS && defined(RAIN_RESPONSE) && defined(DEBUG_RAIN_RESPONSE)
 	// DEBUG MODE: Override water color with debug visualization
 	float3 debugColor = RainResponse::GetDebugWetnessColorStandard(waterData.rippleInfo, 2.0, 3.0);
 	if (any(debugColor)) {
@@ -2451,7 +2535,7 @@ PS_OUTPUT main(PS_INPUT input)
 	// resolution, so never clip/fade native water from bathymetry: doing so made
 	// large holes and bright refraction slabs wherever the two approximations
 	// disagreed. Bathymetry remains authoritative for shoaling and crest foam.
-#						if defined(RAIN_RESPONSE) && defined(DEBUG_RAIN_RESPONSE)
+#						if PIXL_WATER_RELEASE_DIAGNOSTICS && defined(RAIN_RESPONSE) && defined(DEBUG_RAIN_RESPONSE)
 	// DEBUG MODE: Override water color with debug visualization
 	float3 debugColor = RainResponse::GetDebugWetnessColorStandard(waterData.rippleInfo, 2.0, 3.0);
 	if (any(debugColor)) {

@@ -32,11 +32,13 @@ struct LightGrid
 {
 	uint offset;
 	uint lightCount;
-	// Two cluster-wide influence candidates used by PIXL's bounded local
-	// contact-shadow selection. These occupy the original padding, so the ABI
-	// and buffer stride remain unchanged.
+	// Four cluster-wide influence candidates used by PIXL's bounded local
+	// contact-shadow selection.
 	uint contactLight0;
 	uint contactLight1;
+	uint contactLight2;
+	uint contactLight3;
+	uint2 pad;
 };
 
 struct Light

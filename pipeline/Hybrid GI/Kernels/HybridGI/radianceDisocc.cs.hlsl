@@ -15,6 +15,10 @@ Texture2D<half4> srcPrevIlY : register(t7);            // maybe half-res
 Texture2D<half2> srcPrevIlCoCg : register(t8);         // maybe half-res
 Texture2D<half4> srcPrevGISpecular : register(t9);     // maybe half-res
 Texture2D<half4> srcPrevBentVisibility : register(t10);   // encoded world bent normal.xy, visibility, confidence
+// texRadiance still contains the previous frame's canonical direct-radiance
+// pyramid until this pass completes. Reproject it to detect real illumination
+// changes and retire stale GI history locally.
+Texture2D<float3> srcPreviousRadiance : register(t11);
 
 RWTexture2D<float3> outRadianceDisocc : register(u0);
 RWTexture2D<unorm float> outAccumFrames : register(u1);
@@ -182,12 +186,34 @@ void readHistory(
 	outRadianceDisocc[pixCoord] = radiance;
 
 #ifdef TEMPORAL_DENOISER
+	float prevAccum = accum_frames * 255.0f;
 	// Accepted history has already passed motion, world-position, depth and normal
 	// validation above. Keep its normal convergence budget during camera rotation;
 	// reducing every fast-moving pixel to four frames made otherwise valid indirect
 	// illumination visibly brighten/darken while panning. True disocclusions have no
 	// accepted weight and naturally restart from one sample.
-	float prevAccum = accum_frames * 255;
+	// Geometry-validated reprojection gives us the previous direct-light sample
+	// at this receiver. A large radiance change means the indirect solution is
+	// stale even if its noisy estimate happens to match the old value; cap its
+	// history length locally instead of flushing all GI buffers.
+	if (wsum > 1e-2f && all(prev_uv >= 0.0f) && all(prev_uv <= 1.0f)) {
+		float3 previousRadiance = max(srcPreviousRadiance.SampleLevel(
+			samplerLinearClamp, InternalFrameTextureUV(prev_uv), 0.0f), 0.0f);
+		float3 currentRadiance = max((float3)radiance, 0.0f);
+		float currentEnergy = dot(currentRadiance, float3(0.2126f, 0.7152f, 0.0722f));
+		float previousEnergy = dot(previousRadiance, float3(0.2126f, 0.7152f, 0.0722f));
+		float luminanceChange = abs(currentEnergy - previousEnergy) /
+			max(max(currentEnergy, previousEnergy), 0.04f);
+		float colourChange = length(currentRadiance - previousRadiance) /
+			max(max(length(currentRadiance), length(previousRadiance)), 0.08f);
+		float relativeChange = max(luminanceChange, colourChange);
+		float lightingReactivity = smoothstep(0.12f, 0.55f, relativeChange);
+		float responsiveHistory = lerp((float)MaxAccumFrames, 1.0f, lightingReactivity);
+		float acceptedHistory = saturate(wsum * 4.0f);
+		prevAccum = min(prevAccum,
+			lerp((float)MaxAccumFrames, responsiveHistory, acceptedHistory));
+	}
+
 	accum_frames = max(1, min(prevAccum + 1, MaxAccumFrames));
 	outAccumFrames[pixCoord] = accum_frames / 255.0;
 	outRemappedAo[pixCoord] = prev_ao;

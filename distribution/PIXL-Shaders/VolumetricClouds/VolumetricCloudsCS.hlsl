@@ -188,6 +188,17 @@ Texture2D<float> SceneDepth : register(t1);
 RWTexture2D<float4> CloudOutput : register(u0);
 RWTexture2D<float> CloudDepthOutput : register(u1);
 
+float LoadSceneDepth(float2 uv)
+{
+	uint width, height;
+	SceneDepth.GetDimensions(width, height);
+	if (width == 0u || height == 0u)
+		return 1.0f;
+	float2 depthUV = saturate(FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(uv));
+	uint2 pixel = min((uint2)(depthUV * float2(width, height)), uint2(width - 1u, height - 1u));
+	return SceneDepth.Load(int3(pixel, 0));
+}
+
 float HeightProfile(float h, float type)
 {
 	float bottom = smoothstep(0.0f, lerp(0.12f, 0.055f, type), h);
@@ -329,7 +340,7 @@ void RaymarchCS(uint3 dispatchThreadID : SV_DispatchThreadID)
 	if (any(pixel >= uint2(RenderSize.xy)))
 		return;
 	float2 uv = (float2(pixel) + 0.5f) * RenderSize.zw;
-	float fullDepth = SceneDepth.SampleLevel(LinearClamp, FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(uv), 0);
+	float fullDepth = LoadSceneDepth(uv);
 	float3 engineCamera;
 	float3 ray = ReconstructRay(uv, engineCamera);
 	float3 cameraAbsolute = engineCamera + FrameBuffer::CameraPosAdjust.xyz;
@@ -347,29 +358,53 @@ void RaymarchCS(uint3 dispatchThreadID : SV_DispatchThreadID)
 		CloudDepthOutput[pixel] = Layer.z;
 		return;
 	}
-	entryDistance = lowerHit && upperHit ? min(lowerEntry, upperEntry) : (lowerHit ? lowerEntry : upperEntry);
-	exitDistance = lowerHit && upperHit ? max(lowerExit, upperExit) : (lowerHit ? lowerExit : upperExit);
-	// Geometry in front of the cloud interval prevents needless cloud work.
-	if (fullDepth < 0.99999f) {
+	// Clip each shell independently against opaque geometry. Marching the union's
+	// bounding interval wastes most samples in the empty gap between cloud decks,
+	// which is especially visible as horizontal banding in the high layer.
+	if (fullDepth < 1.0f) {
 		float4 scenePoint = mul(FrameBuffer::CameraViewProjInverse,
 			float4(uv * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), fullDepth, 1.0f));
 		float sceneDistance = length(scenePoint.xyz / max(abs(scenePoint.w), 1.0e-6f) - engineCamera);
-		exitDistance = min(exitDistance, sceneDistance);
-		if (exitDistance <= entryDistance + 1.0f) {
-			CloudOutput[pixel] = float4(0.0f, 0.0f, 0.0f, 1.0f);
-			CloudDepthOutput[pixel] = Layer.z;
-			return;
-		}
+		lowerExit = min(lowerExit, sceneDistance);
+		upperExit = min(upperExit, sceneDistance);
+		lowerHit = lowerHit && lowerExit > lowerEntry + 1.0f;
+		upperHit = upperHit && upperExit > upperEntry + 1.0f;
 	}
+	if (!lowerHit && !upperHit) {
+		CloudOutput[pixel] = float4(0.0f, 0.0f, 0.0f, 1.0f);
+		CloudDepthOutput[pixel] = Layer.z;
+		return;
+	}
+	// Order the two intervals front-to-back. If their projected shells overlap,
+	// merge them: SampleDensity already evaluates both decks at each position.
+	if (lowerHit && upperHit && upperEntry < lowerEntry) {
+		float tempEntry = lowerEntry;
+		float tempExit = lowerExit;
+		lowerEntry = upperEntry;
+		lowerExit = upperExit;
+		upperEntry = tempEntry;
+		upperExit = tempExit;
+	}
+	if (lowerHit && upperHit && upperEntry <= lowerExit) {
+		lowerExit = max(lowerExit, upperExit);
+		upperHit = false;
+	}
+	float firstEntry = lowerHit ? lowerEntry : upperEntry;
+	float firstExit = lowerHit ? lowerExit : upperExit;
+	float firstLength = firstExit - firstEntry;
+	float secondEntry = upperHit ? upperEntry : 0.0f;
+	float secondExit = upperHit ? upperExit : 0.0f;
+	float secondLength = upperHit ? secondExit - secondEntry : 0.0f;
+	float totalCloudLength = firstLength + secondLength;
+	entryDistance = firstEntry;
+	exitDistance = upperHit ? secondExit : firstExit;
 
 	// Keep interval spacing consistent with the statically bounded march.
 	// Values above 96 otherwise advance with a larger base step but stop after
 	// 96 iterations, leaving part of the cloud shell under-sampled.
 	uint stepCount = clamp(Quality.x, 8u, 96u);
-	float interval = exitDistance - entryDistance;
-	float baseStep = interval / float(stepCount);
+	float baseStep = totalCloudLength / float(stepCount);
 	float jitter = frac(Hash21(int2(pixel) + int2((uint)Temporal.z * 23u, (uint)Temporal.z * 47u)) + 0.6180339f * Temporal.z);
-	float distance = entryDistance + baseStep * jitter;
 	float transmittance = 1.0f;
 	float3 radiance = 0.0f;
 	float representativeDepth = exitDistance;
@@ -380,8 +415,12 @@ void RaymarchCS(uint3 dispatchThreadID : SV_DispatchThreadID)
 	float phaseForward = HG(cosTheta, Phase.x);
 	float phaseBackward = HG(cosTheta, Phase.y);
 	float phaseValue = phaseForward * 0.78f + phaseBackward * 0.22f;
+	// A broad multiple-scattering share keeps the solar lobe stable as the view
+	// crosses the sun direction and retains some direct energy through overcast.
+	phaseValue = lerp(1.0f / (4.0f * 3.14159265359f), phaseValue, 0.68f);
 	float silver = pow(saturate(cosTheta), lerp(8.0f, 28.0f, saturate(Phase.z))) * Phase.z;
-	float3 directColor = max(SharedData::DirLightColor.rgb, 0.0f) * WeatherSecondary.w;
+	float directVisibility = lerp(0.16f, 1.0f, saturate(WeatherSecondary.w));
+	float3 directColor = max(SharedData::DirLightColor.rgb, 0.0f) * directVisibility;
 	float3 ambientColor = max(float3(SharedData::AmbientSHR.x, SharedData::AmbientSHG.x, SharedData::AmbientSHB.x), 0.015f.xxx);
 	// Skyrim exposes the two moon directions and their phase-adjusted colors in
 	// SharedData. Use them as a low-energy, directional night fill so moonlit
@@ -400,15 +439,29 @@ void RaymarchCS(uint3 dispatchThreadID : SV_DispatchThreadID)
 
 	[loop]
 	for (uint stepIndex = 0u; stepIndex < 96u; ++stepIndex) {
-		if (stepIndex >= stepCount || distance >= exitDistance || transmittance < 0.012f)
+		if (stepIndex >= stepCount || transmittance < 0.012f)
 			break;
-		float adaptiveStep = min(baseStep * (1.0f + saturate(distance / max(Layer.z, 1.0f)) * 0.85f),
-			exitDistance - distance);
+		float pathDistance = (float(stepIndex) + jitter) * baseStep;
+		float distance = firstEntry;
+		float segmentEnd = firstExit;
+		if (pathDistance < firstLength) {
+			distance = firstEntry + pathDistance;
+			segmentEnd = firstExit;
+		} else if (upperHit && pathDistance < totalCloudLength) {
+			distance = secondEntry + (pathDistance - firstLength);
+			segmentEnd = secondExit;
+		} else {
+			break;
+		}
+		// Keep a stable sample footprint within each occupied shell. Expanding
+		// steps with camera distance reintroduced visible strata at the horizon.
+		float adaptiveStep = min(baseStep, segmentEnd - distance);
+		if (adaptiveStep <= 1.0f)
+			continue;
 		float3 position = cameraAbsolute + ray * distance;
 		float density = SampleDensity(position, true);
 		if (density <= 0.002f) {
 			emptyRun++;
-			distance += adaptiveStep * (emptyRun > 2u ? 2.2f : 1.0f);
 			continue;
 		}
 		emptyRun = 0u;
@@ -455,7 +508,6 @@ void RaymarchCS(uint3 dispatchThreadID : SV_DispatchThreadID)
 			representativeDepth = distance;
 		accumulatedWeight += segmentWeight;
 		transmittance *= segmentTransmittance;
-		distance += adaptiveStep;
 	}
 	if (!all(isfinite(radiance)) || !isfinite(transmittance)) {
 		radiance = 0.0f;
@@ -470,8 +522,38 @@ Texture2D<float4> CurrentCloud : register(t0);
 Texture2D<float> CurrentCloudDepth : register(t1);
 Texture2D<float4> PreviousCloud : register(t2);
 Texture2D<float> PreviousCloudDepth : register(t3);
+Texture2D<float> TemporalSceneDepth : register(t4);
 RWTexture2D<float4> ResolvedCloud : register(u0);
 RWTexture2D<float> ResolvedCloudDepth : register(u1);
+
+float LoadTemporalSceneDepth(float2 uv)
+{
+	uint width, height;
+	TemporalSceneDepth.GetDimensions(width, height);
+	if (width == 0u || height == 0u)
+		return 1.0f;
+	float2 depthUV = saturate(FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(saturate(uv)));
+	uint2 pixel = min((uint2)(depthUV * float2(width, height)), uint2(width - 1u, height - 1u));
+	return TemporalSceneDepth.Load(int3(pixel, 0));
+}
+
+float PreviousRayDistance(float2 uv, float previousViewDepth, out bool valid)
+{
+	float2 ndc = uv * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f);
+	float4 viewRayH = mul(FrameBuffer::CameraProjUnjitteredInverse, float4(ndc, 1.0f, 1.0f));
+	valid = all(isfinite(viewRayH)) && abs(viewRayH.w) > 1.0e-6f;
+	if (!valid)
+		return 0.0f;
+	float3 viewRay = viewRayH.xyz / viewRayH.w;
+	float rayLength = length(viewRay);
+	float viewZ = abs(viewRay.z);
+	valid = all(isfinite(viewRay)) && isfinite(rayLength) && rayLength > 1.0e-5f && viewZ > 1.0e-4f;
+	if (!valid)
+		return 0.0f;
+	float rayDistance = previousViewDepth * rayLength / viewZ;
+	valid = isfinite(rayDistance) && rayDistance > 0.0f;
+	return valid ? rayDistance : 0.0f;
+}
 
 [numthreads(8, 8, 1)]
 void TemporalCS(uint3 dispatchThreadID : SV_DispatchThreadID)
@@ -490,7 +572,14 @@ void TemporalCS(uint3 dispatchThreadID : SV_DispatchThreadID)
 	float3 ray = ReconstructRay(uv, engineCamera);
 	float3 currentEnginePosition = engineCamera + ray * currentDepth;
 	float3 currentAbsolutePosition = currentEnginePosition + FrameBuffer::CameraPosAdjust.xyz;
-	float upperHeight = (currentAbsolutePosition.z - UpperLayer.x) / max(UpperLayer.y - UpperLayer.x, 1.0f);
+	float2 cameraAbsoluteXY = FrameBuffer::CameraPosAdjust.xy + engineCamera.xy;
+	float horizontalDistance = length(currentAbsolutePosition.xy - cameraAbsoluteXY);
+	// Match SampleDensity's curved-shell height test. World Z alone misclassifies
+	// nearly horizontal far-cloud samples, selecting the wrong layer wind during
+	// temporal reprojection and leaving a second moving deck behind its source.
+	float curvedHeight = currentAbsolutePosition.z +
+		horizontalDistance * horizontalDistance / max(2.0f * Layer.w, 1.0f);
+	float upperHeight = (curvedHeight - UpperLayer.x) / max(UpperLayer.y - UpperLayer.x, 1.0f);
 	bool onUpperLayer = UpperLayer.z > 1.0e-4f && upperHeight > 0.0f && upperHeight < 1.0f;
 	float height = saturate((currentAbsolutePosition.z - Layer.x) / max(Layer.y - Layer.x, 1.0f));
 	float2 perpendicularWind = float2(-CloudMotion.y, CloudMotion.x);
@@ -504,7 +593,10 @@ void TemporalCS(uint3 dispatchThreadID : SV_DispatchThreadID)
 	previousEnginePosition.xy -= layerWind * max(CloudMotion.z, 0.0f);
 	float4 previousClip = mul(FrameBuffer::CameraPreviousViewProjUnjittered, float4(previousEnginePosition, 1.0f));
 	float2 previousUV = previousClip.xy / max(abs(previousClip.w), 1.0e-6f) * float2(0.5f, -0.5f) + 0.5f;
-	bool historyUsable = Temporal.y > 0.5f && previousClip.w > 0.0f && all(previousUV > 0.0f) && all(previousUV < 1.0f);
+	bool previousRayValid;
+	float previousRayDepth = PreviousRayDistance(previousUV, abs(previousClip.w), previousRayValid);
+	bool historyUsable = Temporal.y > 0.5f && all(isfinite(previousClip)) && previousClip.w > 0.0f &&
+		previousRayValid && all(previousUV > 0.0f) && all(previousUV < 1.0f);
 	float4 history = current;
 	float historyDepth = currentDepth;
 	if (historyUsable) {
@@ -529,17 +621,38 @@ void TemporalCS(uint3 dispatchThreadID : SV_DispatchThreadID)
 			}
 		}
 		history = clamp(history, localMin - 0.035f, localMax + 0.035f);
-		float depthError = abs(historyDepth - currentDepth) / max(currentDepth, 2048.0f);
+		// Compare the fetched history depth with this world feature's expected
+		// radial distance from the previous camera. Comparing against currentDepth
+		// incorrectly penalizes camera translation and is permissive for unrelated
+		// cloud samples at similar current-frame distance.
+		float depthError = abs(historyDepth - previousRayDepth) / max(previousRayDepth, 2048.0f);
 		float weatherMotion = saturate(length(WindTime.xy) * WindTime.w / 1200.0f + WeatherSecondary.z * 0.08f);
 		// Reprojection keeps a cloud feature attached to its world position, but
 		// its view-dependent lighting changes as the camera turns. Large screen
 		// reprojection deltas therefore need to shed old radiance even when depth
 		// still matches (otherwise a bright cloud edge leaves a visible sky trail).
-		float screenMotion = length(previousUV - uv);
-		float cameraMotionRejection = saturate(screenMotion * 24.0f);
-		float rejection = saturate(depthError / max(Temporal.w, 0.001f) + weatherMotion);
+		float screenMotionPixels = length((previousUV - uv) * RenderSize.xy);
+		// Reject old cloud radiance once reprojected features move several pixels;
+		// a normalized-UV threshold allowed long trails at common render sizes.
+		float cameraMotionRejection = smoothstep(0.05f, 0.9f, screenMotionPixels);
+		float rejection = saturate(depthError / max(min(Temporal.w, 0.045f), 0.001f) + weatherMotion);
 		rejection = max(rejection, cameraMotionRejection);
-		float historyWeight = saturate(Temporal.x * (1.0f - rejection));
+		float historyWeight = min(saturate(Temporal.x * (1.0f - rejection)), 0.84f);
+		// Thin foliage and object edges can cross a low-resolution cloud pixel
+		// without changing its representative cloud depth. Shed cloud history in
+		// mixed foreground/sky pixels so it cannot trail the moving silhouette.
+		if (historyWeight > 0.12f) {
+			float2 offset = RenderSize.zw * 0.35f;
+			float4 sceneDepths = float4(
+				LoadTemporalSceneDepth(uv + float2(-offset.x, -offset.y)),
+				LoadTemporalSceneDepth(uv + float2( offset.x, -offset.y)),
+				LoadTemporalSceneDepth(uv + float2(-offset.x,  offset.y)),
+				LoadTemporalSceneDepth(uv + float2( offset.x,  offset.y)));
+			float closestDepth = min(min(sceneDepths.x, sceneDepths.y), min(sceneDepths.z, sceneDepths.w));
+			float farthestDepth = max(max(sceneDepths.x, sceneDepths.y), max(sceneDepths.z, sceneDepths.w));
+			if (closestDepth < 0.9999f && farthestDepth >= 0.9999f)
+				historyWeight = min(historyWeight, 0.12f);
+		}
 		result = lerp(current, history, historyWeight);
 	}
 	ResolvedCloud[pixel] = result;
@@ -552,6 +665,81 @@ Texture2D<float> CompositeSceneDepth : register(t2);
 Texture2D<float4> CompositeWeather : register(t3);
 Texture3D<float4> CloudIntegratedFog : register(t19);
 RWTexture2D<float4> SceneColor : register(u0);
+
+float LoadCompositeSceneDepth(float2 uv)
+{
+	uint width, height;
+	CompositeSceneDepth.GetDimensions(width, height);
+	if (width == 0u || height == 0u)
+		return 1.0f;
+	float2 depthUV = saturate(FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(uv));
+	uint2 pixel = min((uint2)(depthUV * float2(width, height)), uint2(width - 1u, height - 1u));
+	return CompositeSceneDepth.Load(int3(pixel, 0));
+}
+
+float4 SampleCompositeCloud(float2 uv, out float cloudDepth)
+{
+	uint width, height;
+	CompositeCloud.GetDimensions(width, height);
+	if (width == 0u || height == 0u) {
+		cloudDepth = Layer.z;
+		return float4(0.0f, 0.0f, 0.0f, 1.0f);
+	}
+
+	float4 filteredColors = CompositeCloud.SampleLevel(LinearClamp, uv, 0);
+	float filteredDepth = CompositeCloudDepth.SampleLevel(LinearClamp, uv, 0);
+	float4 gatheredAlpha = CompositeCloud.GatherAlpha(LinearClamp, uv);
+	float4 gatheredDepth = CompositeCloudDepth.Gather(LinearClamp, uv);
+	float4 gatheredOpacity = saturate(1.0f - gatheredAlpha);
+	float minimumOpacity = min(min(gatheredOpacity.x, gatheredOpacity.y), min(gatheredOpacity.z, gatheredOpacity.w));
+	float maximumOpacity = max(max(gatheredOpacity.x, gatheredOpacity.y), max(gatheredOpacity.z, gatheredOpacity.w));
+	float depthMinimum = min(min(gatheredDepth.x, gatheredDepth.y), min(gatheredDepth.z, gatheredDepth.w));
+	float depthMaximum = max(max(gatheredDepth.x, gatheredDepth.y), max(gatheredDepth.z, gatheredDepth.w));
+
+	// Preserve inexpensive bilinear filtering inside coherent cloud regions. At
+	// silhouettes, favor taps with matching coverage and front depth so a distant
+	// deck cannot bleed across a nearby cloud edge (or vice versa).
+	if (maximumOpacity - minimumOpacity > 0.12f ||
+		depthMaximum - depthMinimum > max(900.0f, filteredDepth * 0.08f)) {
+		float2 texelPosition = saturate(uv) * float2(width, height) - 0.5f;
+		int2 basePixel = (int2)floor(texelPosition);
+		float2 fraction = frac(texelPosition);
+		int2 maxPixel = int2(width - 1u, height - 1u);
+		int2 p00 = clamp(basePixel, 0, maxPixel);
+		int2 p10 = clamp(basePixel + int2(1, 0), 0, maxPixel);
+		int2 p01 = clamp(basePixel + int2(0, 1), 0, maxPixel);
+		int2 p11 = clamp(basePixel + int2(1, 1), 0, maxPixel);
+		float4 c00 = CompositeCloud.Load(int3(p00, 0));
+		float4 c10 = CompositeCloud.Load(int3(p10, 0));
+		float4 c01 = CompositeCloud.Load(int3(p01, 0));
+		float4 c11 = CompositeCloud.Load(int3(p11, 0));
+		float4 depths = float4(CompositeCloudDepth.Load(int3(p00, 0)), CompositeCloudDepth.Load(int3(p10, 0)),
+			CompositeCloudDepth.Load(int3(p01, 0)), CompositeCloudDepth.Load(int3(p11, 0)));
+		float4 bilinear = float4((1.0f - fraction.x) * (1.0f - fraction.y),
+			fraction.x * (1.0f - fraction.y), (1.0f - fraction.x) * fraction.y, fraction.x * fraction.y);
+		int2 anchorPixel = clamp(basePixel + int2(fraction.x >= 0.5f ? 1 : 0, fraction.y >= 0.5f ? 1 : 0), 0, maxPixel);
+		float anchorDepth = CompositeCloudDepth.Load(int3(anchorPixel, 0));
+		float anchorOpacity = saturate(1.0f - CompositeCloud.Load(int3(anchorPixel, 0)).a);
+		float depthTolerance = max(512.0f, anchorDepth * 0.045f);
+		float4 depthWeight = exp2(-abs(depths - anchorDepth) / depthTolerance);
+		float4 opacity = saturate(1.0f - float4(c00.a, c10.a, c01.a, c11.a));
+		float4 opacityWeight = exp2(-abs(opacity - anchorOpacity) * 10.0f);
+		float4 filteredWeights = bilinear * depthWeight * opacityWeight;
+		float weightSum = dot(filteredWeights, 1.0f.xxxx);
+		if (isfinite(weightSum) && weightSum > 1.0e-5f) {
+			filteredColors = (filteredWeights.x * c00 + filteredWeights.y * c10 +
+				filteredWeights.z * c01 + filteredWeights.w * c11) / weightSum;
+			filteredDepth = dot(filteredWeights, depths) / weightSum;
+		}
+	}
+	cloudDepth = isfinite(filteredDepth) ? clamp(filteredDepth, 0.0f, Layer.z) : Layer.z;
+	return all(isfinite(filteredColors)) ? filteredColors : float4(0.0f, 0.0f, 0.0f, 1.0f);
+}
+
+// Sky depth can differ from the clear value by a few UNORM/viewport precision
+// steps. Treat that narrow far-plane band consistently across cloud compositing
+// so a depth quantization edge cannot split the sky into a rectangular slab.
+static const float kCompositeSkyDepthThreshold = 0.99999f;
 
 float3 ProceduralAurora(float3 ray, float time, float strength)
 {
@@ -692,30 +880,31 @@ void CompositeCS(uint3 dispatchThreadID : SV_DispatchThreadID)
 	if (any(pixel >= uint2(FullSize.xy)))
 		return;
 	float2 uv = (float2(pixel) + 0.5f) * FullSize.zw;
-	// Match the dynamic-resolution depth mapping used during the raymarch. A raw
-	// output-pixel load can address a different depth texel when Skyrim's scene
-	// buffers are scaled, causing foreground mountain LOD to incorrectly reject
-	// clouds that the raymarch correctly found in front of it.
-	float depth = CompositeSceneDepth.SampleLevel(LinearClamp,
-		FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(uv), 0);
+	// Use the same point depth as the raymarch. Linear filtering of nonlinear
+	// depth blends foreground geometry with the far plane at silhouettes.
+	float depth = LoadCompositeSceneDepth(uv);
 	float4 scene = SceneColor[pixel];
-	float cloudDepth = CompositeCloudDepth.SampleLevel(LinearClamp, uv, 0);
-	float4 cloud = CompositeCloud.SampleLevel(LinearClamp, uv, 0);
+	float cloudDepth;
+	float4 cloud = SampleCompositeCloud(uv, cloudDepth);
 	float3 engineCamera = float3(FrameBuffer::CameraViewInverse[0][3],
 		FrameBuffer::CameraViewInverse[1][3], FrameBuffer::CameraViewInverse[2][3]);
 	float3 ray = ReconstructRay(uv, engineCamera);
-	bool cloudInFrontOfScene = true;
-	if (depth < 0.99999f) {
+	float cloudVisibility = 1.0f;
+	if (depth < kCompositeSkyDepthThreshold) {
 		float4 scenePoint = mul(FrameBuffer::CameraViewProjInverse,
 			float4(uv * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), depth, 1.0f));
 		float sceneDistance = length(scenePoint.xyz / max(abs(scenePoint.w), 1.0e-6f) - engineCamera);
-		cloudInFrontOfScene = cloudDepth + max(64.0f, sceneDistance * 0.002f) < sceneDistance;
+		// The cloud depth is a low-resolution front sample. A binary test turns
+		// its upsampled edge into a white stencil over map terrain. Fade the
+		// radiance/transmittance through a finite contact interval instead.
+		float transition = max(384.0f, sceneDistance * 0.030f);
+		cloudVisibility = smoothstep(-transition, transition, sceneDistance - cloudDepth);
 	}
-	if (!cloudInFrontOfScene)
-		cloud = float4(0.0f, 0.0f, 0.0f, 1.0f);
+	cloud.rgb *= cloudVisibility;
+	cloud.a = lerp(1.0f, cloud.a, cloudVisibility);
 	// Grade only the existing sky background. Keep volumetric cloud radiance,
 	// finite-depth geometry and Atmosphere's fog/visibility controls independent.
-	if (depth >= 0.99999f) {
+	if (depth >= kCompositeSkyDepthThreshold) {
 		float exposure = exp2(clamp(WindTime.z, -8.0f, 4.0f));
 		float3 exposedSky = max(scene.rgb, 0.0f.xxx) * exposure;
 		float skyLuminance = dot(exposedSky, float3(0.2126f, 0.7152f, 0.0722f));
@@ -724,9 +913,9 @@ void CompositeCS(uint3 dispatchThreadID : SV_DispatchThreadID)
 		float3 aurora = ProceduralAurora(ray, SkyEffects.y, SkyEffects.x);
 		scene.rgb += aurora;
 	}
-	if (Composite.w == 1.0f && depth >= 0.99999f)
+	if (Composite.w == 1.0f && depth >= kCompositeSkyDepthThreshold)
 		scene.rgb = cloud.rgb;
-	else if (Composite.w == 2.0f && depth >= 0.99999f)
+	else if (Composite.w == 2.0f && depth >= kCompositeSkyDepthThreshold)
 		scene.rgb = (1.0f - cloud.a).xxx;
 	else {
 		float3 cloudPosition = engineCamera + ray * cloudDepth;
@@ -734,7 +923,7 @@ void CompositeCS(uint3 dispatchThreadID : SV_DispatchThreadID)
 		cloud.rgb = cloud.rgb * fog.a + fog.rgb * (1.0f - cloud.a);
 		scene.rgb = cloud.rgb + scene.rgb * cloud.a;
 	}
-	if (depth >= 0.99999f && SkyEffects.z > 0.001f) {
+	if (depth >= kCompositeSkyDepthThreshold && SkyEffects.z > 0.001f) {
 		float bolt = ProceduralLightning(uv, SkyEffects.z, SkyEffects.w,
 			LightningPosition.xyz, Layer.y);
 		// The bolt lives behind the cloud cover. A small residual keeps bright
@@ -749,7 +938,7 @@ void CompositeCS(uint3 dispatchThreadID : SV_DispatchThreadID)
 		float3 lightningCore = lerp(lightningColor, 1.0f.xxx, 0.72f);
 		scene.rgb += lightningCore * (visibleBolt * 18.0f) + lightningColor * (flashGlow * 1.8f);
 	}
-	if (depth < 0.99999f && Composite.x > 0.0f) {
+	if (depth < kCompositeSkyDepthThreshold && Composite.x > 0.0f) {
 		float4 world = mul(FrameBuffer::CameraViewProjInverse,
 			float4(uv * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), depth, 1.0f));
 		world.xyz /= max(abs(world.w), 1.0e-6f);
@@ -779,8 +968,11 @@ void CompositeCS(uint3 dispatchThreadID : SV_DispatchThreadID)
 					float baseNoise = Noise3Periodic(noisePosition, 4096);
 					float threshold = lerp(0.77f, 0.30f, coverage);
 					float cloudMask = smoothstep(threshold - 0.08f, threshold + 0.10f, baseNoise) * coverage;
-					float shadow = cloudMask * Composite.x * sunVisibility * 0.72f;
-					scene.rgb *= 1.0f - saturate(shadow);
+					// This late composite cannot isolate direct diffuse from ambient or
+					// emissive scene light. Keep it as a restrained cloud-shaped cue;
+					// full directional occlusion is handled by world-space shadowing.
+					float shadow = cloudMask * Composite.x * sunVisibility * 0.38f;
+					scene.rgb *= 1.0f - min(saturate(shadow), 0.38f);
 				}
 			}
 		}

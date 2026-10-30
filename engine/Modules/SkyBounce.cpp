@@ -282,6 +282,8 @@ void SkyBounce::Prepass()
 {
 	if (!globals::state || globals::state->isMapMenuOpen)
 		return;
+	if (REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104 && queuedResetSkyBounce)
+		ResetSkyBounce();
 
 	bool interior = true;
 
@@ -335,6 +337,18 @@ void SkyBounce::Prepass()
 			texShadowBitmask->uav.get(),
 			texShadowVisibility->uav.get()
 		};
+		if (REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104) {
+			// 1.7.104's directional shadow capture is still being verified. An
+			// invalid cascade sample can fill this volume with zero and suppress
+			// direct sun across the scene. Keep its cleared visibility of one;
+			// Skyrim's detailed shadow mask remains in the lighting pass.
+			uavs[3] = nullptr;
+			static bool loggedShadowVisibilityFallback = false;
+			if (!loggedShadowVisibilityFallback) {
+				logger::warn("[SKY_BOUNCE] 1.7.104: bypassing unverified probe shadow visibility; retaining the detailed shadow mask.");
+				loggedShadowVisibilityFallback = true;
+			}
+		}
 		std::array<ID3D11SamplerState*, 1> samplers = {
 			comparisonSampler.get()
 		};
@@ -387,7 +401,12 @@ void SkyBounce::PostPostLoad()
 {
 	logger::info("[SKY_BOUNCE] Hooking BSLightingShaderProperty::GetPrecipitationOcclusionMapRenderPassesImp");
 	stl::write_vfunc<0x2D, BSLightingShaderProperty_GetPrecipitationOcclusionMapRenderPassesImpl>(RE::VTABLE_BSLightingShaderProperty[0]);
-	stl::write_thunk_call<Main_Precipitation_RenderOcclusion>(REL::RelocationID(35560, 36559).address() + REL::Relocate(0x3A1, 0x3A1));
+	if (REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104) {
+		// +0x3A1 is not a call boundary in 1.7.104's Main::RenderPlayerView.
+		logger::warn("[SKY_BOUNCE] Skipping unverified precipitation call-site hook on Skyrim 1.7.104.");
+	} else {
+		stl::write_thunk_call<Main_Precipitation_RenderOcclusion>(REL::RelocationID(35560, 36559).address() + REL::Relocate(0x3A1, 0x3A1));
+	}
 
 	stl::write_thunk_call<SetViewFrustum>(REL::RelocationID(25643, 26185).address() + REL::Relocate(0x5D9, 0x59D));
 

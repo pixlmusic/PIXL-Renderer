@@ -12,6 +12,8 @@ function(pixl_add_portable_test TARGET SOURCE)
 endfunction()
 
 if(BUILD_TESTING)
+    pixl_add_portable_test(PIXLTestTemporalMath
+        "${CMAKE_SOURCE_DIR}/tools/TestTemporalMath.cpp")
     pixl_add_portable_test(PIXLTestCameraReprojection
         "${CMAKE_SOURCE_DIR}/tools/TestCameraReprojection.cpp")
     if(WIN32)
@@ -63,7 +65,7 @@ if(BUILD_TESTING)
 
     find_program(PIXL_TEST_POWERSHELL NAMES pwsh powershell)
     if(WIN32 AND PIXL_TEST_POWERSHELL)
-        foreach(_contract IN ITEMS RenderPassScheduler GPUResourceServices HookRegistry RendererMetadata LightTransportWorld ModuleRulesCache TemporalContext PixelAnnotations ReconstructionContext ReconstructionSafety GPUWorkloadBudgeter ReflectionContext VolumetricContext)
+        foreach(_contract IN ITEMS RenderPassScheduler GPUResourceServices HookRegistry RendererMetadata LightTransportWorld ModuleRulesCache TemporalContext PixelAnnotations ReconstructionContext ReconstructionSafety GPUWorkloadBudgeter ReflectionContext VolumetricContext TerrainWetness)
             add_test(
                 NAME PIXLContract${_contract}
                 COMMAND ${PIXL_TEST_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
@@ -98,6 +100,7 @@ if(BUILD_TESTING)
             -C $<CONFIG> --output-on-failure -L portable
         DEPENDS
             ${PIXL_WINDOWS_MODERNISATION_TESTS}
+            PIXLTestTemporalMath
             PIXLTestCameraReprojection
             PIXLTestReactiveFXSpawnSafety
             PIXLTestRenderOrigin

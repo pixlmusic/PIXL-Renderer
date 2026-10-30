@@ -246,8 +246,15 @@ void InjectWorldVoxel(float3 worldPosition, float3 worldNormal, float3 cameraWS,
             response = max(response * lerp(1.0f, 0.55f, relativeChange), 0.09f);
         } else if (historyValid) {
             // Many same-plane pixels compete for one coarse cell. Do not let a
-            // randomly darker atomic winner bypass the configured smoothing.
+            // slightly darker winner bypass the configured smoothing. A large,
+            // coherent drop is different: it usually means a direct emitter was
+            // occluded/removed or the represented lighting changed. Let those
+            // stale bright voxels drain promptly instead of leaving a visible GI
+            // trail for the full low-response cache half-life.
             response = min(max(response, 0.06f + relativeChange * 0.04f), 0.10f);
+            float darkeningResponse = lerp(0.10f, 0.28f,
+                smoothstep(0.20f, 0.70f, saturate((oldLum - newLum) / max(oldLum, 0.05f))));
+            response = max(response, darkeningResponse);
         }
 
         if (historyValid) {

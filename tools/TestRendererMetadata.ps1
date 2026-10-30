@@ -26,6 +26,6 @@ foreach ($contract in @(
     Require-Text $contract[0] $contract[1] $contract[2]
 }
 
-Require-Text 'engine\Modules\CameraSuite.cpp' 'CameraDofFStop\.defaultValue' 'restore-default schema linkage'
+Require-Text 'engine\Modules\CameraSuiteSettings.cpp' 'CameraDofFStop\.defaultValue' 'restore-default schema linkage'
 Require-Text 'engine\Menu\WorkshopToolsRenderer.cpp' 'ShaderABIHash' 'developer metadata diagnostics'
 Write-Host 'PASS: shared settings defaults/ranges and critical CPU/HLSL ABI ownership contracts validated.'

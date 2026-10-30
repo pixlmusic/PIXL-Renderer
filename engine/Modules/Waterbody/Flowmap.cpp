@@ -10,11 +10,20 @@
 #include <charconv>
 #include <cmath>
 #include <cstring>
+#include <algorithm>
+#include <filesystem>
+#include <limits>
+#include <string_view>
+#include <span>
+#include <d3d11.h>
+#include <Windows.h>
 
 namespace
 {
 	constexpr uint32_t FLOW_CELL_SIZE = 64;
 	constexpr size_t FLOWMAP_MIP_LEVELS = 6;
+	constexpr size_t kMaxSourceDDSBytes = 1024u * 1024u;  // 64x64 authored cell cap.
+	constexpr uint64_t kMaxAtlasPixels = 128ull * 1024ull * 1024ull;
 	constexpr std::wstring_view FLOWMAP_CACHE_PREFIX = L"Tamriel-Flowmap-v2";
 	constexpr std::wstring_view LEGACY_FLOWMAP_CACHE_PREFIX = L"Tamriel-Flowmap";
 
@@ -48,64 +57,57 @@ namespace
 			HasFlowmapCachePrefix(path, LEGACY_FLOWMAP_CACHE_PREFIX);
 	}
 
+	// Vector-aware filtering: opposite currents must cancel rather than retain
+	// their scalar speed and hallucinate strong flow in distant mips.
 	FlowPixel BlendFlowSamples(std::span<const FlowPixel* const> samples, bool includeEmptyCoverage)
 	{
-		float directionX = 0.0f;
-		float directionY = 0.0f;
-		float decodedStrength = 0.0f;
-		float alpha = 0.0f;
-		uint32_t authoredCount = 0;
-		const FlowPixel* strongest = nullptr;
+		if (samples.empty())
+			return {};
 
-		for (const auto* sample : samples) {
+		float vectorX = 0.f, vectorY = 0.f, alpha = 0.f;
+		size_t authoredCount = 0;
+		for (const FlowPixel* sample : samples) {
+			if (!sample)
+				continue;
 			alpha += sample->a;
 			if (IsEmptyFlowSample(*sample))
 				continue;
 
-			const float x = static_cast<float>(sample->r) * (2.0f / 255.0f) - 1.0f;
-			const float y = static_cast<float>(sample->g) * (2.0f / 255.0f) - 1.0f;
-			const float strength = std::sqrt(std::max(1.01f - static_cast<float>(sample->b) / 255.0f, 0.0f));
-			const float lengthSquared = x * x + y * y;
-			if (lengthSquared > 1.0e-8f) {
-				const float inverseLength = 1.0f / std::sqrt(lengthSquared);
-				directionX += x * inverseLength * strength;
-				directionY += y * inverseLength * strength;
+			const float x = static_cast<float>(sample->r) * (2.f / 255.f) - 1.f;
+			const float y = static_cast<float>(sample->g) * (2.f / 255.f) - 1.f;
+			const float length2 = x * x + y * y;
+			const float strength = std::sqrt(std::max(1.01f - static_cast<float>(sample->b) / 255.f, 0.f));
+			if (length2 > 1.e-8f) {
+				const float weight = strength / std::sqrt(length2);
+				vectorX += x * weight;
+				vectorY += y * weight;
 			}
-
-			decodedStrength += strength;
 			++authoredCount;
-			if (!strongest || sample->a > strongest->a)
-				strongest = sample;
 		}
 
-		if (authoredCount == 0)
+		if (!authoredCount)
 			return {};
 
-		float directionLengthSquared = directionX * directionX + directionY * directionY;
-		if (directionLengthSquared <= 1.0e-8f) {
-			directionX = static_cast<float>(strongest->r) * (2.0f / 255.0f) - 1.0f;
-			directionY = static_cast<float>(strongest->g) * (2.0f / 255.0f) - 1.0f;
-			directionLengthSquared = directionX * directionX + directionY * directionY;
+		const size_t divisor = includeEmptyCoverage ? samples.size() : authoredCount;
+		const float invCount = 1.f / static_cast<float>(divisor);
+		vectorX *= invCount;
+		vectorY *= invCount;
+		const float speed = std::min(std::sqrt(vectorX * vectorX + vectorY * vectorY), 1.f);
+		if (speed > 1.e-6f) {
+			vectorX /= speed;
+			vectorY /= speed;
+		} else {
+			vectorX = vectorY = 0.f;
 		}
 
-		if (directionLengthSquared > 1.0e-8f) {
-			const float inverseLength = 1.0f / std::sqrt(directionLengthSquared);
-			directionX *= inverseLength;
-			directionY *= inverseLength;
-		}
-
-		auto encodeDirection = [](float value) {
-			return static_cast<uint8_t>(std::clamp(std::lround((value * 0.5f + 0.5f) * 255.0f), 0l, 255l));
+		const auto encode = [](float value) -> uint8_t {
+			return static_cast<uint8_t>(std::clamp(std::lround(value * 255.f), 0l, 255l));
 		};
-
 		FlowPixel result{};
-		result.r = encodeDirection(directionX);
-		result.g = encodeDirection(directionY);
-		const auto coverageDivisor = includeEmptyCoverage ? samples.size() : authoredCount;
-		const float averageStrength = decodedStrength / static_cast<float>(coverageDivisor);
-		const float encodedInverseStrength = std::clamp(1.01f - averageStrength * averageStrength, 0.0f, 1.0f);
-		result.b = static_cast<uint8_t>(std::clamp(std::lround(encodedInverseStrength * 255.0f), 0l, 255l));
-		result.a = static_cast<uint8_t>(std::clamp(std::lround(alpha / static_cast<float>(coverageDivisor)), 0l, 255l));
+		result.r = encode(vectorX * 0.5f + 0.5f);
+		result.g = encode(vectorY * 0.5f + 0.5f);
+		result.b = encode(std::clamp(1.01f - speed * speed, 0.f, 1.f));
+		result.a = encode(std::clamp(alpha * invCount / 255.f, 0.f, 1.f));
 		return result;
 	}
 
@@ -175,10 +177,11 @@ namespace
 
 bool Flowmap::TryGetFlowmap(RE::NiPointer<RE::NiSourceTexture>& outFlowmapTex) const
 {
-	if (!flowmapTex || !flowmapTex->rendererTexture || !flowmapTex->rendererTexture->texture || !flowmapTex->rendererTexture->resourceView)
+	if (!flowmapTex || !flowmapTex->rendererTexture || !flowmapTex->rendererTexture->texture || !flowmapTex->rendererTexture->resourceView) {
+		outFlowmapTex = nullptr;
 		return false;
-
-	outFlowmapTex = this->flowmapTex;
+	}
+	outFlowmapTex = flowmapTex;
 	return true;
 }
 
@@ -191,12 +194,13 @@ void Flowmap::Reset()
 	invHeight = 0.0f;
 	offsetX = 0;
 	offsetY = 0;
+	loadedCacheFile.clear();
+	preferredCacheFile.clear();
 }
 
 bool Flowmap::LoadOrGenerateFlowmap(bool useMips)
 {
-	Reset();
-
+	// Keep last-good GPU texture until a replacement is validated.
 	if (!LoadFlowmap()) {
 		logger::info("[Waterbody] [Flowmap] Could not load flowmap - regenerating...");
 		return RegenerateAndLoadFlowmap(useMips);
@@ -207,44 +211,33 @@ bool Flowmap::LoadOrGenerateFlowmap(bool useMips)
 
 bool Flowmap::RegenerateAndLoadFlowmap(bool useMips)
 {
-	Reset();
-
-	namespace fs = std::filesystem;
-	const fs::path dir = Util::PathHelpers::GetDataPath() / "textures" / "water" / "flowmaps";
-
-	std::error_code ec;
-	fs::create_directories(dir, ec);
-
-	if (!fs::exists(dir))
-		return false;
-
-	for (const auto& entry : fs::directory_iterator(dir, ec)) {
-		if (ec)
-			break;
-		if (!entry.is_regular_file())
-			continue;
-
-		const auto& path = entry.path();
-		if (!IsPIXLFlowmapCache(path))
-			continue;
-
-		std::error_code rec;
-		fs::remove(path, rec);
-		if (rec)
-			logger::warn("[Waterbody] [Flowmap] Failed to remove '{}': {}", path.string(), rec.message());
-	}
-
+	// Never discard valid cache files before replacement generation succeeds.
 	if (!GenerateFlowmap(useMips)) {
-		logger::error("[Waterbody] [Flowmap] Failed to generate flowmap");
+		logger::error("[Waterbody] [Flowmap] Failed to generate flowmap; last-good cache preserved");
 		return false;
 	}
-
 	if (!LoadFlowmap()) {
-		logger::error("[Waterbody] [Flowmap] Failed to load flowmap after generation");
-		Reset();
+		logger::error("[Waterbody] [Flowmap] Failed to load regenerated flowmap");
 		return false;
 	}
 
+	// Only after loading a valid replacement may we remove stale PIXL caches.
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	const fs::path dir = Util::PathHelpers::GetDataPath() / "textures" / "water" / "flowmaps";
+	fs::directory_iterator end;
+	for (fs::directory_iterator it(dir, ec); !ec && it != end; it.increment(ec)) {
+		const auto& entry = *it;
+		if (!entry.is_regular_file(ec) || ec)
+			continue;
+		const auto& path = entry.path();
+		if (!IsPIXLFlowmapCache(path) || path == loadedCacheFile)
+			continue;
+		std::error_code removeError;
+		fs::remove(path, removeError);
+		if (removeError)
+			logger::warn("[Waterbody] [Flowmap] Could not prune stale cache '{}': {}", path.string(), removeError.message());
+	}
 	logger::debug("[Waterbody] [Flowmap] Flowmap regenerated and loaded");
 	return true;
 }
@@ -252,85 +245,102 @@ bool Flowmap::RegenerateAndLoadFlowmap(bool useMips)
 bool Flowmap::LoadFlowmap()
 {
 	namespace fs = std::filesystem;
-
 	const fs::path dir = Util::PathHelpers::GetDataPath() / "textures" / "water" / "flowmaps";
-
-	fs::directory_entry file;
-
-	if (fs::exists(dir) && fs::is_directory(dir)) {
-		for (const auto& entry : fs::directory_iterator(dir)) {
-			if (!entry.is_regular_file()) {
-				continue;
-			}
-
-			if (HasFlowmapCachePrefix(entry.path(), FLOWMAP_CACHE_PREFIX)) {
-				file = entry;
-				break;
-			}
-		}
-	}
-
-	if (file.path().empty()) {
-		logger::debug("[Waterbody] [Flowmap] No flowmap found");
+	std::error_code ec;
+	if (!fs::is_directory(dir, ec) || ec)
 		return false;
-	}
 
-	std::vector<std::string> tokens;
-	std::istringstream iss(file.path().filename().stem().string());
-	std::string token;
-
-	while (std::getline(iss, token, '.')) {
-		tokens.push_back(token);
-	}
-
-	if (tokens.size() != 5) {
-		logger::error("[Waterbody] [Flowmap] Invalid file name");
-		return false;
-	}
-
-	auto path = std::format(R"(textures\water\flowmaps\{})", file.path().filename().string().c_str());
-	RE::NiPointer<RE::NiTexture> tex;
-	RE::BSShaderManager::GetTexture(path.c_str(), true, tex, false);
-
-	if (!tex || tex->GetRTTI() != globals::rtti::NiSourceTextureRTTI.get()) {
-		logger::error("[Waterbody] [Flowmap] Failed to load flowmap from {}", path);
-		return false;
-	}
-
-	const auto sourceTex = static_cast<RE::NiSourceTexture*>(tex.get());
-
-	if (!sourceTex || !sourceTex->rendererTexture || !sourceTex->rendererTexture->texture) {
-		logger::error("[Waterbody] [Flowmap] Flowmap invalid", path);
-		return false;
-	}
-
-	flowmapTex = RE::NiPointer(sourceTex);
-
-	auto parse_int = [&](const std::string& str, int32_t& out) -> bool {
-		int temp;
-		auto [ptr, ec] = std::from_chars(str.data(), str.data() + str.size(), temp);
-		if (ec != std::errc{} || ptr != str.data() + str.size()) {
-			logger::error("[Waterbody] [Flowmap] Failed to parse '{}' from filename", str);
-			return false;
-		}
-		out = temp;
-		return true;
+	struct Candidate
+	{
+		fs::path path;
+		fs::file_time_type modified;
+		int32_t width{}, height{}, offsetX{}, offsetY{};
+	};
+	std::vector<Candidate> candidates;
+	const auto parseInt = [](std::string_view value, int32_t& output) {
+		const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), output);
+		return error == std::errc{} && end == value.data() + value.size();
 	};
 
-	if (!parse_int(tokens[1], width) || !parse_int(tokens[2], height) || !parse_int(tokens[3], offsetX) || !parse_int(tokens[4], offsetY)) {
-		return false;
-	}
-	if (tokens[0] != "Tamriel-Flowmap-v2" || width <= 0 || height <= 0) {
-		logger::error("[Waterbody] [Flowmap] Invalid cache identity or dimensions in {}", file.path().filename().string());
-		Reset();
-		return false;
-	}
+	fs::directory_iterator end;
+	for (fs::directory_iterator it(dir, ec); !ec && it != end; it.increment(ec)) {
+		const auto& entry = *it;
+		if (!entry.is_regular_file(ec) || ec ||
+			!HasFlowmapCachePrefix(entry.path(), FLOWMAP_CACHE_PREFIX))
+			continue;
 
-	invWidth = 1.0f / static_cast<float>(width);
-	invHeight = 1.0f / static_cast<float>(height);
+		const std::string stem = entry.path().stem().string();
+		std::array<std::string_view, 5> parts{};
+		size_t begin = 0;
+		bool valid = true;
+		for (size_t n = 0; n < parts.size(); ++n) {
+			const size_t separator = stem.find('.', begin);
+			if ((n == 4 && separator != std::string::npos) ||
+				(n != 4 && separator == std::string::npos)) {
+				valid = false;
+				break;
+			}
+			parts[n] = std::string_view(stem).substr(begin,
+				separator == std::string::npos ? std::string::npos : separator - begin);
+			begin = separator == std::string::npos ? stem.size() : separator + 1;
+		}
+		if (!valid || parts[0] != "Tamriel-Flowmap-v2")
+			continue;
 
-	logger::debug("[Waterbody] [Flowmap] Flowmap loaded");
-	return true;
+		Candidate candidate{};
+		candidate.path = entry.path();
+		if (!parseInt(parts[1], candidate.width) || !parseInt(parts[2], candidate.height) ||
+			!parseInt(parts[3], candidate.offsetX) || !parseInt(parts[4], candidate.offsetY) ||
+			candidate.width <= 0 || candidate.height <= 0 ||
+			static_cast<int64_t>(candidate.width) * FLOW_CELL_SIZE > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+			static_cast<int64_t>(candidate.height) * FLOW_CELL_SIZE > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+			static_cast<uint64_t>(candidate.width) * candidate.height * FLOW_CELL_SIZE * FLOW_CELL_SIZE > kMaxAtlasPixels)
+			continue;
+		candidate.modified = entry.last_write_time(ec);
+		if (ec) {
+			ec.clear();
+			continue;
+		}
+		candidates.push_back(std::move(candidate));
+	}
+	// Deterministically prefer the newest successfully published cache; stale
+	// atlas dimensions elsewhere in this directory no longer win iterator order.
+	std::sort(candidates.begin(), candidates.end(), [&](const Candidate& a, const Candidate& b) {
+		if (a.path == b.path)
+			return false;
+		if (a.path == preferredCacheFile)
+			return true;
+		if (b.path == preferredCacheFile)
+			return false;
+		return a.modified == b.modified ? a.path.native() > b.path.native() : a.modified > b.modified;
+	});
+
+	for (const auto& candidate : candidates) {
+		const auto relative = std::format(R"(textures\water\flowmaps\{})", candidate.path.filename().string());
+		RE::NiPointer<RE::NiTexture> tex;
+		RE::BSShaderManager::GetTexture(relative.c_str(), true, tex, false);
+		if (!tex || tex->GetRTTI() != globals::rtti::NiSourceTextureRTTI.get())
+			continue;
+		auto* source = static_cast<RE::NiSourceTexture*>(tex.get());
+		if (!source || !source->rendererTexture || !source->rendererTexture->texture ||
+			!source->rendererTexture->resourceView)
+			continue;
+
+		// Commit only once both the DDS name and the game's GPU texture are valid.
+		flowmapTex = RE::NiPointer(source);
+		width = candidate.width;
+		height = candidate.height;
+		offsetX = candidate.offsetX;
+		offsetY = candidate.offsetY;
+		invWidth = 1.f / static_cast<float>(width);
+		invHeight = 1.f / static_cast<float>(height);
+		loadedCacheFile = candidate.path;
+		logger::debug("[Waterbody] [Flowmap] Loaded {} ({}x{} cells)",
+			candidate.path.filename().string(), width, height);
+		return true;
+	}
+	logger::debug("[Waterbody] [Flowmap] No valid flowmap cache found");
+	return false;
 }
 
 bool Flowmap::GenerateFlowmap(bool useMips)
@@ -346,8 +356,19 @@ bool Flowmap::GenerateFlowmap(bool useMips)
 	int32_t worldMinX, worldMinY, worldMaxX, worldMaxY;
 	Util::WorldToCell(tamriel->minimumCoords, worldMinX, worldMinY);
 	Util::WorldToCell(tamriel->maximumCoords, worldMaxX, worldMaxY);
+	// TESWorldSpace maximum coordinates are exclusive; convert to inclusive cells.
+	if (worldMaxX <= worldMinX || worldMaxY <= worldMinY) {
+		logger::error("[Waterbody] [Flowmap] Invalid worldspace bounds");
+		return false;
+	}
 	worldMaxX -= 1;
 	worldMaxY -= 1;
+	if (worldMinX > worldMaxX || worldMinY > worldMaxY ||
+		static_cast<int64_t>(worldMaxX) - worldMinX > 1024 ||
+		static_cast<int64_t>(worldMaxY) - worldMinY > 1024) {
+		logger::error("[Waterbody] [Flowmap] Invalid worldspace extents");
+		return false;
+	}
 
 	struct FlowCell
 	{
@@ -365,8 +386,8 @@ bool Flowmap::GenerateFlowmap(bool useMips)
 	cells.reserve(1024);
 
 	{
-		for (auto y = worldMinY; y < worldMaxY; ++y) {
-			for (auto x = worldMinX; x < worldMaxX; ++x) {
+		for (int64_t y = worldMinY; y <= worldMaxY; ++y) {
+			for (int64_t x = worldMinX; x <= worldMaxX; ++x) {
 				auto path = std::format(R"(Textures\Water\skyrim.esm\flow.{}.{}.dds)", x, y);
 				auto stream = RE::BSResourceNiBinaryStream(path);
 
@@ -374,12 +395,26 @@ bool Flowmap::GenerateFlowmap(bool useMips)
 					continue;
 
 				const auto size = stream.stream->totalSize;
-				std::vector<uint8_t> buffer(size);
+				if (!size || size > kMaxSourceDDSBytes)
+					continue;
+				std::vector<uint8_t> buffer(static_cast<size_t>(size));
 				stream.read(buffer.data(), size);
+				if (!stream.good()) {
+					logger::warn("[Waterbody] [Flowmap] Truncated DDS source at {},{}", x, y);
+					continue;
+				}
 
 				DirectX::TexMetadata meta{};
+				// Validate DDS dimensions before letting DirectXTex allocate its image
+				// chain (a corrupt source could advertise an enormous decompression).
+				auto hr = DirectX::GetMetadataFromDDSMemory(buffer.data(), size,
+					DirectX::DDS_FLAGS_NONE, meta);
+				if (FAILED(hr) || meta.width != FLOW_CELL_SIZE || meta.height != FLOW_CELL_SIZE ||
+					meta.arraySize != 1 || meta.dimension != DirectX::TEX_DIMENSION_TEXTURE2D)
+					continue;
+
 				DirectX::ScratchImage src;
-				auto hr = DirectX::LoadFromDDSMemory(buffer.data(), size, DirectX::DDS_FLAGS_NONE, &meta, src);
+				hr = DirectX::LoadFromDDSMemory(buffer.data(), size, DirectX::DDS_FLAGS_NONE, &meta, src);
 				if (FAILED(hr)) {
 					logger::warn("[Waterbody] [Flowmap] Flow texture at {},{} failed to load", x, y);
 					continue;
@@ -408,12 +443,12 @@ bool Flowmap::GenerateFlowmap(bool useMips)
 					continue;
 				}
 
-				mapMinX = std::min(mapMinX, x);
-				mapMinY = std::min(mapMinY, y);
-				mapMaxX = std::max(mapMaxX, x);
-				mapMaxY = std::max(mapMaxY, y);
+				mapMinX = std::min(mapMinX, static_cast<int32_t>(x));
+				mapMinY = std::min(mapMinY, static_cast<int32_t>(y));
+				mapMaxX = std::max(mapMaxX, static_cast<int32_t>(x));
+				mapMaxY = std::max(mapMaxY, static_cast<int32_t>(y));
 
-				cells.emplace_back(FlowCell{ x, y, std::move(conv) });
+				cells.emplace_back(FlowCell{ static_cast<int32_t>(x), static_cast<int32_t>(y), std::move(conv) });
 			}
 		}
 	}
@@ -423,15 +458,25 @@ bool Flowmap::GenerateFlowmap(bool useMips)
 		return false;
 	}
 
-	const auto width = mapMaxX - mapMinX + 1;
-	const auto height = mapMaxY - mapMinY + 1;
-	const auto offsetX = -mapMinX;
-	const auto offsetY = -mapMinY;
+	const int64_t width64 = static_cast<int64_t>(mapMaxX) - mapMinX + 1;
+	const int64_t height64 = static_cast<int64_t>(mapMaxY) - mapMinY + 1;
+	if (width64 <= 0 || height64 <= 0 ||
+		width64 * FLOW_CELL_SIZE > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+		height64 * FLOW_CELL_SIZE > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
+		static_cast<uint64_t>(width64) * height64 * FLOW_CELL_SIZE * FLOW_CELL_SIZE > kMaxAtlasPixels ||
+		mapMinX == std::numeric_limits<int32_t>::min() || mapMinY == std::numeric_limits<int32_t>::min()) {
+		logger::error("[Waterbody] [Flowmap] Atlas dimensions too large ({}x{} cells)", width64, height64);
+		return false;
+	}
+	const int32_t atlasWidth = static_cast<int32_t>(width64);
+	const int32_t atlasHeight = static_cast<int32_t>(height64);
+	const int32_t atlasOffsetX = -mapMinX;
+	const int32_t atlasOffsetY = -mapMinY;
 
-	logger::debug("[Waterbody] [Flowmap] Loaded {} flow textures, creating a {}x{} flow map...", cells.size(), width, height);
+	logger::debug("[Waterbody] [Flowmap] Loaded {} flow textures, creating a {}x{} flow map...", cells.size(), atlasWidth, atlasHeight);
 
-	const size_t pixelWidth = static_cast<size_t>(width) * FLOW_CELL_SIZE;
-	const size_t pixelHeight = static_cast<size_t>(height) * FLOW_CELL_SIZE;
+	const size_t pixelWidth = static_cast<size_t>(atlasWidth) * FLOW_CELL_SIZE;
+	const size_t pixelHeight = static_cast<size_t>(atlasHeight) * FLOW_CELL_SIZE;
 	const size_t mipLevels = useMips ? FLOWMAP_MIP_LEVELS : 1;
 	DirectX::ScratchImage flowmap;
 	if (FAILED(flowmap.Initialize2D(DXGI_FORMAT_B8G8R8A8_UNORM, pixelWidth, pixelHeight, 1, mipLevels))) {
@@ -443,8 +488,8 @@ bool Flowmap::GenerateFlowmap(bool useMips)
 	auto* destination = flowmap.GetImage(0, 0, 0);
 	for (const auto& [x, y, sourceImage] : cells) {
 		const auto* source = sourceImage.GetImage(0, 0, 0);
-		const size_t cellX = static_cast<size_t>(x + offsetX);
-		const size_t cellY = static_cast<size_t>(y + offsetY);
+		const size_t cellX = static_cast<size_t>(x + atlasOffsetX);
+		const size_t cellY = static_cast<size_t>(y + atlasOffsetY);
 		const size_t destinationX = cellX * FLOW_CELL_SIZE;
 		const size_t destinationY = pixelHeight - (cellY + 1) * FLOW_CELL_SIZE;
 
@@ -455,18 +500,22 @@ bool Flowmap::GenerateFlowmap(bool useMips)
 		}
 	}
 
-	ReconcileFlowmapBoundaries(flowmap, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+	ReconcileFlowmapBoundaries(flowmap, static_cast<uint32_t>(atlasWidth), static_cast<uint32_t>(atlasHeight));
 	if (useMips && !GenerateVectorAwareMips(flowmap)) {
 		logger::error("[Waterbody] [Flowmap] Failed to generate vector-aware mip chain");
 		return false;
 	}
 
-	const auto filename = std::format(L"{}.{}.{}.{}.{}.dds", FLOWMAP_CACHE_PREFIX, width, height, offsetX, offsetY);
+	const auto filename = std::format(L"{}.{}.{}.{}.{}.dds", FLOWMAP_CACHE_PREFIX, atlasWidth, atlasHeight, atlasOffsetX, atlasOffsetY);
 	const auto path = Util::PathHelpers::GetDataPath() / "textures" / "water" / "flowmaps" / filename;
 	auto temporaryPath = path;
 	temporaryPath += L".tmp";
 	std::error_code ec;
 	std::filesystem::create_directories(path.parent_path(), ec);
+	if (ec) {
+		logger::error("[Waterbody] [Flowmap] Could not create cache directory: {}", ec.message());
+		return false;
+	}
 	std::filesystem::remove(temporaryPath, ec);
 	const auto hr = DirectX::SaveToDDSFile(flowmap.GetImages(), flowmap.GetImageCount(), flowmap.GetMetadata(), DirectX::DDS_FLAGS_NONE, temporaryPath.c_str());
 	if (FAILED(hr)) {
@@ -474,15 +523,14 @@ bool Flowmap::GenerateFlowmap(bool useMips)
 		return false;
 	}
 
-	std::filesystem::remove(path, ec);
-	ec.clear();
-	std::filesystem::rename(temporaryPath, path, ec);
-	if (ec) {
-		logger::error("[Waterbody] [Flowmap] Failed to publish {}: {}", path.string(), ec.message());
+	if (!::MoveFileExW(temporaryPath.c_str(), path.c_str(),
+			MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+		logger::error("[Waterbody] [Flowmap] Failed to publish {} (Win32 {})", path.string(), ::GetLastError());
 		std::filesystem::remove(temporaryPath, ec);
 		return false;
 	}
 
+	preferredCacheFile = path;
 	const auto t1 = std::chrono::steady_clock::now();
 	const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 	logger::info("[Waterbody] [Flowmap] Generated vector-aware CPU atlas in {} ms", ms);

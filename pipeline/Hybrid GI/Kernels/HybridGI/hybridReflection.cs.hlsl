@@ -1,6 +1,7 @@
 #include "Common/Color.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/GBuffer.hlsli"
+#include "Common/MotionBlur.hlsli"
 #include "HybridGI/common.hlsli"
 #include "HybridGI/worldCache.hlsli"
 
@@ -16,7 +17,10 @@ Texture2D<float4> srcWorldSH1 : register(t8);
 Texture2D<float4> srcWorldSH2 : register(t9);
 Texture2D<uint> srcWorldNormal : register(t10);
 // CS-only t11; bound/unbound by HybridGI alongside t0..t16. No b1/b5/b6 ABI change.
-Texture2D<float> srcReflectionHiZ : register(t11);
+Texture2D<float2> srcReflectionHiZ : register(t11);
+// Geometry-validated GI history length, reduced locally when direct lighting
+// changes. Reflection history follows the same responsiveness at those pixels.
+Texture2D<unorm float> srcGIHistoryLength : register(t12);
 
 RWTexture2D<float4> outReflection : register(u0);
 
@@ -25,7 +29,11 @@ static const float TWO_PI = 6.28318530718f;
 float3 SafeNormalizeReflection(float3 v, float3 fallback)
 {
     float l2 = dot(v, v);
-    return l2 > 1e-8f ? v * rsqrt(l2) : fallback;
+    bool finiteVector = all((asuint(v) & 0x7f800000u) != 0x7f800000u);
+    bool finiteLength = (asuint(l2) & 0x7f800000u) != 0x7f800000u;
+    return finiteVector && finiteLength && l2 > 1e-8f && l2 < 1e30f
+        ? v * rsqrt(l2)
+        : fallback;
 }
 
 void BuildBasis(float3 n, out float3 t, out float3 b)
@@ -125,6 +133,46 @@ inline bool ReadReflectionVoxelCascade(float3 queryWS, float3 receiverWS, float3
                 radiance = WorldCacheEvaluateRadiance(
                     srcWorldSH0.Load(int3(coord, 0)), srcWorldSH1.Load(int3(coord, 0)), srcWorldSH2.Load(int3(coord, 0)),
                     sourceToReceiver) * leakWeight;
+
+				// Smooth only the closest voxel face, and only when the adjacent
+				// cache sample represents the same oriented surface. This bounds the
+				// extra lookup cost while removing low-frequency SH steps from rough
+				// reflections without blending across corners or separate room walls.
+				float3 fraction = frac(queryWS / cellSize);
+				float3 edge = min(fraction, 1.0f - fraction);
+				float edgeDistance = min(edge.x, min(edge.y, edge.z));
+				if (edgeDistance < 0.125f) {
+					int3 side = edge.x <= edge.y && edge.x <= edge.z ?
+						int3(fraction.x < 0.5f ? -1 : 1, 0, 0) :
+						edge.y <= edge.z ? int3(0, fraction.y < 0.5f ? -1 : 1, 0) :
+						int3(0, 0, fraction.z < 0.5f ? -1 : 1);
+					int3 neighborCell = cell + side;
+					if (WorldCacheCellInWindow(neighborCell, cameraWS, cascade)) {
+						uint2 neighborCoord = WorldCacheAtlasCoord(neighborCell, cascade);
+						uint neighborMeta = srcWorldMetadata.Load(int3(neighborCoord, 0));
+						uint neighborAge = ((WorldCacheClock & 255u) - (neighborMeta >> 24)) & 255u;
+						if ((neighborMeta & 0x00ffffffu) == WorldCacheHash(neighborCell, cascade) &&
+							WorldCacheAgeFade(neighborAge, WorldCacheMaxAge) > 0.0f) {
+							uint neighborSurface = srcWorldNormal.Load(int3(neighborCoord, 0));
+							float3 neighborNormal = UnpackWorldNormal(neighborSurface);
+							float neighborOccupancy = saturate(UnpackWorldOccupancy(neighborSurface) *
+								UnpackWorldConfidence(neighborSurface) * WorldCacheAgeFade(neighborAge, WorldCacheMaxAge));
+							if (neighborOccupancy > (1.0f / 255.0f) && dot(sourceNormal, neighborNormal) > 0.85f) {
+								float3 neighborToReceiver = SafeNormalizeReflection(receiverWS - queryWS, neighborNormal);
+								float neighborGate = lerp(1.0f,
+									smoothstep(-0.05f, 0.15f, dot(neighborNormal, neighborToReceiver)),
+									saturate(WorldCacheLeakReduction));
+								float3 neighborRadiance = WorldCacheEvaluateRadiance(
+									srcWorldSH0.Load(int3(neighborCoord, 0)),
+									srcWorldSH1.Load(int3(neighborCoord, 0)),
+									srcWorldSH2.Load(int3(neighborCoord, 0)), neighborToReceiver) * neighborGate;
+								float neighborWeight = 0.5f * (1.0f - smoothstep(0.0f, 0.125f, edgeDistance));
+								radiance = lerp(radiance, neighborRadiance, neighborWeight);
+								occupancy = lerp(occupancy, neighborOccupancy, neighborWeight);
+							}
+						}
+					}
+				}
             }
         }
     }
@@ -256,7 +304,14 @@ inline bool TraceScreenReflection(float3 originVS, float3 directionVS, float rou
     float epsilonS = 1e-4f / max(max(abs(pixelDelta.x), abs(pixelDelta.y)), 1.0f);
     float s = enter;
     uint mip = 4u;
-    uint tests = clamp(ReflectionSteps, 8u, 64u);
+    uint configuredTests = clamp(ReflectionSteps, 8u, 64u);
+    // Rough reflections already sample a wider radiance footprint and blend
+    // toward the world cache when screen confidence is weak. Spend the full
+    // traversal budget on glossy detail, then reduce the hard iteration cap
+    // smoothly for broad lobes where an exact pixel hit contributes less.
+    float roughTraceScale = lerp(1.0f, 0.70f,
+        smoothstep(0.30f, max(ReflectionMaxRoughness, 0.31f), roughness));
+    uint tests = max(8u, (uint)ceil((float)configuredTests * roughTraceScale));
 
     [loop] for (uint i = 0u; i < tests && s < leave; ++i) {
         uint width, height, levels;
@@ -280,35 +335,49 @@ inline bool TraceScreenReflection(float3 originVS, float3 directionVS, float rou
             if (abs(pixelDelta[axis]) > 1e-8f)
                 exitS = min(exitS, (boundary[axis] - pixelStart[axis]) / pixelDelta[axis]);
         exitS = max(exitS, s);
-        float sceneZ = srcReflectionHiZ.Load(int3(cell, mip));
+		float2 sceneDepthRange = srcReflectionHiZ.Load(int3(cell, mip));
         float entryZ = ReflectionRayDepth(inverseDepth, s);
         float exitZ = ReflectionRayDepth(inverseDepth, exitS);
+		float rayNearZ = min(entryZ, exitZ);
+		float rayFarZ = max(entryZ, exitZ);
         float rayT = lerp(startT * inverseDepth.x, endT * inverseDepth.y, exitS) * exitZ;
         float thickness = max(ReflectionThickness, 1.0f) * (1.0f + roughness * 2.0f +
             (rayT / maxDistance) * 0.5f);
 
-        // A min hierarchy proves empty space only when the entire segment is
-        // in front of its nearest surface. Otherwise descend without advancing.
-        if (max(entryZ, exitZ) + thickness >= sceneZ && mip > 0u) {
+		// The interval pyramid proves empty space on either side of all geometry.
+		// Tiles containing sky carry a far=max sentinel, which conservatively
+		// disables only the behind-surface rejection for that mixed tile.
+		const bool whollyBefore = rayFarZ + thickness < sceneDepthRange.x;
+		const bool whollyBehind = rayNearZ - thickness > sceneDepthRange.y;
+		if (!whollyBefore && !whollyBehind && mip > 0u) {
             --mip;
             continue;
         }
-        if (mip == 0u && sceneZ > FP_Z &&
-            min(entryZ, exitZ) <= sceneZ + thickness &&
-            max(entryZ, exitZ) >= sceneZ - thickness) {
+		float sceneZ = sceneDepthRange.x;
+		if (mip == 0u && isfinite(sceneZ) && sceneZ > FP_Z &&
+			rayNearZ <= sceneZ + thickness && rayFarZ >= sceneZ - thickness) {
             float depthSlope = inverseDepth.y - inverseDepth.x;
             float hitS = abs(depthSlope) > 1e-10f ?
                 clamp((rcp(sceneZ) - inverseDepth.x) / depthSlope, s, exitS) : s;
             float2 uv = startUV + deltaUV * hitS;
             float finalDelta = abs(ReflectionRayDepth(inverseDepth, hitS) - sceneZ);
-            float3 hitNormal = GBuffer::DecodeNormal(srcNormalRoughness.SampleLevel(
-                samplerLinearClamp, FullFrameTextureUV(uv), 0.0f).xy);
+			// Point sampling keeps silhouettes from interpolating foreground and
+			// background normals into a false grazing hit.
+			float3 hitNormal = GBuffer::DecodeNormal(srcNormalRoughness.SampleLevel(
+				samplerPointClamp, FullFrameTextureUV(uv), 0.0f).xy);
             float facing = saturate(dot(hitNormal, -directionVS));
-            if (facing > 0.025f && finalDelta <= thickness) {
+            // Grazing rays run almost parallel to the hit surface, where a
+            // broad depth tolerance can accept a distant terrain layer as a
+            // valid reflection and form a camera-following band. Keep the
+            // coarse HiZ test permissive, but tighten the final full-res hit
+            // tolerance until the ray meets the surface at a stable angle.
+            float incidence = smoothstep(0.05f, 0.30f, facing);
+            float hitTolerance = thickness * lerp(0.20f, 1.0f, incidence);
+            if (facing > 0.025f && finalDelta <= hitTolerance) {
                 float edge = min(min(uv.x, uv.y), min(1.0f - uv.x, 1.0f - uv.y));
                 hitUV = uv;
                 hitConfidence = saturate(edge * 24.0f) *
-                    saturate(1.0f - finalDelta / max(thickness * 1.5f, 1.0f)) *
+                    saturate(1.0f - finalDelta / max(hitTolerance * 1.5f, 1.0f)) *
                     smoothstep(0.025f, 0.20f, facing);
                 return hitConfidence > 1e-4f;
             }
@@ -332,6 +401,36 @@ float3 SoftFireflyClamp(float3 value, float threshold)
 		result *= compressed / max(lum, 1e-5f);
 	}
 	return result;
+}
+
+// The source atlas contains a 128x128 spatiotemporal blue-noise tile. Reusing
+// the same tile at every screen-space block makes stochastic reflection hits
+// correlate into a visible grid, especially on broad low-roughness terrain.
+// A stable per-block dihedral transform and toroidal offset preserve the atlas
+// distribution while decorrelating repeated screen tiles. The temporal slice
+// remains identical for every pixel in a frame.
+uint2 ReflectionNoiseCoordinate(uint2 pixel, uint frameIndex)
+{
+	uint2 tile = pixel >> 7u;
+	uint hash = tile.x * 0x9e3779b9u ^ tile.y * 0x85ebca6bu;
+	hash ^= hash >> 16u;
+	hash *= 0x7feb352du;
+	hash ^= hash >> 15u;
+	hash *= 0x846ca68bu;
+	hash ^= hash >> 16u;
+
+	uint2 local = pixel & 127u;
+	switch (hash & 3u) {
+	case 1u: local = uint2(127u - local.y, local.x); break;
+	case 2u: local = uint2(127u - local.x, 127u - local.y); break;
+	case 3u: local = uint2(local.y, 127u - local.x); break;
+	}
+	if ((hash & 4u) != 0u)
+		local.x = 127u - local.x;
+	uint2 offset = uint2(hash & 127u, (hash >> 8u) & 127u);
+	local = (local + offset) & 127u;
+	local.y += (frameIndex & 63u) * 128u;
+	return local;
 }
 
 [numthreads(8, 8, 1)]
@@ -365,7 +464,7 @@ void main(uint2 dtid : SV_DispatchThreadID)
     if (dot(N, V) < 0.0f)
         N = -N;
 
-    float2 noise = srcNoise.Load(int3((dtid & 127u) + uint2(0u, (FrameIndex & 63u) * 128u), 0));
+    float2 noise = srcNoise.Load(int3(ReflectionNoiseCoordinate(dtid, FrameIndex), 0));
     // Reduce stochastic spread on nearly mirror-like surfaces; full VNDF on rough surfaces.
     float stochasticRoughness = roughness * saturate(ReflectionRoughnessJitter);
     float3 H;
@@ -449,12 +548,42 @@ void main(uint2 dtid : SV_DispatchThreadID)
 #ifdef TEMPORAL_DENOISER
     float4 history = srcHistory[dtid];
     if (history.a > 1e-3f) {
+        float3 receiverPositionWS =
+            ViewToWorldPosition(P, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
+        float2 receiverMotion = MotionBlur::GetSSMotionVector(
+            float4(receiverPositionWS, 1.0f), float4(receiverPositionWS, 1.0f));
+        float cameraMotionPixels = length(receiverMotion * float2(OUT_FRAME_DIM));
+        cameraMotionPixels = isfinite(cameraMotionPixels) ? cameraMotionPixels : 0.0f;
+
         float response = saturate(ReflectionTemporalResponse);
         // Rough reflections need more temporal integration; glossy hits stay
-        // more responsive to camera/surface motion.
+        // more responsive to camera/surface motion. Camera reprojection motion
+        // raises the current-frame response so stale screen-space hits cannot
+        // drag behind a moving view.
+        // The receiver is reprojected correctly, but the reflected *source* may
+        // have moved independently in screen space. A slow camera pan can
+        // therefore leave a broad, camera-following reflection footprint even
+        // when receiver depth and normal still match. Raise current-frame
+        // authority earlier than the old 4 px ramp so moving views shed stale
+        // screen-space hits before they form a visible band.
+        response = max(response, 0.72f * saturate(cameraMotionPixels / 3.0f));
+		// The GI reprojection stage cuts its local accumulation budget when the
+		// receiver's direct lighting changes. Mirror that signal here so indirect
+		// reflections shed stale local-light/shadow contributions as well.
+		float giFrames = srcGIHistoryLength.Load(int3(dtid, 0)) * 255.0f;
+		float historyBudget = max((float)MaxAccumFrames, 1.0f);
+		float directLightChange = saturate(1.0f - (giFrames - 1.0f) / max(historyBudget - 1.0f, 1.0f));
+		response = max(response, 0.52f * directLightChange);
         response = saturate(lerp(max(response, 0.18f), max(response, 0.07f), roughness));
         float currLum = Luminance(max(current, 0.0f));
         float histLum = Luminance(max(history.rgb, 0.0f));
+		float relativeRadianceChange = abs(currLum - histLum) /
+			max(max(currLum, histLum), 0.05f);
+		// High-confidence screen hits carry new source radiance. Let coherent
+		// source changes converge promptly while weak stochastic samples keep
+		// relying on temporal stability.
+		response = max(response, 0.48f * smoothstep(0.20f, 0.75f, relativeRadianceChange) *
+			smoothstep(0.30f, 0.75f, confidence));
         float referenceLum = confidence > 1e-3f ? currLum : histLum;
 		float limit = max(ReflectionFireflyClamp, max(referenceLum * 4.0f + 0.05f, 1.0f));
 		float3 historySafe = SoftFireflyClamp(history.rgb, limit);
@@ -467,14 +596,24 @@ void main(uint2 dtid : SV_DispatchThreadID)
         if (confidence > 1e-3f) {
             // Low-confidence hits are useful observations but should not replace
             // a validated history sample as aggressively as a solid screen hit.
-            float observationResponse = lerp(response * 0.30f, response, confidence);
+            float observationResponse = lerp(response * 0.55f, response, confidence);
+            // During camera motion, a weak screen-space hit can be a stale
+            // grazing-angle terrain sample. Shed that history faster; retain
+            // the slower accumulation for stationary, well-supported pixels.
+            float uncertainMotion = saturate(cameraMotionPixels / 2.0f) *
+                (1.0f - saturate(confidence));
+            observationResponse = max(observationResponse, 0.55f * uncertainMotion);
             current = lerp(historySafe, current, observationResponse);
             confidence = max(confidence, history.a * (1.0f - observationResponse));
         } else {
-            // The history texture was already geometry/depth/normal validated by
-            // radianceDisocc. Keep a short decaying tail through transient
-            // screen-space misses instead of popping a reflection to black.
-            float retain = lerp(0.82f, 0.94f, roughness);
+            // Geometry-valid history can still describe a screen-space hit that
+            // has just left the view. Retain only a short fallback tail, and
+            // shed it faster as the camera moves to avoid bright bands trailing
+            // across distant terrain.
+            // Keep a useful miss tail while stationary to bridge stochastic
+            // sampling gaps, but reject it quickly during motion: unlike the
+            // receiver, an off-screen reflection hit has no reliable reprojection.
+            float retain = lerp(0.28f, 0.48f, roughness) * exp2(-0.55f * cameraMotionPixels);
             current = historySafe * retain;
             confidence = history.a * retain;
         }

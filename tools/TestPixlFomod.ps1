@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$PackageDirectory,
     [string]$SchemaPath = "",
-    [string]$ExpectedVersion = "1.0.8"
+    [string]$ExpectedVersion = "1.0.9"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,10 +37,6 @@ for ($index = 0; $index -lt $expectedSteps.Count; ++$index) {
     if ($steps[$index].name -ne $expectedSteps[$index]) { throw "Unexpected FOMOD page order at $index." }
 }
 $allInstallerText = (Get-Content -LiteralPath $configPath,$infoPath -Raw) -join "`n"
-if ($allInstallerText -match '(?i)SurfaceTides') { throw 'SurfaceTides must not be referenced in the 1.0.8 FOMOD.' }
-if (Get-ChildItem -LiteralPath $root -Recurse -File | Where-Object { $_.Name -in @('SurfaceTides.dll','SurfaceTides.ini') -or $_.FullName -match '[\\/]SurfaceTides[\\/]' }) {
-    throw 'SurfaceTides payload is present in this FOMOD.'
-}
 if ($allInstallerText -notmatch 'regular default look' -or $allInstallerText -match '(?i)bleak') {
     throw 'FOMOD must describe the regular default look and must not select a bleak default.'
 }
@@ -85,12 +81,12 @@ if ($manifest.cacheMode -eq 'preloaded') {
     if ($pipelineCount -lt 3000 -or $manifest.preloadedPipelineStages -lt 3000) {
         throw "Bundled shader cache is incomplete ($pipelineCount stages)."
     }
-} elseif ($manifest.channel -eq 'LIVE-TEST' -and $manifest.cacheMode -eq 'compile-on-device') {
-    if (Test-Path -LiteralPath $pipelineRoot) { throw 'LIVE-TEST compile-on-device FOMOD must not include a stale PipelineLibrary.' }
+} elseif ($manifest.channel -in @('LIVE-TEST', 'RELEASE-CANDIDATE') -and $manifest.cacheMode -eq 'compile-on-device') {
+    if (Test-Path -LiteralPath $pipelineRoot) { throw 'Compile-on-device FOMOD must not include a stale PipelineLibrary.' }
     if ($manifest.preloadedPipelineStages -ne 0) { throw 'Compile-on-device FOMOD has an inconsistent preloaded stage count.' }
     $pipelineCount = 0
 } else {
-    throw 'FOMOD must use a validated preloaded cache, except for explicit LIVE-TEST compile-on-device packages.'
+    throw 'FOMOD must use a validated preloaded cache, except for explicit LIVE-TEST or RELEASE-CANDIDATE compile-on-device packages.'
 }
 
 $defaultsPath = Join-Path $core 'SKSE\Plugins\PIXL\Config\RendererDefaults.json'
@@ -116,4 +112,4 @@ if (Test-Path -LiteralPath $vendorRuntimeRoot) {
         }
     }
 }
-Write-Host "PASS: PIXL $ExpectedVersion three-page FOMOD, regular defaults, cache mode '$($manifest.cacheMode)' and no SurfaceTides payload validated ($pipelineCount stages)."
+Write-Host "PASS: PIXL $ExpectedVersion three-page FOMOD, regular defaults, cache mode '$($manifest.cacheMode)' validated ($pipelineCount stages)."

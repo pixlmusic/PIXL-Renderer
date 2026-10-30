@@ -76,7 +76,7 @@ float3 ComputeHistoryVolumeUVAndDepth(float3 positionWS, out bool validHistory, 
 	float4 previousClip = mul(FrameBuffer::CameraPreviousViewProjUnjittered, float4(previousPositionWS, 1.0f));
 
 	previousViewDepth = abs(previousClip.w);
-	validHistory = previousClip.w > 0.0f;
+	validHistory = all(isfinite(previousClip)) && previousClip.w > 0.0f;
 	if (!validHistory)
 		return 0.0f.xxx;
 
@@ -84,7 +84,7 @@ float3 ComputeHistoryVolumeUVAndDepth(float3 positionWS, out bool validHistory, 
 
 	float historyZ = Atmosphere::ComputeVolumetricNormalizedSlice(previousViewDepth);
 	float3 volumeUV = float3(historyUV, historyZ);
-	validHistory = !any(volumeUV < 0.0f) && !any(volumeUV >= 1.0f);
+	validHistory = all(isfinite(volumeUV)) && !any(volumeUV < 0.0f) && !any(volumeUV >= 1.0f);
 	return saturate(volumeUV);
 }
 
@@ -226,16 +226,20 @@ float SampleDirectionalWorldShadow(float3 positionWS)
 	return worldShadow;
 }
 
-float3 ComputeSkyLightScattering(float3 positionWS, float3 viewDirection)
+float3 ComputeSkyLightScattering(float3 positionWS)
 {
-	float phaseG = SharedData::atmosphereSettings.volumetricFogScatteringDistribution;
-	float3 skyDirection = abs(phaseG) > 0.001f ? Atmosphere::SafeNormalize(-viewDirection * phaseG, float3(0.0f, 0.0f, 1.0f)) : 0.0f.xxx;
-	float3 skyVisibilityDirection = abs(phaseG) > 0.001f ? skyDirection : float3(0.0f, 0.0f, 1.0f);
+	// Ambient sky irradiance is not a view-direction lobe. Sampling it along the
+	// camera ray made a small camera turn switch between unrelated SH hemispheres,
+	// which appeared as the sky/fog abruptly losing all light. Keep ambient sky
+	// evaluation fixed in world space; the sun's view-dependent phase is evaluated
+	// independently in ComputeLightScattering.
+	const float3 kSkyBounceUp = float3(0.0f, 0.0f, 1.0f);
+	const float3 kAmbientProbeSkyDirection = float3(0.0f, 0.0f, -1.0f);
 	float skyVisibility = 1.0f;
 	if (VolumetricFogHasSkyBounce && !SharedData::InInterior && !SharedData::HideSky) {
 		float3 skylightingPosition = positionWS;
 		sh2 skyBounceSH = SkyBounce::SampleNoBias(skylightingPosition);
-		skyVisibility = SkyBounce::EvaluateDiffuse(skyBounceSH, skyVisibilityDirection, SkyBounce::GetFadeOutFactor(skylightingPosition));
+		skyVisibility = SkyBounce::EvaluateDiffuse(skyBounceSH, kSkyBounceUp, SkyBounce::GetFadeOutFactor(skylightingPosition));
 	}
 
 	float3 skyLighting =
@@ -243,7 +247,7 @@ float3 ComputeSkyLightScattering(float3 positionWS, float3 viewDirection)
 		SharedData::atmosphereSettings.fogInscatteringColor.a *
 		skyVisibility;
 	[branch] if (VolumetricFogHasIBL)
-		skyLighting = AmbientProbe::GetAmbientColorOccluded(skyDirection, skyVisibility);
+		skyLighting = AmbientProbe::GetAmbientColorOccluded(kAmbientProbeSkyDirection, skyVisibility);
 
 	// Extinction still attenuates the scene in areas where direct sunlight is
 	// occluded. SkyBounce/IBL visibility can legitimately approach zero there,
@@ -344,7 +348,7 @@ float3 AccumulateLocalLightScattering(
 }
 #endif
 
-float4 ComputeLightScattering(uint3 coord, float3 cellOffset)
+float4 ComputeLightScattering(uint3 coord, float3 cellOffset, float directionalShadow)
 {
 	float viewDepth;
 	float3 positionWS = Atmosphere::ComputeCellWorldPosition(coord, cellOffset, viewDepth);
@@ -360,8 +364,6 @@ float4 ComputeLightScattering(uint3 coord, float3 cellOffset)
 	float3 directionalScattering = 0.0f.xxx;
 	[branch] if (SharedData::HasDirectionalShadows && !SharedData::HideSky && !SharedData::InMapMenu)
 	{
-		float directionalShadow = SampleDirectionalShadow(positionWS) *
-		                          SampleDirectionalWorldShadow(positionWS);
 		float directionalMultiplier = SharedData::atmosphereSettings.volumetricDirectionalScatteringIntensity;
 		if (Atmosphere::IsMapAtmosphereActive())
 			directionalMultiplier *= max(SharedData::atmosphereSettings.mapDirectionalInscatteringMultiplier, 0.0f);
@@ -373,7 +375,7 @@ float4 ComputeLightScattering(uint3 coord, float3 cellOffset)
 			materialScatteringAndExtinction.rgb;
 	}
 
-	float3 skyScattering = ComputeSkyLightScattering(positionWS, viewDirection) *
+	float3 skyScattering = ComputeSkyLightScattering(positionWS) *
 	                       materialScatteringAndExtinction.rgb;
 
 	float3 localScattering = AccumulateLocalLightScattering(
@@ -434,12 +436,22 @@ float4 ComputeLightScattering(uint3 coord, float3 cellOffset)
 		float2 currentVolumeUV = (float2(dispatchID.xy) + 0.5f.xx) * VolumetricFogInvGridSize.xy;
 		float motionInFroxels = length(
 			(historyUV.xy - currentVolumeUV) * float2(VolumetricFogGridSize.xy));
-		historyAlpha *= exp2(-1.5f * motionInFroxels);
+		// Reduce reuse faster during camera motion so view-dependent scattering
+		// cannot leave a lingering shaft after the current froxel has moved away.
+		historyAlpha *= exp2(-8.0f * motionInFroxels);
 	}
 
 	// Partially rejected history needs the same stable current-frame estimate as a
 	// full miss; otherwise motion trades ghosting for visibly noisy fog.
 	uint sampleCount = historyAlpha < 0.25f ? VolumetricFogHistoryMissSampleCount : 1u;
+	// Shadow visibility varies slowly across the sub-voxel jitter pattern. Sample
+	// the center once and reuse it for all history-miss radiance samples instead
+	// of repeating cascaded shadow PCF and world-space cloud/terrain tests.
+	float directionalShadow = 1.0f;
+	if (SharedData::HasDirectionalShadows && !SharedData::HideSky && !SharedData::InMapMenu) {
+		directionalShadow = SampleDirectionalShadow(centerPositionWS) *
+		                    SampleDirectionalWorldShadow(centerPositionWS);
+	}
 	float4 scatteringAndExtinction = 0.0f.xxxx;
 	[loop] for (uint sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++)
 	{
@@ -450,7 +462,7 @@ float4 ComputeLightScattering(uint3 coord, float3 cellOffset)
 		float3 Rand3D = (float3(Rand32Bits) / float(uint(0xffffffff))) * 2.0f - 1.0f;
 		float3 cellOffset = VolumetricFogFrameJitterOffsets[sampleIndex].xyz + VolumetricFogSampleJitterMultiplier * Rand3D;
 
-		scatteringAndExtinction += ComputeLightScattering(dispatchID, cellOffset);
+		scatteringAndExtinction += ComputeLightScattering(dispatchID, cellOffset, directionalShadow);
 	}
 	scatteringAndExtinction *= rcp(float(sampleCount));
 

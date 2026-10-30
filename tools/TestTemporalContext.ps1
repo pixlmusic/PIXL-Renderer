@@ -23,6 +23,8 @@ foreach ($contract in @(
 
 Require-Text $header 'CameraCut[\s\S]*Teleport[\s\S]*WorldspaceChange[\s\S]*RenderOriginShift[\s\S]*ResolutionChange[\s\S]*SettingsChange[\s\S]*ModuleReset[\s\S]*DeviceReset' 'typed invalidation reasons'
 Require-Text 'engine\Renderer\TemporalContext.cpp' '\}\s*for \(auto& \[reason, callback\] : callbacks\)' 'callbacks executed outside registry lock'
+Require-Text 'engine\Renderer\TemporalContext.cpp' 'IsAbruptCameraRotation\(input\.view, frame\.current\.view\)' 'orientation cut detection'
+Require-Text 'engine\Renderer\TemporalMath.h' '0\.7071067811865476' '45-degree camera rotation threshold'
 Require-Text 'engine\State.cpp' 'TemporalContext::Get\(\)\.BeginFrame' 'authoritative frame publication'
 Require-Text 'engine\Modules\HybridGI.cpp' 'worldHistoryId.*RegisterHistory|RegisterHistory[\s\S]*worldHistoryId' 'HybridGI selective world history'
 Require-Text 'engine\Modules\CameraSuite.cpp' 'dofHistoryId.*IsHistoryValid|IsHistoryValid\(dofHistoryId\)' 'Auto-DOF migration'

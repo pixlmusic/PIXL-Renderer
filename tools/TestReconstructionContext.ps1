@@ -8,4 +8,8 @@ Require-Contract 'engine\Renderer\ReconstructionContext.cpp' 'contributors\.size
 Require-Contract 'engine\Modules\ImageReconstruction.cpp' 'RegisterReactiveContributor\([\s\S]*ContainedLiquids' 'contained liquid migration'
 Require-Contract 'engine\Modules\ImageReconstruction.cpp' 'RegisterReactiveContributor\([\s\S]*ReactiveFX' 'ReactiveFX migration'
 Require-Contract 'engine\Modules\ImageReconstruction.cpp' 'ReconstructionContext::Get\(\)\.Publish' 'frame publication'
+$encode = Get-Content -Raw (Join-Path $repo 'pipeline\ImageReconstruction\Kernels\ImageReconstruction\EncodeTexturesCS.hlsl')
+if ($encode -notmatch '(?s)CloudMaskAvailable\s*>\s*0\.5f.*?cloudOpacity\s*\*\s*0\.38f.*?touchesOppositeLayer.*?cloudOpacity\s*\*\s*0\.62f.*?#if defined\(DLSS\)') {
+	throw 'Open-sky and silhouette cloud reactivity must be shared by DLSS and FSR before DLSS-only motion conditioning'
+}
 Write-Host 'PASS: shared reconstruction frame and bounded reactive contribution contracts validated.'

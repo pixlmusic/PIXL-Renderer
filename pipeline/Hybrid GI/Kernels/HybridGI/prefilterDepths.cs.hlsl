@@ -17,11 +17,24 @@
 
 Texture2D<float> srcNDCDepth : register(t0);
 
+#ifdef MIN_FILTER
+// Reflection traversal needs both ends of each depth interval: nearest depth
+// proves empty space in front of geometry, farthest depth proves empty space
+// behind it. Other GI prefilters retain their existing single-channel ABI.
+RWTexture2D<float2> outDepth0 : register(u0);
+RWTexture2D<float2> outDepth1 : register(u1);
+RWTexture2D<float2> outDepth2 : register(u2);
+RWTexture2D<float2> outDepth3 : register(u3);
+RWTexture2D<float2> outDepth4 : register(u4);
+groupshared float2 g_scratchDepths[8][8];
+#else
 RWTexture2D<float> outDepth0 : register(u0);
 RWTexture2D<float> outDepth1 : register(u1);
 RWTexture2D<float> outDepth2 : register(u2);
 RWTexture2D<float> outDepth3 : register(u3);
 RWTexture2D<float> outDepth4 : register(u4);
+groupshared float g_scratchDepths[8][8];
+#endif
 
 // This is also a good place to do non-linear depth conversion for cases where one wants the 'radius' (effectively the threshold between near-field and far-field GI),
 // is required to be non-linear (i.e. very large outdoors environments).
@@ -39,6 +52,13 @@ float ClampDepth(float depth)
 	return clamp(depth, 0.0, 3.402823466e+38);
 }
 
+#ifdef MIN_FILTER
+float2 DepthMIPFilter(float2 depth0, float2 depth1, float2 depth2, float2 depth3)
+{
+	return float2(min(min(depth0.x, depth1.x), min(depth2.x, depth3.x)),
+		max(max(depth0.y, depth1.y), max(depth2.y, depth3.y)));
+}
+#else
 float DepthMIPFilter(float depth0, float depth1, float depth2, float depth3)
 {
 #ifdef LINEAR_FILTER
@@ -63,8 +83,8 @@ float DepthMIPFilter(float depth0, float depth1, float depth2, float depth3)
 	return (depth0 + depth1 + depth2 + depth3) * 0.25;
 #endif
 }
+#endif
 
-groupshared float g_scratchDepths[8][8];
 [numthreads(8, 8, 1)] void main(uint2 dispatchThreadID : SV_DispatchThreadID, uint2 groupThreadID : SV_GroupThreadID) {
 
 	// MIP 0
@@ -73,17 +93,16 @@ groupshared float g_scratchDepths[8][8];
 	const float2 uv = (pixCoord + .5) * RcpFrameDim;
 
 #ifdef MIN_FILTER
-	// Exact pixel ownership for Hi-Z. Padded group lanes must participate in
-	// every barrier, but contribute far depth instead of clamped edge texels.
-	float4 depths4 = 0.0f;
-	float depth0 = 1e20f, depth1 = 1e20f, depth2 = 1e20f, depth3 = 1e20f;
+	// Exact pixel ownership for Hi-Z. Padded lanes and sky contribute an
+	// unbounded interval so mixed geometry/sky tiles remain conservative.
+	float2 depth0 = 1e20f.xx, depth1 = 1e20f.xx, depth2 = 1e20f.xx, depth3 = 1e20f.xx;
 	[unroll] for (uint lane = 0u; lane < 4u; ++lane) {
 		uint2 coord = pixCoord + uint2(lane & 1u, lane >> 1u);
-		float z = 1e20f;
+		float2 z = 1e20f.xx;
 		if (all(coord < uint2(FrameDim))) {
 			float converted = ScreenToViewDepth(srcNDCDepth.Load(int3(coord, 0)));
 			if (isfinite(converted) && converted > 0.0f)
-				z = converted;
+				z = converted.xx;
 		}
 		if (lane == 0u) depth0 = z;
 		if (lane == 1u) depth1 = z;
@@ -104,7 +123,11 @@ groupshared float g_scratchDepths[8][8];
 #endif
 
 	// MIP 1
+#ifdef MIN_FILTER
+	float2 dm1 = DepthMIPFilter(depth0, depth1, depth2, depth3);
+#else
 	float dm1 = DepthMIPFilter(depth0, depth1, depth2, depth3);
+#endif
 	if (all(baseCoord < (uint2(TexDim) >> 1))) outDepth1[baseCoord] = dm1;
 	g_scratchDepths[groupThreadID.x][groupThreadID.y] = dm1;
 
@@ -113,12 +136,23 @@ groupshared float g_scratchDepths[8][8];
 	// MIP 2
 	[branch] if (all((groupThreadID.xy % 2) == 0))
 	{
+#ifdef MIN_FILTER
+		float2 inTL = g_scratchDepths[groupThreadID.x + 0][groupThreadID.y + 0];
+		float2 inTR = g_scratchDepths[groupThreadID.x + 1][groupThreadID.y + 0];
+		float2 inBL = g_scratchDepths[groupThreadID.x + 0][groupThreadID.y + 1];
+		float2 inBR = g_scratchDepths[groupThreadID.x + 1][groupThreadID.y + 1];
+#else
 		float inTL = g_scratchDepths[groupThreadID.x + 0][groupThreadID.y + 0];
 		float inTR = g_scratchDepths[groupThreadID.x + 1][groupThreadID.y + 0];
 		float inBL = g_scratchDepths[groupThreadID.x + 0][groupThreadID.y + 1];
 		float inBR = g_scratchDepths[groupThreadID.x + 1][groupThreadID.y + 1];
+#endif
 
+#ifdef MIN_FILTER
+		float2 dm2 = DepthMIPFilter(inTL, inTR, inBL, inBR);
+#else
 		float dm2 = DepthMIPFilter(inTL, inTR, inBL, inBR);
+#endif
 		if (all(baseCoord / 2 < (uint2(TexDim) >> 2))) outDepth2[baseCoord / 2] = dm2;
 		g_scratchDepths[groupThreadID.x][groupThreadID.y] = dm2;
 	}
@@ -128,12 +162,23 @@ groupshared float g_scratchDepths[8][8];
 	// MIP 3
 	[branch] if (all((groupThreadID.xy % 4) == 0))
 	{
+#ifdef MIN_FILTER
+		float2 inTL = g_scratchDepths[groupThreadID.x + 0][groupThreadID.y + 0];
+		float2 inTR = g_scratchDepths[groupThreadID.x + 2][groupThreadID.y + 0];
+		float2 inBL = g_scratchDepths[groupThreadID.x + 0][groupThreadID.y + 2];
+		float2 inBR = g_scratchDepths[groupThreadID.x + 2][groupThreadID.y + 2];
+#else
 		float inTL = g_scratchDepths[groupThreadID.x + 0][groupThreadID.y + 0];
 		float inTR = g_scratchDepths[groupThreadID.x + 2][groupThreadID.y + 0];
 		float inBL = g_scratchDepths[groupThreadID.x + 0][groupThreadID.y + 2];
 		float inBR = g_scratchDepths[groupThreadID.x + 2][groupThreadID.y + 2];
+#endif
 
+#ifdef MIN_FILTER
+		float2 dm3 = DepthMIPFilter(inTL, inTR, inBL, inBR);
+#else
 		float dm3 = DepthMIPFilter(inTL, inTR, inBL, inBR);
+#endif
 		if (all(baseCoord / 4 < (uint2(TexDim) >> 3))) outDepth3[baseCoord / 4] = dm3;
 		g_scratchDepths[groupThreadID.x][groupThreadID.y] = dm3;
 	}
@@ -143,12 +188,23 @@ groupshared float g_scratchDepths[8][8];
 	// MIP 4
 	[branch] if (all((groupThreadID.xy % 8) == 0))
 	{
+#ifdef MIN_FILTER
+		float2 inTL = g_scratchDepths[groupThreadID.x + 0][groupThreadID.y + 0];
+		float2 inTR = g_scratchDepths[groupThreadID.x + 4][groupThreadID.y + 0];
+		float2 inBL = g_scratchDepths[groupThreadID.x + 0][groupThreadID.y + 4];
+		float2 inBR = g_scratchDepths[groupThreadID.x + 4][groupThreadID.y + 4];
+#else
 		float inTL = g_scratchDepths[groupThreadID.x + 0][groupThreadID.y + 0];
 		float inTR = g_scratchDepths[groupThreadID.x + 4][groupThreadID.y + 0];
 		float inBL = g_scratchDepths[groupThreadID.x + 0][groupThreadID.y + 4];
 		float inBR = g_scratchDepths[groupThreadID.x + 4][groupThreadID.y + 4];
+#endif
 
+#ifdef MIN_FILTER
+		float2 dm4 = DepthMIPFilter(inTL, inTR, inBL, inBR);
+#else
 		float dm4 = DepthMIPFilter(inTL, inTR, inBL, inBR);
+#endif
 		if (all(baseCoord / 8 < (uint2(TexDim) >> 4))) outDepth4[baseCoord / 8] = dm4;
 		//g_scratchDepths[ groupThreadID.x ][ groupThreadID.y ] = dm4;
 	}

@@ -1007,7 +1007,11 @@ PS_OUTPUT main(PS_INPUT input)
 	float vanillaFogFactor = fogFactor;
 	float3 vanillaFogColor = fogColor;
 	float expFogFactor = 0;
-	if (SharedData::atmosphereSettings.enabled) {
+	// Skyrim's distant cloud/mountain sprites are authored sky effects. Keep their
+	// vanilla fog path: applying integrated volume opacity makes them disappear
+	// into volumetric extinction before reaching the horizon.
+	bool isSkyObject = (Permutation::VertexShaderDescriptor & Permutation::EffectFlags::SkyObject) != 0;
+	if (SharedData::atmosphereSettings.enabled && !isSkyObject) {
 		float4 atmosphere = Atmosphere::GetAtmosphere(input.WorldPosition.xyz, FrameBuffer::CameraPosAdjust.xyz, fogColor, float4(input.Position.xy * FrameBuffer::DynamicResolutionParams2.xy, input.Position.z, 1));
 		expFogFactor = atmosphere.w;
 #			if defined(ADDBLEND) || defined(MULTBLEND) || defined(MULTBLEND_DECAL)

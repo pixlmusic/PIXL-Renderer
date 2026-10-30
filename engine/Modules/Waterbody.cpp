@@ -1,11 +1,13 @@
 #include "Waterbody.h"
 #include "Modules/OceanDynamics.h"
+#include "RE/B/BSAtomic.h"
 
 #include "I18n/I18n.h"
 #include "Menu.h"
 #include "Menu/ThemeManager.h"
 #include "State.h"
 #include "Util.h"
+#include "Utils/VersionedRelocation.h"
 
 #define I18N_KEY_PREFIX "feature.waterbody."
 
@@ -480,21 +482,15 @@ void Waterbody::PostPostLoad()
 	stl::detour_thunk<TES_SetWorldSpace>(REL::RelocationID(13170, 13315));
 	stl::detour_thunk<TES_DestroySkyCell>(REL::RelocationID(20029, 20463));
 
-	stl::write_thunk_call<TESWaterSystem_InitializeWater_SetWaterShaderMaterialParams>(REL::RelocationID(31388, 32179).address() + REL::Relocate(0x360, 0x3BC));
+	stl::write_thunk_call<TESWaterSystem_InitializeWater_SetWaterShaderMaterialParams>(REL::RelocationID(31388, 32179).address() + REL::Relocate(0x360, 0x3BC, 0x35B));
 	stl::write_vfunc<0x4, BSWaterShaderMaterial_ComputeCRC32>(RE::VTABLE_BSWaterShaderMaterial[0]);
 
 	stl::detour_thunk<BGSTerrainBlock_Attach>(REL::RelocationID(30934, 31737));
 
 	stl::detour_thunk<BGSTerrainBlock_Detach>(REL::RelocationID(30936, 31739));
 
-	if (REL::Module::get().version() < SKSE::RUNTIME_SSE_1_7_104) {
-		stl::detour_thunk<BGSTerrainNode_UpdateWaterMeshSubVisibility>(REL::RelocationID(31059, 31846));
-	} else {
-		// Address Library format 5 for 1.7.104 has no AE entry for this function.
-		// Leave the native terrain water visibility routine in place rather than
-		// asking CommonLib to resolve a missing relocation and abort plugin load.
-		logger::warn("[Waterbody] Native terrain water visibility hook unavailable on runtime {}; keeping Skyrim's implementation", REL::Module::get().version().string());
-	}
+	stl::detour_thunk<BGSTerrainNode_UpdateWaterMeshSubVisibility>(
+		Util::VersionedRelocation::ResolveID(31059, 31846, 523588));
 
 	stl::detour_thunk<TESWaterSystem_UpdateDisplacementMeshPosition>(REL::RelocationID(31384, 32175));
 
@@ -618,13 +614,17 @@ void Waterbody::TES_DestroySkyCell::thunk(RE::TES* tes)
 
 void Waterbody::BGSTerrainNode_UpdateWaterMeshSubVisibility::thunk(const RE::BGSTerrainNode* node, RE::BSMultiBoundNode* waterParent)
 {
-	if (!globals::pipeline::waterbody.IsWaterDataReady()) {
+	// 1.7.99+ terrain jobs may invoke this while their node is being detached.
+	// The engine routine dereferences the node before validating it.
+	if (!node || !waterParent)
+		return;
+
+	const bool modernTerrainJobs = REL::Module::IsAE() &&
+		REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_99;
+	if (!globals::pipeline::waterbody.IsWaterDataReady() && !modernTerrainJobs) {
 		func(node, waterParent);
 		return;
 	}
-
-	if (!node || !waterParent)
-		return;
 
 	if (node->GetLODLevel() != 4)
 		return;
@@ -651,7 +651,16 @@ void Waterbody::BGSTerrainNode_UpdateWaterMeshSubVisibility::thunk(const RE::BGS
 
 		bool cull = false;
 		if (x >= 0 && y >= 0 && x < length && y < length) {
-			if (const auto cell = gridCells->GetCell(x, y); cell && cell->cellState.any(RE::TESObjectCELL::CellState::kAttached, static_cast<RE::TESObjectCELL::CellState>(6))) {
+			RE::TESObjectCELL* cell = nullptr;
+			if (REL::Module::IsAE() && REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_99) {
+				static REL::Relocation<RE::BSReadWriteLock*> terrainCellMapLock{ REL::ID(564236) };
+				const RE::BSReadLockGuard lock(*terrainCellMapLock);
+				cell = gridCells->GetCell(x, y);
+			} else {
+				cell = gridCells->GetCell(x, y);
+			}
+
+			if (cell && cell->cellState.any(RE::TESObjectCELL::CellState::kAttached, static_cast<RE::TESObjectCELL::CellState>(6))) {
 				// Keep LOD visible when a loaded dry cell has no active water to replace it
 				cull = cell->cellFlags.any(RE::TESObjectCELL::Flag::kHasWater);
 			}

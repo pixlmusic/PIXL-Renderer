@@ -89,14 +89,14 @@ namespace
 		// Keep the established weather-class profiles. Authored Skyrim cloud
 		// opacity remains authoritative per weather.
 		switch (weatherClass) {
-		case WeatherManager::WeatherClass::Clear: return { 0.85f, 0.82f, 0.10f, 0.78f, 0.72f, 45000.0f, 0.42f, 0.24f, 0.02f, 0.55f, 0.70f, 100000.0f };
-		case WeatherManager::WeatherClass::Cloudy: return { 1.08f, 1.00f, 0.38f, 1.00f, 1.00f, 65000.0f, 0.34f, 0.32f, 0.10f, 0.68f, 0.78f, 95000.0f };
-		case WeatherManager::WeatherClass::Fog: return { 0.98f, 0.94f, 0.16f, 0.84f, 0.82f, 58000.0f, 0.20f, 0.18f, 0.02f, 0.48f, 0.60f, 82000.0f };
-		case WeatherManager::WeatherClass::Rain: return { 1.18f, 1.10f, 0.63f, 0.96f, 1.18f, 65000.0f, 0.24f, 0.26f, 0.12f, 0.56f, 0.82f, 90000.0f };
-		case WeatherManager::WeatherClass::Storm: return { 1.25f, 1.20f, 0.86f, 1.08f, 1.38f, 65000.0f, 0.18f, 0.20f, 0.20f, 0.52f, 0.92f, 88000.0f };
-		case WeatherManager::WeatherClass::Snow: return { 1.12f, 1.06f, 0.58f, 0.94f, 1.02f, 62000.0f, 0.30f, 0.28f, 0.12f, 0.62f, 0.72f, 92000.0f };
-		case WeatherManager::WeatherClass::Special: return { 1.02f, 1.00f, 0.48f, 0.96f, 0.96f, 61000.0f, 0.28f, 0.30f, 0.12f, 0.72f, 0.76f, 96000.0f };
-		default: return { 1.08f, 1.00f, 0.42f, 1.00f, 1.00f, 65000.0f, 0.32f, 0.30f, 0.10f, 0.65f, 0.76f, 95000.0f };
+		case WeatherManager::WeatherClass::Clear: return { 0.85f, 0.82f, 0.10f, 0.78f, 0.72f, 45000.0f, 0.68f, 0.48f, 0.02f, 0.55f, 0.70f, 100000.0f };
+		case WeatherManager::WeatherClass::Cloudy: return { 1.08f, 1.00f, 0.38f, 1.00f, 1.00f, 65000.0f, 0.62f, 0.58f, 0.10f, 0.68f, 0.78f, 95000.0f };
+		case WeatherManager::WeatherClass::Fog: return { 0.98f, 0.94f, 0.16f, 0.84f, 0.82f, 58000.0f, 0.42f, 0.36f, 0.02f, 0.48f, 0.60f, 82000.0f };
+		case WeatherManager::WeatherClass::Rain: return { 1.18f, 1.10f, 0.63f, 0.96f, 1.18f, 65000.0f, 0.54f, 0.46f, 0.12f, 0.56f, 0.82f, 90000.0f };
+		case WeatherManager::WeatherClass::Storm: return { 1.25f, 1.20f, 0.86f, 1.08f, 1.38f, 65000.0f, 0.48f, 0.42f, 0.20f, 0.52f, 0.92f, 88000.0f };
+		case WeatherManager::WeatherClass::Snow: return { 1.12f, 1.06f, 0.58f, 0.94f, 1.02f, 62000.0f, 0.60f, 0.52f, 0.12f, 0.62f, 0.72f, 92000.0f };
+		case WeatherManager::WeatherClass::Special: return { 1.02f, 1.00f, 0.48f, 0.96f, 0.96f, 61000.0f, 0.58f, 0.54f, 0.12f, 0.72f, 0.76f, 96000.0f };
+		default: return { 1.08f, 1.00f, 0.42f, 1.00f, 1.00f, 65000.0f, 0.58f, 0.52f, 0.10f, 0.65f, 0.76f, 95000.0f };
 		}
 	}
 
@@ -648,6 +648,16 @@ void VolumetricClouds::DrawClouds()
 	rt.weatherSimulationAccumulator = std::min(
 		rt.weatherSimulationAccumulator + static_cast<float>(std::min(simulationDelta, 1.0e7)), 1.0e7f);
 	const auto temporalSnapshot = PIXL::Renderer::TemporalContext::Get().GetFrameSnapshot();
+	// An exterior load or an interior-to-exterior transition has no valid prior
+	// camera frame. Rebuild the weather map as well as the cloud history; using
+	// the previous exterior's low-resolution map can leave a dark block across
+	// the sky until the periodic weather update catches up.
+	if (!temporalSnapshot.previousFrameValid) {
+		InvalidateHistory();
+		rt.weatherValid = false;
+		rt.weatherProfileValid = false;
+		rt.weatherAccumulator = kWeatherUpdateInterval;
+	}
 	const float cameraX = static_cast<float>(temporalSnapshot.current.absoluteCameraPosition[0]);
 	const float cameraY = static_cast<float>(temporalSnapshot.current.absoluteCameraPosition[1]);
 	const float stormStrength = std::clamp(weatherContext.storminess, 0.0f, 1.0f);
@@ -782,9 +792,9 @@ void VolumetricClouds::DrawClouds()
 	// thickness and the relative spacing between clear, rain, snow, and storm tops.
 	constexpr float cloudAltitudeScale = 1.075f;
 	const float cloudBase = std::max(
-		(FiniteClamp(settings.CloudBase, 15000.0f, 0.0f, 120000.0f) + profile.baseOffset) * cloudAltitudeScale,
+		(FiniteClamp(settings.CloudBase, 15435.0f, 0.0f, 120000.0f) + profile.baseOffset) * cloudAltitudeScale,
 		0.0f);
-	const float authoredThicknessScale = FiniteClamp(settings.CloudThickness, 50085.0f, 2000.0f, 90000.0f) / 50085.0f;
+	const float authoredThicknessScale = FiniteClamp(settings.CloudThickness, 65000.0f, 2000.0f, 90000.0f) / 50085.0f;
 	const float thickness = std::max(profile.cloudTop - cloudBase / cloudAltitudeScale, 5000.0f) *
 		cloudAltitudeScale * authoredThicknessScale;
 	CloudConstants constants{};
@@ -793,8 +803,8 @@ void VolumetricClouds::DrawClouds()
 	constants.fullSize = { static_cast<float>(width), static_cast<float>(height), 1.0f / width, 1.0f / height };
 	constants.layer = { cloudBase, cloudBase + thickness,
 		FiniteClamp(settings.MaximumDistance, 320000.0f, 50000.0f, 800000.0f), kCloudCurvatureRadius };
-	constants.weather = { std::clamp(profile.coverage * FiniteClamp(settings.Coverage, 0.60f, 0.0f, 2.0f), 0.0f, 1.0f),
-		profile.density * FiniteClamp(settings.Density, 1.55f, 0.1f, 2.5f), profile.type, profile.precipitation };
+	constants.weather = { std::clamp(profile.coverage * FiniteClamp(settings.Coverage, 0.73f, 0.0f, 2.0f), 0.0f, 1.0f),
+		profile.density * FiniteClamp(settings.Density, 1.91f, 0.1f, 2.5f), profile.type, profile.precipitation };
 	constants.weatherSecondary = { profile.storm, profile.fog,
 		std::clamp(weatherContext.transition.lerpFactor, 0.0f, 1.0f), profile.sunVisibility };
 	constants.windTime = { windVelocityX, windVelocityY,
@@ -827,7 +837,7 @@ void VolumetricClouds::DrawClouds()
 	constants.phase = { FiniteClamp(settings.ForwardScattering, 0.72f, 0.0f, 0.92f),
 		FiniteClamp(settings.BackScattering, -0.18f, -0.8f, 0.0f), FiniteClamp(settings.SilverLining, 0.85f, 0.0f, 2.0f),
 		FiniteClamp(settings.MultipleScattering, 0.65f, 0.0f, 1.5f) };
-	const float baseTemporalResponse = FiniteClamp(settings.TemporalResponse, 0.92f, 0.0f, 0.98f);
+	const float baseTemporalResponse = FiniteClamp(settings.TemporalResponse, 0.68f, 0.0f, 0.98f);
 	const float lightningTemporalResponse = lightningFlash > 0.02f
 		? std::lerp(baseTemporalResponse, std::min(baseTemporalResponse, 0.22f),
 			std::clamp(lightningFlash, 0.0f, 1.0f))
@@ -916,18 +926,19 @@ void VolumetricClouds::DrawClouds()
 
 	const std::uint32_t previousIndex = rt.historyFlip ? 1u : 0u;
 	const std::uint32_t resolvedIndex = 1u - previousIndex;
-	ID3D11ShaderResourceView* temporalViews[4]{ rt.rawCloud->srv.get(), rt.rawDepth->srv.get(),
-		rt.historyCloud[previousIndex]->srv.get(), rt.historyDepth[previousIndex]->srv.get() };
+	ID3D11ShaderResourceView* temporalViews[5]{ rt.rawCloud->srv.get(), rt.rawDepth->srv.get(),
+		rt.historyCloud[previousIndex]->srv.get(), rt.historyDepth[previousIndex]->srv.get(), depthSRV };
 	ID3D11UnorderedAccessView* temporalOutputs[2]{ rt.historyCloud[resolvedIndex]->uav.get(),
 		rt.historyDepth[resolvedIndex]->uav.get() };
-	context->CSSetShaderResources(0, 4, temporalViews);
+	context->CSSetShaderResources(0, 5, temporalViews);
 	context->CSSetUnorderedAccessViews(0, 2, temporalOutputs, nullptr);
 	context->CSSetShader(rt.temporalShader.get(), nullptr, 0);
 	globals::profiler->BeginPass("VolumetricClouds::Temporal");
 	context->Dispatch((rt.lowWidth + 7u) / 8u, (rt.lowHeight + 7u) / 8u, 1u);
 	globals::profiler->EndPass();
 	rt.frameCloudsAvailable = true;
-	context->CSSetShaderResources(0, 4, nullViews4);
+	ID3D11ShaderResourceView* nullTemporalViews[5]{};
+	context->CSSetShaderResources(0, 5, nullTemporalViews);
 	context->CSSetUnorderedAccessViews(0, 2, nullOutputs2, nullptr);
 	rt.historyFlip = resolvedIndex != 0u;
 	if (rt.temporalHistoryId != 0)
@@ -1121,15 +1132,15 @@ void VolumetricClouds::LoadSettings(json& value)
 	};
 	settings.Enabled = value.value("Enabled", true);
 	settings.Quality = std::min(value.value("Quality", 2u), 3u);
-	settings.Coverage = readFloat("Coverage", 0.60f, 0.0f, 2.0f);
-	settings.Density = readFloat("Density", 1.55f, 0.1f, 2.5f);
+	settings.Coverage = readFloat("Coverage", 0.73f, 0.0f, 2.0f);
+	settings.Density = readFloat("Density", 1.91f, 0.1f, 2.5f);
 	settings.VanillaCloudVisibility = readFloat("VanillaCloudVisibility", 0.25f, 0.0f, 1.0f);
 	settings.OriginalSkyExposure = readFloat("OriginalSkyExposure", 0.0f, -3.0f, 2.0f);
 	settings.OriginalSkyContrast = readFloat("OriginalSkyContrast", 1.0f, 0.5f, 2.0f);
 	settings.AuroraIntensity = readFloat("AuroraIntensity", 0.35f, 0.0f, 1.5f);
 	settings.LightningIntensity = readFloat("LightningIntensity", 1.0f, 0.0f, 2.0f);
-	settings.CloudBase = readFloat("CloudBase", 15000.0f, 0.0f, 120000.0f);
-	settings.CloudThickness = readFloat("CloudThickness", 50085.0f, 2000.0f, 90000.0f);
+	settings.CloudBase = readFloat("CloudBase", 15435.0f, 0.0f, 120000.0f);
+	settings.CloudThickness = readFloat("CloudThickness", 65000.0f, 2000.0f, 90000.0f);
 	settings.EnableHighCloudLayer = value.value("EnableHighCloudLayer", false);
 	settings.HighCloudBase = readFloat("HighCloudBase", 30000.0f, 20000.0f, 70000.0f);
 	settings.HighCloudTop = readFloat("HighCloudTop", 100000.0f, 65000.0f, 110000.0f);
@@ -1153,7 +1164,7 @@ void VolumetricClouds::LoadSettings(json& value)
 	settings.Powder = readFloat("Powder", 0.55f, 0.0f, 2.0f);
 	settings.MultipleScattering = readFloat("MultipleScattering", 0.65f, 0.0f, 1.5f);
 	settings.ShadowStrength = readFloat("ShadowStrength", 0.20f, 0.0f, 1.0f);
-	settings.TemporalResponse = readFloat("TemporalResponse", 0.92f, 0.0f, 0.98f);
+	settings.TemporalResponse = readFloat("TemporalResponse", 0.68f, 0.0f, 0.98f);
 	settings.DebugMode = 0u;
 }
 
@@ -1196,13 +1207,13 @@ void VolumetricClouds::RegisterWeatherVariables()
 			key, label, tooltip, &setting, fallback, minimum, maximum));
 	};
 	addFloat("Coverage", "Cloud Coverage", "Per-weather multiplier applied after automatic weather classification.",
-		settings.Coverage, 0.60f, 0.0f, 2.0f);
+		settings.Coverage, 0.73f, 0.0f, 2.0f);
 	addFloat("Density", "Cloud Density", "Per-weather optical-density multiplier.",
-		settings.Density, 1.55f, 0.1f, 2.5f);
+		settings.Density, 1.91f, 0.1f, 2.5f);
 	addFloat("CloudBase", "Cloud Base", "Base altitude for this weather in Skyrim world units.",
-		settings.CloudBase, 15000.0f, 0.0f, 120000.0f);
+		settings.CloudBase, 15435.0f, 0.0f, 120000.0f);
 	addFloat("CloudThickness", "Cloud Thickness", "Scales weather-driven vertical development around the configured cloud base.",
-		settings.CloudThickness, 50085.0f, 2000.0f, 90000.0f);
+		settings.CloudThickness, 65000.0f, 2000.0f, 90000.0f);
 	addFloat("Erosion", "Cloud Erosion", "Fine breakup and wispy-edge strength for this weather.",
 		settings.Erosion, 0.62f, 0.0f, 1.5f);
 	addFloat("ShadowStrength", "Cloud Shadow Strength", "Strength of broad world-space cloud shadows.",

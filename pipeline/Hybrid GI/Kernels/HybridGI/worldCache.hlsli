@@ -178,12 +178,12 @@ bool WorldCachePositionInWindow(float3 positionWS, float3 cameraWS, uint cascade
 float WorldCacheCascadeBlend(float3 positionWS, float3 cameraWS)
 {
     float nearExtent = WorldCacheCellSizeNear * (WORLD_CACHE_DIM * 0.47f);
-    float3 diff = abs(positionWS - cameraWS);
-    float maxDiff = max(diff.x, max(diff.y, diff.z));
-    // Keep the near/far toroidal volumes overlapped for a wider band. The old
-    // narrow transition was visible as a radiance edge when voxel lighting
-    // changed authority, especially against large interior/exterior views.
-    return smoothstep(0.62f, 1.08f, maxDiff / max(nearExtent, 1.0f));
+    float3 diff = positionWS - cameraWS;
+    // Chebyshev distance made the near/far handoff a cube: axis-aligned
+    // corners could change cache authority together and read as a moving square
+    // in reflections. A radial metric makes the transition isotropic.
+    float radialDistance = length(diff);
+    return smoothstep(0.62f, 1.08f, radialDistance / max(nearExtent, 1.0f));
 }
 
 uint WorldCacheCascade(float3 positionWS, float3 cameraWS)
@@ -232,7 +232,11 @@ float WorldCacheStableRotation(float3 positionWS, float3 cameraWS)
 
 float WorldCacheAgeFade(uint age, uint maxAge)
 {
-    float softStart = (float)maxAge * 0.65f;
+    // Visible voxels refresh at 30 Hz, but off-screen cells can only be
+    // rediscovered after camera movement. Fade them after one quarter of their
+    // lifetime so stale lighting does not remain at full strength for most of
+    // the cache window. GI, secondary bounce, and voxel reflections share this.
+    float softStart = (float)maxAge * 0.25f;
     return 1.0f - smoothstep(softStart, (float)max(maxAge, 1u), (float)age);
 }
 
