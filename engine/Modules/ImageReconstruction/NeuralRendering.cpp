@@ -9,8 +9,11 @@
 #include <nvsdk_ngx_helpers.h>
 
 #include <array>
+#include <atomic>
+#include <cmath>
 #include <cstring>
 #include <format>
+#include <mutex>
 
 namespace
 {
@@ -37,7 +40,10 @@ namespace
 	GetModuleFileNameWFunction originalGetModuleFileNameW = nullptr;
 	HMODULE callerModule = nullptr;
 	std::wstring signedRuntimePath;
-	std::uint32_t signedPathHits = 0;
+	std::atomic_uint32_t signedPathHits{ 0 };
+
+	// Serialize scoped import-table changes across PIXL neural calls.
+	std::mutex signedRuntimeIdentityMutex;
 
 	HMODULE FindNGXCoreModule()
 	{
@@ -58,7 +64,7 @@ namespace
 	DWORD WINAPI SignedRuntimeGetModuleFileNameW(HMODULE module, LPWSTR filename, DWORD size)
 	{
 		if (module == callerModule && filename && size > 0 && !signedRuntimePath.empty()) {
-			++signedPathHits;
+			signedPathHits.fetch_add(1, std::memory_order_relaxed);
 			const DWORD length = static_cast<DWORD>(signedRuntimePath.size());
 			const DWORD copyLength = std::min(length, size - 1);
 			std::memcpy(filename, signedRuntimePath.data(), copyLength * sizeof(wchar_t));
@@ -79,11 +85,12 @@ namespace
 		{
 			if (!runtime)
 				return;
-			GetModuleHandleExW(
+			if (!GetModuleHandleExW(
 				GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-				reinterpret_cast<LPCWSTR>(&SignedRuntimeGetModuleFileNameW), &callerModule);
+				reinterpret_cast<LPCWSTR>(&SignedRuntimeGetModuleFileNameW), &callerModule))
+				return;
 			signedRuntimePath = coreIdentity.wstring();
-			signedPathHits = 0;
+			signedPathHits.store(0, std::memory_order_relaxed);
 
 			auto* base = reinterpret_cast<std::byte*>(runtime);
 			auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
@@ -140,17 +147,26 @@ namespace
 		}
 
 		[[nodiscard]] bool IsInstalled() const { return installed_; }
-		[[nodiscard]] std::uint32_t Hits() const { return signedPathHits; }
+		[[nodiscard]] std::uint32_t Hits() const { return signedPathHits.load(std::memory_order_relaxed); }
 
 	private:
+		// Global identity state must never be overwritten by another PIXL call
+		// before this scope has restored the import table.
+		std::unique_lock<std::mutex> lifetimeLock_{ signedRuntimeIdentityMutex };
 		void** slot_ = nullptr;
 		bool installed_ = false;
 	};
 
+
 	std::filesystem::path ResolveRuntimePath(const std::filesystem::path& explicitPath)
 	{
-		if (!explicitPath.empty())
-			return std::filesystem::is_directory(explicitPath) ? explicitPath / kRuntimeName : explicitPath;
+		if (!explicitPath.empty()) {
+			std::error_code pathError;
+			const bool directory = std::filesystem::is_directory(explicitPath, pathError);
+			if (pathError)
+				return {};
+			return directory ? explicitPath / kRuntimeName : explicitPath;
+		}
 
 		const auto dataPath = Util::PathHelpers::GetDataPath();
 		// PIXL is self-contained. Resolve Neural Rendering only from its canonical
@@ -173,7 +189,8 @@ bool NeuralRendering::Probe(const std::filesystem::path& explicitPath)
 	runtimePath_ = ResolveRuntimePath(explicitPath);
 	if (runtimePath_.empty()) {
 		status_ = Status::NotFound;
-		detail_ = "nvngx_dlssnr.dll was not found";
+		detail_ = "nvngx_dlssnr.dll was not found in Data/PIXL-Shaders/ImageReconstruction/Streamline";
+		logger::warn("[NeuralRendering] Enabled, but unavailable: {}.", detail_);
 		return false;
 	}
 
@@ -181,6 +198,7 @@ bool NeuralRendering::Probe(const std::filesystem::path& explicitPath)
 	if (!version) {
 		status_ = Status::VersionUnavailable;
 		detail_ = "runtime version resource is unavailable";
+		logger::warn("[NeuralRendering] Runtime probe failed for '{}': {}.", runtimePath_.string(), detail_);
 		return false;
 	}
 	version_ = Util::GetFormattedVersion(*version);
@@ -193,6 +211,7 @@ bool NeuralRendering::Probe(const std::filesystem::path& explicitPath)
 	if (!supportedRuntime) {
 		status_ = Status::UnsupportedVersion;
 		detail_ = std::format("supported DLSSNR runtimes are 310.8.x and 310.9.16; found {}", version_);
+		logger::warn("[NeuralRendering] Runtime probe rejected '{}': {}.", runtimePath_.string(), detail_);
 		return false;
 	}
 
@@ -201,6 +220,7 @@ bool NeuralRendering::Probe(const std::filesystem::path& explicitPath)
 	if (!module_) {
 		status_ = Status::LoadFailed;
 		detail_ = std::format("LoadLibraryExW failed with {}", GetLastError());
+		logger::warn("[NeuralRendering] Runtime load failed for '{}': {}.", runtimePath_.string(), detail_);
 		return false;
 	}
 
@@ -210,6 +230,7 @@ bool NeuralRendering::Probe(const std::filesystem::path& explicitPath)
 			detail_ = std::format("missing export {}", exportName);
 			FreeLibrary(static_cast<HMODULE>(module_));
 			module_ = nullptr;
+			logger::warn("[NeuralRendering] Runtime probe rejected '{}': {}.", runtimePath_.string(), detail_);
 			return false;
 		}
 	}
@@ -223,6 +244,7 @@ bool NeuralRendering::Probe(const std::filesystem::path& explicitPath)
 		detail_ = "signed runtime identity exports are missing";
 		FreeLibrary(static_cast<HMODULE>(module_));
 		module_ = nullptr;
+		logger::warn("[NeuralRendering] Runtime probe rejected '{}': {}.", runtimePath_.string(), detail_);
 		return false;
 	}
 
@@ -230,6 +252,7 @@ bool NeuralRendering::Probe(const std::filesystem::path& explicitPath)
 	apiVersion_ = getApiVersion();
 	status_ = Status::Ready;
 	detail_ = "runtime validated; waiting for PIXL DX12 sidecar";
+	logger::info("[NeuralRendering] Validated DLSSNR {} at '{}'.", version_, runtimePath_.string());
 	return true;
 }
 
@@ -249,11 +272,19 @@ bool NeuralRendering::Initialize(ID3D12Device* device)
 	const auto writablePath = Util::PathHelpers::GetDataPath() / L"SKSE/Plugins/PIXLRenderer/NGXCache";
 	std::error_code error;
 	std::filesystem::create_directories(writablePath, error);
+	if (error) {
+		status_ = Status::InitializationFailed;
+		detail_ = std::format("NGX cache directory unavailable: {}", error.message());
+		logger::warn("[NeuralRendering] Initialization failed: {}.", detail_);
+		return false;
+	}
 
+	// Retain the previously working feature-18 initialization compatibility path.
 	SignedRuntimePathScope scope(static_cast<HMODULE>(module_), runtimePath_.parent_path() / L"nvngx.dll");
 	if (!scope.IsInstalled()) {
 		status_ = Status::InitializationFailed;
-		detail_ = "could not establish the scoped signed-runtime identity";
+		detail_ = "could not establish the scoped NGX identity compatibility path";
+		logger::warn("[NeuralRendering] Initialization failed: {}.", detail_);
 		return false;
 	}
 
@@ -262,6 +293,7 @@ bool NeuralRendering::Initialize(ID3D12Device* device)
 	if (ngxResult_ != NVSDK_NGX_Result_Success) {
 		status_ = Status::InitializationFailed;
 		detail_ = std::format("NGX initialization failed 0x{:08X}; identityHits={}", ngxResult_, scope.Hits());
+		logger::warn("[NeuralRendering] Initialization failed: {}.", detail_);
 		return false;
 	}
 
@@ -271,6 +303,7 @@ bool NeuralRendering::Initialize(ID3D12Device* device)
 	if (!core) {
 		status_ = Status::CoreUnavailable;
 		detail_ = "NGX parameter allocator was not found in the loaded Streamline core";
+		logger::warn("[NeuralRendering] Initialization failed: {}.", detail_);
 		return false;
 	}
 	auto allocate = reinterpret_cast<AllocateParameters>(
@@ -280,6 +313,7 @@ bool NeuralRendering::Initialize(ID3D12Device* device)
 	if (ngxResult_ != NVSDK_NGX_Result_Success || !parameters) {
 		status_ = Status::ParameterAllocationFailed;
 		detail_ = std::format("NGX parameter allocation failed 0x{:08X}", ngxResult_);
+		logger::warn("[NeuralRendering] Initialization failed: {}.", detail_);
 		return false;
 	}
 
@@ -306,8 +340,26 @@ bool NeuralRendering::Evaluate(
 	bool reset,
 	bool latchFailure)
 {
-	if (status_ == Status::RuntimeFault || status_ != Status::Initialized || !commandList || !color || !depth ||
-		!motionVectors || !output || guideWidth <= 1 || guideHeight <= 1 || !outputWidth || !outputHeight)
+	if (status_ != Status::Initialized || !module_ || !parameters_ || !commandList || !color || !depth ||
+		!std::isfinite(tuning.intensity) || !std::isfinite(tuning.localToneStrength) ||
+		!std::isfinite(tuning.localStructureStrength) || !std::isfinite(tuning.skinStructureStrength) ||
+		!motionVectors || !output || guideWidth <= 1 || guideHeight <= 1 || !outputWidth || !outputHeight ||
+		!std::isfinite(motionVectorScaleX) || !std::isfinite(motionVectorScaleY) ||
+		motionVectorScaleX <= 0.0f || motionVectorScaleY <= 0.0f)
+		return false;
+	const auto colorDesc = color->GetDesc();
+	const auto depthDesc = depth->GetDesc();
+	const auto motionDesc = motionVectors->GetDesc();
+	const auto outputDesc = output->GetDesc();
+	if (colorDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+		depthDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+		motionDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+		outputDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+		colorDesc.Width < outputWidth || colorDesc.Height < outputHeight ||
+		depthDesc.Width < guideWidth || depthDesc.Height < guideHeight ||
+		motionDesc.Width < guideWidth || motionDesc.Height < guideHeight ||
+		outputDesc.Width < outputWidth || outputDesc.Height < outputHeight ||
+		!(outputDesc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS))
 		return false;
 
 	auto* parameters = static_cast<NVSDK_NGX_Parameter*>(parameters_);
@@ -317,17 +369,26 @@ bool NeuralRendering::Evaluate(
 		GetProcAddress(static_cast<HMODULE>(module_), "NVSDK_NGX_D3D12_EvaluateFeature"));
 	auto release = reinterpret_cast<ReleaseFeature>(
 		GetProcAddress(static_cast<HMODULE>(module_), "NVSDK_NGX_D3D12_ReleaseFeature"));
+	if (!create || !evaluate || !release) {
+		LatchRuntimeFault("private NGX functions are unavailable");
+		return false;
+	}
 
 	SignedRuntimePathScope scope(static_cast<HMODULE>(module_), runtimePath_.parent_path() / L"nvngx.dll");
 	if (!scope.IsInstalled()) {
-		LatchRuntimeFault("scoped signed-runtime identity was unavailable during evaluation");
+		LatchRuntimeFault("scoped NGX identity compatibility path was unavailable during evaluation");
 		return false;
 	}
 
 	const bool dimensionsChanged = featureGuideWidth_ != guideWidth || featureGuideHeight_ != guideHeight ||
 		featureOutputWidth_ != outputWidth || featureOutputHeight_ != outputHeight;
 	if (featureHandle_ && dimensionsChanged) {
-		release(static_cast<NVSDK_NGX_Handle*>(featureHandle_));
+		const auto releaseResult = release(static_cast<NVSDK_NGX_Handle*>(featureHandle_));
+		if (releaseResult != NVSDK_NGX_Result_Success) {
+			LatchRuntimeFault("private NGX feature could not be released for resizing",
+				static_cast<std::uint32_t>(releaseResult));
+			return false;
+		}
 		featureHandle_ = nullptr;
 	}
 

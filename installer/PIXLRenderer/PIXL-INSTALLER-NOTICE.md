@@ -42,3 +42,11 @@ version.
 ## Optional integrations
 
 This FOMOD installs the regular PIXL Renderer package only. Optional third-party water integrations are not included; any future compatibility package will identify the supported release and required file priority separately.
+
+The PGLite source-adapter choice installs a patch and setup guide. If this
+archive also offers a separate **PIXL-aware PGLite runtime** choice, that choice
+installs a modified, build-validated DLL plus its cubemap. It preserves an
+existing `PGLite.ini`; a sample INI is included in the archive. The original
+PGLite runtime release expects Community Shaders or ENB and does not recognize
+PIXL alone. The PIXL-aware build needs in-game compatibility validation before
+public release; the optional guide documents its source and test status.

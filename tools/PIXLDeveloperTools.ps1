@@ -22,7 +22,7 @@ param(
 
 $ErrorActionPreference='Stop'
 $repo=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$productVersion='1.0.9'
+$productVersion='1.1.0'
 $localConfig=Join-Path $repo 'build\PIXLDevTools.local.json'
 $script:step=0
 $script:coreStage=''
@@ -168,10 +168,16 @@ function Invoke-Package([string]$kind,[string]$mode) {
     $stage=Join-Path $repo "dist\PIXL-Renderer-v$productVersion-$label-Core-$stamp"
     $zip="$stage.zip";$compression=if($mode -eq 'Production'){9}else{1}
     $channel=if($mode -eq 'Production'){'RELEASE'}else{'RELEASE-CANDIDATE'}
-    $arguments=@('-OutputDirectory',$stage,'-ArchivePath',$zip,'-Channel',$channel,'-ProductVersion',$productVersion,'-CompressionLevel',$compression)
-    if($mode -eq 'Production' -or $IncludeLiveCache){$arguments+=@('-PipelineLibrary',(Select-CacheRoot))}else{$arguments+='-SkipPipelineLibrary'}
+    $stageArguments=@{
+        OutputDirectory=$stage
+        ArchivePath=$zip
+        Channel=$channel
+        ProductVersion=$productVersion
+        CompressionLevel=$compression
+    }
+    if($mode -eq 'Production' -or $IncludeLiveCache){$stageArguments.PipelineLibrary=Select-CacheRoot}else{$stageArguments.SkipPipelineLibrary=$true}
     Write-Step "Staging $label Core"
-    & (Join-Path $PSScriptRoot 'StagePixlRendererStandalone.ps1') @arguments
+    & (Join-Path $PSScriptRoot 'StagePixlRendererStandalone.ps1') @stageArguments
     if($LASTEXITCODE){throw 'Core staging failed.'}
     $script:coreStage=$stage
     if($kind -in @('FOMOD','Both')){

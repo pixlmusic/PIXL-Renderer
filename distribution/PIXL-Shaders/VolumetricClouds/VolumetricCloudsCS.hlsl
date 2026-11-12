@@ -628,16 +628,7 @@ void TemporalCS(uint3 dispatchThreadID : SV_DispatchThreadID)
 		// cloud samples at similar current-frame distance.
 		float depthError = abs(historyDepth - previousRayDepth) / max(previousRayDepth, 2048.0f);
 		float weatherMotion = saturate(length(WindTime.xy) * WindTime.w / 1200.0f + WeatherSecondary.z * 0.08f);
-		// Reprojection keeps a cloud feature attached to its world position, but
-		// its view-dependent lighting changes as the camera turns. Large screen
-		// reprojection deltas therefore need to shed old radiance even when depth
-		// still matches (otherwise a bright cloud edge leaves a visible sky trail).
-		float screenMotionPixels = length((previousUV - uv) * RenderSize.xy);
-		// Reject old cloud radiance once reprojected features move several pixels;
-		// a normalized-UV threshold allowed long trails at common render sizes.
-		float cameraMotionRejection = smoothstep(0.05f, 0.9f, screenMotionPixels);
 		float rejection = saturate(depthError / max(min(Temporal.w, 0.045f), 0.001f) + weatherMotion);
-		rejection = max(rejection, cameraMotionRejection);
 		float historyWeight = min(saturate(Temporal.x * (1.0f - rejection)), 0.84f);
 		// Cloud coverage is stored as transmittance in alpha. Reject history whose
 		// cloud support no longer exists in the current 3x3 footprint. The loose

@@ -1,0 +1,61 @@
+## nifly by [ousnius](https://github.com/ousnius)
+
+PIXL vendored snapshot: `ousnius/nifly` commit `6cb15fb5da71527b33cea8ff7913be8790e1c633`.
+This snapshot is built locally by the PIXL CMake graph; no configure-time network
+access is required. Preserve the included upstream GPL-3.0 license and notices.
+
+C++ NIF library for the NetImmerse File Format (NetImmerse, Gamebryo, Creation Engine).  
+Created with a clean-room design.
+
+[![CMake](https://github.com/ousnius/nifly/actions/workflows/cmake.yml/badge.svg)](https://github.com/ousnius/nifly/actions/workflows/cmake.yml)
+
+Also check out [NiflySharp](https://github.com/ousnius/NiflySharp) for a native C# / .NET version of nifly that uses source generation based on [nifxml](https://github.com/niftools/nifxml).
+
+### Features
+- Reading and writing NIF files (NetImmerse, Gamebryo, Creation Engine)
+- Cross platform (Windows, Linux, macOS)
+- No external dependencies (tests optional)
+- Includes basic functionality often used for 3D meshes
+- NIF blocks unknown to the library are kept untouched
+- Lots of other helper functions
+- Current file support:
+  - Fallout 3
+  - Fallout: New Vegas
+  - Fallout 4
+  - Fallout 4 VR
+  - Fallout 76
+  - The Elder Scrolls III: Morrowind
+  - The Elder Scrolls IV: Oblivion
+  - The Elder Scrolls V: Skyrim
+  - The Elder Scrolls V: Skyrim Special Edition
+  - The Elder Scrolls V: Skyrim VR
+  - Starfield (initial support, no mesh/morph files)
+
+### Building
+- C++ 17 compiler support required
+- Use the included [CMake](https://cmake.org/) lists for building - or simply include the headers and source in your project
+- (optional) To get Catch2 for running the tests, install its [CMake package](https://github.com/catchorg/Catch2/blob/devel/docs/cmake-integration.md#installing-catch2-from-git-repository) (or get it via vcpkg):
+```bash
+git clone --depth 1 -b v3.15.0 https://github.com/catchorg/Catch2.git
+cd Catch2
+cmake -S . -B build -DCATCH_BUILD_TESTING=OFF -DCATCH_INSTALL_DOCS=OFF -DCATCH_INSTALL_EXTRAS=ON
+cmake --build build/ --target install  #with admin elevation (or sudo) depending on your cmake prefix path
+```
+- Support for [xmake](https://xmake.io/) added with https://github.com/ousnius/nifly/pull/48
+
+### Libraries used
+- [half - IEEE 754-based half-precision floating point library (v1.12.0)](http://half.sourceforge.net/) for 16-bit floats
+- [Miniball (v3.0)](https://people.inf.ethz.ch/gaertner/subdir/software/miniball.html) for generating bounding spheres
+- [Catch2 v3](https://github.com/catchorg/Catch2/tree/v3.15.0) for running tests
+
+### nifly is used by
+- [BodySlide and Outfit Studio](https://github.com/ousnius/BodySlide-and-Outfit-Studio)
+- [SSE NIF Optimizer](https://github.com/ousnius/SSE-NIF-Optimizer)
+- [Cathedral Assets Optimizer](https://gitlab.com/G_ka/Cathedral_Assets_Optimizer)
+
+### Credits
+- [Contributors to nifly](https://github.com/ousnius/nifly/graphs/contributors)
+- [ousnius](https://github.com/ousnius)
+- [jonwd7](https://github.com/jonwd7)
+- [Caliente](https://github.com/Caliente8)
+- [NifTools team and contributors](https://www.niftools.org/)

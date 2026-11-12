@@ -2,17 +2,22 @@
 
 #include "Buffer.h"
 #include "HybridGI/CacheBudget.h"
+#include "HybridGI/SceneVoxelizer.h"
 #include "RenderModule.h"
 #include "Renderer/RendererMetadata.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <string>
 #include <string_view>
 #include <tuple>
 #include <vector>
+#include <mutex>
+#include <limits>
+#include <unordered_map>
 
 struct HybridGI : RenderModule
 {
@@ -21,7 +26,7 @@ private:
 
 public:
 	std::string GetName() override { return "Hybrid GI"; }
-	std::string GetDisplayName() override { return "PIXL Radiance Weave"; }
+	std::string GetDisplayName() override { return "PIXL Screen-Space GI"; }
 	std::string GetShortName() override { return "HybridGI"; }
 	std::string GetModuleSupportLink() override { return MakeNexusModURL(MOD_ID); }
 	std::string_view GetCategory() const override { return ModuleGroups::kLighting; }
@@ -30,12 +35,12 @@ public:
 	std::pair<std::string, std::vector<std::string>> GetModuleSummary() override
 	{
 		return { T("feature.hybrid_gi.pixl_description",
-			"PIXL Radiance Weave combines high-detail screen-space indirect lighting with a persistent world-space irradiance cache for more stable lighting while the camera moves."),
-			{ T("feature.hybrid_gi.pixl_key_feature_1", "Screen-space diffuse and specular indirect lighting"),
-				T("feature.hybrid_gi.pixl_key_feature_2", "Persistent two-cascade world irradiance cache"),
-				T("feature.hybrid_gi.pixl_key_feature_3", "Secondary bounce and directional occlusion"),
-				T("feature.hybrid_gi.pixl_key_feature_4", "Temporal accumulation with adaptive edge-aware denoising"),
-				T("feature.hybrid_gi.pixl_key_feature_5", "Quality presets, advanced tuning and diagnostic views") } };
+			"Screen-space diffuse indirect lighting and ambient occlusion using adaptive view-space ray marching, temporal history, and optional screen-space reflections."),
+			{ T("feature.hybrid_gi.pixl_key_feature_1", "Adaptive screen-space diffuse ray tracing"),
+				T("feature.hybrid_gi.pixl_key_feature_2", "Ray-derived ambient occlusion"),
+				T("feature.hybrid_gi.pixl_key_feature_3", "Temporal accumulation with geometry-aware history"),
+				T("feature.hybrid_gi.pixl_key_feature_4", "Optional screen-space reflections"),
+				T("feature.hybrid_gi.pixl_key_feature_5", "Quality controls and diagnostic views") } };
 	}
 
 	/** @brief Resets all settings to their default values and flags shaders for recompilation. */
@@ -59,6 +64,8 @@ public:
 
 	/** @brief Executes the full HybridGI pipeline: depth prefilter, radiance fetch, GI, blur, and upsample. */
 	void DrawHybridGI();
+	/** @brief Copies eligible rigid opaque triangles from the live Skyrim draw pass into owned bounded frame data. */
+	void CaptureRenderGeometry(RE::BSRenderPass* a_pass);
 	/** @brief Updates the HybridGI constant buffer with current camera, resolution, and settings data. */
 	void UpdateSB();
 	/** @brief Starts an asynchronous fixed-camera capture of every PIXL GI and PBR diagnostic view. */
@@ -72,6 +79,8 @@ public:
 	//////////////////////////////////////////////////////////////////////////////////
 
 	bool recompileFlag = false;
+	std::chrono::steady_clock::time_point shaderCompileRetryAfter{};
+	bool coreShaderCompileWarningLogged = false;
 	uint outputAoIdx = 0;
 	uint outputIlIdx = 0;
 	std::atomic_bool queuedResetHistory{ true };
@@ -89,6 +98,7 @@ public:
 	struct Settings
 	{
 		bool Enabled = true;
+		bool EnableAO = true;
 		bool EnableGI = true;
 		bool EnableExperimentalSpecularGI = false;
 		bool EnableVanillaSSAO = false;
@@ -135,11 +145,11 @@ public:
 		uint WorldCacheMaxAge = 48;
 		uint WorldCacheSampleCount = 8;
 		float WorldCacheStrength = static_cast<float>(PIXL::Metadata::Settings::HybridWorldCacheStrength.defaultValue);
-		float WorldCacheCellSizeNear = 96.f;
-		float WorldCacheCellSizeFar = 512.f;
+		float WorldCacheCellSizeNear = 64.f;
+		float WorldCacheCellSizeFar = 256.f;
 		float WorldCacheRadius = 1536.f;
 		float WorldCacheLeakReduction = 0.82f;
-		float WorldCacheTemporalResponse = 0.07f;
+		float WorldCacheTemporalResponse = 0.20f;
 		bool EnableEmitterInjection = true;
 		float EmitterInjectionStrength = 0.65f;
 		bool EnableWorldCacheSecondBounce = true;
@@ -154,7 +164,7 @@ public:
 
 		// PIXL Rendering vNext visibility/reflection controls. The legacy
 		// EnableExperimentalSpecularGI field remains the persisted master switch
-		// for backwards compatibility and is presented as Hybrid Reflections.
+		// for backwards compatibility and is presented as Screen-Space Reflections.
 		bool EnableBentNormalLighting = true;
 		float BentNormalStrength = 0.85f;
 		bool EnableSpecularOcclusion = true;
@@ -299,6 +309,76 @@ public:
 	static_assert(offsetof(HybridGICB, WorldCacheDeltaTime) == 392);
 	static_assert(offsetof(HybridGICB, WorldCacheEmitterInjectionEnabled) == 400);
 	eastl::unique_ptr<ConstantBuffer> ssgiCB;
+	struct alignas(16) SceneVoxelCB
+	{
+		float worldMin[3]{};
+		float voxelSize{};
+		std::uint32_t dimension{};
+		std::uint32_t valid{};
+		std::uint32_t radianceStride{};
+		std::uint32_t padding{};
+	};
+	static_assert(sizeof(SceneVoxelCB) == 32);
+	eastl::unique_ptr<ConstantBuffer> sceneVoxelCB;
+	struct alignas(16) SceneVoxelizeCB
+	{
+		float worldMin[3]{};
+		float voxelSize{};
+		std::uint32_t dimension{};
+		std::uint32_t triangleCount{};
+		std::uint32_t padding[2]{};
+		std::int32_t scrollOffset[3]{};
+		std::uint32_t updateMode{};
+	};
+	static_assert(sizeof(SceneVoxelizeCB) == 48);
+	eastl::unique_ptr<ConstantBuffer> sceneVoxelizeCB;
+	struct alignas(16) SceneVoxelScrollCB
+	{
+		std::int32_t sourceOffset[3]{};
+		std::uint32_t dimension{};
+	};
+	static_assert(sizeof(SceneVoxelScrollCB) == 16);
+	eastl::unique_ptr<ConstantBuffer> sceneVoxelScrollCB;
+	eastl::unique_ptr<Texture3D> texSceneVoxels;
+	eastl::unique_ptr<Texture3D> texSceneVoxelsScratch;
+	eastl::unique_ptr<Texture3D> texSceneVoxelWinners;
+	eastl::unique_ptr<Texture3D> texSceneVoxelRadiance;
+	eastl::unique_ptr<Texture3D> texSceneVoxelSurface;
+	eastl::unique_ptr<Texture3D> texSceneVoxelSurfaceScratch;
+	eastl::unique_ptr<Texture3D> texSceneVoxelMaterial;
+	eastl::unique_ptr<Texture3D> texSceneVoxelMaterialScratch;
+	eastl::unique_ptr<Buffer> sceneTriangleBuffer;
+	winrt::com_ptr<ID3D11UnorderedAccessView> sceneVoxelUAV;
+	winrt::com_ptr<ID3D11UnorderedAccessView> sceneVoxelScratchUAV;
+	winrt::com_ptr<ID3D11UnorderedAccessView> sceneVoxelWinnerUAV;
+	winrt::com_ptr<ID3D11UnorderedAccessView> sceneVoxelRadianceUAV;
+	winrt::com_ptr<ID3D11UnorderedAccessView> sceneVoxelSurfaceUAV;
+	winrt::com_ptr<ID3D11UnorderedAccessView> sceneVoxelSurfaceScratchUAV;
+	winrt::com_ptr<ID3D11UnorderedAccessView> sceneVoxelMaterialUAV;
+	winrt::com_ptr<ID3D11UnorderedAccessView> sceneVoxelMaterialScratchUAV;
+	winrt::com_ptr<ID3D11ComputeShader> sceneVoxelizeCompute;
+	winrt::com_ptr<ID3D11ComputeShader> sceneVoxelScrollCompute;
+	winrt::com_ptr<ID3D11ComputeShader> sceneVoxelRadianceSelectCompute;
+	winrt::com_ptr<ID3D11ComputeShader> sceneVoxelRadianceResolveCompute;
+	winrt::com_ptr<ID3D11ComputeShader> sceneVoxelLightingCompute;
+	std::uint32_t sceneVoxelDimension = PIXL::HybridGIInternal::SceneVoxelGrid::kDimension;
+	std::mutex sceneTriangleMutex;
+	std::vector<PIXL::HybridGIInternal::SceneTriangle> pendingSceneTriangles;
+	std::vector<winrt::com_ptr<ID3D11ShaderResourceView>> pendingSceneMaterialTextures;
+	std::unordered_map<ID3D11ShaderResourceView*, std::uint32_t> pendingSceneMaterialTextureIndices;
+	std::vector<std::uintptr_t> pendingSceneGeometryTokens;
+	// Keep the exact owned triangle snapshot represented by the GPU voxel field.
+	// Static geometry is reused while the snapped grid and scene context are stable.
+	std::vector<PIXL::HybridGIInternal::SceneTriangle> voxelizedSceneTriangles;
+	std::vector<std::uintptr_t> voxelizedSceneMaterialTextureIdentities;
+	std::array<float, 3> voxelizedSceneWorldMin{};
+	std::uintptr_t voxelizedSceneCellKey{}, voxelizedSceneWorldKey{};
+	bool sceneVoxelContentsInitialized{};
+	bool voxelizedSceneOriginValid{};
+	std::uint32_t sceneCaptureFrame = std::numeric_limits<std::uint32_t>::max();
+	std::uint32_t worldRootCaptureFrame = std::numeric_limits<std::uint32_t>::max();
+	std::uintptr_t sceneCaptureCellKey{}, sceneCaptureWorldKey{};
+	std::uintptr_t pendingSceneCellKey{}, pendingSceneWorldKey{};
 	struct alignas(16) EmitterChangesCB
 	{
 		uint count{}, overflow{}, padding[2]{};
@@ -405,16 +485,40 @@ private:
 	// The age clock stays at 8 Hz, while the visible radiance cache is refreshed
 	// at a bounded 30 Hz so its temporal filter does not jump between coarse ticks.
 	uint lastWorldCacheInjectionClock = 0xffffffffu;
+	// Interior world coordinates are reused by unrelated cells. Keep the cache
+	// scoped to the active interior cell so old voxel radiance cannot leak across
+	// doors; exterior cell streaming remains in the shared worldspace cache.
+	std::uint32_t lastInteriorCellFormId = 0u;
+	bool interiorSceneContextInitialized = false;
+	bool lastSceneWasInterior = false;
 	// Runtime semantic/permutation snapshot. These settings change the meaning
 	// of temporal/cache history and therefore require deterministic invalidation.
 	bool runtimeConfigInitialized = false;
 	bool lastEnableGI = true;
+	bool lastEnableAO = true;
 	bool lastEnableTemporalDenoiser = true;
 	bool lastEnableExperimentalSpecularGI = false;
 	bool lastEnableAdaptiveRayAllocation = false;
 	bool lastEnableWorldCache = true;
     bool lastEnableCacheIntelligence = false;
 	int lastResolutionMode = 0;
+	// Artistic SSGI/AO parameters are part of the temporal signal's meaning.
+	// Keep a runtime snapshot so changing a UI slider discards old radiance/AO
+	// history instead of slowly blending the previous setting back in.
+	float lastAOPower = 0.0f;
+	float lastAORadius = 0.0f;
+	float lastGIRadius = 0.0f;
+	float lastGIStrength = 0.0f;
+	float lastGISaturation = 0.0f;
+	float lastThickness = 0.0f;
+	float lastDepthFadeNear = 0.0f;
+	float lastDepthFadeFar = 0.0f;
+	float lastContactDepthStrength = 0.0f;
+	float lastContactDepthRadius = 0.0f;
+	float lastContactDepthBias = 0.0f;
+	uint lastNumSlices = 0;
+	uint lastNumSteps = 0;
+	bool lastEnableContactDepth = false;
 	float lastWorldCacheCellSizeNear = 0.0f;
 	float lastWorldCacheCellSizeFar = 0.0f;
 	bool compiledShaderConfigInitialized = false;
@@ -455,6 +559,9 @@ private:
 	uint lastRuntimeMaterialDebugMode = 0;
 
 	void ApplyDiagnosticView(size_t index);
+	std::string_view DiagnosticViewUnavailableReason(size_t index) const;
+	size_t DiagnosticAvailableViewCount() const;
+	size_t NextDiagnosticView(size_t index) const;
 	void FinishDiagnosticCapture(bool complete);
 	void WriteDiagnosticManifest(bool complete) const;
 	static void NotifyDiagnostic(std::string message);

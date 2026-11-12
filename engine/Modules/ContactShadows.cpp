@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <exception>
+#include <cstdint>
 
 #define I18N_KEY_PREFIX "feature.contact_shadows."
 
@@ -46,13 +47,13 @@ void ContactShadows::DrawSettings()
 
 		Util::UIntSlider(T(TKEY("sample_count"), "Directional Ray Quality"), &bendSettings.SampleCount, 1, 12);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::Text("%s", T(TKEY("sample_count_tooltip"), "Multiplier for directional ray samples. High uses 3; Cinematic uses 6. Adapts to render resolution and rebuilds the ray-march shader when needed."));
+			ImGui::Text("%s", T(TKEY("sample_count_tooltip"), "Controls ray length/quality. Low settings favour performance; High uses 3 and Cinematic uses 6. Resolution scaling is quantized to avoid rapid shader recompilation."));
 
-		ImGui::SliderFloat(T(TKEY("surface_thickness"), "Surface Thickness"), &bendSettings.SurfaceThickness, 0.005f, 0.05f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat(T(TKEY("surface_thickness"), "Surface Thickness"), &bendSettings.SurfaceThickness, 0.002f, 0.05f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("%s", T(TKEY("surface_thickness_tooltip"), "Assumed thickness of surfaces for shadow detection. Lower values produce thinner, more precise shadows."));
 
-		ImGui::SliderFloat(T(TKEY("bilinear_threshold"), "Edge Smoothing Threshold"), &bendSettings.BilinearThreshold, 0.02f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat(T(TKEY("bilinear_threshold"), "Edge Smoothing Threshold"), &bendSettings.BilinearThreshold, 0.005f, 0.25f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::Text("%s", T(TKEY("bilinear_threshold_tooltip"), "Depth threshold for edge detection during bilinear interpolation. Higher values smooth more aggressively across edges."));
 
@@ -115,7 +116,6 @@ bool ContactShadows::EnsureShadowTexture(std::uint32_t width, std::uint32_t heig
 
 	ID3D11ShaderResourceView* nullView = nullptr;
 	globals::d3d::context->PSSetShaderResources(45, 1, &nullView);
-	contactShadowsTexture.reset();
 
 	D3D11_TEXTURE2D_DESC textureDesc{};
 	textureDesc.Width = width;
@@ -179,43 +179,48 @@ uint ContactShadows::GetScaledSampleCount()
 {
 	const auto* graphicsState = globals::game::graphicsState;
 	if (!graphicsState)
-		return 8u;
+		return 64u;
 
 	float2 renderSize = Util::ConvertToDynamic(float2{ (float)graphicsState->screenWidth, (float)graphicsState->screenHeight });
-	renderSize.x = std::max(renderSize.x, 1.0f);
-	renderSize.y = std::max(renderSize.y, 1.0f);
+	renderSize.x = std::isfinite(renderSize.x) ? std::clamp(renderSize.x, 1.0f, 16384.0f) : 1920.0f;
+	renderSize.y = std::isfinite(renderSize.y) ? std::clamp(renderSize.y, 1.0f, 16384.0f) : 1080.0f;
 
-	// Scale sample count based on both dimensions relative to 1920x1080 reference
-	float2 referenceRes = { 1920.0f, 1080.0f };
-	float referenceArea = referenceRes.x * referenceRes.y;
-	float currentArea = renderSize.x * renderSize.y;
-	float areaScale = std::clamp(std::sqrt(currentArea / referenceArea), 0.5f, 4.0f);
-	uint scaledSampleCount = static_cast<uint>(std::round(bendSettings.SampleCount * 60 * areaScale));
+	// DX11 SM5 compiles SAMPLE_COUNT into an unrolled loop. Keep permutations
+	// bounded (especially at 4K) without disabling the full 1..12 UI range.
+	const float areaScale = std::clamp(std::sqrt((renderSize.x * renderSize.y) / (1920.0f * 1080.0f)), 0.75f, 1.5f);
+	const uint multiplier = std::clamp(bendSettings.SampleCount, 1u, 12u);
+	const uint desired = static_cast<uint>(std::round((32.0f + 32.0f * multiplier) * areaScale));
+	const uint quantized = std::clamp(((desired + 16u) / 32u) * 32u, 64u, 512u);
 
-	// Quantize to steps of 8 to prevent frequent recompilation from small DRS oscillations
-	scaledSampleCount = ((scaledSampleCount + 7u) / 8u) * 8u;
-	scaledSampleCount = std::clamp(scaledSampleCount, 8u, 960u);
-
-	return scaledSampleCount;
+	// Do not thrash the shader cache when dynamic resolution oscillates close
+	// to a quantization boundary. Explicit quality-slider changes bypass this.
+	if (lastCompiledSampleCount != 0u && lastSampleMultiplier == multiplier &&
+		std::abs(static_cast<int>(quantized) - static_cast<int>(lastCompiledSampleCount)) <= 32)
+		return lastCompiledSampleCount;
+	return quantized;
 }
 
-ID3D11ComputeShader* ContactShadows::GetComputeRaymarch()
+ID3D11ComputeShader* ContactShadows::GetComputeRaymarch(bool floatDepthSRV)
 {
-	uint scaledSampleCount = GetScaledSampleCount();
-
-	if (scaledSampleCount != lastCompiledSampleCount) {
-		lastCompiledSampleCount = scaledSampleCount;
+	const uint scaledSampleCount = GetScaledSampleCount();
+	const uint multiplier = std::clamp(bendSettings.SampleCount, 1u, 12u);
+	if (scaledSampleCount != lastCompiledSampleCount ||
+		floatDepthSRV != lastCompiledFloatDepth || multiplier != lastSampleMultiplier) {
 		InvalidateRaymarchShaders();
+		lastCompiledSampleCount = scaledSampleCount;
+		lastCompiledFloatDepth = floatDepthSRV;
+		lastSampleMultiplier = multiplier;
 	}
 
 	if (!raymarchCS) {
 		auto sampleCount = std::format("{}", scaledSampleCount);
 		std::vector<std::pair<const char*, const char*>> defines{ { "SAMPLE_COUNT", sampleCount.c_str() } };
-		// TERRAIN_SEAM flips DepthTexture's HLSL type from `Texture2D<unorm float>`
-		// (R24_UNORM_X8_TYPELESS game depth) to `Texture2D<float>` (R32_FLOAT blendedDepth).
-		if (globals::pipeline::terrainSeam.loaded)
+		// The actual bound SRV format, not a possibly stale module-loaded flag,
+		// selects the matching depth declaration for this permutation.
+		if (floatDepthSRV)
 			defines.push_back({ "TERRAIN_SEAM", "" });
-		raymarchCS = (ID3D11ComputeShader*)Util::CompileShader(L"Data\\PIXL-Shaders\\ContactShadows\\RaymarchCS.hlsl", defines, "cs_5_0");
+		raymarchCS = static_cast<ID3D11ComputeShader*>(Util::CompileShader(
+			L"Data\\PIXL-Shaders\\ContactShadows\\RaymarchCS.hlsl", defines, "cs_5_0"));
 	}
 	return raymarchCS;
 }
@@ -267,8 +272,11 @@ void ContactShadows::DrawShadows()
 
 	auto lightProjectionF = CalculateLightProjection();
 
-	float2 renderSize = Util::ConvertToDynamic(float2{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight });
-	int viewportSize[2] = { (int)renderSize.x, (int)renderSize.y };
+	// Write exactly the dimensions of the allocated UAV. Mixing rounded
+	// allocation and truncated viewport dimensions causes right/bottom seams.
+	int viewportSize[2] = {
+		static_cast<int>(contactShadowsTexture->desc.Width),
+		static_cast<int>(contactShadowsTexture->desc.Height) };
 	if (viewportSize[0] <= 0 || viewportSize[1] <= 0)
 		return;
 
@@ -282,8 +290,38 @@ void ContactShadows::DrawShadows()
 	// The shader's DepthTexture declaration is conditional on TERRAIN_SEAM:
 	// `<float>` for the R32_FLOAT path, `<unorm float>` for the R24_UNORM path.
 	auto* depthSRV = Util::GetCurrentSceneDepthSRV(false);
-	auto* raymarchShader = GetComputeRaymarch();
-	if (!depthSRV || !raymarchShader)
+	if (!depthSRV)
+		return;
+
+	// Derive sampling dimensions and shader format from the SRV actually bound
+	// on THIS frame, not an assumed output/display ratio or a module flag.
+	D3D11_SHADER_RESOURCE_VIEW_DESC depthViewDesc{};
+	depthSRV->GetDesc(&depthViewDesc);
+	const bool floatDepthSRV = depthViewDesc.Format == DXGI_FORMAT_R32_FLOAT;
+	if (!floatDepthSRV && depthViewDesc.Format != DXGI_FORMAT_R24_UNORM_X8_TYPELESS)
+		return; // Unknown depth view: leave the shadow field white/neutral.
+
+	ID3D11Resource* depthResource = nullptr;
+	depthSRV->GetResource(&depthResource);
+	if (!depthResource)
+		return;
+	ID3D11Texture2D* depthTexture = nullptr;
+	const HRESULT depthQuery = depthResource->QueryInterface(
+		__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&depthTexture));
+	depthResource->Release();
+	if (FAILED(depthQuery) || !depthTexture)
+		return;
+	D3D11_TEXTURE2D_DESC depthDesc{};
+	depthTexture->GetDesc(&depthDesc);
+	depthTexture->Release();
+	if (!depthDesc.Width || !depthDesc.Height || depthDesc.SampleDesc.Count != 1 ||
+		depthViewDesc.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D ||
+		depthDesc.Width < static_cast<UINT>(viewportSize[0]) ||
+		depthDesc.Height < static_cast<UINT>(viewportSize[1]))
+		return;
+
+	auto* raymarchShader = GetComputeRaymarch(floatDepthSRV);
+	if (!raymarchShader)
 		return;
 	context->CSSetShaderResources(0, 1, &depthSRV);
 
@@ -295,9 +333,12 @@ void ContactShadows::DrawShadows()
 	auto buffer = raymarchCB->CB();
 	context->CSSetConstantBuffers(1, 1, &buffer);
 
-	auto viewport = globals::game::graphicsState;
-
-	float2 dynamicRes = { viewport->GetRuntimeData().dynamicResolutionWidthRatio, viewport->GetRuntimeData().dynamicResolutionHeightRatio };
+	// Depth buffer may have a larger backing allocation than the active
+	// rendering viewport. These ratios make each ray sample exactly one source
+	// texel apart without applying an assumed DRS factor twice.
+	const float2 dynamicRes = {
+		static_cast<float>(viewportSize[0]) / static_cast<float>(depthDesc.Width),
+		static_cast<float>(viewportSize[1]) / static_cast<float>(depthDesc.Height) };
 
 	// Shared dispatch logic
 	auto Dispatch = [&](ID3D11ComputeShader* shader, const float* lightProj,
@@ -346,6 +387,13 @@ void ContactShadows::DrawShadows()
 			{
 				TracyD3D11Zone(globals::state->tracyCtx, "Contact Shadows - Dispatch Sweep");
 				context->Dispatch(dispatchData.WaveCount[0], dispatchData.WaveCount[1], dispatchData.WaveCount[2]);
+				static bool loggedDispatch = false;
+				if (!loggedDispatch) {
+					logger::info("[ContactShadows] Raymarch dispatched: viewport={}x{} depth={}x{} waves={}x{}x{}.",
+						viewportSize[0], viewportSize[1], depthDesc.Width, depthDesc.Height,
+						dispatchData.WaveCount[0], dispatchData.WaveCount[1], dispatchData.WaveCount[2]);
+					loggedDispatch = true;
+				}
 			}
 		}
 
@@ -359,7 +407,9 @@ void ContactShadows::DrawShadows()
 	float InvTexSizeX = 1.0f / (float)viewportSize[0];
 	float InvTexSizeY = 1.0f / (float)viewportSize[1];
 
-	Dispatch(raymarchShader, lightProjectionF.data(), InvTexSizeX, InvTexSizeY);
+	if (std::all_of(lightProjectionF.begin(), lightProjectionF.end(),
+		[](float value) { return std::isfinite(value); }))
+		Dispatch(raymarchShader, lightProjectionF.data(), InvTexSizeX, InvTexSizeY);
 
 	ID3D11ShaderResourceView* views[1]{ nullptr };
 	context->CSSetShaderResources(0, 1, views);
@@ -388,7 +438,8 @@ void ContactShadows::Prepass()
 		static_cast<float>(globals::game::graphicsState->screenHeight) });
 	const auto width = static_cast<std::uint32_t>(std::max(std::lround(renderSize.x), 0l));
 	const auto height = static_cast<std::uint32_t>(std::max(std::lround(renderSize.y), 0l));
-	if (!EnsureShadowTexture(width, height) || !contactShadowsTexture->uav || !contactShadowsTexture->srv)
+	const bool textureReady = EnsureShadowTexture(width, height);
+	if (!contactShadowsTexture || !contactShadowsTexture->uav || !contactShadowsTexture->srv)
 		return;
 
 	// Unbind last frame's pixel-shader SRV before clearing/writing through the UAV.
@@ -397,6 +448,13 @@ void ContactShadows::Prepass()
 
 	float white[4] = { 1, 1, 1, 1 };
 	context->ClearUnorderedAccessViewFloat(contactShadowsTexture->uav.get(), white);
+	if (!textureReady) {
+		// Keep the last valid allocation neutral if a resize fails. The shader
+		// will still receive a readable SRV, and the next frame can retry.
+		auto view = contactShadowsTexture->srv.get();
+		context->PSSetShaderResources(45, 1, &view);
+		return;
+	}
 
 	// Source availability, not sky mode, decides whether the pass can run. Skyrim
 	// can expose a valid directional light in partial-sky/interior transition states.
@@ -412,16 +470,21 @@ void ContactShadows::Prepass()
 
 void ContactShadows::LoadSettings(json& o_json)
 {
-	bendSettings = o_json;
+	bendSettings = o_json.is_object() ? o_json.get<BendSettings>() : BendSettings{};
 	const BendSettings defaults{};
 	auto finiteClamp = [](float value, float fallback, float minimum, float maximum) {
 		return std::clamp(std::isfinite(value) ? value : fallback, minimum, maximum);
 	};
-	EnableGrassShadowCasting = o_json.is_object() ? o_json.value("EnableGrassShadowCasting", true) : true;
+	EnableGrassShadowCasting = true;
+	if (o_json.is_object()) {
+		const auto it = o_json.find("EnableGrassShadowCasting");
+		if (it != o_json.end() && it->is_boolean())
+			EnableGrassShadowCasting = it->get<bool>();
+	}
 	bendSettings.Enable = bendSettings.Enable ? 1u : 0u;
 	bendSettings.SampleCount = std::clamp(bendSettings.SampleCount, 1u, 12u);
-	bendSettings.SurfaceThickness = finiteClamp(bendSettings.SurfaceThickness, defaults.SurfaceThickness, 0.005f, 0.05f);
-	bendSettings.BilinearThreshold = finiteClamp(bendSettings.BilinearThreshold, defaults.BilinearThreshold, 0.02f, 1.0f);
+	bendSettings.SurfaceThickness = finiteClamp(bendSettings.SurfaceThickness, defaults.SurfaceThickness, 0.002f, 0.05f);
+	bendSettings.BilinearThreshold = finiteClamp(bendSettings.BilinearThreshold, defaults.BilinearThreshold, 0.005f, 0.25f);
 	bendSettings.ShadowContrast = finiteClamp(bendSettings.ShadowContrast, defaults.ShadowContrast, 1.0f, 4.0f);
 	bendSettings.Strength = finiteClamp(bendSettings.Strength, defaults.Strength, 0.0f, 1.0f);
 	bendSettings.FalloffStart = finiteClamp(bendSettings.FalloffStart, defaults.FalloffStart, 256.0f, 20000.0f);
@@ -445,6 +508,7 @@ void ContactShadows::Reset()
 void ContactShadows::RestoreDefaultSettings()
 {
 	bendSettings = {};
+	EnableGrassShadowCasting = true;
 }
 
 bool ContactShadows::HasShaderDefine(RE::BSShader::Type shaderType)
@@ -461,9 +525,10 @@ void ContactShadows::SetupResources()
 		return;
 	}
 
-	raymarchCB = new ConstantBuffer(ConstantBufferDesc<RaymarchCB>(), "ContactShadows::RaymarchCB");
+	if (!raymarchCB)
+		raymarchCB = new ConstantBuffer(ConstantBufferDesc<RaymarchCB>(), "ContactShadows::RaymarchCB");
 
-	{
+	if (!pointBorderSampler) {
 		auto device = globals::d3d::device;
 
 		D3D11_SAMPLER_DESC samplerDesc = {};

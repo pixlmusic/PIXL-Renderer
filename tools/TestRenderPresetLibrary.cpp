@@ -52,6 +52,8 @@ int main(int argc, char** argv)
 		Check(shipped.size() == 6, "all six bundled portable renderer presets are recognized");
 		Check(std::none_of(shipped.begin(), shipped.end(), [](const auto& preset) { return preset.legacy; }),
 			"bundled profiles use the portable renderer-only schema");
+		Check(std::all_of(shipped.begin(), shipped.end(), [](const auto& preset) { return preset.rendererVersion == "1-0-9-0"; }),
+			"bundled profile versions use PIXL's runtime version string format");
 		const auto legacyRoot = sourceRoot / "distribution" / "SKSE" / "Plugins" / "PIXLRenderer" / "Presets";
 		for (const auto& legacyPath : fs::directory_iterator(legacyRoot)) {
 			if (!legacyPath.is_regular_file() || legacyPath.path().extension() != ".json")
@@ -80,7 +82,9 @@ int main(int argc, char** argv)
 			{ "Disable at Boot", {{"OceanDynamics", true}, {"HybridGI", false}} },
 			{ "HybridGI", {{"Enable", true}, {"Quality", 2}, {"RayBudget", 96}} },
 			{ "Camera Suite", {{"Physical Camera", true}, {"Exposure", 0.6}} },
-			{ "Pixel Capture", {{"ScreenshotPath", "C:/Users/Private/Pictures"}, {"Format", 1}} }
+			{ "Pixel Capture", {{"ScreenshotPath", "Screenshots"}, {"Format", 1}} },
+			{ "Custom Look", {{"LutFile", "C:/Users/Private/PIXL/custom.cube"},
+				{"AdditionalLuts", json::array({"D:/Private/PIXL/one.cube", "relative/default.cube"})}} }
 		};
 		const auto captured = CaptureRendererSettings(complete);
 		Check(!captured.contains("Menu") && !captured.contains("Advanced") && !captured.contains("Version"),
@@ -89,6 +93,9 @@ int main(int argc, char** argv)
 			"renderer master enable is shared while machine preferences are excluded");
 		Check(!captured["Pixel Capture"].contains("ScreenshotPath") && captured["Pixel Capture"]["Format"] == 1,
 			"machine-local screenshot path is excluded while adjacent renderer controls remain shareable");
+		Check(!captured["Custom Look"].contains("LutFile") &&
+			captured["Custom Look"]["AdditionalLuts"] == json::array({"relative/default.cube"}),
+			"absolute machine-local paths are removed while portable relative paths remain shareable");
 		Check(captured.contains("Disable at Boot") && captured.contains("HybridGI"),
 			"module activation and module parameters are captured");
 
@@ -116,6 +123,10 @@ int main(int argc, char** argv)
 		privatePath["settings"]["Pixel Capture"]["ScreenshotPath"] = "C:/Private/Folder";
 		Check(!ParseDocument(privatePath, "private-path.json", rejected, error),
 			"manually authored presets cannot change the recipient's local screenshot destination");
+		auto absolutePath = document;
+		absolutePath["settings"]["Custom Renderer Setting"] = "C:/Users/Private/personal.cube";
+		Check(!ParseDocument(absolutePath, "absolute-path.json", rejected, error),
+			"manually authored presets cannot embed machine-local absolute paths");
 
 		const json installed{
 			{ "Menu", {{"SelectedThemePreset", "PIXL"}} },

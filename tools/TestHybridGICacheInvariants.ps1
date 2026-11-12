@@ -68,9 +68,12 @@ $hybridCpp = Get-Content (Join-Path $PSScriptRoot '..\engine\Modules\HybridGI.cp
 $hybridHeader = Get-Content (Join-Path $PSScriptRoot '..\engine\Modules\HybridGI.h') -Raw
 $moduleIni = Get-Content (Join-Path $PSScriptRoot '..\pipeline\Hybrid GI\Module.ini') -Raw
 $moduleVersion = [regex]::Match($moduleIni, '(?m)^Version\s*=\s*([\d-]+)').Groups[1].Value
-Require ($moduleVersion -eq '4-4-4') 'HybridGI module version must be 4-4-4 for the current cache revision'
+Require ($moduleVersion -eq '4-4-7') 'HybridGI module version must be 4-4-7 for robust world-cache normalization'
 Require ($hybridCpp.Contains('PIXL_HYBRIDGI_MODULE_REVISION')) 'HybridGI compute artifact revision define is missing'
-Require ($hybridCpp.Contains('\"4-4-7\"')) 'HybridGI compute artifact revision was not advanced for cache intelligence semantics'
+Require ($hybridCpp.Contains('\"4-4-10\"')) 'HybridGI compute artifact revision was not advanced for robust world-cache normalization'
+$giShader = Get-Content (Join-Path $PSScriptRoot '..\pipeline\Hybrid GI\Kernels\HybridGI\gi.cs.hlsl') -Raw
+Require ($giShader.Contains('cacheContributionY = max(cacheY.x * cacheBlend, 0.0f)')) 'World-cache radiance contribution is not tracked for temporal GI response'
+Require ($giShader.Contains('lerp(0.55f, 0.16f, cacheSignalShare)')) 'World-cache dominated history lacks the reduced reactive response'
 $injectionBlock = [regex]::Match($hybridCpp,
     'if\s*\(worldCacheInjectionDue\)\s*\{(?<body>[\s\S]*?)lastWorldCacheInjectionClock\s*=\s*worldCacheClock;')
 Require $injectionBlock.Success 'World-cache injection is not guarded by its scheduled cadence'

@@ -59,11 +59,13 @@ inline bool BuildCameraReprojection(const CameraFrame& frame, CameraReprojection
         }
         return true;
     };
+    CameraReprojection staged{};
     Wide invProjection{};
-    if (!inverse(widen(frame.projection), invProjection) || !narrow(invProjection, result.clipToView)) return false;
+    if (!inverse(widen(frame.projection), invProjection) || !narrow(invProjection, staged.clipToView)) return false;
     if (frame.reset) {
-        result.clipToPrevious = {}; result.previousToClip = {};
-        for (size_t i = 0; i < 4; ++i) result.clipToPrevious[i * 5] = result.previousToClip[i * 5] = 1;
+        staged.clipToPrevious = {}; staged.previousToClip = {};
+        for (size_t i = 0; i < 4; ++i) staged.clipToPrevious[i * 5] = staged.previousToClip[i * 5] = 1;
+        result = staged;
         return true;
     }
     Wide inverseCurrent{}, inversePrevious{}, forwardOffset{}, reverseOffset{};
@@ -74,7 +76,11 @@ inline bool BuildCameraReprojection(const CameraFrame& frame, CameraReprojection
         forwardOffset[12 + i] = delta; reverseOffset[12 + i] = -delta;
     }
     if (!inverse(widen(frame.currentVP), inverseCurrent) || !inverse(widen(frame.previousVP), inversePrevious)) return false;
-    return narrow(multiply(multiply(inverseCurrent, forwardOffset), widen(frame.previousVP)), result.clipToPrevious) &&
-           narrow(multiply(multiply(inversePrevious, reverseOffset), widen(frame.currentVP)), result.previousToClip);
+    if (!narrow(multiply(multiply(inverseCurrent, forwardOffset), widen(frame.previousVP)), staged.clipToPrevious) ||
+        !narrow(multiply(multiply(inversePrevious, reverseOffset), widen(frame.currentVP)), staged.previousToClip))
+        return false;
+    // Commit only a fully valid frame; consumers never see half-updated matrices.
+    result = staged;
+    return true;
 }
 }

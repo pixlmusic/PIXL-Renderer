@@ -149,13 +149,9 @@ void Streamline::LoadInterposer()
 	auto pluginDirAbsolute = std::filesystem::absolute(pluginDirPath, pluginPathError);
 	if (pluginPathError)
 		pluginDirAbsolute = pluginDirPath;
-	static std::wstring pluginDirAbsoluteW_DX11;
-	static std::wstring pluginDirAbsoluteW_DX12;
-	std::wstring& pluginDirAbsoluteW = renderAPI == sl::RenderAPI::eD3D11 ?
-		pluginDirAbsoluteW_DX11 : pluginDirAbsoluteW_DX12;
-	pluginDirAbsoluteW = pluginDirAbsolute.wstring();
-	const wchar_t* pluginPaths[1] = { pluginDirAbsoluteW.c_str() };
-	pref.pathsToPlugins = pluginPaths;
+	pluginPathStorage = pluginDirAbsolute.wstring();
+	pluginPathPointers[0] = pluginPathStorage.c_str();
+	pref.pathsToPlugins = pluginPathPointers.data();
 	pref.numPathsToPlugins = 1;
 	logger::info("[Streamline] Plugin search path: {}", pluginDirAbsolute.string());
 
@@ -239,9 +235,19 @@ void Streamline::LoadInterposer()
 
 void Streamline::CheckFeatures(IDXGIAdapter* a_adapter)
 {
+	featureDLSS = false;
+	featureDLSSG = false;
+	featureReflex = false;
+	featurePCL = false;
+	reflexSupportedOnCurrentAdapter = false;
+	neuralRenderingSupportedOnCurrentAdapter = false;
+	if (!a_adapter || !initialized || !slIsFeatureLoaded ||
+		!slGetFeatureRequirements || !slIsFeatureSupported)
+		return;
 	logger::info("[Streamline] Checking features");
 	DXGI_ADAPTER_DESC adapterDesc;
-	a_adapter->GetDesc(&adapterDesc);
+	if (FAILED(a_adapter->GetDesc(&adapterDesc)))
+		return;
 	reflexSupportedOnCurrentAdapter = adapterDesc.VendorId == NVIDIA_VENDOR_ID;
 	isRTXBelow40series = false;
 	neuralRenderingSupportedOnCurrentAdapter = false;
@@ -520,7 +526,7 @@ bool Streamline::EnsureFrameToken()
 
 bool Streamline::CheckFrameConstants(sl::ViewportHandle p_viewport, bool resetHistory)
 {
-	if (!initialized)
+	if (!initialized || !slSetConstants || !globals::state)
 		return false;
 
 	if (!EnsureFrameToken())
@@ -721,7 +727,10 @@ bool Streamline::EvaluateDLSS(sl::ViewportHandle vp,
 	const sl::Extent& extentIn, const sl::Extent& extentOut, uint32_t outputWidth,
 	bool resetHistory)
 {
-	if (!initialized || !featureDLSS || !slSetTagForFrame || !slEvaluateFeature || !slDLSSSetOptions) {
+	if (!initialized || !featureDLSS || !slSetTagForFrame || !slEvaluateFeature || !slDLSSSetOptions ||
+		!colorIn || !colorOut || colorIn == colorOut || !depth || !mvec ||
+		!reactiveMask || !transparencyMask || !extentIn.width || !extentIn.height ||
+		!extentOut.width || !extentOut.height || !outputWidth) {
 		logger::error("[Streamline] DLSS evaluation skipped because its runtime interface is incomplete");
 		return false;
 	}
@@ -816,7 +825,9 @@ bool Streamline::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_r
 	// then either sharpen or copy the result back to kMAIN.
 	auto& imageReconstruction = globals::pipeline::imageReconstruction;
 	ID3D11Resource* colorOut =
-		imageReconstruction.sharpenerTexture ? imageReconstruction.sharpenerTexture->resource.get() : a_upscalingTexture;
+		imageReconstruction.sharpenerTexture ? imageReconstruction.sharpenerTexture->resource.get() : nullptr;
+	if (!a_upscalingTexture || !colorOut || colorOut == a_upscalingTexture)
+		return false;
 
 	sl::Extent extentIn{ 0, 0, (uint)renderSize.x, (uint)renderSize.y };
 	sl::Extent extentOut{ 0, 0, (uint)screenSize.x, (uint)screenSize.y };
@@ -930,7 +941,7 @@ void Streamline::UpdateReflex()
  */
 void Streamline::DestroyDLSSResources()
 {
-	if (!slDLSSSetOptions || !slFreeResources)
+	if (!initialized || !slDLSSSetOptions || !slFreeResources)
 		return;
 
 	sl::DLSSOptions dlssOptions{};

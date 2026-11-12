@@ -28,7 +28,7 @@ if ([math]::Abs($fogDefaults.automaticWeatherStrength - 0.50) -gt 1e-6 -or
 	[math]::Abs($fogDefaults.fogDensity - 0.049) -gt 1e-6 -or
 	$fogDefaults.startDistance -ne 0 -or $fogDefaults.volumetricFogStartDistance -ne 2224 -or
 	$fogDefaults.volumetricFogDistance -ne 48535 -or
-	[math]::Abs($fogDefaults.volumetricHistoryWeight - 0.65) -gt 1e-6 -or
+	[math]::Abs($fogDefaults.volumetricHistoryWeight - 0.82) -gt 1e-6 -or
 	$fogDefaults.volumetricHistoryMissSampleCount -ne 4) {
 	throw 'Shipped fog defaults no longer match the promoted runtime profile and motion-stability settings'
 }
@@ -38,9 +38,10 @@ if ($settingsDefaults.Version -ne '1-0-9-0' -or $cloudDefaults.Quality -ne 2 -or
 	[math]::Abs($cloudDefaults.TemporalResponse - 0.68) -gt 1e-6) {
 	throw 'Shipped cloud defaults must retain the promoted high-cloud layer at balanced quality with reduced temporal history'
 }
-if ($cloudTemporal -notmatch 'cameraMotionRejection\s*=\s*smoothstep\(0\.05f,\s*0\.9f,\s*screenMotionPixels\)' -or
+if ($cloudTemporal -notmatch 'float weatherMotion\s*=\s*saturate\(length\(WindTime\.xy\).*?WeatherSecondary\.z\s*\*\s*0\.08f\)' -or
+	$cloudTemporal -notmatch 'rejection\s*=\s*saturate\(depthError\s*/\s*max\(min\(Temporal\.w,\s*0\.045f\),\s*0\.001f\)\s*\+\s*weatherMotion\)' -or
 	$hdrSun -notmatch 'min\(0\.15f\s*\*\s*log2\(maxBoost\s*/\s*kMinHdrSunBoost\),\s*0\.6f\)') {
-	throw 'Sun and cloud temporal response must retain the bounded motion-stability shaping'
+	throw 'Sun and cloud temporal response must retain bounded weather-motion and HDR stability shaping'
 }
 if ($cloudTemporal -notmatch 'SampleCompositeCloud\(float2 uv, out float cloudDepth\)' -or
 	$cloudTemporal -notmatch 'depthWeight\s*=\s*exp2\(-abs\(depths\s*-\s*anchorDepth\)' -or
@@ -61,9 +62,9 @@ if ($cloudTemporal -notmatch 'currentMinOpacity\s*=\s*1\.0f\s*-\s*localMax\.a' -
 if ($cloudTemporal -cne $cloudDistribution) {
 	throw 'Cloud distribution payload must match the authoritative pipeline shader'
 }
-if ($scattering -notmatch 'historyAlpha\s*\*=\s*exp2\(-8\.0f\s*\*\s*motionInFroxels\)' -or
+	if ($scattering -notmatch 'historyAlpha\s*\*=\s*exp2\(-8\.0f\s*\*\s*extinctionDelta\)' -or
 	$scattering -notmatch 'all\(isfinite\(previousClip\)\)') {
-	throw 'Volumetric fog history must reject camera motion and invalid reprojections'
+	throw 'Volumetric fog history must reject extinction changes and invalid reprojections'
 }
 if ($scattering -notmatch 'HistoryDepthRejection|ConservativeDepth') { throw 'Froxel shader lost depth-aware history rejection' }
 if ($scattering -notmatch 'ComputeSkyLightScattering\(float3 positionWS\)' -or

@@ -55,18 +55,32 @@ float GetSharpenConfidence(uint2 outputPixel, uint2 outputDimensions)
 	if (useConfidence == 0)
 		return 1.0;
 
-	uint2 validInputDimensions = max(uint2(inputDimensions), 1u.xx);
+	float2 safeInputDimensions = all(isfinite(inputDimensions)) ? max(inputDimensions, 1.0f.xx) : float2(outputDimensions);
+	uint2 validInputDimensions = max(uint2(safeInputDimensions), 1u.xx);
 	float2 inputPosition =
-		(float2(outputPixel) + 0.5) * (inputDimensions / float2(outputDimensions));
+		(float2(outputPixel) + 0.5f) * (safeInputDimensions / max(float2(outputDimensions), 1.0f.xx));
 	uint2 inputPixel = min(uint2(inputPosition), validInputDimensions - 1u.xx);
+	uint reactiveW, reactiveH, transparencyW, transparencyH, motionW, motionH;
+	ReactiveMask.GetDimensions(reactiveW, reactiveH);
+	TransparencyMask.GetDimensions(transparencyW, transparencyH);
+	MotionVectors.GetDimensions(motionW, motionH);
+	if (min(min(reactiveW, reactiveH), min(min(transparencyW, transparencyH), min(motionW, motionH))) == 0u)
+		return 0.0f;
+	const uint2 reactivePixel = min(inputPixel, uint2(reactiveW - 1u, reactiveH - 1u));
+	const uint2 transparencyPixel = min(inputPixel, uint2(transparencyW - 1u, transparencyH - 1u));
+	const uint2 motionPixel = min(inputPixel, uint2(motionW - 1u, motionH - 1u));
 
-	float reactive = saturate(ReactiveMask.Load(int3(inputPixel, 0)) * 1.25);
-	float transparency = saturate(TransparencyMask.Load(int3(inputPixel, 0)) * 1.5);
-	float unstableSurface = max(reactive, transparency);
+	float reactive = ReactiveMask.Load(int3(reactivePixel, 0));
+	float transparency = TransparencyMask.Load(int3(transparencyPixel, 0));
+	if (!isfinite(reactive) || !isfinite(transparency))
+		return 0.0f;
+	float unstableSurface = max(saturate(reactive * 1.25f), saturate(transparency * 1.5f));
 
 	// Motion vectors are normalized screen-space deltas. Evaluate them in output
 	// pixels so quality modes share one confidence response.
-	float2 motion = MotionVectors.Load(int3(inputPixel, 0));
+	float2 motion = MotionVectors.Load(int3(motionPixel, 0));
+	if (!all(isfinite(motion)))
+		return 0.0f;
 	float motionPixels = length(motion * float2(outputDimensions));
 	float motionConfidence = exp2(-motionPixels * 0.10);
 
@@ -93,7 +107,8 @@ float GetSharpenConfidence(uint2 outputPixel, uint2 outputDimensions)
 	int2 sourceMax = int2(max(uint2(sourceWidth, sourceHeight), 1u.xx) - 1u.xx);
 	float3 b = Source.Load(int3(clamp(sp + int2(0, -1), int2(0, 0), sourceMax), 0)).rgb;
 	float3 d = Source.Load(int3(clamp(sp + int2(-1, 0), int2(0, 0), sourceMax), 0)).rgb;
-	float3 e = Source.Load(int3(sp, 0)).rgb;
+	float4 center = Source.Load(int3(clamp(sp, int2(0, 0), sourceMax), 0));
+	float3 e = center.rgb;
 	float3 f = Source.Load(int3(clamp(sp + int2(1, 0), int2(0, 0), sourceMax), 0)).rgb;
 	float3 h = Source.Load(int3(clamp(sp + int2(0, 1), int2(0, 0), sourceMax), 0)).rgb;
 
@@ -159,5 +174,11 @@ float GetSharpenConfidence(uint2 outputPixel, uint2 outputDimensions)
 	float pixG = (lobe * bG + lobe * dG + lobe * hG + lobe * fG + eG) * rcpL;
 	float pixB = (lobe * bB + lobe * dB + lobe * hB + lobe * fB + eB) * rcpL;
 
-	Dest[DTid.xy] = float4(pixR, pixG, pixB, 1.0);
+	// A single invalid HDR neighbor must not spread NaNs across the image.
+	const bool validNeighborhood = all(isfinite(b)) && all(isfinite(d)) &&
+		all(isfinite(e)) && all(isfinite(f)) && all(isfinite(h));
+	float3 result = float3(pixR, pixG, pixB);
+	if (!validNeighborhood || !all(isfinite(result)))
+		result = all(isfinite(e)) ? e : 0.0f.xxx;
+	Dest[DTid.xy] = float4(result, isfinite(center.a) ? center.a : 1.0f);
 }

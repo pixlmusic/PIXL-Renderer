@@ -1,4 +1,4 @@
-﻿{
+{
     "format":  "PIXL.RenderPreset",
     "schemaVersion":  1,
     "metadata":  {
@@ -6,7 +6,7 @@
                      "author":  "PIXL Studio",
                      "description":  "Balanced settings for mid-range GPUs."
                  },
-    "rendererVersion":  "1.0.9.0",
+    "rendererVersion":  "1-0-9-0",
     "settings":  {
                      "ImageReconstruction":  {
                                                  "dlssgGeneratedFrames":  1,
@@ -522,14 +522,14 @@
                                        "EnableBentNormalLighting":  true,
                                        "EnableBlur":  true,
                                        "EnableContactDepth":  true,
-                                       "EnableDirectionalOcclusion":  true,
+                                       "EnableDirectionalOcclusion":  false,
                                        "EnableExperimentalSpecularGI":  true,
                                        "EnableGI":  true,
                                        "EnableSpecularOcclusion":  true,
                                        "EnableTemporalDenoiser":  true,
                                        "EnableVanillaSSAO":  false,
                                        "EnableVoxelReflections":  false,
-                                       "EnableWorldCache":  true,
+                                       "EnableWorldCache": true,
                                        "EnableWorldCacheSecondBounce":  true,
                                        "Enabled":  true,
                                        "GIDistanceCompensation":  0.27000001072883606,
@@ -558,8 +558,8 @@
                                        "UpsampleEdgeThreshold":  0.10000000149011612,
                                        "VoxelReflectionRoughnessCutoff":  0.800000011920929,
                                        "VoxelReflectionStrength":  0.3700000047683716,
-                                       "WorldCacheCellSizeFar":  512.0,
-                                       "WorldCacheCellSizeNear":  96.0,
+                                       "WorldCacheCellSizeFar":  256.0,
+                                       "WorldCacheCellSizeNear":  64.0,
                                        "WorldCacheInjectionStride":  5,
                                        "WorldCacheLeakReduction":  0.82,
                                        "WorldCacheMaxAge":  48,
@@ -567,7 +567,7 @@
                                        "WorldCacheSampleCount":  3,
                                        "WorldCacheSecondBounceStrength":  0.2,
                                        "WorldCacheStrength":  0.6,
-                                       "WorldCacheTemporalResponse":  0.075,
+                                       "WorldCacheTemporalResponse":  0.20,
                                        "WorldCacheTraceSteps":  3
                                    },
                      "Interior Daylight":  {

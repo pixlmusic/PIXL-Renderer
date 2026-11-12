@@ -48,7 +48,7 @@
 // conservative neighbour depth: enough to close cracks without turning depth
 // edges into broad shadow leaks.
 #ifndef PIXL_SSS_EDGE_BRIDGE
-#define PIXL_SSS_EDGE_BRIDGE 0.18h
+#define PIXL_SSS_EDGE_BRIDGE 0.10h
 #endif
 
 // Controls how quickly the shadow transitions from peak (hard contact) to the
@@ -248,8 +248,6 @@ void WriteScreenSpaceShadow(DispatchParameters inParameters, int3 inGroupID, int
 	const half z_sign = inParameters.NearDepthValue > inParameters.FarDepthValue ? -1 : +1;
 
 	int i;
-	bool is_edge = false;
-	bool skip_pixel = false;
 
 #if defined(RIGHT)
 	// pixel_xy is in pixel coordinates here. The old reciprocal-sized offset was
@@ -286,8 +284,19 @@ void WriteScreenSpaceShadow(DispatchParameters inParameters, int3 inGroupID, int
 		half2 coord = read_xy * inParameters.InvDepthTextureSize * inParameters.DynamicRes;
 		half2 coord_with_offset = (read_xy + offset_xy) * inParameters.InvDepthTextureSize * inParameters.DynamicRes;
 
-		depths.x = inParameters.DepthTexture.SampleLevel(inParameters.PointBorderSampler, coord, 0);
-		depths.y = inParameters.DepthTexture.SampleLevel(inParameters.PointBorderSampler, coord_with_offset, 0);
+		// A DRS backing texture can be larger than the active viewport.
+		// Border-clamp at the ACTIVE viewport, not merely the physical SRV edge,
+		// so uninitialized pixels outside the viewport cannot become blockers.
+		const half2 activeSize = rcp(inParameters.InvDepthTextureSize);
+		const bool baseValid = all(read_xy >= 0.0h) && all(read_xy < activeSize);
+		const bool neighbourValid = all(read_xy + offset_xy >= 0.0h) &&
+			all(read_xy + offset_xy < activeSize);
+		depths.x = baseValid
+			? inParameters.DepthTexture.SampleLevel(inParameters.PointBorderSampler, coord, 0)
+			: inParameters.FarDepthValue;
+		depths.y = (baseValid && neighbourValid)
+			? inParameters.DepthTexture.SampleLevel(inParameters.PointBorderSampler, coord_with_offset, 0)
+			: depths.x;
 
 		// Depth thresholds (bilinear/shadow thickness) are based on a fractional ratio of the difference between sampled depth and the far clip depth
 		static const half kDepthThicknessFloor = 1e-4h;  // Prevents division by zero in depth_scale when depth is at the far clip plane
@@ -296,10 +305,6 @@ void WriteScreenSpaceShadow(DispatchParameters inParameters, int3 inGroupID, int
 		// If depth variance is more than a specific threshold, then just use point filtering
 		bool use_point_filter = abs(depths.x - depths.y) > depth_thickness_scale[i] * inParameters.BilinearThreshold;
 
-		// Store for debug output when inParameters.DebugOutputEdgeMask is true
-		if (i == 0)
-			is_edge = use_point_filter;
-
 		// The pixel starts sampling at this depth
 		sampling_depth[i] = depths.x;
 
@@ -307,11 +312,8 @@ void WriteScreenSpaceShadow(DispatchParameters inParameters, int3 inGroupID, int
 		// sample, so use a conservative depth in the light-facing direction.
 		half shadow_depth = depths.x + abs(depths.x - depths.y) * z_sign;
 
-		// Pure point filtering at every detected edge creates the characteristic
-		// dotted/silhouette gaps when a projected ray repeatedly crosses the same
-		// depth discontinuity.  Bridge only 35% toward the conservative neighbour:
-		// this closes isolated cracks but keeps real silhouettes substantially
-		// sharper than a full bilinear depth interpolation.
+		// Bridge a small fraction of detected edge depth discontinuities.
+		// Full conservative interpolation can smear distant silhouettes.
 		half edge_depth = inParameters.IgnoreEdgePixels
 			? edge_skip
 			: lerp(depths.x, shadow_depth, (half)PIXL_SSS_EDGE_BRIDGE);
@@ -329,14 +331,11 @@ void WriteScreenSpaceShadow(DispatchParameters inParameters, int3 inGroupID, int
 	// Write the shadow depths to LDS
 	[unroll] for (i = 0; i < READ_COUNT; i++)
 	{
-		// Perspective correct the shadowing depth, in this space, all light rays are parallel
-		half stored_depth = (shadowing_depth[i] - inParameters.LightCoordinate.z) / sample_distance[i];
-
-		if (i != 0) {
-			// For pixels within sampling distance of the light, it is possible that sampling will
-			// overshoot the light coordinate for extended reads. We want to ignore these samples
-			stored_depth = sample_distance[i] > 0 ? stored_depth : 1e10;
-		}
+		// Invalid or zero ray distances must never produce infinities/NaNs in LDS.
+		// Keep the invalid sentinel finite for DX11 SM5 compatibility.
+		half stored_depth = (sample_distance[i] > 1e-3h && isfinite(shadowing_depth[i]))
+			? (shadowing_depth[i] - inParameters.LightCoordinate.z) / sample_distance[i]
+			: 1e10;
 
 		// Store the depth values in groupshared
 		int idx = (i * WAVE_SIZE) + inGroupThreadID.x;
@@ -348,7 +347,15 @@ void WriteScreenSpaceShadow(DispatchParameters inParameters, int3 inGroupID, int
 
 	half start_depth = sampling_depth[0];
 
-	if (start_depth == 0.0 || start_depth == 1.0)
+	// All threads must pass the group barrier before any early exit.
+	// Reject sky/border, invalid rays, and pixels outside the output texture.
+	uint outputWidth, outputHeight;
+	inParameters.OutputTexture.GetDimensions(outputWidth, outputHeight);
+	if (!isfinite(start_depth) ||
+		abs(start_depth - inParameters.FarDepthValue) < 1e-6h ||
+		sample_distance[0] <= 1e-3h ||
+		write_xy.x < 0 || write_xy.y < 0 ||
+		write_xy.x >= (int)outputWidth || write_xy.y >= (int)outputHeight)
 		return;
 
 	// Non-linear depth loses blocker separation precision at long range. Fade the
@@ -358,6 +365,8 @@ void WriteScreenSpaceShadow(DispatchParameters inParameters, int3 inGroupID, int
 	// so the broad smooth transition cannot form a circular boundary.
 	const float receiver_view_depth =
 		abs(SharedData::GetScreenDepth((float)start_depth));
+	if (!isfinite(receiver_view_depth) || receiver_view_depth <= 0.0f)
+		return;
 	const half distance_confidence =
 		1.0h - smoothstep(inParameters.FalloffStart, inParameters.FalloffEnd, receiver_view_depth);
 	if (distance_confidence <= 1e-3h)
@@ -380,65 +389,59 @@ void WriteScreenSpaceShadow(DispatchParameters inParameters, int3 inGroupID, int
 	half depth_scale = min(sample_distance[0] + direction, 1.0h / safe_surface_thickness) *
 		sample_distance[0] / depth_thickness_scale[0];
 
+	if (!isfinite(depth_scale) || depth_scale <= 1e-5h)
+		return;
 	start_depth = start_depth * depth_scale - z_sign;
 
 #if PIXL_SSS_CONTACT_HARDENING
-	// Convert depth agreement to four interleaved coverage lanes. The original
-	// algorithm stored only a minimum depth delta per lane and averaged those
-	// minima. That makes a valid blocker disappear whenever it lands in only one
-	// or two lanes, producing the visible dashed/silhouette gaps.
-	//
-	// Here each existing sample produces an occluder confidence.  Close blockers
-	// use the peak confidence (hard contact); separated blockers transition toward
-	// the four-lane average (wider/softer penumbra). No extra depth samples.
+	// Four interleaved coverage lanes remain compatible with Bend's ray sweep.
+	// A single strong depth match is NOT sufficient for maximum hard contact:
+	// require two adjacent depth-consistent samples before promoting it. This
+	// suppresses single-tap floor blotches without erasing thin edge casters.
 	half4 occlusion_lanes = 0.0h;
-	half peak_occlusion = 0.0h;
+	half paired_peak = 0.0h;
+	half previous = 0.0h;
 	half nearest_blocker = 1.0h;
-	const half inv_sample_count = rcp((half)SAMPLE_COUNT);
+	// Keep physical contact hardness approximately invariant when users
+	// change ray quality (which extends the maximum traced distance).
+	const half inv_contact_window = rcp(min((half)SAMPLE_COUNT, 64.0h));
 	const half contrast = max(inParameters.ShadowContrast, 1.0h);
 
-	[unroll] for (i = 0; i < SAMPLE_COUNT; i++)
+	[loop] for (i = 0; i < SAMPLE_COUNT; i++)
 	{
 		half depth_delta = abs(start_depth - DepthData[sample_index + i] * depth_scale);
-
-		// Algebraically matches the old contrast window closely:
-		// old visibility = saturate(delta*C + 1-C)
-		// -> occlusion ~= saturate((1-delta)*C).
+		// Same monotone detection window as Bend: no extra depth fetches.
 		half occlusion = saturate((1.0h - depth_delta) * contrast);
 		occlusion = occlusion * occlusion * (3.0h - 2.0h * occlusion);
-
-		uint lane = (uint)i & 3u;
-		occlusion_lanes[lane] = max(occlusion_lanes[lane], occlusion);
-		peak_occlusion = max(peak_occlusion, occlusion);
-
-		// A weak grazing match should not be allowed to classify the whole pixel
-		// as a hard contact. Bias its apparent blocker slightly farther away.
-		if (occlusion > 0.05h) {
-			half ray_position = ((half)i + 0.5h) * inv_sample_count;
-			ray_position += (1.0h - occlusion) * (0.5h * inv_sample_count);
-			nearest_blocker = min(nearest_blocker, ray_position);
+		// FXC's SM5 compiler cannot address vector components dynamically here.
+		// Keep the four interleaved lanes explicit so this bounded loop can remain
+		// unrolled without changing the lane reduction.
+		switch (i & 3)
+		{
+		case 0: occlusion_lanes.x = max(occlusion_lanes.x, occlusion); break;
+		case 1: occlusion_lanes.y = max(occlusion_lanes.y, occlusion); break;
+		case 2: occlusion_lanes.z = max(occlusion_lanes.z, occlusion); break;
+		default: occlusion_lanes.w = max(occlusion_lanes.w, occlusion); break;
 		}
+		const half paired = min(previous, occlusion);
+		paired_peak = max(paired_peak, paired);
+		if (paired > 0.15h)
+			nearest_blocker = min(nearest_blocker,
+				((half)i - 0.5h) * inv_contact_window);
+		previous = occlusion;
 	}
 
-	half lane_coverage = dot(occlusion_lanes, 0.25h);
-	half contact_hardness = 1.0h - smoothstep(
+	const half lane_coverage = dot(occlusion_lanes, 0.25h);
+	const half contact_hardness = 1.0h - smoothstep(
 		(half)PIXL_SSS_CONTACT_START,
-		(half)PIXL_SSS_CONTACT_END,
-		nearest_blocker);
-
-	// Suppress isolated one-lane blockers on broad flat surfaces. They are the
-	// main cause of the dark square/stepped patches visible on floors after the
-	// first contact-hardening pass. Only when there is coherent multi-lane
-	// support do we allow the strongest blocker to dominate the hard-contact
-	// term.
-	half support = smoothstep(0.18h, 0.55h, lane_coverage);
-	half hard_contact = max(lane_coverage, peak_occlusion * support * 0.92h);
+		(half)PIXL_SSS_CONTACT_END, nearest_blocker);
+	// Coherent adjacent hits create a crisp contact; weaker/discontinuous
+	// evidence stays at the softer four-lane coverage level.
+	const half support = smoothstep(0.12h, 0.55h, lane_coverage);
+	const half hard_contact = max(lane_coverage, paired_peak * 0.98h);
 	half occlusion = lerp(lane_coverage, hard_contact, contact_hardness * support);
-
-	// Preserve hard receiver contact, but fade separated screen-space blockers so
-	// the projected tail behaves like a penumbra rather than a cut-out silhouette.
-	half separation_fade = lerp(0.52h, 1.0h, contact_hardness);
-	occlusion *= separation_fade;
+	// Projected separation should not form an equally dark cut-out silhouette.
+	occlusion *= lerp(0.60h, 1.0h, contact_hardness);
 	half result = saturate(1.0h - occlusion);
 #else
 	half4 shadow_value = 1.0h;

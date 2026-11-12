@@ -2,7 +2,9 @@
 
 #include <FidelityFX/api/include/dx12/ffx_api_dx12.hpp>
 #include <algorithm>
+#include <cmath>
 #include <dxgi1_6.h>
+#include <mutex>
 
 #include "../CameraSuite.h"
 #include "../ImageReconstruction.h"
@@ -124,7 +126,7 @@ void DX12SwapChain::CreateSwapChainDirect(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN
 	swapChainDesc.Flags = enableDLSSG ?
 		a_swapChainDesc.Flags & ~DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : a_swapChainDesc.Flags;
 	winrt::com_ptr<IDXGISwapChain1> nativeSwapChain;
-			logger::debug("[DX12SwapChain] Calling CreateSwapChainForHwnd");
+	logger::debug("[DX12SwapChain] Calling CreateSwapChainForHwnd");
 	DX::ThrowIfFailed(dxgiFactory->CreateSwapChainForHwnd(commandQueue.get(), a_swapChainDesc.OutputWindow,
 		&swapChainDesc, nullptr, nullptr, nativeSwapChain.put()));
 			logger::debug("[DX12SwapChain] Native swap chain created");
@@ -255,6 +257,7 @@ void DX12SwapChain::CreateInterop()
 	}
 	completedNeuralFrameSerial.store(0, std::memory_order_release);
 	completedNeuralOutputIndex.store(UINT32_MAX, std::memory_order_release);
+	neuralOutputCompletedThisPresent.store(false, std::memory_order_release);
 
 	// UI buffer uses R8G8B8A8_UNORM - vanilla UI is SDR and 8-bit precision
 	texDesc11.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -288,6 +291,18 @@ HRESULT DX12SwapChain::GetBuffer(UINT buffer, REFIID riid, void** ppSurface)
 
 HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 {
+	if (!swapChain)
+		return DXGI_ERROR_INVALID_CALL;
+	// A DXGI test present must not submit rendering, advance fences or
+	// publish a neural frame; callers use this to probe occlusion.
+	if (Flags & DXGI_PRESENT_TEST)
+		return swapChain->Present(SyncInterval, Flags);
+	if (!d3d11Context || !d3d11Fence || !d3d12Fence || !commandQueue ||
+		!swapChainBufferWrapped || !swapChainBufferWrapped->resource ||
+		!uiBufferWrapped || !uiBufferWrapped->rtv ||
+		frameIndex >= swapChainDesc.BufferCount || frameIndex >= 3u ||
+		!commandAllocators[frameIndex] || !commandLists[frameIndex])
+		return DXGI_ERROR_INVALID_CALL;
 	auto& imageReconstruction = globals::pipeline::imageReconstruction;
 	neuralOutputCompletedThisPresent.store(false, std::memory_order_release);
 	bool completedNeuralThisFrame = false;
@@ -324,8 +339,6 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	// New frame, reset
 	// A GPU-side queue Wait does not make a CPU allocator Reset safe. Wait
 	// only for this backbuffer's previous submission before reusing its memory.
-	if (frameIndex >= swapChainDesc.BufferCount || frameIndex >= 3)
-		return DXGI_ERROR_INVALID_CALL;
 	const UINT64 allocatorCompletion = allocatorFenceValues[frameIndex];
 	const UINT64 completedFence = d3d12Fence->GetCompletedValue();
 	if (completedFence == UINT64_MAX)
@@ -351,9 +364,11 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 		ID3D12Resource* presentationSource = fakeSwapChain;
 		bool neuralTransitionsActive = false;
 
-		// DLSS-G uses three backbuffers while neural output remains deliberately
-		// double-buffered. Never index the neural array with the raw swap index.
-		const std::uint32_t neuralOutputIndex = static_cast<std::uint32_t>(frameIndex) & 1u;
+		// DLSS-G can cycle 0,1,2,0. Index parity would select 0 twice
+		// consecutively (2 then 0), potentially overwriting the captured frame.
+		// Always write the buffer opposite the most recently published one.
+		const std::uint32_t publishedIndex = completedNeuralOutputIndex.load(std::memory_order_acquire);
+		const std::uint32_t neuralOutputIndex = publishedIndex < 2u ? (publishedIndex ^ 1u) : 0u;
 		auto& neuralOutput = neuralRenderingOutputWrapped[neuralOutputIndex];
 		if (imageReconstruction.ShouldUseNeuralRenderingThisFrame() &&
 			neuralOutput && neuralOutput->resource &&
@@ -408,7 +423,7 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 				};
 				const bool initialReset =
 					imageReconstruction.pendingNeuralRenderingReset.exchange(false, std::memory_order_acq_rel);
-				const std::uint32_t targetIndex = static_cast<std::uint32_t>(frameIndex) & 1u;
+				const std::uint32_t targetIndex = neuralOutputIndex;
 				auto& target = neuralRenderingOutputWrapped[targetIndex];
 				ID3D12Resource* finalNeuralOutput = nullptr;
 				std::uint32_t finalNeuralOutputIndex = UINT32_MAX;
@@ -627,29 +642,28 @@ HRESULT DX12SwapChain::GetDevice(REFIID uuid, void** ppDevice)
 
 HANDLE DX12SwapChain::GetFrameLatencyWaitableObject()
 {
-	return swapChain->GetFrameLatencyWaitableObject();
+	return swapChain ? swapChain->GetFrameLatencyWaitableObject() : nullptr;
 }
 
 float DX12SwapChain::GetFrameTime() const
 {
-	// Calculate frame time based on swap chain presentation
-	static float lastPresentTime = 0.0f;
-	static float frameTime = 1.0f / 60.0f;  // Default to 60 fps
-	static LARGE_INTEGER frequency = {};
-	static LARGE_INTEGER currentTime = {};
-
-	if (frequency.QuadPart == 0) {
-		QueryPerformanceFrequency(&frequency);
+	// Keep timestamps in double precision: casting a large QPC timestamp to
+	// float loses frame-scale resolution after long game sessions.
+	static LARGE_INTEGER frequency{};
+	static LARGE_INTEGER previous{};
+	LARGE_INTEGER now{};
+	if (!frequency.QuadPart && !QueryPerformanceFrequency(&frequency))
+		return 1.0f / 60.0f;
+	if (frequency.QuadPart <= 0 || !QueryPerformanceCounter(&now))
+		return 1.0f / 60.0f;
+	float frameTime = 1.0f / 60.0f;
+	if (previous.QuadPart > 0 && now.QuadPart >= previous.QuadPart) {
+		const double seconds = static_cast<double>(now.QuadPart - previous.QuadPart) /
+			static_cast<double>(frequency.QuadPart);
+		if (std::isfinite(seconds) && seconds >= 0.0 && seconds <= 1.0)
+			frameTime = static_cast<float>(seconds);
 	}
-
-	QueryPerformanceCounter(&currentTime);
-	float time = static_cast<float>(currentTime.QuadPart) / static_cast<float>(frequency.QuadPart);
-
-	if (lastPresentTime > 0.0f) {
-		frameTime = time - lastPresentTime;
-	}
-	lastPresentTime = time;
-
+	previous = now;
 	return frameTime;
 }
 
@@ -854,13 +868,23 @@ void DX12SwapChain::SetColorSpace(bool enableHDR)
 	if (!swapChain)
 		return;
 
-	if (enableHDR) {
-		swapChain->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
-		logger::info("[DX12SwapChain] Set color space to HDR10 (PQ/BT.2020)");
-	} else {
-		swapChain->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
-		logger::info("[DX12SwapChain] Set color space to SDR (sRGB)");
+	const auto requestedColorSpace = enableHDR
+		? DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
+		: DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+	UINT colorSpaceSupport = 0;
+	if (FAILED(swapChain->CheckColorSpaceSupport(requestedColorSpace, &colorSpaceSupport)) ||
+		!(colorSpaceSupport & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT)) {
+		logger::warn("[DX12SwapChain] Requested {} color space not supported by DXGI",
+			enableHDR ? "HDR10" : "SDR");
+		return;
 	}
+	const HRESULT hr = swapChain->SetColorSpace1(requestedColorSpace);
+	if (FAILED(hr)) {
+		logger::warn("[DX12SwapChain] Setting {} color space failed with HRESULT 0x{:08X}",
+			enableHDR ? "HDR10" : "SDR", static_cast<std::uint32_t>(hr));
+		return;
+	}
+	logger::info("[DX12SwapChain] Set color space to {}", enableHDR ? "HDR10 (PQ/BT.2020)" : "SDR (sRGB)");
 }
 
 DX12SwapChain::BlurResources DX12SwapChain::GetBlurResources() const
@@ -932,240 +956,3 @@ std::uint64_t DX12SwapChain::GetCompletedNeuralFrameSerial() const
 {
 	return completedNeuralFrameSerial.load(std::memory_order_acquire);
 }
-
-#if 0  // Retired: Photo Finish uses completed live Feature 18 frames.
-bool DX12SwapChain::EvaluateOfflinePhotoNeural(
-	const DirectX::Image& color,
-	const DirectX::Image& depth,
-	DirectX::ScratchImage& output)
-{
-	if (!d3d12Device || !commandQueue || color.width <= 1 || color.height <= 1 ||
-		depth.width != color.width || depth.height != color.height ||
-		depth.format != DXGI_FORMAT_R32_FLOAT || color.format != swapChainDesc.Format) {
-		logger::warn(
-			"[NeuralRendering] Photo Finish offline input rejected: color={} {}x{}, depth={} {}x{}",
-			static_cast<std::uint32_t>(color.format), color.width, color.height,
-			static_cast<std::uint32_t>(depth.format), depth.width, depth.height);
-		return false;
-	}
-	logger::info(
-		"[DX12SwapChain] Created {} frame-interpolation swap chain at {}x{} ({}/{})",
-		a_swapChainDesc.Windowed ? "windowed/borderless" : "exclusive-fullscreen",
-		swapChainDesc.Width,
-		swapChainDesc.Height,
-		fullscreenDesc.RefreshRate.Numerator,
-		fullscreenDesc.RefreshRate.Denominator);
-
-	constexpr std::uint64_t kMaxPhotoPixels = 48ull * 1000ull * 1000ull;
-	const std::uint64_t pixelCount = static_cast<std::uint64_t>(color.width) * color.height;
-	if (pixelCount > kMaxPhotoPixels) {
-		logger::warn(
-			"[NeuralRendering] Photo Finish offline input exceeds the 48 MP safety limit: {}x{}",
-			color.width, color.height);
-		return false;
-	}
-
-	std::scoped_lock queueLock(neuralQueueMutex);
-	auto& reconstruction = globals::pipeline::imageReconstruction;
-	auto& neural = ImageReconstruction::neuralRendering;
-	if ((neural.GetStatus() == NeuralRendering::Status::NotProbed ||
-		 neural.GetStatus() == NeuralRendering::Status::Ready) &&
-		!neural.Initialize(d3d12Device.get())) {
-		return false;
-	}
-	if (neural.GetStatus() != NeuralRendering::Status::Initialized)
-		return false;
-
-	winrt::com_ptr<ID3D12CommandAllocator> allocator;
-	winrt::com_ptr<ID3D12GraphicsCommandList4> list;
-	if (FAILED(d3d12Device->CreateCommandAllocator(
-			D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(allocator.put()))) ||
-		FAILED(d3d12Device->CreateCommandList(
-			0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.get(), nullptr, IID_PPV_ARGS(list.put())))) {
-		logger::warn("[NeuralRendering] Photo Finish could not allocate an isolated DX12 command list");
-		return false;
-	}
-
-	const auto createTexture = [&](DXGI_FORMAT format, D3D12_RESOURCE_FLAGS flags,
-		D3D12_RESOURCE_STATES initialState, winrt::com_ptr<ID3D12Resource>& resource) {
-		const auto desc = CD3DX12_RESOURCE_DESC::Tex2D(
-			format,
-			static_cast<UINT64>(color.width),
-			static_cast<UINT>(color.height),
-			1, 1, 1, 0, flags);
-		const CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_DEFAULT);
-		return SUCCEEDED(d3d12Device->CreateCommittedResource(
-			&heap, D3D12_HEAP_FLAG_NONE, &desc, initialState, nullptr,
-			IID_PPV_ARGS(resource.put())));
-	};
-
-	winrt::com_ptr<ID3D12Resource> colorTexture;
-	winrt::com_ptr<ID3D12Resource> depthTexture;
-	winrt::com_ptr<ID3D12Resource> motionTexture;
-	winrt::com_ptr<ID3D12Resource> outputTexture;
-	if (!createTexture(color.format, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, colorTexture) ||
-		!createTexture(DXGI_FORMAT_R32_FLOAT, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, depthTexture) ||
-		!createTexture(DXGI_FORMAT_R16G16_FLOAT, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, motionTexture) ||
-		!createTexture(color.format, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, outputTexture)) {
-		logger::warn("[NeuralRendering] Photo Finish could not allocate high-resolution neural resources");
-		return false;
-	}
-
-	std::vector<winrt::com_ptr<ID3D12Resource>> uploadBuffers;
-	uploadBuffers.reserve(3);
-	const auto uploadImage = [&](const DirectX::Image* image, ID3D12Resource* destination,
-		bool clearToZero) {
-		const auto destinationDesc = destination->GetDesc();
-		D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
-		UINT rowCount = 0;
-		UINT64 rowSize = 0;
-		UINT64 totalBytes = 0;
-		d3d12Device->GetCopyableFootprints(
-			&destinationDesc, 0, 1, 0, &footprint, &rowCount, &rowSize, &totalBytes);
-		const CD3DX12_HEAP_PROPERTIES uploadHeap(D3D12_HEAP_TYPE_UPLOAD);
-		const auto bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(totalBytes);
-		winrt::com_ptr<ID3D12Resource> upload;
-		if (FAILED(d3d12Device->CreateCommittedResource(
-				&uploadHeap, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-				D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(upload.put()))))
-			return false;
-
-		std::uint8_t* mapped = nullptr;
-		if (FAILED(upload->Map(0, nullptr, reinterpret_cast<void**>(&mapped))))
-			return false;
-		std::memset(mapped, 0, static_cast<std::size_t>(totalBytes));
-		if (!clearToZero && image) {
-			const std::size_t copyBytes = static_cast<std::size_t>(std::min<UINT64>(rowSize, image->rowPitch));
-			for (UINT row = 0; row < rowCount; ++row) {
-				std::memcpy(
-					mapped + footprint.Offset + static_cast<std::size_t>(row) * footprint.Footprint.RowPitch,
-					image->pixels + static_cast<std::size_t>(row) * image->rowPitch,
-					copyBytes);
-			}
-		}
-		upload->Unmap(0, nullptr);
-
-		D3D12_TEXTURE_COPY_LOCATION src{};
-		src.pResource = upload.get();
-		src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-		src.PlacedFootprint = footprint;
-		D3D12_TEXTURE_COPY_LOCATION dst{};
-		dst.pResource = destination;
-		dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-		dst.SubresourceIndex = 0;
-		list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-		uploadBuffers.push_back(std::move(upload));
-		return true;
-	};
-
-	if (!uploadImage(&color, colorTexture.get(), false) ||
-		!uploadImage(&depth, depthTexture.get(), false) ||
-		!uploadImage(nullptr, motionTexture.get(), true)) {
-		logger::warn("[NeuralRendering] Photo Finish failed to upload high-resolution neural inputs");
-		return false;
-	}
-
-	ID3D12Resource* inputs[]{ colorTexture.get(), depthTexture.get(), motionTexture.get() };
-	D3D12_RESOURCE_BARRIER inputBarriers[3]{};
-	for (std::size_t i = 0; i < std::size(inputBarriers); ++i) {
-		inputBarriers[i] = CD3DX12_RESOURCE_BARRIER::Transition(
-			inputs[i], D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-	}
-	list->ResourceBarrier(static_cast<UINT>(std::size(inputBarriers)), inputBarriers);
-
-	NeuralRendering::Tuning tuning{
-		.intensity = reconstruction.settings.neuralRenderingIntensity,
-		.localToneStrength = reconstruction.settings.neuralRenderingLocalTone,
-		.localStructureStrength = reconstruction.settings.neuralRenderingLocalStructure,
-		.skinStructureStrength = reconstruction.settings.neuralRenderingSkinStructure,
-		.style = reconstruction.settings.neuralRenderingStyle,
-		.performanceQuality = 5u,  // frozen high-resolution DLAA contract
-		.outputPreset = reconstruction.neuralRenderingOutputPresetAtBoot,
-		.useAutoMask = reconstruction.settings.neuralRenderingAutoMask,
-		.uiCorrection = false,
-	};
-
-	const auto width = static_cast<std::uint32_t>(color.width);
-	const auto height = static_cast<std::uint32_t>(color.height);
-	const bool evaluated = neural.Evaluate(
-		list.get(), colorTexture.get(), depthTexture.get(), motionTexture.get(), outputTexture.get(),
-		width, height, width, height, static_cast<float>(width), static_cast<float>(height),
-		tuning, true, false);
-
-	D3D12_PLACED_SUBRESOURCE_FOOTPRINT outputFootprint{};
-	UINT outputRows = 0;
-	UINT64 outputRowSize = 0;
-	UINT64 outputBytes = 0;
-	winrt::com_ptr<ID3D12Resource> readback;
-	if (evaluated) {
-		const auto outputDesc = outputTexture->GetDesc();
-		d3d12Device->GetCopyableFootprints(
-			&outputDesc, 0, 1, 0, &outputFootprint, &outputRows, &outputRowSize, &outputBytes);
-		const CD3DX12_HEAP_PROPERTIES readbackHeap(D3D12_HEAP_TYPE_READBACK);
-		const auto bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(outputBytes);
-		if (FAILED(d3d12Device->CreateCommittedResource(
-				&readbackHeap, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-				D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(readback.put())))) {
-			logger::warn("[NeuralRendering] Photo Finish could not allocate the neural readback buffer");
-			return false;
-		}
-		const auto outputToCopy = CD3DX12_RESOURCE_BARRIER::Transition(
-			outputTexture.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-		list->ResourceBarrier(1, &outputToCopy);
-		D3D12_TEXTURE_COPY_LOCATION src{};
-		src.pResource = outputTexture.get();
-		src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-		D3D12_TEXTURE_COPY_LOCATION dst{};
-		dst.pResource = readback.get();
-		dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-		dst.PlacedFootprint = outputFootprint;
-		list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-	}
-
-	if (FAILED(list->Close()))
-		return false;
-	ID3D12CommandList* lists[]{ list.get() };
-	commandQueue->ExecuteCommandLists(1, lists);
-
-	winrt::com_ptr<ID3D12Fence> completionFence;
-	if (FAILED(d3d12Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(completionFence.put()))))
-		return false;
-	Microsoft::WRL::Wrappers::Event completionEvent(CreateEventW(nullptr, FALSE, FALSE, nullptr));
-	if (!completionEvent.IsValid() || FAILED(commandQueue->Signal(completionFence.get(), 1u)) ||
-		FAILED(completionFence->SetEventOnCompletion(1u, completionEvent.Get())))
-		return false;
-	WaitForSingleObject(completionEvent.Get(), INFINITE);
-
-	// The offline dimensions replace the live feature handle. Recreate the normal
-	// display-sized contract cleanly on the next Present rather than carrying its
-	// still-image history into gameplay.
-	neural.ResetFeature();
-	reconstruction.pendingNeuralRenderingReset.store(true, std::memory_order_release);
-	if (!evaluated || !readback)
-		return false;
-
-	if (FAILED(output.Initialize2D(color.format, color.width, color.height, 1, 1)))
-		return false;
-	const DirectX::Image* outputImage = output.GetImage(0, 0, 0);
-	if (!outputImage)
-		return false;
-	const std::uint8_t* mapped = nullptr;
-	D3D12_RANGE readRange{ 0, static_cast<SIZE_T>(outputBytes) };
-	if (FAILED(readback->Map(0, &readRange, reinterpret_cast<void**>(const_cast<std::uint8_t**>(&mapped)))))
-		return false;
-	const std::size_t copyBytes = static_cast<std::size_t>(std::min<UINT64>(outputRowSize, outputImage->rowPitch));
-	for (UINT row = 0; row < outputRows; ++row) {
-		std::memcpy(
-			output.GetPixels() + static_cast<std::size_t>(row) * outputImage->rowPitch,
-			mapped + outputFootprint.Offset + static_cast<std::size_t>(row) * outputFootprint.Footprint.RowPitch,
-			copyBytes);
-	}
-	D3D12_RANGE writeRange{ 0, 0 };
-	readback->Unmap(0, &writeRange);
-	logger::info(
-		"[NeuralRendering] Photo Finish completed one isolated {}x{} DLAA neural refinement pass",
-		width, height);
-	return true;
-}
-#endif

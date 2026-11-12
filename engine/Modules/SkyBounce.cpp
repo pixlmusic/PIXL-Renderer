@@ -399,6 +399,12 @@ void SkyBounce::Prepass()
 
 void SkyBounce::PostPostLoad()
 {
+	if (GetModuleHandleW(L"SPS.dll")) {
+		logger::info(
+			"[Compatibility] Skyrim Performance Solution detected. Its default SkylightingCulling threshold (radius 128) also filters "
+			"PIXL SkyBounce occluders below that size; set [SkylightingCulling] bEnabled=false in SPS.ini to retain full SkyBounce detail.");
+	}
+
 	logger::info("[SKY_BOUNCE] Hooking BSLightingShaderProperty::GetPrecipitationOcclusionMapRenderPassesImp");
 	stl::write_vfunc<0x2D, BSLightingShaderProperty_GetPrecipitationOcclusionMapRenderPassesImpl>(RE::VTABLE_BSLightingShaderProperty[0]);
 	if (REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104) {

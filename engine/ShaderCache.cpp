@@ -1,4 +1,5 @@
 #include "ShaderCache.h"
+#include "ShaderCache/CacheMetadataCompatibility.h"
 #include "ShaderCache/DescriptorUtilities.h"
 #include "Globals.h"
 #include "ShaderFileWatcher.h"
@@ -27,10 +28,10 @@ namespace SIE
 	// shared by shader families which do not enable the changed module's define.
 	static constexpr const char* kPipelineCacheLayout = "PIXL.StageShard.v1";
 	static constexpr const char* kSharedShaderABI = "PIXL.SharedBuffers.20260926.RenderOrigin1";
-	// Bump whenever a shared shader or included module shader changes. The
-	// 2026-10-21 shader updates postdate the prior cache revision; keep old
-	// compiled permutations from masking the source changes on the next launch.
-	static constexpr const char* kPipelineShaderRevision = "PIXL.Shaders.20261023.MaterialSurfaceProfiles1";
+	// Source-closure identities select/reuse individual compiled permutations, so
+	// changing this provenance label does not flush ABI-compatible unrelated cache
+	// entries. It makes shared shader edits visible in the live cache metadata.
+	static constexpr const char* kPipelineShaderRevision = "PIXL.Shaders.20261104.TraceViewContract2";
 
 	// Custom include handler to track all includes during shader compilation
 	class TrackingIncludeHandler : public ID3DInclude
@@ -1976,7 +1977,7 @@ namespace SIE
 			(descriptor & static_cast<uint32_t>(UtilityShaderFlags::RenderShadowmask))) {
 			static std::atomic_flag loggedNativeShadowMask = ATOMIC_FLAG_INIT;
 			if (!loggedNativeShadowMask.test_and_set(std::memory_order_relaxed))
-				logger::warn("[PIXL][Sun] Skyrim 1.7.104: using native directional shadow-mask shaders after PIXL mask readback was black on sunlit geometry.");
+				logger::warn("[PIXL][Sun] Skyrim 1.7.104: retaining native directional shadow-mask shaders; PIXL's override remains disabled after a prior black-mask result.");
 			return nullptr;
 		}
 		auto state = globals::state;
@@ -2583,7 +2584,11 @@ namespace SIE
 		CSimpleIniA ini;
 		ini.SetUnicode();
 		ini.LoadFile(L"Data\\PIXL\\PipelineLibrary\\Library.ini");
-		bool baseCacheValid = true;
+		const auto cacheMetadata = SIE::CheckCacheMetadataCompatibility(
+			ini.GetValue("Cache", "Layout", ""), kPipelineCacheLayout,
+			ini.GetValue("Cache", "ShaderABI", ""), kSharedShaderABI,
+			ini.GetValue("Cache", "ShaderRevision", ""), kPipelineShaderRevision);
+		bool baseCacheValid = cacheMetadata.layoutAndABICompatible;
 
 		// Product version is provenance, not a shader compatibility key. CPU-only
 		// updates retain stages; Layout/ShaderABI and module versions own invalidation.
@@ -2595,22 +2600,19 @@ namespace SIE
 		} else {
 			logger::info("Cache has no product version; validating shader ABI and layout");
 		}
-		if (auto layout = ini.GetValue("Cache", "Layout"); !layout || strcmp(layout, kPipelineCacheLayout) != 0) {
-			logger::info("Disk cache outdated: pipeline layout changed");
-			baseCacheValid = false;
+		if (!cacheMetadata.layoutAndABICompatible) {
+			auto layout = ini.GetValue("Cache", "Layout");
+			logger::info("Disk cache layout/shared ABI metadata is incompatible");
+			auto shaderABI = ini.GetValue("Cache", "ShaderABI");
+			logger::info("Disk cache compatibility: layout {} (expected {}), shared shader ABI {} (expected {})",
+				layout ? layout : "(missing)", kPipelineCacheLayout,
+				shaderABI ? shaderABI : "(missing)", kSharedShaderABI);
 		}
-		if (auto shaderABI = ini.GetValue("Cache", "ShaderABI"); !shaderABI || strcmp(shaderABI, kSharedShaderABI) != 0) {
-			logger::info(
-				"Disk cache outdated: shared shader ABI changed (current: {}, cached: {})",
-				kSharedShaderABI,
-				shaderABI ? shaderABI : "(missing)");
-			baseCacheValid = false;
-		}
-		if (auto shaderRevision = ini.GetValue("Cache", "ShaderRevision");
-			!shaderRevision || strcmp(shaderRevision, kPipelineShaderRevision) != 0) {
-			logger::info("Disk cache outdated: shared shader revision changed (current: {}, cached: {})",
+		if (!cacheMetadata.shaderRevisionMatches) {
+			auto shaderRevision = ini.GetValue("Cache", "ShaderRevision");
+			logger::info("Shader revision label differs (current: {}, cached: {})",
 				kPipelineShaderRevision, shaderRevision ? shaderRevision : "(missing)");
-			baseCacheValid = false;
+			logger::info("Retaining layout/ABI-compatible stages; per-artifact source-closure identities decide reuse.");
 		}
 
 		// Validate every module independently. A module version/load-state change no
@@ -2782,6 +2784,15 @@ namespace SIE
 					"Removed {} cache entries with names that did not match the PIXL descriptor format",
 					unparsableFiles);
 			}
+
+			// Persist the validated module identities now that their affected stages
+			// have been removed. Waiting for DataLoaded to save Library.ini can repeat
+			// this invalidation after an early-startup crash, forcing the same shader
+			// families to compile again on every launch.
+			for (auto* module : invalidModules)
+				module->WriteDiskCacheInfo(ini);
+			if (ini.SaveFile(L"Data\\PIXL\\PipelineLibrary\\Library.ini") != SI_OK)
+				logger::error("Failed to persist module identities after selective pipeline invalidation");
 		} else {
 			logger::info("Using disk cache");
 		}
@@ -2811,6 +2822,25 @@ namespace SIE
 		managementJthread = std::jthread([this](std::stop_token stoken) {
 			ManageCompilationSet(stoken);
 		});
+	}
+
+	void ShaderCache::ApplyStartupCompilerThreadSettings()
+	{
+		// The pool is constructed before State loads UserGraphics. Its worker count
+		// must be updated before the first task or the saved limits only change the
+		// queue depth, leaving physical compiler parallelism at the old default.
+		if (IsCompiling() || compilationPool.get_tasks_total() != 0) {
+			logger::warn("[ShaderCompiler] Startup worker resize skipped because compilation is active");
+			return;
+		}
+		const auto hardwareLimit = std::max(1u, std::thread::hardware_concurrency());
+		const auto requested = std::max(compilationThreadCount, backgroundCompilationThreadCount);
+		const auto workerCount = static_cast<std::size_t>(std::clamp(requested, 1, static_cast<int32_t>(hardwareLimit)));
+		if (compilationPool.get_thread_count() != workerCount)
+			compilationPool.reset(workerCount);
+		logger::info("[ShaderCompiler] Configured {} workers (foreground limit {}, background limit {}, performance logical cores {})",
+			compilationPool.get_thread_count(), compilationThreadCount, backgroundCompilationThreadCount,
+			Util::GetPerformanceCoreCount());
 	}
 
 	bool ShaderCache::UseFileWatcher() const

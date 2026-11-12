@@ -13,6 +13,9 @@ namespace PIXL::Renderer
         std::uint64_t identity{}; // comparison token only; never dereferenced
         std::array<float, 4> sphere{}; // absolute engine world xyz, radius
         std::array<float, 3> energy{};
+        // Changes whenever the source's cached native shadow map is refreshed.
+        // A fixed light can still change world-space transport when an occluder moves.
+        std::uint64_t shadowRevision{};
     };
 
     struct EmitterChangeBatch
@@ -95,6 +98,7 @@ namespace PIXL::Renderer
                         changed |= !std::isfinite(b.sphere[axis]) || std::abs(a.sphere[axis] - b.sphere[axis]) > 1.0f;
                     for (std::size_t channel = 0; channel < 3; ++channel)
                         changed |= !std::isfinite(b.energy[channel]) || std::abs(a.energy[channel] - b.energy[channel]) > 0.02f * std::max({std::abs(a.energy[channel]), std::abs(b.energy[channel]), 0.01f});
+                    changed |= a.shadowRevision != b.shadowRevision;
                     if (changed) { append(a); append(b); }
                     else current[now] = a;
                     ++old; ++now;

@@ -527,7 +527,7 @@
                       "EnableBentNormalLighting":  true,
                       "EnableBlur":  true,
                       "EnableContactDepth":  true,
-                      "EnableDirectionalOcclusion":  true,
+                      "EnableDirectionalOcclusion":  false,
                       "EnableExperimentalSpecularGI":  true,
                       "EnableGI":  true,
                       "EnableSpecularOcclusion":  true,
@@ -563,8 +563,8 @@
                       "UpsampleEdgeThreshold":  0.10000000149011612,
                       "VoxelReflectionRoughnessCutoff":  0.800000011920929,
                       "VoxelReflectionStrength":  0.3700000047683716,
-                      "WorldCacheCellSizeFar":  512.0,
-                      "WorldCacheCellSizeNear":  96.0,
+                      "WorldCacheCellSizeFar":  256.0,
+                      "WorldCacheCellSizeNear":  64.0,
                       "WorldCacheInjectionStride":  3,
                       "WorldCacheLeakReduction":  0.82,
                       "WorldCacheMaxAge": 48,
@@ -572,7 +572,7 @@
                       "WorldCacheSampleCount":  6,
                       "WorldCacheSecondBounceStrength":  0.2,
                       "WorldCacheStrength":  0.6,
-                      "WorldCacheTemporalResponse":  0.07,
+                      "WorldCacheTemporalResponse":  0.20,
                       "WorldCacheTraceSteps":  3
                   },
     "Interior Daylight":  {

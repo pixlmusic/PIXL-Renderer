@@ -332,17 +332,6 @@ namespace
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
-	struct HDR_MenuManagerDrawInterfaceStartHook
-	{
-		static void thunk(int64_t a1)
-		{
-			globals::pipeline::cameraSuite.SetUIBuffer();
-			func(a1);
-		}
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-
 	void CopyCameraSceneToBackBuffer(IDXGISwapChain* swapChain, ID3D11DeviceContext* context,
 		ID3D11Resource* source)
 	{
@@ -395,11 +384,8 @@ void CameraSuite::PostPostLoad()
 	cinematicDoFLoaded = GetModuleHandleW(L"CinematicDoFStandalone.dll") != nullptr;
 	if (cinematicDoFLoaded)
 		logger::info("[Camera Suite] Cinematic DoF Standalone detected; optional native-DoF hand-off enabled. External focus remains provider-owned (0.8.31 has no control API).");
-	// When ImageReconstruction is loaded it installs equivalent hooks for these same addresses in its own
-	// PostPostLoad. Only install here when ImageReconstruction is absent.
 	if (!globals::pipeline::imageReconstruction.loaded) {
 		logger::info("[Camera Suite] Installing HDR pipeline hooks (ImageReconstruction not loaded)");
-		stl::detour_thunk<HDR_MenuManagerDrawInterfaceStartHook>(REL::RelocationID(79947, 82084));
 		stl::write_thunk_call<HDR_Main_PostProcessing>(REL::RelocationID(100430, 107148).address() + REL::Relocate(0x1F0, 0x1E7));
 	}
 }
@@ -582,7 +568,7 @@ void CameraSuite::SetupResources()
 	dofControlCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<DofControlCB>(), "PIXL Camera::DofControl");
 	exposureControlCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<ExposureControlCB>(), "PIXL Camera::ExposureControl");
 	exposureHistoryValid = false;
-	exposureHoldLogged = false;
+	exposureLockLogged = false;
 	lastExposureCompensationEV = 0.0f;
 
 	UpdateHDRData();
@@ -1568,7 +1554,7 @@ void CameraSuite::DestroyResources()
 	dofControlCB.reset();
 	exposureControlCB.reset();
 	exposureHistoryValid = false;
-	exposureHoldLogged = false;
+	exposureLockLogged = false;
 
 	RestoreLDRRenderTargets();
 }
@@ -1806,24 +1792,32 @@ void CameraSuite::UpdatePhysicalCameraExposure(ID3D11ShaderResourceView* sceneSR
 	// Menu imagery must not become the gameplay meter's history.
 	if (globals::state->IsDisplayReferredModelMenuOpen(globals::game::ui) || globals::state->isMapMenuOpen)
 		return;
-	// Director must never take a fresh histogram sample, including the first
-	// frame after a resize/reload. The 1x1 exposure texture starts at unity;
-	// the first held dispatch applies the user's compensation to that value.
-	const bool freezeMetering = TuningWorkspaceRenderer::IsDirectorPhotoModeActive();
-	const bool holdingAutoExposure = freezeMetering && settings.cameraAutoExposure;
-	if (holdingAutoExposure != exposureHoldLogged) {
-		exposureHoldLogged = holdingAutoExposure;
-		logger::info("[CameraSuite] Photo/inspection auto exposure {} (compensation {:.2f} EV, local exposure {:.3f}, HDR {}).",
-			holdingAutoExposure ? "HELD: histogram and adaptation dispatch skipped unless compensation changes" : "released: gameplay metering resumed",
-			settings.cameraExposureCompensationEV, settings.cameraLocalExposure, settings.enableHDR);
-	}
+	// Director must never take a fresh histogram sample or adapt exposure from
+	// its first transition frame through Photo/Video capture processing. Keep the
+	// live exposure texture exactly as-is on lock entry; subsequent mini-panel EV
+	// edits are applied as relative stops by the exposure shader.
+	const bool freezeMetering = TuningWorkspaceRenderer::IsDirectorExposureLocked();
 	const float compensationEV = std::isfinite(settings.cameraExposureCompensationEV) ?
 		std::clamp(settings.cameraExposureCompensationEV, -4.0f, 4.0f) : 0.0f;
+	if (freezeMetering != exposureLockLogged) {
+		exposureLockLogged = freezeMetering;
+		if (freezeMetering) {
+			// Director profiles can select a different compensation value from the
+			// gameplay camera. Rebase the control here without changing current EV;
+			// later user edits are measured from this baseline and applied relatively.
+			lastExposureCompensationEV = compensationEV;
+			exposureHistoryValid = true;
+			logger::info("[CameraSuite] Director Photo/Video exposure locked at the current exposure (compensation {:.2f} EV).",
+				compensationEV);
+			return;
+		}
+		logger::info("[CameraSuite] Director exposure lock released; gameplay exposure adaptation resumed.");
+	}
 	if (!std::isfinite(lastExposureCompensationEV)) {
 		lastExposureCompensationEV = compensationEV;
 		exposureHistoryValid = false;
 	}
-	if (freezeMetering && settings.cameraAutoExposure && compensationEV == lastExposureCompensationEV)
+	if (freezeMetering && compensationEV == lastExposureCompensationEV)
 		return;
 	exposureControlCB->Update(ExposureControlCB{
 		freezeMetering ? 1.0f : 0.0f,

@@ -11,9 +11,14 @@ if ($sourceText -notmatch 'smoothstep\(0\.006f,\s*0\.045f,\s*absoluteRadianceCha
 	$sourceText -notmatch 'historyReactivity\s*=\s*smoothstep\(0\.10f,\s*0\.45f,\s*relativeRadianceChange\)\s*\*') {
 	throw 'HybridGI temporal reactivity must suppress sub-threshold radiance noise while retaining relative-change response.'
 }
-if ($sourceText -notmatch 'WorldCacheStrength\s*\*\s*0\.60f\s*\*\s*cacheConfidence' -or
-	$sourceText -match 'screenMiss\s*=\s*1\.0f\s*-\s*saturate\(giCoverage') {
-	throw 'HybridGI world-cache contribution must use stable confidence weighting, independent of the stochastic horizon mask.'
+if ($sourceText -notmatch 'cacheConfidence\s*=\s*saturate\(cacheHitRatio\s*\*\s*2\.2f\)' -or
+	$sourceText -notmatch 'cacheBlend\s*=\s*WorldCacheStrength\s*\*\s*0\.60f\s*\*\s*cacheConfidence' -or
+	$sourceText -match 'cacheBlend\s*=.*(giCoverage|screenCoverage|screenMiss|cacheRole)') {
+	throw 'HybridGI world-cache contribution must use cache confidence and remain independent of the stochastic AO horizon mask.'
+}
+if ($sourceText -notmatch 'o_cacheContributionY\s*=\s*max\(cacheY\.x\s*\*\s*cacheBlend' -or
+	$sourceText -notmatch 'reactiveResponse\s*=\s*lerp\(0\.55f,\s*0\.16f,\s*cacheSignalShare\)') {
+	throw 'World-cache-dominant GI history must use the damped temporal response.'
 }
 $injection = Get-Content -LiteralPath (Join-Path $repo 'pipeline\Hybrid GI\Kernels\HybridGI\worldCacheInject.cs.hlsl') -Raw
 if ($injection -match 'if\s*\(staleLighting\)\s*historyValid\s*=\s*false' -or
@@ -21,8 +26,27 @@ if ($injection -match 'if\s*\(staleLighting\)\s*historyValid\s*=\s*false' -or
 	$injection -notmatch 'if\s*\(CacheScheduleEnabled\s*!=\s*0u\)\s*response\s*=\s*min\(response,\s*0\.18f\)') {
 	throw 'HybridGI cache refresh must blend invalidated light history and bound sparse scheduled radiance steps.'
 }
+$cacheHelpers = Get-Content -LiteralPath (Join-Path $repo 'pipeline\Hybrid GI\Kernels\HybridGI\worldCache.hlsli') -Raw
+if ($injection -notmatch 'WorldCacheVarianceDampedResponse\(response,\s*oldRelativeVariance\)' -or
+	$cacheHelpers -notmatch 'return\s+saturate\(response\)\s*\*\s*rcp\(1\.0f\s*\+\s*max\(relativeVariance,\s*0\.0f\)\)') {
+	throw 'Intelligent cache refresh must damp uncertain-cell update steps according to measured variance.'
+}
+if ($injection -notmatch 'WorldCacheDecayLightChange\(oldLightChangeEvidence\)' -or
+	$cacheHelpers -notmatch 'return\s+evidence\s*>\s*64u\s*\?\s*evidence\s*-\s*64u\s*:\s*0u') {
+	throw 'Emitter-change reliability must fade over successive cache publications instead of clearing in one step.'
+}
 $output = Join-Path $repo 'build\gi-optimization\permutations'
 New-Item -ItemType Directory -Path $output -Force | Out-Null
+# The fixed overlap must rise monotonically with valid world-cache confidence,
+# remain zero without confidence, and never exceed its 60% base contribution.
+$previousBlend = 0.0
+foreach ($confidence in @(0.0, 0.10, 0.25, 0.50, 0.75, 1.0)) {
+	$blend = 0.60 * [Math]::Min(1.0, $confidence * 2.2)
+	if ($blend -lt $previousBlend - 1e-10) { throw 'World-cache confidence blend is not monotonic' }
+	if ($blend -gt 0.60 + 1e-10) { throw 'World-cache contribution exceeds its bounded overlap' }
+	$previousBlend = $blend
+}
+if ($previousBlend -lt 0.60 - 1e-10) { throw 'World-cache confidence does not reach the configured overlap bound' }
 $count = 0
 foreach ($resolution in 0..2) {
     foreach ($temporal in 0..1) {

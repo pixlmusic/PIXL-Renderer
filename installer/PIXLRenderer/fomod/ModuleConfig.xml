@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>PIXL Renderer 1.0.9</moduleName>
+  <moduleName>PIXL Renderer 1.1.0</moduleName>
   <moduleImage path="fomod\images\pixl-hero.jpg" showImage="true" showFade="true" height="240" />
   <requiredInstallFiles>
     <folder source="PIXL-Core" destination="" priority="0" />
@@ -26,10 +26,10 @@ Install with Vortex, MO2, or by extracting into the game Data folder. Launch thr
     </installStep>
     <installStep name="New updates">
       <optionalFileGroups order="Explicit">
-        <group name="New in 1.0.9" type="SelectExactlyOne">
+        <group name="New in 1.1.0" type="SelectExactlyOne">
           <plugins order="Explicit">
             <plugin name="See what's new">
-              <description>PIXL Renderer 1.0.9 highlights
+              <description>PIXL Renderer 1.1.0 highlights
 
 - Improved sunlight transmission and cloud-shaped shadowing across volumetric and layered cloud systems.
 - Stabilized view-dependent atmospheric scattering and reduced cloud/fog history ghosting during camera motion.
@@ -47,13 +47,30 @@ Shader compilation happens on first launch. Allow it to finish before evaluating
     </installStep>
     <installStep name="Install">
       <optionalFileGroups order="Explicit">
+        <group name="PGLite source adapter" type="SelectAtMostOne">
+          <plugins order="Explicit">
+            <plugin name="Include PGLite source adapter and setup guide">
+              <description>Includes the PIXL-aware PGLite source patch and setup notes. This is for building a separate PGLite runtime; no PGLite DLL is included or enabled. The original PGLite runtime does not detect PIXL alone.</description>
+              <files>
+                <folder source="PGLite-Adapter" destination="SKSE\Plugins\PIXL\Documentation\PGLite" priority="0" />
+              </files>
+              <typeDescriptor><type name="Optional" /></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+        <group name="PIXL-aware PGLite addon (requires PGLite)" type="SelectAtMostOne">
+          <plugins order="Explicit">
+            <!-- PGLITE_RUNTIME_OPTION -->
+          </plugins>
+        </group>
         <group name="Ready to install" type="SelectExactlyOne">
           <plugins order="Explicit">
-            <plugin name="Install PIXL Renderer 1.0.9">
+            <plugin name="Install PIXL Renderer 1.1.0">
               <description>PIXL Renderer will install with the regular default look and a validated prebuilt shader cache.
 
 After installation, start Skyrim through SKSE. Complete Quick Setup if prompted and let any missing or changed shader permutations compile.</description>
               <image path="fomod\images\pixl-hero.jpg" />
+              <conditionFlags><flag name="PIXLInstall">On</flag></conditionFlags>
               <typeDescriptor><type name="Required" /></typeDescriptor>
             </plugin>
           </plugins>

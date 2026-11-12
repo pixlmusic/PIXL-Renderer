@@ -143,7 +143,7 @@ void Atmosphere::LoadSettings(json& o_json)
 	// Froxel scattering depends on view direction as well as world position.
 	// A near-unity history weight leaves old sky-facing scattering visible during
 	// camera rotation, so cap persistence while retaining lower user values.
-	settings.volumetricHistoryWeight = std::clamp(finiteOr(settings.volumetricHistoryWeight, 0.65f), 0.0f, 0.88f);
+	settings.volumetricHistoryWeight = std::clamp(finiteOr(settings.volumetricHistoryWeight, 0.82f), 0.0f, 0.88f);
 	settings.volumetricHistoryMissSampleCount = std::clamp(settings.volumetricHistoryMissSampleCount, 1u, 16u);
 	settings.volumetricSampleJitterMultiplier = std::clamp(finiteOr(settings.volumetricSampleJitterMultiplier, 0.0f), 0.0f, 1.0f);
 	settings.volumetricUpsampleJitterMultiplier = std::clamp(finiteOr(settings.volumetricUpsampleJitterMultiplier, 0.0f), 0.0f, 1.0f);
@@ -779,6 +779,8 @@ void Atmosphere::Prepass()
 		radiantGrid.lights &&
 		radiantGrid.lightIndexList &&
 		radiantGrid.lightGrid;
+	const bool hasLocalShadowData = hasLocalLightData && radiantGrid.IsLocalShadowCacheActive() &&
+		radiantGrid.localShadowBuffer && radiantGrid.localShadowCache;
 	auto* depthSrv = Util::GetCurrentSceneDepthSRV(true);
 	auto& ambientProbe = globals::pipeline::ambientProbe;
 	auto& skyBounce = globals::pipeline::skyBounce;
@@ -795,7 +797,8 @@ void Atmosphere::Prepass()
 		(depthSrv ? 2u : 0u) |
 		(hasIBL ? 4u : 0u) |
 		(hasSkyBounce ? 8u : 0u) |
-		(hasLocalLightData ? 32u : 0u);
+		(hasLocalLightData ? 32u : 0u) |
+		(hasLocalShadowData ? 64u : 0u);
 	const bool lightingInputsChanged =
 		hasLightingInputHistory && lightingInputFlags != lastLightingInputFlags;
 
@@ -947,9 +950,14 @@ void Atmosphere::Prepass()
 			hasLocalLightData ? radiantGrid.lightIndexList->srv.get() : nullptr,
 			hasLocalLightData ? radiantGrid.lightGrid->srv.get() : nullptr
 		};
+		ID3D11ShaderResourceView* localShadowSrvs[2]{
+			hasLocalShadowData ? radiantGrid.localShadowBuffer->srv.get() : nullptr,
+			hasLocalShadowData ? radiantGrid.localShadowCache->srv.get() : nullptr
+		};
 		ID3D11UnorderedAccessView* uavs[1]{ lightScattering->uav.get() };
 		context->CSSetShaderResources(0, 5, srvs);
 		context->CSSetShaderResources(35, 3, localLightSrvs);
+		context->CSSetShaderResources(112, 2, localShadowSrvs);
 		context->CSSetShaderResources(98, 1, &directionalShadowLightData);
 		context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
 		context->CSSetShader(lightScatteringShader, nullptr, 0);
@@ -976,6 +984,7 @@ void Atmosphere::Prepass()
 	context->CSSetShaderResources(0, 5, nullSrvs);
 	context->CSSetShaderResources(17, 1, nullDepthSrv);
 	context->CSSetShaderResources(35, 3, nullSrvs);
+	context->CSSetShaderResources(112, 2, nullSrvs);
 	context->CSSetShaderResources(50, 1, nullDepthSrv);
 	context->CSSetShaderResources(76, 2, nullSrvs);
 	context->CSSetShaderResources(98, 1, nullSrvs);

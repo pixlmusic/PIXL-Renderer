@@ -104,7 +104,7 @@ namespace PipelineHealth
 								 .displayName = "Foliage Optimizer",
 								 .rejectionReason = "Retired from the 1.0.9 release line; grass rendering remains vanilla",
 								 .replacementFeature = "",
-								 .userMessage = "Foliage Optimizer is retired in PIXL Renderer 1.0.9. Its private module files can be safely removed.",
+								 .userMessage = "Foliage Optimizer is retired in PIXL Renderer 1.1.0. Its private module files can be safely removed.",
 								 .removedInVersion = { 1, 0, 9 },
 								 .modifiedShaderDirectory = false,
 								 .issueType = FeatureIssueInfo::IssueType::OBSOLETE } },

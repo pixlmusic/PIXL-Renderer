@@ -14,7 +14,30 @@ endfunction()
 if(BUILD_TESTING)
     pixl_add_portable_test(PIXLTestEmitterChanges "${CMAKE_SOURCE_DIR}/tools/TestEmitterChanges.cpp")
     pixl_add_portable_test(PIXLTestHybridGICacheBudget "${CMAKE_SOURCE_DIR}/tools/TestHybridGICacheBudget.cpp")
+    pixl_add_portable_test(PIXLTestHybridGISceneVoxelizer
+        "${CMAKE_SOURCE_DIR}/tools/TestHybridGISceneVoxelizer.cpp"
+        "${CMAKE_SOURCE_DIR}/engine/Modules/HybridGI/SceneVoxelizer.cpp")
     pixl_add_portable_test(PIXLTestHybridGIGeometryPrototype "${CMAKE_SOURCE_DIR}/tools/TestHybridGIGeometryPrototype.cpp")
+    if(WIN32)
+        pixl_add_portable_test(PIXLTestSSGITraceGPU "${CMAKE_SOURCE_DIR}/tools/TestSSGITraceGPU.cpp")
+        pixl_add_portable_test(PIXLTestHybridGIBlurGPU "${CMAKE_SOURCE_DIR}/tools/TestHybridGIBlurGPU.cpp")
+        target_link_libraries(PIXLTestHybridGIBlurGPU PRIVATE d3d11 d3dcompiler)
+        set_tests_properties(PIXLTestHybridGIBlurGPU PROPERTIES LABELS "shader;warp;hybridgi" WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        target_link_libraries(PIXLTestSSGITraceGPU PRIVATE d3d11 d3dcompiler)
+        set_tests_properties(PIXLTestSSGITraceGPU PROPERTIES LABELS "shader;warp;hybridgi" WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        pixl_add_portable_test(PIXLTestRadiantGridClusterGPU "${CMAKE_SOURCE_DIR}/tools/TestRadiantGridClusterGPU.cpp")
+        target_link_libraries(PIXLTestRadiantGridClusterGPU PRIVATE d3d11 d3dcompiler)
+        target_compile_definitions(PIXLTestRadiantGridClusterGPU PRIVATE PIXL_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+        set_tests_properties(PIXLTestRadiantGridClusterGPU PROPERTIES LABELS "portable;cpp;d3d11;shader;warp;lighting" WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        add_test(NAME PIXLTestRadiantGridPositiveZGPU COMMAND PIXLTestRadiantGridClusterGPU --positive-z)
+        set_tests_properties(PIXLTestRadiantGridPositiveZGPU PROPERTIES LABELS "d3d11;shader;warp;lighting" WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        pixl_add_portable_test(PIXLTestHybridGISceneVoxelizeGPU "${CMAKE_SOURCE_DIR}/tools/TestHybridGISceneVoxelizeGPU.cpp")
+        target_link_libraries(PIXLTestHybridGISceneVoxelizeGPU PRIVATE d3d11 d3dcompiler)
+        set_tests_properties(PIXLTestHybridGISceneVoxelizeGPU PROPERTIES LABELS "portable;shader;d3d11;warp;hybridgi" WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        pixl_add_portable_test(PIXLTestHybridReflectionTraceGPU "${CMAKE_SOURCE_DIR}/tools/TestHybridReflectionTraceGPU.cpp")
+        target_link_libraries(PIXLTestHybridReflectionTraceGPU PRIVATE d3d11 d3dcompiler)
+        set_tests_properties(PIXLTestHybridReflectionTraceGPU PROPERTIES LABELS "portable;shader;d3d11;warp;hybridgi;ssr" WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    endif()
     pixl_add_portable_test(PIXLTestRenderPresetLibrary
         "${CMAKE_SOURCE_DIR}/tools/TestRenderPresetLibrary.cpp"
         "${CMAKE_SOURCE_DIR}/engine/Presets/RenderPresetLibrary.cpp")
@@ -63,6 +86,8 @@ if(BUILD_TESTING)
 		"${CMAKE_SOURCE_DIR}/tools/TestReactiveFXSpawnSafety.cpp")
     pixl_add_portable_test(PIXLTestRenderOrigin
         "${CMAKE_SOURCE_DIR}/tools/TestRenderOrigin.cpp")
+	pixl_add_portable_test(PIXLTestShaderCacheMetadataCompatibility
+		"${CMAKE_SOURCE_DIR}/tools/TestShaderCacheMetadataCompatibility.cpp")
     pixl_add_portable_test(PIXLTestContainedLiquidMath
         "${CMAKE_SOURCE_DIR}/tools/TestContainedLiquidMath.cpp")
     pixl_add_portable_test(PIXLTestHybridGIMath
@@ -108,6 +133,7 @@ if(BUILD_TESTING)
                 -File "${CMAKE_SOURCE_DIR}/tools/TestVisibilityShaders.ps1")
         set_tests_properties(PIXLShaderVisibility PROPERTIES LABELS "portable;shader;fxc")
 
+
         if(TARGET PIXLRenderer)
             add_test(
                 NAME PIXLRepositoryAudit
@@ -126,6 +152,10 @@ if(BUILD_TESTING)
             PIXLTestEmitterChanges
             PIXLTestHybridGICacheBudget
             PIXLTestHybridGIGeometryPrototype
+            PIXLTestSDFGeometry
+            PIXLTestSDFNifGeometryReader
+            PIXLTestSDFSceneSpatialIndex
+            PIXLTestSDFSceneContextPolicy
             PIXLTestRenderPresetLibrary
             PIXLTestTemporalMath
             PIXLTestCameraReprojection

@@ -198,6 +198,14 @@ bool RenderModule::ValidateCache(CSimpleIniA& a_ini)
 	auto ini_name = GetShortName();
 
 	logger::info("Validating {}", name);
+	// Standalone PIXL compute modules do not contribute defines to Skyrim's
+	// persistent permutation library. Their install state or module version must
+	// never force that cache to be invalidated; their own shader loaders validate
+	// and compile their runtime shaders independently.
+	if (HasNoPipelinePermutationDependencies()) {
+		logger::info("{} has no persistent pipeline permutations; leaving disk cache untouched", name);
+		return true;
+	}
 
 	auto enabledInCache = a_ini.GetBoolValue(ini_name.c_str(), "Enabled", false);
 	if (enabledInCache && !loaded) {

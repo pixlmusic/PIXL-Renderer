@@ -1077,7 +1077,7 @@ float GetSnowParameterY(float texProjTmp, float alpha)
 #		include "MaterialLayers/MaterialLayers.hlsli"
 #	endif
 
-#	if defined(CONTACT_SHADOWS)
+#	if defined(CONTACT_SHADOWS) || ((defined(MATERIAL_FORGE) || defined(RADIANT_GRID)) && defined(DEFERRED))
 #		include "ContactShadows/ContactShadows.hlsli"
 #	endif
 
@@ -2554,7 +2554,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	// using it to turn the whole material model on/off created adjacent legacy and
 	// physical pixels, which appeared as black/bright square speckles on wood.
 	const float complexMaterialSmoothness = saturate(complexMaterialColor.y);
+#		if !defined(MATERIAL_FORGE)
 	shininess = lerp(shininess, shininess * complexMaterialSmoothness, complexMaterial);
+#		endif
 	if (complexMaterial) {
 		complexSpecular = lerp(1.0, baseColor.xyz, complexMaterialColor.z);
 		baseColor.xyz = lerp(baseColor.xyz, 0.0, complexMaterialColor.z);
@@ -3852,6 +3854,11 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 #			endif
 
 			if (dynamicCubemap) {
+#			if defined(EMAT)
+				// Complex-material F0 was already resolved by PhysicalMaterial above.
+				// The 1px cubemap is a legacy control texture, not conductor evidence.
+				float3 physicalComplexF0 = material.F0;
+#			endif
 				float4 envColorBase = TexEnvSampler.SampleLevel(SampEnvSampler, float3(1.0, 0.0, 0.0), 15);
 
 				if (envColorBase.a < 1.0) {
@@ -3872,7 +3879,7 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 #			if defined(EMAT)
 				float complexMaterialRoughness = 1.0 - complexMaterialColor.y;
 				material.Roughness = lerp(material.Roughness, complexMaterialRoughness, complexMaterial);
-				material.F0 = lerp(material.F0, complexSpecular, complexMaterial);
+				material.F0 = lerp(material.F0, physicalComplexF0, complexMaterial);
 #			endif
 			}
 		}
@@ -4352,6 +4359,11 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 
 	float llDirLightMult = SharedData::linearLightCoreSettings.enableLinearLightCore && !SharedData::linearLightCoreSettings.isDirLightLinear && (inWorld || inReflection) && !SharedData::InInterior ? SharedData::linearLightCoreSettings.dirLightMult : 1.0f;
 	float3 dirLightColor = Color::DirectionalLight(DirLightColor.xyz / max(llDirLightMult, 1e-5), SharedData::linearLightCoreSettings.isDirLightLinear) * llDirLightMult;
+	// Skyrim can leave a directional colour in enclosed interiors even though
+	// no sky-lit directional caster exists. Keep ambient and local lighting, but
+	// do not turn that residual colour into unshadowed direct wall illumination.
+	if (SharedData::InInterior && !SharedData::HasDirectionalShadows)
+		dirLightColor = 0.0f.xxx;
 
 #	if defined(ATMOSPHERE_PIPELINE)
 	if (SharedData::atmosphereSettings.enabled) {
@@ -4397,6 +4409,9 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 #	endif
 
 	float dirDetailedShadow = 1.0;
+	float sdfDebugVisibility = 1.0;
+	float sdfDebugCoverage = 1.0;
+	bool sdfDebugWasTraced = false;
 	// The raised GroundResponse receiver did not exist when Skyrim produced the
 	// screen-space shadow mask. Re-evaluate the directional shadow against the
 	// actual displaced world-space receiver instead of sampling shadowColor.x.
@@ -4510,11 +4525,43 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 		dirSoftShadow = skylightingShadowVisibility;
 #	endif
 
+#	if defined(SDF_SHADOWS) && defined(DEFERRED)
+	// Add loaded-scene geometric visibility even where native cascades have no
+	// coverage (for example, off-screen structural casters). The minimum
+	// composition retains native occlusion and missing SDF fields remain neutral.
+	[branch] if (!pixlGroundRaisedShell && inWorld && !inReflection && dirLightAngle > 0.0f &&
+		SDFShadows::Params[0].instanceCount != 0u &&
+		SDFShadows::Params[0].enableDirectionalShadows != 0u)
+	{
+		float sdfDirectionalCoverage;
+		const float sdfDirectionalVisibility = SDFShadows::DirectionalLightVisibility(
+			SDFShadows::CameraRelativeToAbsolute(
+				input.WorldPosition.xyz, FrameBuffer::CameraPosAdjust.xyz),
+			worldNormal.xyz, pixlWorldDirLightDirection.xyz, sdfDirectionalCoverage);
+		sdfDebugVisibility = min(sdfDebugVisibility, sdfDirectionalVisibility);
+		// Direct shadows need only a valid ray through the resident BVH. The
+		// scene-wide proof bit is reserved for consumers that interpret a clear
+		// ray as globally unoccluded (HybridGI); it must not suppress a confirmed
+		// local caster because an unrelated asset is still missing.
+		sdfDebugCoverage = min(sdfDebugCoverage, sdfDirectionalCoverage);
+		sdfDebugWasTraced = true;
+		// An exhausted/invalid SDF trace has unknown coverage. Preserve the
+		// native cascade/contact result instead of applying a partial estimate.
+		if (sdfDirectionalCoverage >= 0.999f) {
+			dirDetailedShadow = min(dirDetailedShadow, sdfDirectionalVisibility);
+			dirSoftShadow = min(dirSoftShadow, sdfDirectionalVisibility);
+		}
+	}
+#	endif
+
 	float3 diffuseColor = 0.0.xxx;
 	float3 specularColor = 0.0.xxx;
 	float3 transmissionColor = 0.0.xxx;
 
 	float3 lightsDiffuseColor = 0.0.xxx;
+	float3 pixlLocalLightPotential = 0.0.xxx;
+	float3 pixlLocalLightAfterMap = 0.0.xxx;
+	float3 pixlLocalLightVisible = 0.0.xxx;
 	float3 coatLightsDiffuseColor = 0.0.xxx;
 	float3 lightsSpecularColor = 0.0.xxx;
 #	if !defined(MATERIAL_FORGE)
@@ -4550,12 +4597,8 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 	PhysicalLighting::EvaluateDirect(
 		dirLightContext, material, tbnTr, uvOriginal, uvOriginal_ddx, uvOriginal_ddy, inWorld || inReflection, pixlComplexMaterialForPhysicalLighting, dirLightOutput,
 		dirLegacyPhysicalDelta, dirLegacyPhysicalApplied);
-	// Enclosed interiors can retain a non-zero vanilla directional-light colour
-	// even though no sun is visible.  Diffuse remains under Skyrim's authored
-	// interior lighting contract, but a GGX lobe from that hidden direction reads
-	// as sunlight leaking through walls.  Interior Daylight is the controlled
-	// exception: State::HasDirectionalShadows is true only for a compatible
-	// sky-lit interior, where the real portal/shadow path supplies spatial falloff.
+	// Keep the interior guard on the specular output as well as the incident
+	// directional colour, including any future material-specific contribution.
 	const float pixlDirectionalSpecularVisibility =
 		(!SharedData::InInterior || SharedData::HasDirectionalShadows) ? 1.0f : 0.0f;
 	dirLightOutput.specular *= pixlDirectionalSpecularVisibility;
@@ -4660,15 +4703,27 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 
 #	if !defined(LOD)
 #		if !defined(RADIANT_GRID)
+#			if (defined(CONTACT_SHADOWS) || defined(MATERIAL_FORGE) || defined(SDF_SHADOWS)) && defined(DEFERRED)
 	uint4 localContactLightIndices = 0xFFFFFFFFu;
-#			if defined(CONTACT_SHADOWS) && defined(DEFERRED)
+	uint4 localSDFLightIndices = 0xFFFFFFFFu;
 	const uint localContactLightCount = clamp(SharedData::materialForgeSettings.LocalContactShadowLightCount, 1u, 4u);
 	const bool localContactShadowsActive =
+		inWorld && !inReflection &&
 		SharedData::materialForgeSettings.EnableLocalContactShadows != 0 &&
 		SharedData::materialForgeSettings.LocalContactShadowStrength > 0.0f &&
 		SharedData::materialForgeSettings.LocalContactShadowLength > 4.0f;
-	if (localContactShadowsActive) {
+#			if defined(SDF_SHADOWS)
+	const bool sdfShadowsActive = SDFShadows::Params[0].instanceCount != 0u;
+	const uint sdfLightCount = clamp(SDFShadows::Params[0].maxShadowedLights, 1u, 4u);
+#			else
+	const bool sdfShadowsActive = false;
+	const uint sdfLightCount = 0u;
+#			endif
+	const uint candidateLightCount = max(localContactShadowsActive ? localContactLightCount : 0u,
+		sdfShadowsActive ? sdfLightCount : 0u);
+	if (candidateLightCount != 0u) {
 		float4 bestContactScores = -1.0f;
+		float4 bestSDFScores = -1.0f;
 		[unroll] for (uint candidateIndex = 0; candidateIndex < 7; ++candidateIndex) {
 			if (candidateIndex >= numLights)
 				break;
@@ -4676,7 +4731,7 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 			float candidateDistance = length(candidateDirection);
 			float candidateAttenuation = GetLocalLightAttenuation(candidateDistance, PointLightPosition[candidateIndex].w, 0.0f, 0.0f);
 			float candidateScore = Color::RGBToLuminance(Color::PointLight(PointLightColor[candidateIndex].xyz)) * candidateAttenuation;
-			if (candidateScore > bestContactScores.x) {
+			if (localContactShadowsActive && candidateScore > bestContactScores.x) {
 				bestContactScores.w = bestContactScores.z;
 				localContactLightIndices.w = localContactLightIndices.z;
 				bestContactScores.z = bestContactScores.y;
@@ -4685,21 +4740,38 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 				localContactLightIndices.y = localContactLightIndices.x;
 				bestContactScores.x = candidateScore;
 				localContactLightIndices.x = candidateIndex;
-			} else if (candidateScore > bestContactScores.y) {
+			} else if (localContactShadowsActive && candidateScore > bestContactScores.y) {
 				bestContactScores.w = bestContactScores.z;
 				localContactLightIndices.w = localContactLightIndices.z;
 				bestContactScores.z = bestContactScores.y;
 				localContactLightIndices.z = localContactLightIndices.y;
 				bestContactScores.y = candidateScore;
 				localContactLightIndices.y = candidateIndex;
-			} else if (candidateScore > bestContactScores.z) {
+			} else if (localContactShadowsActive && candidateScore > bestContactScores.z) {
 				bestContactScores.w = bestContactScores.z;
 				localContactLightIndices.w = localContactLightIndices.z;
 				bestContactScores.z = candidateScore;
 				localContactLightIndices.z = candidateIndex;
-			} else if (candidateScore > bestContactScores.w) {
+			} else if (localContactShadowsActive && candidateScore > bestContactScores.w) {
 				bestContactScores.w = candidateScore;
 				localContactLightIndices.w = candidateIndex;
+			}
+			if (sdfShadowsActive) {
+				if (candidateScore > bestSDFScores.x) {
+					bestSDFScores.w = bestSDFScores.z; localSDFLightIndices.w = localSDFLightIndices.z;
+					bestSDFScores.z = bestSDFScores.y; localSDFLightIndices.z = localSDFLightIndices.y;
+					bestSDFScores.y = bestSDFScores.x; localSDFLightIndices.y = localSDFLightIndices.x;
+					bestSDFScores.x = candidateScore; localSDFLightIndices.x = candidateIndex;
+				} else if (candidateScore > bestSDFScores.y) {
+					bestSDFScores.w = bestSDFScores.z; localSDFLightIndices.w = localSDFLightIndices.z;
+					bestSDFScores.z = bestSDFScores.y; localSDFLightIndices.z = localSDFLightIndices.y;
+					bestSDFScores.y = candidateScore; localSDFLightIndices.y = candidateIndex;
+				} else if (candidateScore > bestSDFScores.z) {
+					bestSDFScores.w = bestSDFScores.z; localSDFLightIndices.w = localSDFLightIndices.z;
+					bestSDFScores.z = candidateScore; localSDFLightIndices.z = candidateIndex;
+				} else if (candidateScore > bestSDFScores.w) {
+					bestSDFScores.w = candidateScore; localSDFLightIndices.w = candidateIndex;
+				}
 			}
 		}
 	}
@@ -4736,16 +4808,24 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 				lightShadow *= shadowColor[ShadowLightMaskSelect[lightIndex]];
 			}
 		}
+		const float nativeLightShadow = lightShadow;
 
 		float3 normalizedLightDirection = lightDirection * rcp(lightDist);
-#			if defined(CONTACT_SHADOWS) && defined(DEFERRED)
+#			if (defined(CONTACT_SHADOWS) || defined(MATERIAL_FORGE) || defined(SDF_SHADOWS)) && defined(DEFERRED)
 		bool useLocalContactShadow = localContactShadowsActive && (
 			lightIndex == localContactLightIndices.x ||
 			(localContactLightCount > 1u && lightIndex == localContactLightIndices.y) ||
 			(localContactLightCount > 2u && lightIndex == localContactLightIndices.z) ||
 			(localContactLightCount > 3u && lightIndex == localContactLightIndices.w));
+		bool useSDFShadow = sdfShadowsActive && (
+				lightIndex == localSDFLightIndices.x ||
+				(sdfLightCount > 1u && lightIndex == localSDFLightIndices.y) ||
+				(sdfLightCount > 2u && lightIndex == localSDFLightIndices.z) ||
+				(sdfLightCount > 3u && lightIndex == localSDFLightIndices.w));
+#			if defined(CONTACT_SHADOWS) || defined(MATERIAL_FORGE)
 		[branch] if (!pixlGroundRaisedShell &&
 			useLocalContactShadow &&
+			(lightIndex >= numShadowLights || nativeLightShadow >= 0.995f) &&
 			dot(worldNormal.xyz, normalizedLightDirection) > 0.0f)
 		{
 			// Held spells and torches sit close to the camera.  Give these emitters a
@@ -4753,10 +4833,35 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 			// retained the historical 16-unit contact length.
 			float heldEmitterShadowLength =
 				length(PointLightPosition[lightIndex].xyz) < 280.0f ? 112.0f : 0.0f;
-			lightShadow *= ContactShadows::GetLocalContactShadow(
+			float contactVisibility = ContactShadows::GetLocalContactShadow(
 				input.WorldPosition.xyz, worldNormal.xyz, normalizedLightDirection,
 				lightDist, heldEmitterShadowLength);
+			// This ray is only allowed to refine receivers where the native map is
+			// fully lit. Keep the accepted near-field evidence at full strength; the
+			// previous 35% blend made local contact effectively invisible indoors.
+			lightShadow = min(lightShadow, contactVisibility);
 		}
+#			endif
+#			if defined(SDF_SHADOWS)
+		[branch] if (!pixlGroundRaisedShell && useSDFShadow &&
+			(lightIndex >= numShadowLights || nativeLightShadow >= 0.999f) &&
+			(lightShadow > 0.0f || SDFShadows::Params[0].debugVisibility != 0u) &&
+			dot(worldNormal.xyz, normalizedLightDirection) > 0.0f) {
+			float sdfCoverage;
+			const float sdfVisibility = SDFShadows::PointLightVisibility(
+				SDFShadows::CameraRelativeToAbsolute(input.WorldPosition.xyz, FrameBuffer::CameraPosAdjust.xyz),
+				worldNormal.xyz,
+				SDFShadows::CameraRelativeToAbsolute(PointLightPosition[lightIndex].xyz,
+					FrameBuffer::CameraPosAdjust.xyz), lightDist, sdfCoverage);
+			sdfDebugVisibility = min(sdfDebugVisibility, sdfVisibility);
+			sdfDebugCoverage = min(sdfDebugCoverage, sdfCoverage);
+			sdfDebugWasTraced = true;
+			// Unknown coverage must remain neutral; the existing local contact
+			// estimate and native shadow path continue to own this light.
+			if (sdfCoverage >= 0.999f)
+				lightShadow = min(lightShadow, sdfVisibility);
+		}
+#			endif
 #			endif
 
 		DirectContext pointLightContext;
@@ -4787,6 +4892,12 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 		PhysicalLighting::EvaluateDirect(
 			pointLightContext, material, tbnTr, uvOriginal, uvOriginal_ddx, uvOriginal_ddy, inWorld || inReflection, pixlComplexMaterialForPhysicalLighting, pointLightOutput,
 			pointLegacyPhysicalDelta, pointLegacyPhysicalApplied);
+		if (SharedData::materialForgeSettings.LegacyPhysicalDebugMode >= 16u) {
+			float3 incident = lightColor * saturate(dot(worldNormal.xyz, normalizedLightDirection));
+			pixlLocalLightPotential += incident;
+			pixlLocalLightAfterMap += incident * nativeLightShadow;
+			pixlLocalLightVisible += incident * lightShadow;
+		}
 #			if !defined(MATERIAL_FORGE)
 		legacyPhysicalDelta += pointLegacyPhysicalDelta;
 		legacyPhysicalCoverage = max(legacyPhysicalCoverage, pointLegacyPhysicalApplied);
@@ -4812,7 +4923,10 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 	uint totalLightCount = RadiantGrid::NumStrictLights;
 	uint clusterIndex = 0;
 	uint lightOffset = 0;
+	const uint worldFallbackLightCount = min((uint)max(RadiantGrid::WorldEyePosition.w, 0.0f), 15u);
+	bool useStrictLightFallback = false;
 	uint4 clusteredContactCandidates = 0xFFFFFFFFu;
+	uint4 clusteredSDFCandidates = 0xFFFFFFFFu;
 	if (inWorld && RadiantGrid::GetClusterIndex(screenUV, viewPosition.z, clusterIndex)) {
 		RadiantGrid::LightGrid pixelLightGrid = RadiantGrid::lightGrid[clusterIndex];
 		numClusteredLights = pixelLightGrid.lightCount;
@@ -4820,32 +4934,84 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 		lightOffset = pixelLightGrid.offset;
 		clusteredContactCandidates = uint4(pixelLightGrid.contactLight0, pixelLightGrid.contactLight1,
 			pixelLightGrid.contactLight2, pixelLightGrid.contactLight3);
+		clusteredSDFCandidates = uint4(pixelLightGrid.sdfLight0, pixelLightGrid.sdfLight1,
+			pixelLightGrid.sdfLight2, pixelLightGrid.sdfLight3);
+	}
+	// The engine's per-draw light list is a conservative safety net for a bad or
+	// temporarily empty cluster cell. It is populated by the validated native
+	// SetupGeometry call hook and only used when the clustered result has no lights.
+	if (inWorld && numClusteredLights == 0u && worldFallbackLightCount != 0u) {
+		useStrictLightFallback = true;
+		totalLightCount += worldFallbackLightCount;
 	}
 
 	uint4 localContactLightIndices = 0xFFFFFFFFu;
-#			if defined(CONTACT_SHADOWS) && defined(DEFERRED)
+	uint4 screenSpaceLocalLightIndices = 0xFFFFFFFFu;
+	uint4 localSDFLightIndices = 0xFFFFFFFFu;
+#			if defined(RADIANT_GRID) && defined(DEFERRED)
+	const bool screenSpaceLocalShadowsActive =
+		SharedData::radiantGridSettings.EnableScreenSpaceLocalShadows != 0u && inWorld;
+#			endif
+#			if (defined(CONTACT_SHADOWS) || defined(MATERIAL_FORGE) || defined(SDF_SHADOWS) || defined(RADIANT_GRID)) && defined(DEFERRED)
 	const uint localContactLightCount = clamp(SharedData::materialForgeSettings.LocalContactShadowLightCount, 1u, 4u);
 	const bool localContactShadowsActive =
+		inWorld && !inReflection &&
 		SharedData::materialForgeSettings.EnableLocalContactShadows != 0 &&
 		SharedData::materialForgeSettings.LocalContactShadowStrength > 0.0f &&
 		SharedData::materialForgeSettings.LocalContactShadowLength > 4.0f;
-	if (localContactShadowsActive) {
+#			if defined(SDF_SHADOWS)
+	const bool sdfShadowsActive = SDFShadows::Params[0].instanceCount != 0u;
+	const uint sdfLightCount = clamp(SDFShadows::Params[0].maxShadowedLights, 1u, 4u);
+#			else
+	const bool sdfShadowsActive = false;
+	const uint sdfLightCount = 0u;
+#			endif
+	const uint clusteredContactCandidateCount =
+		(localContactShadowsActive || screenSpaceLocalShadowsActive) ? min(numClusteredLights, 4u) : 0u;
+	const uint fallbackContactCandidateCount = useStrictLightFallback ? worldFallbackLightCount : 0u;
+	const uint candidateLightCount = max(max(localContactShadowsActive ? localContactLightCount : 0u,
+		screenSpaceLocalShadowsActive ? 4u : 0u), sdfShadowsActive ? sdfLightCount : 0u);
+	if (candidateLightCount != 0u) {
 		float4 bestContactScores = -1.0f;
-		uint contactCandidateCount = RadiantGrid::NumStrictLights + 4u;
+		float4 bestScreenSpaceScores = -1.0f;
+		float4 bestSDFScores = -1.0f;
+		uint contactCandidateCount = RadiantGrid::NumStrictLights + fallbackContactCandidateCount +
+			clusteredContactCandidateCount + (sdfShadowsActive ? 4u : 0u);
 		[loop] for (uint candidateIndex = 0; candidateIndex < contactCandidateCount; ++candidateIndex) {
 			RadiantGrid::Light candidateLight;
 			uint candidateKey;
+			bool fromContactSet = false;
+			bool fromSDFSet = false;
 			if (candidateIndex < RadiantGrid::NumStrictLights) {
 				candidateLight = RadiantGrid::StrictLights[candidateIndex];
 				candidateKey = candidateIndex;
-			} else {
-				uint clusteredCandidateIndex = clusteredContactCandidates[candidateIndex - RadiantGrid::NumStrictLights];
+			} else if (candidateIndex < RadiantGrid::NumStrictLights + fallbackContactCandidateCount) {
+				candidateLight = RadiantGrid::StrictLights[candidateIndex - RadiantGrid::NumStrictLights];
+				candidateKey = candidateIndex - RadiantGrid::NumStrictLights;
+			} else if (candidateIndex < RadiantGrid::NumStrictLights + fallbackContactCandidateCount + clusteredContactCandidateCount) {
+				// The culling pass stores a bounded four-light contact shortlist per
+				// cluster. Score only those candidates at the receiver; walking every
+				// clustered light here runs once per shaded pixel and caused severe
+				// frame-time spikes in dense exterior scenes.
+				uint shortlistIndex = candidateIndex - RadiantGrid::NumStrictLights - fallbackContactCandidateCount;
+				uint clusteredCandidateIndex = clusteredContactCandidates[shortlistIndex];
 				if (clusteredCandidateIndex == 0xFFFFFFFFu)
 					continue;
 				candidateLight = RadiantGrid::lights[clusteredCandidateIndex];
 				if (RadiantGrid::IsLightIgnored(candidateLight))
 					continue;
 				candidateKey = clusteredCandidateIndex | 0x80000000u;
+				fromContactSet = true;
+			} else {
+				uint sdfSetOffset = RadiantGrid::NumStrictLights + fallbackContactCandidateCount + clusteredContactCandidateCount;
+				uint clusteredCandidateIndex = clusteredSDFCandidates[candidateIndex - sdfSetOffset];
+				if (clusteredCandidateIndex == 0xFFFFFFFFu)
+					continue;
+				candidateLight = RadiantGrid::lights[clusteredCandidateIndex];
+				if (RadiantGrid::IsLightIgnored(candidateLight))
+					continue;
+				candidateKey = clusteredCandidateIndex | 0x80000000u;
+				fromSDFSet = true;
 			}
 			float3 candidateDirection = candidateLight.positionWS.xyz - input.WorldPosition.xyz;
 			float candidateDistance = length(candidateDirection);
@@ -4865,7 +5031,8 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 			float candidateScore = Color::RGBToLuminance(Color::PointLight(
 				candidateLight.color.xyz, (candidateLight.lightFlags & RadiantGrid::LightFlags::Linear) != 0)) *
 				candidateAttenuation * candidateLight.fade;
-			if (candidateScore > bestContactScores.x) {
+			const bool contactEligible = (candidateLight.lightFlags & RadiantGrid::LightFlags::Disabled) == 0u;
+			if (localContactShadowsActive && contactEligible && !fromSDFSet && candidateScore > bestContactScores.x) {
 				bestContactScores.w = bestContactScores.z;
 				localContactLightIndices.w = localContactLightIndices.z;
 				bestContactScores.z = bestContactScores.y;
@@ -4874,21 +5041,56 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 				localContactLightIndices.y = localContactLightIndices.x;
 				bestContactScores.x = candidateScore;
 				localContactLightIndices.x = candidateKey;
-			} else if (candidateScore > bestContactScores.y) {
+			} else if (localContactShadowsActive && contactEligible && !fromSDFSet && candidateScore > bestContactScores.y) {
 				bestContactScores.w = bestContactScores.z;
 				localContactLightIndices.w = localContactLightIndices.z;
 				bestContactScores.z = bestContactScores.y;
 				localContactLightIndices.z = localContactLightIndices.y;
 				bestContactScores.y = candidateScore;
 				localContactLightIndices.y = candidateKey;
-			} else if (candidateScore > bestContactScores.z) {
+			} else if (localContactShadowsActive && contactEligible && !fromSDFSet && candidateScore > bestContactScores.z) {
 				bestContactScores.w = bestContactScores.z;
 				localContactLightIndices.w = localContactLightIndices.z;
 				bestContactScores.z = candidateScore;
 				localContactLightIndices.z = candidateKey;
-			} else if (candidateScore > bestContactScores.w) {
+			} else if (localContactShadowsActive && contactEligible && !fromSDFSet && candidateScore > bestContactScores.w) {
 				bestContactScores.w = candidateScore;
 				localContactLightIndices.w = candidateKey;
+			}
+			if (screenSpaceLocalShadowsActive && contactEligible && !fromSDFSet) {
+				if (candidateScore > bestScreenSpaceScores.x) {
+					bestScreenSpaceScores.w = bestScreenSpaceScores.z; screenSpaceLocalLightIndices.w = screenSpaceLocalLightIndices.z;
+					bestScreenSpaceScores.z = bestScreenSpaceScores.y; screenSpaceLocalLightIndices.z = screenSpaceLocalLightIndices.y;
+					bestScreenSpaceScores.y = bestScreenSpaceScores.x; screenSpaceLocalLightIndices.y = screenSpaceLocalLightIndices.x;
+					bestScreenSpaceScores.x = candidateScore; screenSpaceLocalLightIndices.x = candidateKey;
+				} else if (candidateScore > bestScreenSpaceScores.y) {
+					bestScreenSpaceScores.w = bestScreenSpaceScores.z; screenSpaceLocalLightIndices.w = screenSpaceLocalLightIndices.z;
+					bestScreenSpaceScores.z = bestScreenSpaceScores.y; screenSpaceLocalLightIndices.z = screenSpaceLocalLightIndices.y;
+					bestScreenSpaceScores.y = candidateScore; screenSpaceLocalLightIndices.y = candidateKey;
+				} else if (candidateScore > bestScreenSpaceScores.z) {
+					bestScreenSpaceScores.w = bestScreenSpaceScores.z; screenSpaceLocalLightIndices.w = screenSpaceLocalLightIndices.z;
+					bestScreenSpaceScores.z = candidateScore; screenSpaceLocalLightIndices.z = candidateKey;
+				} else if (candidateScore > bestScreenSpaceScores.w) {
+					bestScreenSpaceScores.w = candidateScore; screenSpaceLocalLightIndices.w = candidateKey;
+				}
+			}
+			if (sdfShadowsActive && !fromContactSet &&
+				(candidateLight.lightFlags & RadiantGrid::LightFlags::Disabled) == 0u) {
+				if (candidateScore > bestSDFScores.x) {
+					bestSDFScores.w = bestSDFScores.z; localSDFLightIndices.w = localSDFLightIndices.z;
+					bestSDFScores.z = bestSDFScores.y; localSDFLightIndices.z = localSDFLightIndices.y;
+					bestSDFScores.y = bestSDFScores.x; localSDFLightIndices.y = localSDFLightIndices.x;
+					bestSDFScores.x = candidateScore; localSDFLightIndices.x = candidateKey;
+				} else if (candidateScore > bestSDFScores.y) {
+					bestSDFScores.w = bestSDFScores.z; localSDFLightIndices.w = localSDFLightIndices.z;
+					bestSDFScores.z = bestSDFScores.y; localSDFLightIndices.z = localSDFLightIndices.y;
+					bestSDFScores.y = candidateScore; localSDFLightIndices.y = candidateKey;
+				} else if (candidateScore > bestSDFScores.z) {
+					bestSDFScores.w = bestSDFScores.z; localSDFLightIndices.w = localSDFLightIndices.z;
+					bestSDFScores.z = candidateScore; localSDFLightIndices.z = candidateKey;
+				} else if (candidateScore > bestSDFScores.w) {
+					bestSDFScores.w = candidateScore; localSDFLightIndices.w = candidateKey;
+				}
 			}
 		}
 	}
@@ -4898,9 +5100,16 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 	{
 		RadiantGrid::Light light;
 		uint lightContactKey;
+		uint strictLightIndex = 0xFFFFFFFFu;
 		if (lightIndex < RadiantGrid::NumStrictLights) {
 			light = RadiantGrid::StrictLights[lightIndex];
 			lightContactKey = lightIndex;
+			strictLightIndex = lightIndex;
+		} else if (useStrictLightFallback &&
+			lightIndex < RadiantGrid::NumStrictLights + worldFallbackLightCount) {
+			light = RadiantGrid::StrictLights[lightIndex - RadiantGrid::NumStrictLights];
+			lightContactKey = lightIndex - RadiantGrid::NumStrictLights;
+			strictLightIndex = lightContactKey;
 		} else {
 			uint clusteredLightIndex = RadiantGrid::lightList[lightOffset + (lightIndex - RadiantGrid::NumStrictLights)];
 			light = RadiantGrid::lights[clusteredLightIndex];
@@ -4949,38 +5158,121 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 		float lightShadow = 1.0;
 
 		float shadowComponent = 1.0;
-		if (!pixlGroundRaisedShell &&
-			(Permutation::PixelShaderDescriptor & Permutation::LightingFlags::DefShadow)) {
-			if (light.lightFlags & RadiantGrid::LightFlags::Shadow) {
-				shadowComponent = shadowColor[light.shadowLightIndex];
-				lightShadow *= shadowComponent;
+		// A resident caster owns a cached map, which also covers receivers outside
+		// Skyrim's per-draw mask. Only lights without a cached map use the native
+		// screen mask; clustered and strict light lists have different ordering.
+		const bool hasCachedLocalShadow = !pixlGroundRaisedShell &&
+			(light.lightFlags & RadiantGrid::LightFlags::LocalShadow) != 0u;
+		if (!hasCachedLocalShadow && strictLightIndex == 0xFFFFFFFFu && numShadowLights != 0u &&
+			RadiantGrid::HasNativeShadowMap(light)) {
+			const uint selectedCount = min(numShadowLights,
+				RadiantGrid::NumStrictLights != 0u ? RadiantGrid::NumStrictLights : worldFallbackLightCount);
+			[loop] for (uint selectedIndex = 0u; selectedIndex < selectedCount; ++selectedIndex) {
+				RadiantGrid::Light selectedLight = RadiantGrid::StrictLights[selectedIndex];
+				float3 selectedOffset = selectedLight.positionWS.xyz - light.positionWS.xyz;
+				if (RadiantGrid::HasNativeShadowMap(selectedLight) &&
+					selectedLight.shadowLightIndex == light.shadowLightIndex &&
+					dot(selectedOffset, selectedOffset) < 64.0f) {
+					strictLightIndex = selectedIndex;
+					break;
+				}
 			}
 		}
+		uint nativeMaskChannel = 4u;
+		if (!hasCachedLocalShadow && strictLightIndex < numShadowLights && RadiantGrid::HasNativeShadowMap(light)) {
+			// Skyrim's per-draw selector, rather than BSShadowLight::maskIndex,
+			// owns the screen-mask channel for this receiver.
+			const float selectedChannel = ShadowLightMaskSelect[strictLightIndex];
+			if (isfinite(selectedChannel) && selectedChannel >= 0.0f && selectedChannel < 4.0f)
+				nativeMaskChannel = (uint)selectedChannel;
+		}
+		bool hasNativeLocalMask = false;
+		if (!pixlGroundRaisedShell &&
+			(Permutation::PixelShaderDescriptor & Permutation::LightingFlags::DefShadow) &&
+			nativeMaskChannel < 4u) {
+			// Only index a native channel belonging to this render pass.
+			hasNativeLocalMask = isfinite(shadowColor[nativeMaskChannel]);
+		}
+		if (hasCachedLocalShadow) {
+#			if defined(SKINNED)
+			const bool localShadowSkinned = true;
+#			else
+			const bool localShadowSkinned = false;
+#			endif
+			const float3 localShadowEye = RadiantGrid::FirstPerson ? RadiantGrid::WorldEyePosition.xyz : FrameBuffer::CameraPosAdjust.xyz;
+			shadowComponent = RadiantGrid::GetLocalShadow(LinearSampler, light.localShadowIndex,
+				input.WorldPosition.xyz, localShadowEye, lightDirection * rcp(lightDist), localShadowSkinned, screenNoise);
+			lightShadow = shadowComponent;
+		} else if (hasNativeLocalMask) {
+			shadowComponent = saturate(shadowColor[nativeMaskChannel]);
+			lightShadow = shadowComponent;
+		}
+		const float pixlMappedLightShadow = lightShadow;
 
 		float3 normalizedLightDirection = lightDirection * rcp(lightDist);
 		float lightAngle = dot(worldNormal.xyz, normalizedLightDirection.xyz);
-#			if defined(CONTACT_SHADOWS) && defined(DEFERRED)
+		const bool hasMappedShadow = hasNativeLocalMask || hasCachedLocalShadow;
+#			if (defined(CONTACT_SHADOWS) || defined(MATERIAL_FORGE) || defined(SDF_SHADOWS) || defined(RADIANT_GRID)) && defined(DEFERRED)
 		bool useLocalContactShadow = localContactShadowsActive && (
 			lightContactKey == localContactLightIndices.x ||
 			(localContactLightCount > 1u && lightContactKey == localContactLightIndices.y) ||
 			(localContactLightCount > 2u && lightContactKey == localContactLightIndices.z) ||
 			(localContactLightCount > 3u && lightContactKey == localContactLightIndices.w));
+		bool useSDFShadow = sdfShadowsActive && (
+				lightContactKey == localSDFLightIndices.x ||
+				(sdfLightCount > 1u && lightContactKey == localSDFLightIndices.y) ||
+				(sdfLightCount > 2u && lightContactKey == localSDFLightIndices.z) ||
+				(sdfLightCount > 3u && lightContactKey == localSDFLightIndices.w));
+		bool useScreenSpaceLocalShadow = screenSpaceLocalShadowsActive && (
+			lightContactKey == screenSpaceLocalLightIndices.x ||
+			lightContactKey == screenSpaceLocalLightIndices.y ||
+			lightContactKey == screenSpaceLocalLightIndices.z ||
+			lightContactKey == screenSpaceLocalLightIndices.w);
+#			if defined(CONTACT_SHADOWS) || defined(MATERIAL_FORGE) || defined(RADIANT_GRID)
 		[branch] if (!pixlGroundRaisedShell &&
 			useLocalContactShadow &&
+			(!hasMappedShadow || shadowComponent >= 0.995f) &&
 			lightAngle > 0.0f)
 		{
-			// Procedural particle/glow emitters have no Skyrim shadow-map slice, but
-			// they can still cast bounded depth-aware contact shadows. Keep the reach
-			// proportional to the resolved emitter without turning this into a long
-			// screen-space ray for every clustered light.
+			// Keep procedural emitters' reach proportional to their radius. Mapped
+			// lights use the same short ray only in fully lit shadow-map regions.
 			float heldEmitterShadowLength =
 				(light.lightFlags & RadiantGrid::LightFlags::Simple) != 0
 					? clamp(light.radius * 0.20f, 72.0f, 160.0f)
 					: (length(light.positionWS.xyz) < 280.0f ? 112.0f : 0.0f);
-			lightShadow *= ContactShadows::GetLocalContactShadow(
+			float contactVisibility = ContactShadows::GetLocalContactShadow(
 				input.WorldPosition.xyz, worldNormal.xyz, normalizedLightDirection,
 				lightDist, heldEmitterShadowLength);
+			lightShadow = min(lightShadow, contactVisibility);
 		}
+#			endif
+#			if defined(SDF_SHADOWS)
+		[branch] if (!pixlGroundRaisedShell && useSDFShadow &&
+			(!hasMappedShadow || shadowComponent >= 0.999f) &&
+			(lightShadow > 0.0f || SDFShadows::Params[0].debugVisibility != 0u) &&
+			(light.lightFlags & RadiantGrid::LightFlags::Disabled) == 0u &&
+			lightAngle > 0.0f) {
+			float sdfCoverage;
+			const float sdfVisibility = SDFShadows::PointLightVisibility(
+				SDFShadows::CameraRelativeToAbsolute(input.WorldPosition.xyz, FrameBuffer::CameraPosAdjust.xyz),
+				worldNormal.xyz,
+				SDFShadows::CameraRelativeToAbsolute(light.positionWS.xyz,
+					FrameBuffer::CameraPosAdjust.xyz), lightDist, sdfCoverage);
+			sdfDebugVisibility = min(sdfDebugVisibility, sdfVisibility);
+			sdfDebugCoverage = min(sdfDebugCoverage, sdfCoverage);
+			sdfDebugWasTraced = true;
+			if (sdfCoverage >= 0.999f)
+				lightShadow = min(lightShadow, sdfVisibility);
+		}
+#			endif
+#			if defined(RADIANT_GRID)
+		[branch] if (!pixlGroundRaisedShell && useScreenSpaceLocalShadow && lightAngle > 0.0f) {
+			float3 lightViewPosition = FrameBuffer::WorldToView(light.positionWS.xyz);
+			float screenSpaceVisibility = RadiantGrid::GetScreenSpaceLocalShadow(
+				LinearSampler, screenUV, viewPosition, lightViewPosition, light.radius);
+			lightShadow = min(lightShadow, screenSpaceVisibility);
+		}
+#			endif
 #			endif
 
 		float3 refractedLightDirection = normalizedLightDirection;
@@ -5052,6 +5344,12 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 		PhysicalLighting::EvaluateDirect(
 			pointLightContext, material, tbnTr, uvOriginal, uvOriginal_ddx, uvOriginal_ddy, inWorld || inReflection, pixlComplexMaterialForPhysicalLighting, pointLightOutput,
 			pointLegacyPhysicalDelta, pointLegacyPhysicalApplied);
+		if (SharedData::materialForgeSettings.LegacyPhysicalDebugMode >= 16u) {
+			float3 incident = lightColor * saturate(dot(worldNormal.xyz, normalizedLightDirection));
+			pixlLocalLightPotential += incident;
+			pixlLocalLightAfterMap += incident * pixlMappedLightShadow;
+			pixlLocalLightVisible += incident * pointLightShadow;
+		}
 #			if !defined(MATERIAL_FORGE)
 		legacyPhysicalDelta += pointLegacyPhysicalDelta;
 		legacyPhysicalCoverage = max(legacyPhysicalCoverage, pointLegacyPhysicalApplied);
@@ -5842,7 +6140,7 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 	// not replace the frame with a debug composite, so comparison screenshots are
 	// directly representative of normal rendering.  Mode 15 is an overlay that
 	// marks only material pixels whose final GGX roughness is below 0.05.
-	[branch] if (physicalDebugMode > 0 && physicalDebugMode <= 12)
+	[branch] if ((physicalDebugMode > 0 && physicalDebugMode <= 12) || (physicalDebugMode >= 16u && physicalDebugMode <= 18u))
 	{
 		float3 physicalDebugColor = 0.0.xxx;
 #	if defined(MATERIAL_FORGE)
@@ -5873,6 +6171,12 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 			physicalDebugColor = saturate(material.Metallic).xxx;
 		else if (physicalDebugMode == 12)
 			physicalDebugColor = saturate(material.Metallic).xxx;
+		else if (physicalDebugMode == 16u)
+			physicalDebugColor = 1.0f.xxx - exp(-max(pixlLocalLightPotential, 0.0f.xxx));
+		else if (physicalDebugMode == 17u)
+			physicalDebugColor = 1.0f.xxx - exp(-max(pixlLocalLightVisible, 0.0f.xxx));
+		else if (physicalDebugMode == 18u)
+			physicalDebugColor = 1.0f.xxx - exp(-max(pixlLocalLightAfterMap, 0.0f.xxx));
 #	else
 		if (physicalDebugMode == 1)
 			physicalDebugColor = lerp(float3(1.0, 0.05, 0.02), float3(0.05, 1.0, 0.1), legacyPhysicalCoverage);
@@ -5903,6 +6207,12 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 			physicalDebugColor = 0.0.xxx;  // No authored metallic channel on legacy materials.
 		else if (physicalDebugMode == 12)
 			physicalDebugColor = saturate(material.Metallic).xxx;
+		else if (physicalDebugMode == 16u)
+			physicalDebugColor = 1.0f.xxx - exp(-max(pixlLocalLightPotential, 0.0f.xxx));
+		else if (physicalDebugMode == 17u)
+			physicalDebugColor = 1.0f.xxx - exp(-max(pixlLocalLightVisible, 0.0f.xxx));
+		else if (physicalDebugMode == 18u)
+			physicalDebugColor = 1.0f.xxx - exp(-max(pixlLocalLightAfterMap, 0.0f.xxx));
 #	endif
 		psout.Diffuse.xyz = physicalDebugColor;
 #	if defined(DEFERRED)
@@ -5972,6 +6282,20 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 		psout.Albedo.xyz =
 			lerp(psout.Albedo.xyz, groundDebugColor, 0.18f);
 #		endif
+	}
+#	endif
+
+#	if defined(SDF_SHADOWS) && defined(DEFERRED)
+	// Diagnostic-only view of the exact visibility result accumulated above.
+	// The setting is runtime-controlled and defaults off; it does not alter SDF
+	// tracing or the material/shadow path when disabled.
+	[branch] if (SDFShadows::Params[0].debugVisibility != 0u && inWorld && !inReflection)
+	{
+		psout.Diffuse.xyz = !sdfDebugWasTraced ? float3(0.12, 0.22, 0.50) :
+			(sdfDebugCoverage < 0.5 ? float3(1.0, 0.0, 1.0) : saturate(sdfDebugVisibility).xxx);
+		psout.Specular.xyz = 0.0.xxx;
+		psout.Albedo.xyz = 0.0.xxx;
+		psout.Reflectance.xyz = 0.0.xxx;
 	}
 #	endif
 

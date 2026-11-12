@@ -30,8 +30,12 @@ void main(uint2 pixel : SV_DispatchThreadID)
     float3 minimumWS = float3(cell) * size;
     [loop] for (uint i = 0; i < min(ChangeCount, 128u) && !affected; ++i) {
         float4 sphere = ChangeSpheres[i];
-        float3 delta = sphere.xyz - clamp(sphere.xyz, minimumWS, minimumWS + size);
-        affected = dot(delta, delta) <= sphere.w * sphere.w;
+        // Ignore malformed emitter records rather than invalidating an entire
+        // cache window through NaN/infinite or negative radius input.
+        if (all(isfinite(sphere)) && sphere.w >= 0.0f) {
+            float3 delta = sphere.xyz - clamp(sphere.xyz, minimumWS, minimumWS + size);
+            affected = dot(delta, delta) <= sphere.w * sphere.w;
+        }
     }
     if (affected) {
         uint word = outIntelligence[pixel];

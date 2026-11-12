@@ -449,11 +449,14 @@ void TerrainOcclusion::UpdateShadow()
 		context->CSSetShaderResources(60, (uint)srvs.size(), srvs.data());
 	}
 
-	const auto accumulatorAddress = globals::game::currentAccumulator.get();
-	if (!accumulatorAddress || !*accumulatorAddress)
+	// The active accumulator's shadow-scene pointer is transient and can be stale
+	// during early prepasses (including reflection/menu transitions). Terrain
+	// shadows follow the primary world sun, so resolve it from the stable manager
+	// slot instead of dereferencing that per-pass pointer.
+	auto* smState = globals::game::smState;
+	if (!smState)
 		return;
-	auto accumulator = *accumulatorAddress;
-	auto shadowSceneNode = accumulator->GetRuntimeData().activeShadowSceneNode;
+	auto* shadowSceneNode = smState->shadowSceneNode[0];
 	if (!shadowSceneNode || !shadowSceneNode->GetRuntimeData().sunLight)
 		return;
 	auto sunLight = skyrim_cast<RE::NiDirectionalLight*>(shadowSceneNode->GetRuntimeData().sunLight->light.get());

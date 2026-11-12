@@ -1,6 +1,11 @@
 #pragma once
 
+// Keep SDK contexts and COM wrappers at a stable ABI in every consumer of
+// the process-wide FidelityFX instance.
+#pragma pack(push, 8)
+
 #include <atomic>
+#include <cstdint>
 #include <d3d12.h>
 #include <winrt/base.h>
 
@@ -22,13 +27,16 @@
 class FidelityFX
 {
 public:
+	FidelityFX() = default;
+	FidelityFX(const FidelityFX&) = delete;
+	FidelityFX& operator=(const FidelityFX&) = delete;
 	static constexpr const wchar_t* PluginDir = L"Data\\PIXL-Shaders\\ImageReconstruction\\FidelityFX";
 
 	HMODULE module = nullptr;
 
 	ffx::Context swapChainContext{};
-	ffx::Context frameGenContext;
-	FfxFsr3Context fsrContext[2];
+	ffx::Context frameGenContext{};
+	FfxFsr3Context fsrContext[2]{};
 
 	bool featureFSR3FG = false;
 
@@ -37,11 +45,15 @@ public:
 	// Latched when FidelityFX cannot configure or dispatch a generated frame.
 	// The presentation hook falls back to real frames until Skyrim restarts.
 	bool frameGenerationRuntimeFault = false;
+	bool frameGenContextCreated = false;
 
 	// Track HDR state for frame generation callback (needs to be accessible from static callback)
 	// Using atomic for thread safety since async workloads may read this from different threads
 	static inline std::atomic<bool> isHDRActive = false;
 	static inline std::atomic<float> hdrPeakNits = 1000.0f;
+	// One atomic snapshot for the asynchronous frame-generation callback.
+	// Low 32 bits: IEEE-754 peak nits, bit 32: HDR active.
+	static inline std::atomic<std::uint64_t> hdrPackedState{ 0x447A0000ull };
 	static inline std::atomic<bool> needsReset = false;
 
 	// Track previous HDR parameters to detect changes that require FG reset
@@ -81,8 +93,14 @@ public:
 private:
 	// FSR scratch buffer - needs to be freed in DestroyFSRResources
 	void* fsrScratchBuffer = nullptr;
+	bool fsrContextCreated = false;
+	// Dedicated full-resolution output when the optional shared sharpener target
+	// is unavailable or incompatible. Keeps FSR input/output non-aliased.
+	winrt::com_ptr<ID3D11Texture2D> fsrUpscaleScratch;
 
 	// Flag to prevent spamming the log with FSR3 dispatch crash messages
 	bool fsrDispatchCrashLogged = false;
 	bool frameGenerationFailureLogged = false;
 };
+
+#pragma pack(pop)

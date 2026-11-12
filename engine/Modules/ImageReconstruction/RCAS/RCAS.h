@@ -17,6 +17,8 @@ class RCAS
 public:
 	RCAS() = default;
 	~RCAS();
+	RCAS(const RCAS&) = delete;
+	RCAS& operator=(const RCAS&) = delete;
 
 	/**
 	 * @brief Initializes RCAS resources including compute shader and constant buffer.

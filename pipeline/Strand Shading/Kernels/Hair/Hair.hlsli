@@ -20,6 +20,13 @@ namespace Hair
 
 	Texture2D<float> TexTangentShift : register(t73);
 
+	// Blend toward the first authored mip: forcing mip 0 makes the tangent shift
+	// map too sharp at hair-card scale, creating noisy specular edges.
+	float SampleTangentShift(float2 uv)
+	{
+		return TexTangentShift.SampleLevel(SampColorSampler, uv, 0.75f).x - 0.5f;
+	}
+
 	// Physical fibre constants hoisted out of hot lighting paths. These values
 	// were previously recomputed through pow/sqrt expressions and are invariant.
 	static const float PIXL_HAIR_F0 = 0.0465205690f;
@@ -81,7 +88,7 @@ namespace Hair
 
 	float3 ShiftWorldNormal(float3 T, float3 N, float n, float2 uv)
 	{
-		const float shift = TexTangentShift.SampleLevel(SampColorSampler, uv, 0).x - 0.5f;
+		const float shift = SampleTangentShift(uv);
 		return ShiftNormal(T, N, shift + n);
 	}
 
@@ -111,7 +118,7 @@ namespace Hair
 		float3 TshiftSecondary;
 
 		if (SharedData::strandShadingSettings.EnableTangentShift) {
-			const float shift = TexTangentShift.SampleLevel(SampColorSampler, uv, 0).x - 0.5;
+			const float shift = SampleTangentShift(uv);
 			TshiftPrimary = ShiftTangent(T, N, shift + SharedData::strandShadingSettings.PrimaryTangentShift);
 			TshiftSecondary = ShiftTangent(T, N, shift + SharedData::strandShadingSettings.SecondaryTangentShift);
 		} else {
@@ -274,7 +281,7 @@ namespace Hair
 		const float roughness = 1 - saturate(shininess * 0.01);
 
 		if (SharedData::strandShadingSettings.EnableTangentShift) {
-			const float shift = TexTangentShift.SampleLevel(SampColorSampler, uv, 0).x - 0.5;
+			const float shift = SampleTangentShift(uv);
 			T = ShiftTangent(T, N, shift);
 		}
 
@@ -315,7 +322,7 @@ namespace Hair
 
 		if (SharedData::strandShadingSettings.HairMode == 1) {
 			if (SharedData::strandShadingSettings.EnableTangentShift) {
-				const float shift = TexTangentShift.SampleLevel(SampColorSampler, uv, 0).x - 0.5;
+				const float shift = SampleTangentShift(uv);
 				T = ShiftTangent(T, N, shift);
 			}
 			float3 projectedV = V - T * dot(V, T);

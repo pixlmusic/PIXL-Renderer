@@ -38,10 +38,6 @@ namespace PIXLRenderer::QualityProfiles
 			int resolutionMode;
 			std::uint32_t slices;
 			std::uint32_t steps;
-			std::uint32_t cacheSamples;
-			std::uint32_t cacheTraceSteps;
-			std::uint32_t injectionStride;
-			bool secondBounce;
 			std::uint32_t reflectionSteps;
 			std::uint32_t shadowSamples;
 			float shadowFalloffStart;
@@ -51,17 +47,17 @@ namespace PIXLRenderer::QualityProfiles
 			float blurRadius;
 			float radianceFireflyLimit;
 			float reflectionFireflyLimit;
-			float cacheResponse;
 		};
 
-		// Keep full-resolution GI in every tier. Scale its dominant per-pixel
-		// horizon work, world-cache injection cadence, reflection steps and SSS
-		// refinement distance instead of changing the look/identity of the effects.
+		// Keep the active screen-space path full resolution and scale ray count,
+		// reflection work, local shadow sampling, history and SSS refinement distance.
+		// The bounded persistent cache is active and remains part of every tier's
+		// indirect-lighting contract; users can still disable it explicitly.
 		constexpr std::array<LightingContract, 4> kLightingContracts{
-			LightingContract{ 0, 2, 4, 2, 2, 8, false, 12, 1, 3072.0f, 6144.0f, 1, 16, 3.0f, 4.0f, 4.0f, 0.08f },
-			LightingContract{ 0, 3, 7, 3, 3, 5, true, 20, 1, 3584.0f, 7168.0f, 1, 24, 2.5f, 5.0f, 6.0f, 0.075f },
-			LightingContract{ 0, 5, 10, 6, 3, 3, true, 36, 3, 4608.0f, 8192.0f, 2, 24, 2.0f, 8.0f, 10.0f, 0.07f },
-			LightingContract{ 0, 8, 16, 8, 5, 1, true, 56, 6, 6144.0f, 10240.0f, 4, 36, 1.6f, 12.0f, 16.0f, 0.06f }
+			LightingContract{ 0, 2, 4, 12, 1, 3072.0f, 6144.0f, 1, 16, 3.0f, 4.0f, 4.0f },
+			LightingContract{ 0, 3, 7, 20, 1, 3584.0f, 7168.0f, 1, 24, 2.5f, 5.0f, 6.0f },
+			LightingContract{ 0, 5, 10, 36, 3, 4608.0f, 8192.0f, 2, 24, 2.0f, 8.0f, 10.0f },
+			LightingContract{ 0, 8, 16, 56, 6, 6144.0f, 10240.0f, 4, 36, 1.6f, 12.0f, 16.0f }
 		};
 
 		struct MaterialsContract
@@ -140,7 +136,7 @@ namespace PIXLRenderer::QualityProfiles
 			const LightingContract& contract)
 		{
 			return settings.EnableGI && settings.EnableBlur && settings.EnableTemporalDenoiser &&
-			       settings.EnableWorldCache && settings.EnableDirectionalOcclusion &&
+			       settings.EnableWorldCache && settings.EnableEmitterInjection && !settings.EnableDirectionalOcclusion &&
 			       settings.EnableBentNormalLighting && settings.EnableSpecularOcclusion &&
 			       settings.EnableAdaptiveDenoiser &&
 			       shadowSettings.SampleCount == contract.shadowSamples &&
@@ -149,16 +145,12 @@ namespace PIXLRenderer::QualityProfiles
 			       settings.ResolutionMode == contract.resolutionMode &&
 			       settings.NumSlices == contract.slices &&
 			       settings.NumSteps == contract.steps &&
-			       settings.WorldCacheSampleCount == contract.cacheSamples &&
-			       settings.WorldCacheTraceSteps == contract.cacheTraceSteps &&
-			       settings.WorldCacheInjectionStride == contract.injectionStride &&
-			       settings.EnableWorldCacheSecondBounce == contract.secondBounce &&
+			       settings.EnableWorldCacheSecondBounce &&
 			       settings.ReflectionSteps == contract.reflectionSteps &&
 			       settings.MaxAccumFrames == contract.historyFrames &&
 			       NearlyEqual(settings.BlurRadius, contract.blurRadius) &&
 			       NearlyEqual(settings.RadianceFireflyClamp, contract.radianceFireflyLimit) &&
-			       NearlyEqual(settings.ReflectionFireflyClamp, contract.reflectionFireflyLimit) &&
-			       NearlyEqual(settings.WorldCacheTemporalResponse, contract.cacheResponse);
+			       NearlyEqual(settings.ReflectionFireflyClamp, contract.reflectionFireflyLimit);
 		}
 
 		void ApplyLighting(int quality)
@@ -175,17 +167,19 @@ namespace PIXLRenderer::QualityProfiles
 			//
 			// Never compound an upscaler's reduced render resolution with another
 			// spatial reduction. All tiers trace the complete game render grid and
-			// scale through bounded ray density, cache cadence and shadow sampling.
+			// scale through bounded ray density, reflection steps and shadow sampling.
 			const auto& contract = kLightingContracts[quality];
 
-			// Radiance Weave: apply the COMPLETE tier contract. The previous Q1
-			// draft omitted trace steps and feature gates, allowing settings from a
-			// previously selected tier to leak into the new one.
+			// Apply the screen-space workload contract and keep the supported cache,
+			// transparent-emitter injection and bounded second bounce enabled. The cache
+			// is active in this renderer build, so quality presets must not silently
+			// disable the room-filling indirect-light path.
 			gi.settings.EnableGI = true;
 			gi.settings.EnableBlur = true;
 			gi.settings.EnableTemporalDenoiser = true;
 			gi.settings.EnableWorldCache = true;
-			gi.settings.EnableDirectionalOcclusion = true;
+			gi.settings.EnableEmitterInjection = true;
+			gi.settings.EnableDirectionalOcclusion = false;
 			gi.settings.EnableBentNormalLighting = true;
 			gi.settings.EnableSpecularOcclusion = true;
 			gi.settings.EnableAdaptiveDenoiser = true;
@@ -193,16 +187,13 @@ namespace PIXLRenderer::QualityProfiles
 			gi.settings.ResolutionMode = contract.resolutionMode;
 			gi.settings.NumSlices = contract.slices;
 			gi.settings.NumSteps = contract.steps;
-			gi.settings.WorldCacheSampleCount = contract.cacheSamples;
-			gi.settings.WorldCacheTraceSteps = contract.cacheTraceSteps;
-			gi.settings.WorldCacheInjectionStride = contract.injectionStride;
-			gi.settings.EnableWorldCacheSecondBounce = contract.secondBounce;
+			gi.settings.EnableWorldCacheSecondBounce = true;
+			gi.settings.WorldCacheTemporalResponse = 0.20f;
 			gi.settings.ReflectionSteps = contract.reflectionSteps;
 			gi.settings.MaxAccumFrames = contract.historyFrames;
 			gi.settings.BlurRadius = contract.blurRadius;
 			gi.settings.RadianceFireflyClamp = contract.radianceFireflyLimit;
 			gi.settings.ReflectionFireflyClamp = contract.reflectionFireflyLimit;
-			gi.settings.WorldCacheTemporalResponse = contract.cacheResponse;
 
 			// Directional SSS ray count and distance fade are part of Lighting, not
 			// Materials. The Skyrim shadow map remains the far-distance fallback.

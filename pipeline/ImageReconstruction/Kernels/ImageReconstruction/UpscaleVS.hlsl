@@ -13,6 +13,9 @@ VS_OUTPUT main(uint vertexId : SV_VertexID)
 	// Generate the fullscreen triangle directly from the low two vertex-id bits.
 	// The shifts are exactly equivalent to /2 and %2 for SV_VertexID, while
 	// making the intended integer operations explicit to all HLSL compilers.
+	// The draw is exactly three vertices (0, 1, 2), no vertex buffer.
+	// The calling draw must submit three vertices. Keep a shift-and-mask
+	// mapping with no integer modulo in this fullscreen hot path.
 	const uint x = vertexId >> 1u;
 	const uint y = vertexId & 1u;
 

@@ -209,6 +209,9 @@ public:
 	winrt::com_ptr<ID3D11PixelShader> underwaterMaskUpscalePS;
 	ID3D11PixelShader* GetUnderwaterMaskUpscalePS();
 
+	winrt::com_ptr<ID3D11PixelShader> spatialFallbackPS;
+	ID3D11PixelShader* GetSpatialFallbackPS();
+
 	winrt::com_ptr<ID3D11VertexShader> upscaleVS;
 	ID3D11VertexShader* GetUpscaleVS();
 
@@ -223,6 +226,7 @@ public:
 	void ConfigureTAA();
 	void ConfigureUpscaling(RE::BSGraphics::State* a_state);
 	void Upscale();
+	void ApplySpatialFallback();
 
 	// Offline Director supersampling. The normal temporal path already jitters,
 	// but its phase count can repeat during a long frozen capture. Director pins
@@ -274,6 +278,10 @@ public:
 
 	bool previousUpscalingWasActive = false;
 	bool depthUpscaleUseWideKernel = false;
+	// Backend and input-scale changes invalidate temporal guides even when the
+	// game remains in the same world and the camera does not cut.
+	std::uint32_t lastConfiguredUpscaleMethod = UINT32_MAX;
+	std::uint32_t lastConfiguredQualityMode = UINT32_MAX;
 	std::uint64_t reconstructionHistoryId = 0;
 	std::uint64_t containedLiquidReactiveContributorId = 0;
 	std::uint64_t reactiveFXContributorId = 0;
@@ -346,12 +354,6 @@ private:
 	struct Main_UpdateJitter
 	{
 		static void thunk(RE::BSGraphics::State* a_state);
-		static inline REL::Relocation<decltype(thunk)> func;
-	};
-
-	struct MenuManagerDrawInterfaceStartHook
-	{
-		static void thunk(int64_t a1);
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 

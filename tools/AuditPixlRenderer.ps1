@@ -240,11 +240,23 @@ Get-ChildItem -LiteralPath (Join-Path $repo "pipeline") -Directory | ForEach-Obj
 }
 
 $runtimeAssetRefs = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+$retiredEngineModuleRoots = [Collections.Generic.List[string]]::new()
+Get-ChildItem -LiteralPath (Join-Path $repo 'pipeline') -Directory | ForEach-Object {
+    $descriptorPath = Join-Path $_.FullName 'Module.ini'
+    if (-not (Test-Path -LiteralPath $descriptorPath)) { return }
+    $descriptorText = Get-Content -LiteralPath $descriptorPath -Raw
+    if ($descriptorText -match '(?im)^\s*Pipeline\s*=\s*Retired\s*$') {
+        $idMatch = [regex]::Match($descriptorText, '(?m)^\s*Id\s*=\s*([^\r\n]+?)\s*$')
+        if ($idMatch.Success) { $retiredEngineModuleRoots.Add((Join-Path $repo "engine\Modules\$($idMatch.Groups[1].Value.Trim())")) }
+    }
+}
 $legacyRuntimeShaderPattern = 'Data(?:\\\\|/)Shaders(?:\\\\|/)'
 $runtimeAssetPattern = 'Data(?:\\\\|/)PIXL-Shaders(?:\\\\|/)([^"\r\n]+\.(?:hlsl|hlsli|dds|png|cube|lut|tga))'
 Get-ChildItem -LiteralPath (Join-Path $repo "engine") -Recurse -File | Where-Object {
     $_.Extension -in @('.cpp','.h')
 } | ForEach-Object {
+    $sourcePath = $_.FullName
+    if (@($retiredEngineModuleRoots | Where-Object { $sourcePath.StartsWith($_.TrimEnd([char]'\') + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) { return }
     $sourceText = Get-Content -LiteralPath $_.FullName -Raw
     if ([regex]::IsMatch($sourceText, $legacyRuntimeShaderPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
         Add-Error "Runtime source still refers to the shared Data\Shaders tree: $($_.FullName)"
@@ -396,6 +408,70 @@ if ($PackageDirectory) {
             & (Join-Path $PSScriptRoot 'VerifyPixlPackageManifest.ps1') -PackageDirectory $package
         } catch {
             Add-Error "Package manifest validation failed: $($_.Exception.Message)"
+        }
+        $manifestPath = Join-Path $package 'PIXL-RENDERER.manifest.json'
+        if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+            try {
+                $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+                $shaderCacheSource = Get-Content -LiteralPath (Join-Path $repo 'engine\ShaderCache.cpp') -Raw
+                foreach ($identity in @(
+                    @{ Manifest = 'shaderABI'; Constant = 'kSharedShaderABI' },
+                    @{ Manifest = 'shaderRevision'; Constant = 'kPipelineShaderRevision' }
+                )) {
+                    $constant = [regex]::Match($shaderCacheSource,
+                        'static constexpr const char\*\s+' + [regex]::Escape($identity.Constant) + '\s*=\s*"([^"]+)"')
+                    if (-not $constant.Success -or $manifest.($identity.Manifest) -cne $constant.Groups[1].Value) {
+                        Add-Error "Package manifest $($identity.Manifest) does not match the renderer shader-cache identity."
+                    }
+                }
+
+                # Module.ini versions are compiled into ModuleVersions.h and
+                # validated again by RenderModule::Load. Keep source descriptors,
+                # generated runtime requirements and staged descriptors aligned.
+                $moduleVersionsHeader = Join-Path (Split-Path -Parent $BuildDirectory) 'cmake\ModuleVersions.h'
+                if (-not (Test-Path -LiteralPath $moduleVersionsHeader -PathType Leaf)) {
+                    Add-Error "Missing generated module-version contract: $moduleVersionsHeader"
+                } else {
+                    $compiledVersions = Get-Content -LiteralPath $moduleVersionsHeader -Raw
+                    foreach ($id in $activeDescriptorIds) {
+                        $sourceDescriptor = Get-ChildItem -LiteralPath (Join-Path $repo 'pipeline') -Directory |
+                            ForEach-Object { Join-Path $_.FullName 'Module.ini' } |
+                            Where-Object { (Test-Path -LiteralPath $_ -PathType Leaf) -and
+                                (Get-Content -LiteralPath $_ -Raw) -match ('(?m)^\s*Id\s*=\s*' + [regex]::Escape($id) + '\s*$') } |
+                            Select-Object -First 1
+                        if (-not $sourceDescriptor) {
+                            Add-Error "Active module has no source descriptor: $id"
+                            continue
+                        }
+                        $sourceText = Get-Content -LiteralPath $sourceDescriptor -Raw
+                        $sourceVersionMatch = [regex]::Match($sourceText, '(?m)^\s*Version\s*=\s*(\d+)-(\d+)-(\d+)\s*$')
+                        $compiledVersionMatch = [regex]::Match($compiledVersions,
+                            '\{"' + [regex]::Escape($id) + '"sv,\s*\{(\d+),(\d+),(\d+)\}\}')
+                        $stagedDescriptor = Join-Path $package ("PIXL-Shaders\PIXL\Modules\$id.ini")
+                        if (-not $sourceVersionMatch.Success -or -not $compiledVersionMatch.Success) {
+                            Add-Error "Unable to resolve source/build module version: $id"
+                            continue
+                        }
+                        $sourceVersion = $sourceVersionMatch.Groups[1..3].Value -join '-'
+                        $compiledVersion = $compiledVersionMatch.Groups[1..3].Value -join '-'
+                        if ($sourceVersion -cne $compiledVersion) {
+                            Add-Error "Source descriptor and built runtime module version differ: $id ($sourceVersion vs $compiledVersion)"
+                        }
+                        if (-not (Test-Path -LiteralPath $stagedDescriptor -PathType Leaf)) {
+                            Add-Error "Staged module descriptor is missing: $id"
+                        } else {
+                            $stagedText = Get-Content -LiteralPath $stagedDescriptor -Raw
+                            $stagedVersionMatch = [regex]::Match($stagedText, '(?m)^\s*Version\s*=\s*(\d+)-(\d+)-(\d+)\s*$')
+                            if (-not $stagedVersionMatch.Success -or
+                                (($stagedVersionMatch.Groups[1..3].Value -join '-') -cne $sourceVersion)) {
+                                Add-Error "Staged module descriptor version differs from source: $id"
+                            }
+                        }
+                    }
+                }
+            } catch {
+                Add-Error "Package cache/module identity audit failed: $($_.Exception.Message)"
+            }
         }
         foreach ($file in @(
             "SKSE\Plugins\PIXL\Documentation\COPYING",

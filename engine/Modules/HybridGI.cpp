@@ -1,7 +1,9 @@
 #include "HybridGI.h"
 #include "HybridGI/TemporalPolicy.h"
+#include "HybridGI/SceneVoxelizer.h"
 
 #include <DirectXTex.h>
+#include <DirectXPackedVector.h>
 
 #include "../I18n/I18n.h"
 #include "Deferred.h"
@@ -15,6 +17,7 @@
 #include "Menu.h"
 #include "Profiler.h"
 #include "State.h"
+#include "ShaderCache.h"
 #include "MaterialForge.h"
 #include "MaterialForge/PhysicalMaterialRegistry.h"
 #include "MaterialLayers.h"
@@ -27,8 +30,18 @@
 #include "Util.h"
 #include "../Menu/PIXLStyle.h"
 #include "Utils/FileSystem.h"
+#include "Utils/Game.h"
 
 #include <RE/S/SendHUDMessage.h>
+#include <RE/B/BSVisit.h>
+#include <RE/B/BSRenderPass.h>
+#include <RE/B/BSLightingShaderMaterialBase.h>
+#include <RE/B/BSTriShape.h>
+#include <RE/N/NiSourceTexture.h>
+#include <RE/N/NiNode.h>
+#include <RE/T/TES.h>
+#include <RE/T/TESObjectCELL.h>
+#include <RE/P/PlayerCharacter.h>
 
 #include <array>
 #include <chrono>
@@ -38,6 +51,10 @@
 #include <iomanip>
 #include <initializer_list>
 #include <iterator>
+#include <cmath>
+#include <queue>
+#include <unordered_set>
+#include <windows.h>
 
 #define I18N_KEY_PREFIX "feature.hybrid_gi."
 
@@ -107,6 +124,135 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 
 namespace
 {
+    // The active SSGI path consumes the bounded persistent irradiance atlas for
+    // off-screen rays, plus optional Radiant Grid emitter injection and one
+    // conservative cache bounce. Keep the atlas windows tightly bounded.
+    constexpr bool kEnableWorldCacheForSSGITest = true;
+    bool WorldCacheAvailableForSSGITest() { return kEnableWorldCacheForSSGITest; }
+
+	// Skyrim's scenegraph visitor assumes every child pointer has a live NiObject
+	// vtable. Streaming/LOD trees can briefly contain a readable object whose
+	// vtable has already been cleared. Validate the object and the two virtual
+	// slots used by our bounded walk before making either virtual call.
+	bool IsReadableSceneMemory(const void* address, std::size_t size)
+	{
+		if (!address || size == 0)
+			return false;
+		const auto start = reinterpret_cast<std::uintptr_t>(address);
+		if (start > UINTPTR_MAX - size)
+			return false;
+		const auto end = start + size;
+		for (auto cursor = start; cursor < end;) {
+			MEMORY_BASIC_INFORMATION info{};
+			if (!VirtualQuery(reinterpret_cast<const void*>(cursor), &info, sizeof(info)) ||
+				info.State != MEM_COMMIT || (info.Protect & (PAGE_GUARD | PAGE_NOACCESS)))
+				return false;
+			const DWORD protection = info.Protect & 0xFFu;
+			if (protection != PAGE_READONLY && protection != PAGE_READWRITE && protection != PAGE_WRITECOPY &&
+				protection != PAGE_EXECUTE_READ && protection != PAGE_EXECUTE_READWRITE && protection != PAGE_EXECUTE_WRITECOPY)
+				return false;
+			const auto regionEnd = reinterpret_cast<std::uintptr_t>(info.BaseAddress) + info.RegionSize;
+			if (regionEnd <= cursor)
+				return false;
+			cursor = std::min(regionEnd, end);
+		}
+		return true;
+	}
+
+	bool IsExecutableSceneAddress(std::uintptr_t address)
+	{
+		if (!address)
+			return false;
+		MEMORY_BASIC_INFORMATION info{};
+		if (!VirtualQuery(reinterpret_cast<const void*>(address), &info, sizeof(info)) || info.State != MEM_COMMIT)
+			return false;
+		const DWORD protection = info.Protect & 0xFFu;
+		return protection == PAGE_EXECUTE || protection == PAGE_EXECUTE_READ ||
+			protection == PAGE_EXECUTE_READWRITE || protection == PAGE_EXECUTE_WRITECOPY;
+	}
+
+	bool HasSafeSceneVTable(RE::NiAVObject* object, std::unordered_set<std::uintptr_t>& validVTables,
+		std::unordered_set<std::uintptr_t>& invalidVTables)
+	{
+		// NiAVObject/SE has a 0x110-byte instance; AsNode and AsGeometry are
+		// NiObject virtual slots 3 and 7 respectively.
+		if (!IsReadableSceneMemory(object, 0x110))
+			return false;
+		const auto vtableAddress = *reinterpret_cast<const std::uintptr_t*>(object);
+		if (validVTables.contains(vtableAddress))
+			return true;
+		if (invalidVTables.contains(vtableAddress))
+			return false;
+		const auto* vtable = reinterpret_cast<const std::uintptr_t*>(vtableAddress);
+		if (!IsReadableSceneMemory(vtable, sizeof(std::uintptr_t) * 8)) {
+			invalidVTables.insert(vtableAddress);
+			return false;
+		}
+		if (!IsExecutableSceneAddress(vtable[3]) || !IsExecutableSceneAddress(vtable[7])) {
+			invalidVTables.insert(vtableAddress);
+			return false;
+		}
+		validVTables.insert(vtableAddress);
+		return true;
+	}
+
+	template <class Callback>
+	void TraverseScenegraphGeometriesGuarded(RE::NiAVObject* root, const std::array<float, 3>& volumeCenter,
+		float volumeHalfExtent, Callback&& callback)
+	{
+		constexpr std::size_t kMaximumVisitedObjects = 131072;
+		std::vector<RE::NiAVObject*> pending;
+		std::unordered_set<RE::NiAVObject*> visited;
+		std::unordered_set<std::uintptr_t> validVTables;
+		std::unordered_set<std::uintptr_t> invalidVTables;
+		pending.reserve(4096);
+		visited.reserve(8192);
+		validVTables.reserve(16);
+		invalidVTables.reserve(16);
+		if (root)
+			pending.push_back(root);
+
+		while (!pending.empty() && visited.size() < kMaximumVisitedObjects) {
+			auto* object = pending.back();
+			pending.pop_back();
+			if (!object || !visited.emplace(object).second || !HasSafeSceneVTable(object, validVTables, invalidVTables))
+				continue;
+
+			const auto& bound = object->worldBound;
+			const float radius = bound.radius;
+			if (std::isfinite(radius) && radius >= 0.0f &&
+				std::isfinite(bound.center.x) && std::isfinite(bound.center.y) && std::isfinite(bound.center.z)) {
+				const bool intersectsVolume =
+					std::abs(bound.center.x - volumeCenter[0]) <= volumeHalfExtent + radius &&
+					std::abs(bound.center.y - volumeCenter[1]) <= volumeHalfExtent + radius &&
+					std::abs(bound.center.z - volumeCenter[2]) <= volumeHalfExtent + radius;
+				if (!intersectsVolume)
+					continue;
+			}
+
+			if (auto* geometry = object->AsGeometry()) {
+				callback(geometry);
+				continue;
+			}
+			auto* node = object->AsNode();
+			if (!node || !IsReadableSceneMemory(node, sizeof(RE::NiNode)))
+				continue;
+			const auto& children = node->GetChildren();
+			// Only walk initialized child entries. Capacity includes unused storage,
+			// which can contain stale scenegraph pointers during LOD/cell streaming.
+			const auto childCount = static_cast<std::size_t>(children.size());
+			const auto* first = children.begin();
+			if (!first || childCount == 0 || childCount > kMaximumVisitedObjects ||
+				!IsReadableSceneMemory(first, childCount * sizeof(RE::NiPointer<RE::NiAVObject>)))
+				continue;
+			for (std::size_t i = 0; i < childCount; ++i) {
+				auto* child = first[i].get();
+				if (child)
+					pending.push_back(child);
+			}
+		}
+	}
+
 	struct PixlDiagnosticView
 	{
 		std::string_view name;
@@ -147,6 +293,9 @@ namespace
         PixlDiagnosticView{ "29-cache-state", 17, 0 },
         PixlDiagnosticView{ "30-cache-light-change", 18, 0 },
         PixlDiagnosticView{ "31-cache-camera-plane-visibility", 19, 0 },
+		PixlDiagnosticView{ "32-local-light-potential", 0, 16 },
+		PixlDiagnosticView{ "33-local-light-after-shadows", 0, 17 },
+		PixlDiagnosticView{ "34-local-light-after-mapped-shadow", 0, 18 },
 	};
 
 	std::string PixlDiagnosticTimestamp()
@@ -221,9 +370,9 @@ namespace
 	{
 		switch (preset) {
 		case PixlQualityPreset::Performance:
-			return "Unified Low lighting workload: bounded GI rays, reduced cache cadence and lower shadow sampling.";
+			return "Unified Low lighting workload: fewer GI rays, shorter reflection traces and reduced local shadow sampling.";
 		case PixlQualityPreset::Balanced:
-			return "Unified Medium lighting workload with balanced GI coverage, cache updates and shadow cost.";
+			return "Unified Medium lighting workload with balanced GI coverage, reflection traces and shadow cost.";
 		case PixlQualityPreset::Quality:
 			return "Unified High lighting workload with strong GI/reflection density and contact-shadow sampling.";
 		case PixlQualityPreset::Ultra:
@@ -330,6 +479,255 @@ namespace
 
 }
 
+void HybridGI::CaptureRenderGeometry(RE::BSRenderPass* a_pass)
+{
+	// The existing SetupGeometry hook runs on Skyrim's render thread. Walk the
+	// active world scene root once per frame so off-screen attached-cell geometry
+	// participates, then copy a bounded set of rigid opaque triangles immediately.
+	// No game object, geometry pointer, or borrowed vertex buffer survives here.
+	if (!settings.Enabled || !settings.EnableGI || sceneVoxelDimension == 0)
+		return;
+	const auto frame = globals::state ? globals::state->frameCount : std::numeric_limits<std::uint32_t>::max();
+	std::scoped_lock lock(sceneTriangleMutex);
+	constexpr std::size_t kMaxFrameTriangles = PIXL::HybridGIInternal::kMaxGpuSceneTriangles;
+	constexpr std::size_t kMaxFrameShapes = 1024;
+	if (frame != sceneCaptureFrame) {
+		pendingSceneTriangles.clear();
+		pendingSceneMaterialTextures.clear();
+		pendingSceneMaterialTextureIndices.clear();
+		pendingSceneGeometryTokens.clear();
+		sceneCaptureFrame = frame;
+		if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+			sceneCaptureCellKey = reinterpret_cast<std::uintptr_t>(player->GetParentCell());
+			sceneCaptureWorldKey = reinterpret_cast<std::uintptr_t>(player->GetWorldspace());
+		} else {
+			sceneCaptureCellKey = 0;
+			sceneCaptureWorldKey = 0;
+		}
+		pendingSceneCellKey = sceneCaptureCellKey;
+		pendingSceneWorldKey = sceneCaptureWorldKey;
+	}
+
+	auto captureGeometry = [&](RE::BSGeometry* geometry) {
+		if (!geometry || pendingSceneTriangles.size() >= kMaxFrameTriangles || pendingSceneGeometryTokens.size() >= kMaxFrameShapes)
+			return;
+		const auto& runtime = geometry->GetGeometryRuntimeData();
+		if (runtime.skinInstance || runtime.alphaProperty ||
+			(runtime.shaderProperty && runtime.shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexAlpha)))
+			return;
+		auto* shape = geometry->AsTriShape();
+		auto* rendererData = runtime.rendererData;
+		if (!shape || !rendererData || !rendererData->rawVertexData || !rendererData->rawIndexData ||
+			!rendererData->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_VERTEX))
+			return;
+		const auto token = reinterpret_cast<std::uintptr_t>(geometry);
+		if (std::find(pendingSceneGeometryTokens.begin(), pendingSceneGeometryTokens.end(), token) != pendingSceneGeometryTokens.end())
+			return;
+		const auto shapeData = shape->GetTrishapeRuntimeData();
+		const auto stride = rendererData->vertexDesc.GetSize();
+		const bool hasUV = rendererData->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_UV);
+		const auto uvOffset = hasUV ? rendererData->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_TEXCOORD0) : 0u;
+		const bool validUVOffset = hasUV && uvOffset <= stride && sizeof(std::uint16_t) * 2u <= stride - uvOffset;
+		const bool hasVertexColors = rendererData->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_COLORS);
+		const auto colorOffset = hasVertexColors ? rendererData->vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_COLOR) : 0u;
+		const bool validColorOffset = hasVertexColors && colorOffset <= stride && sizeof(std::uint8_t) * 4u <= stride - colorOffset;
+		const auto triangleCount = static_cast<std::uint32_t>(shapeData.triangleCount);
+		const auto vertexCount = static_cast<std::uint32_t>(shapeData.vertexCount);
+		if (stride < sizeof(float) * 3 || triangleCount == 0 || triangleCount > 4096 || vertexCount < 3 || vertexCount > 65535)
+			return;
+		if (triangleCount > kMaxFrameTriangles - pendingSceneTriangles.size())
+			return;  // retain whole mesh topology within the per-frame snapshot
+		pendingSceneGeometryTokens.push_back(token);  // compared only until this owned snapshot is drained
+		const auto readPosition = [&](std::uint16_t index, std::array<float, 3>& result) {
+			if (index >= vertexCount)
+				return false;
+			const auto* p = reinterpret_cast<const float*>(rendererData->rawVertexData + std::size_t(index) * stride);
+			if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(p[2]))
+				return false;
+			const RE::NiPoint3 world = geometry->world * RE::NiPoint3{ p[0], p[1], p[2] };
+			if (!std::isfinite(world.x) || !std::isfinite(world.y) || !std::isfinite(world.z))
+				return false;
+			result = { world.x, world.y, world.z };
+			return true;
+		};
+		std::array<float, 2> uvScale{ 1.0f, 1.0f };
+		std::array<float, 2> uvOffsetValue{};
+		const auto readUV = [&](std::uint16_t index, std::array<float, 2>& result) {
+			if (!validUVOffset || index >= vertexCount)
+				return false;
+			const auto* uv = reinterpret_cast<const std::uint16_t*>(rendererData->rawVertexData + std::size_t(index) * stride + uvOffset);
+			result = { DirectX::PackedVector::XMConvertHalfToFloat(uv[0]), DirectX::PackedVector::XMConvertHalfToFloat(uv[1]) };
+			result[0] = result[0] * uvScale[0] + uvOffsetValue[0];
+			result[1] = result[1] * uvScale[1] + uvOffsetValue[1];
+			return std::isfinite(result[0]) && std::isfinite(result[1]);
+		};
+		std::array<float, 3> emissiveColor{};
+		bool isEmissive = false;
+		if (auto* property = geometry->lightingShaderProp_cast(); property && property->emissiveColor &&
+			std::isfinite(property->emissiveMult) && property->emissiveMult > 0.0f) {
+			const float intensity = property->emissiveMult;
+			emissiveColor = { property->emissiveColor->red * intensity, property->emissiveColor->green * intensity,
+				property->emissiveColor->blue * intensity };
+			isEmissive = std::isfinite(emissiveColor[0]) && std::isfinite(emissiveColor[1]) && std::isfinite(emissiveColor[2]) &&
+				std::max({ emissiveColor[0], emissiveColor[1], emissiveColor[2] }) > 1.0e-4f;
+		}
+		const auto readVertexColor = [&](std::uint16_t index, std::array<float, 3>& result) {
+			if (!validColorOffset || index >= vertexCount)
+				return false;
+			const auto* vertex = rendererData->rawVertexData + std::size_t(index) * stride + colorOffset;
+			if (vertex[3] < 250u)
+				return false;  // uncertain vertex-alpha geometry is not a trusted opaque material
+			result = { vertex[0] / 255.0f, vertex[1] / 255.0f, vertex[2] / 255.0f };
+			return true;
+		};
+		std::uint32_t textureIndex = UINT32_MAX;
+		if (validUVOffset && !isEmissive) {
+			if (auto* property = geometry->lightingShaderProp_cast(); property && property->material &&
+				property->material->GetType() == RE::BSShaderMaterial::Type::kLighting) {
+				auto* material = static_cast<RE::BSLightingShaderMaterialBase*>(property->material);
+				uvScale = { material->texCoordScale[0].x, material->texCoordScale[0].y };
+				uvOffsetValue = { material->texCoordOffset[0].x, material->texCoordOffset[0].y };
+				auto* sourceTexture = material->diffuseTexture.get();
+				auto* rendererTexture = sourceTexture ? sourceTexture->rendererTexture : nullptr;
+				auto* srv = rendererTexture ? REX::W32::AsReal(rendererTexture->resourceView) : nullptr;
+				if (srv) {
+					auto found = pendingSceneMaterialTextureIndices.find(srv);
+					if (found != pendingSceneMaterialTextureIndices.end()) {
+						textureIndex = found->second;
+					} else if (pendingSceneMaterialTextures.size() < PIXL::HybridGIInternal::kSceneMaterialTextureSlots) {
+						textureIndex = static_cast<std::uint32_t>(pendingSceneMaterialTextures.size());
+						winrt::com_ptr<ID3D11ShaderResourceView> ownedTexture;
+						ownedTexture.copy_from(srv);
+						pendingSceneMaterialTextures.push_back(std::move(ownedTexture));
+						pendingSceneMaterialTextureIndices.emplace(srv, textureIndex);
+					}
+				}
+			}
+		}
+		for (std::uint32_t i = 0; i < triangleCount && pendingSceneTriangles.size() < kMaxFrameTriangles; ++i) {
+			const auto base = std::size_t(i) * 3;
+			PIXL::HybridGIInternal::SceneTriangle triangle;
+			const auto i0 = rendererData->rawIndexData[base];
+			const auto i1 = rendererData->rawIndexData[base + 1];
+			const auto i2 = rendererData->rawIndexData[base + 2];
+			if (readPosition(i0, triangle.a) && readPosition(i1, triangle.b) && readPosition(i2, triangle.c)) {
+				readUV(i0, triangle.uvA);
+				readUV(i1, triangle.uvB);
+				readUV(i2, triangle.uvC);
+				triangle.textureIndex = textureIndex;
+				std::array<float, 3> materialColor = isEmissive ? emissiveColor : std::array<float, 3>{ 1.0f, 1.0f, 1.0f };
+				std::array<float, 3> color0{}, color1{}, color2{};
+				if (readVertexColor(i0, color0) && readVertexColor(i1, color1) && readVertexColor(i2, color2)) {
+					for (std::size_t channel = 0; channel < 3; ++channel) {
+						const float vertexTint = (color0[channel] + color1[channel] + color2[channel]) / 3.0f;
+						materialColor[channel] *= vertexTint;
+					}
+				}
+				triangle.packedMaterial = PIXL::HybridGIInternal::PackSceneVoxelMaterial(materialColor, isEmissive);
+				pendingSceneTriangles.push_back(triangle);
+			}
+		}
+	};
+
+	bool traversedWorldRoot = worldRootCaptureFrame == frame;
+	if (!traversedWorldRoot && frame != std::numeric_limits<std::uint32_t>::max()) {
+		if (auto* tes = RE::TES::GetSingleton()) {
+			RE::NiNode* sceneRoot = tes->objRoot;
+			if (auto* interior = tes->interiorCell; interior && interior->IsAttached()) {
+				const auto& interiorRuntime = interior->GetRuntimeData();
+				if (interiorRuntime.loadedData && interiorRuntime.loadedData->cell3D)
+					sceneRoot = interiorRuntime.loadedData->cell3D.get();
+			}
+			if (sceneRoot) {
+			traversedWorldRoot = true;
+			worldRootCaptureFrame = frame;
+			const auto eye = Util::GetEyePosition();
+			const float voxelPitch = PIXL::HybridGIInternal::SceneVoxelGrid::kVoxelSize;
+			const float snappedCenter[3] = {
+				std::round(eye.x / voxelPitch) * voxelPitch,
+				std::round(eye.y / voxelPitch) * voxelPitch,
+				std::round(eye.z / voxelPitch) * voxelPitch
+			};
+			const float voxelHalfExtent = PIXL::HybridGIInternal::SceneVoxelGrid::kDimension * voxelPitch * 0.5f;
+			using Candidate = std::pair<float, RE::BSGeometry*>;
+			std::priority_queue<Candidate> nearest;
+			TraverseScenegraphGeometriesGuarded(sceneRoot,
+				{ snappedCenter[0], snappedCenter[1], snappedCenter[2] }, voxelHalfExtent, [&](RE::BSGeometry* geometry) {
+				if (!geometry || pendingSceneGeometryTokens.size() >= kMaxFrameShapes || nearest.size() >= kMaxFrameShapes) {
+					if (nearest.size() >= kMaxFrameShapes)
+						return RE::BSVisit::BSVisitControl::kContinue;
+				}
+				if (geometry) {
+					const auto& runtime = geometry->GetGeometryRuntimeData();
+					if (!runtime.skinInstance && !runtime.alphaProperty &&
+						!(runtime.shaderProperty && runtime.shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexAlpha))) {
+						const auto& bound = geometry->worldBound;
+						const float radius = std::max(bound.radius, 0.0f);
+						const float dx = bound.center.x - snappedCenter[0];
+						const float dy = bound.center.y - snappedCenter[1];
+						const float dz = bound.center.z - snappedCenter[2];
+						// HTrace voxelizes a bounded, snapped camera volume. Exclude
+						// scene geometry outside it before spending shape/triangle budget.
+						const bool intersectsVoxelVolume = std::abs(dx) <= voxelHalfExtent + radius &&
+							std::abs(dy) <= voxelHalfExtent + radius && std::abs(dz) <= voxelHalfExtent + radius;
+						const float distance = std::max(std::sqrt(dx * dx + dy * dy + dz * dz) - radius, 0.0f);
+						if (intersectsVoxelVolume && std::isfinite(distance)) {
+							if (nearest.size() < kMaxFrameShapes)
+								nearest.emplace(distance, geometry);
+							else if (distance < nearest.top().first) {
+								nearest.pop();
+								nearest.emplace(distance, geometry);
+							}
+						}
+					}
+				}
+				return RE::BSVisit::BSVisitControl::kContinue;
+			});
+			std::vector<Candidate> ordered;
+			ordered.reserve(nearest.size());
+			while (!nearest.empty()) {
+				ordered.push_back(nearest.top());
+				nearest.pop();
+			}
+			std::vector<PIXL::HybridGIInternal::SceneGeometryBudgetCandidate> budgetCandidates;
+			budgetCandidates.reserve(ordered.size());
+			for (const auto& candidate : ordered) {
+				auto* geometry = candidate.second;
+				if (!geometry)
+					continue;
+				const auto& runtime = geometry->GetGeometryRuntimeData();
+				auto* shape = geometry->AsTriShape();
+				auto* rendererData = runtime.rendererData;
+				if (!shape || runtime.skinInstance || runtime.alphaProperty ||
+					(runtime.shaderProperty && runtime.shaderProperty->flags.any(RE::BSShaderProperty::EShaderPropertyFlag::kVertexAlpha)) || !rendererData ||
+					!rendererData->rawVertexData || !rendererData->rawIndexData ||
+					!rendererData->vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_VERTEX))
+					continue;
+				const auto shapeData = shape->GetTrishapeRuntimeData();
+				const auto triangleCount = static_cast<std::uint32_t>(shapeData.triangleCount);
+				const auto vertexCount = static_cast<std::uint32_t>(shapeData.vertexCount);
+				const auto stride = rendererData->vertexDesc.GetSize();
+				if (stride < sizeof(float) * 3 || triangleCount == 0 || triangleCount > 4096 ||
+					vertexCount < 3 || vertexCount > 65535)
+					continue;
+				budgetCandidates.push_back({ reinterpret_cast<std::uintptr_t>(geometry), candidate.first, triangleCount });
+			}
+
+			// Spend the triangle budget by proximity first, then restore canonical
+			// identity order so camera-distance changes do not reorder the snapshot.
+			const auto admittedIndices = PIXL::HybridGIInternal::SelectSceneGeometryWithinBudget(
+				budgetCandidates, kMaxFrameShapes, kMaxFrameTriangles);
+			for (const auto index : admittedIndices)
+				captureGeometry(reinterpret_cast<RE::BSGeometry*>(budgetCandidates[index].identity));
+			}
+		}
+	}
+	// Fallback for unusual render contexts whose submitted geometry is not under
+	// TES::objRoot (menus and preview views); pointer identity is frame-local only.
+	if (!traversedWorldRoot && a_pass)
+		captureGeometry(a_pass->geometry);
+}
+
 
 void HybridGI::RestoreDefaultSettings()
 {
@@ -343,8 +741,18 @@ void HybridGI::DrawSettings()
 	constexpr bool showAdvanced = true;
 
 	if (!ShadersOK()) {
-		Util::Text::Error("%s", T(TKEY("shader_compile_error"), "Compute shaders failed to compile!"));
-		ImGui::TextWrapped("The controls remain available, but the effect will not render until all Hybrid GI compute shaders compile successfully.");
+		const bool coreComputeShadersReady = prefilterDepthsCompute && prefilterRadianceCompute &&
+			prefilterNormalCompute && radianceDisoccCompute && giCompute;
+		if (!coreComputeShadersReady) {
+			Util::Text::Error("%s", T(TKEY("shader_compile_error"), "Required GI compute shaders are unavailable."));
+			ImGui::TextWrapped("The effect will retry compilation automatically. Check PIXLRenderer.log for compiler diagnostics if the warning persists.");
+		} else if (std::clamp(settings.ResolutionMode, 0, 2) != 0 && !upsampleCompute) {
+			Util::Text::Error("%s", "The reduced-resolution GI reconstruction shader is unavailable.");
+			ImGui::TextWrapped("GI cannot render at the selected resolution until the upsample shader is ready.");
+		} else {
+			Util::Text::Error("%s", "Hybrid GI render resources are unavailable.");
+			ImGui::TextWrapped("The compute shaders are ready, but one or more required GPU resources could not be created.");
+		}
 	}
 	if (settings.EnableWorldCache && !WorldCacheShadersOK())
 		Util::Text::Error("%s", "World-cache shaders are unavailable; core screen-space GI will continue without persistent world irradiance.");
@@ -363,7 +771,7 @@ void HybridGI::DrawSettings()
 	PIXLUI::SectionBanner("QUICK SETUP");
 	ImGui::TextWrapped("Choose a quality target, then adjust bounced light and contact shading. Quality changes affect GPU cost; the sections below fine-tune the result.");
 
-	if (ImGui::BeginTable("PIXL GI Status", 3, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings)) {
+	if (ImGui::BeginTable("PIXL GI Status", 2, ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoSavedSettings)) {
 		ImGui::TableNextColumn();
 		DrawPixlToggleField(T(TKEY("enabled"), "Enabled"), &settings.Enabled);
 		if (auto _tt = Util::HoverTooltipWrapper())
@@ -376,11 +784,18 @@ void HybridGI::DrawSettings()
 		}
 		if (auto _tt = Util::HoverTooltipWrapper())
 			ImGui::TextWrapped("Enables bounced indirect light. Ambient occlusion can still be used independently. Changing this automatically rebuilds the affected compute permutation.");
+		ImGui::TableNextColumn();
+		{
+			auto guard = Util::DisableGuard(!settings.Enabled);
+			DrawPixlToggleField("PIXL Ambient Occlusion", &settings.EnableAO);
+		}
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Enables PIXL's screen-space crevice and contact-depth occlusion independently of indirect light and reflections.");
 
 		ImGui::TableNextColumn();
 		DrawPixlToggleField(T(TKEY("vanilla_ssao"), "Vanilla SSAO"), &settings.EnableVanillaSSAO);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Usually leave this off while PIXL AO is active to avoid double-darkening corners and contact areas.");
+		ImGui::TextWrapped("Usually leave this off while PIXL AO is active to avoid double-darkening corners and contact areas.");
 		ImGui::EndTable();
 	}
 
@@ -399,13 +814,11 @@ void HybridGI::DrawSettings()
 			ImGui::EndTable();
 		}
 
-		ImGui::TextDisabled("Current: %s  |  %s resolution  |  %u x %u screen-space samples  |  %u world samples / %u cone steps",
+		ImGui::TextDisabled("Current: %s  |  %s resolution  |  %u x %u screen-space rays / steps",
 			GetPresetName(DetectPreset()),
 			GetResolutionName(settings.ResolutionMode),
 			settings.NumSlices,
-			settings.NumSteps,
-			settings.EnableWorldCache ? settings.WorldCacheSampleCount : 0u,
-			settings.EnableWorldCache ? settings.WorldCacheTraceSteps : 0u);
+			settings.NumSteps);
 		ImGui::TextDisabled("Ultra is the shipped PIXL baseline. Unified presets also coordinate contact shadows and Light Volumes without changing artistic GI tuning.");
 
 		if (Util::WarningButton("Restore Unified Ultra")) {
@@ -426,15 +839,15 @@ void HybridGI::DrawSettings()
 	{
 		auto guard = Util::DisableGuard(!settings.Enabled);
 		if (BeginSettingsTable("PIXL GI Lighting")) {
-			BeginSettingRow("Ambient Occlusion Strength", "Controls contact and crevice darkening. 1.0 is neutral; increase carefully to avoid crushed corners.");
-			ImGui::SliderFloat("##ao_strength", &settings.AOPower, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+			BeginSettingRow("Ambient Occlusion Strength", "Controls contact and crevice darkening. 1.0 is the default strength; increase carefully to avoid crushed corners.");
+			{ auto aoGuard = Util::DisableGuard(!settings.EnableAO); ImGui::SliderFloat("##ao_strength", &settings.AOPower, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp); }
 
 			BeginSettingRow("Contact Depth", "Adds restrained near-field grounding by reusing PIXL GI horizon samples. It does not run a second AO pass or darken direct lights.");
-			PIXLUI::Toggle("##contact_depth", &settings.EnableContactDepth);
+			{ auto aoGuard = Util::DisableGuard(!settings.EnableAO); PIXLUI::Toggle("##contact_depth", &settings.EnableContactDepth); }
 
 			BeginSettingRow("Contact Depth Strength", "Controls small-scale contact and crevice depth. The contribution is bounded to prevent double-darkening with GI.");
 			{
-				auto contactGuard = Util::DisableGuard(!settings.EnableContactDepth);
+				auto contactGuard = Util::DisableGuard(!settings.EnableAO || !settings.EnableContactDepth);
 				ImGui::SliderFloat("##contact_depth_strength", &settings.ContactDepthStrength, 0.0f, 0.75f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 			}
 
@@ -469,6 +882,9 @@ void HybridGI::DrawSettings()
 	}
 
 	// -------------------------------------------------------------------------
+	if (!WorldCacheAvailableForSSGITest())
+		ImGui::TextDisabled("Persistent world cache is unavailable in this build.");
+    if (WorldCacheAvailableForSSGITest()) {
 	// WORLD-SPACE GI
 	// -------------------------------------------------------------------------
 	PIXLUI::SectionBanner("WORLD GI");
@@ -508,24 +924,17 @@ void HybridGI::DrawSettings()
 					ImGui::SliderFloat("##second_bounce_strength", &settings.WorldCacheSecondBounceStrength, 0.0f, 0.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 				}
 
-				BeginSettingRow("Directional Occlusion", "Uses voxel occupancy to reduce cached light arriving through blocked directions, improving depth and reducing light leakage.");
-				PIXLUI::Toggle("##directional_occlusion", &settings.EnableDirectionalOcclusion);
-
-				BeginSettingRow("Occlusion Strength", "How strongly world-cache occupancy suppresses blocked indirect-light directions.");
-				{
-					auto occGuard = Util::DisableGuard(!settings.EnableDirectionalOcclusion);
-					ImGui::SliderFloat("##directional_occlusion_strength", &settings.DirectionalOcclusionStrength, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-				}
 				ImGui::EndTable();
 			}
 		}
+	}
 	}
 
 	// -------------------------------------------------------------------------
 	// VISIBILITY + REFLECTIONS
 	// -------------------------------------------------------------------------
 	PIXLUI::SectionBanner("VISIBILITY & REFLECTIONS");
-	ImGui::TextWrapped("Bent-normal visibility reuses the GI horizon data to stop ambient and rough reflection energy from arriving through blocked directions. Hybrid Reflections adds stochastic GGX screen-space transport with world-cache fallback.");
+	ImGui::TextWrapped("Bent-normal visibility reuses the SSGI visibility rays to steer ambient and rough reflection energy away from blocked directions. Screen-Space Reflections adds stochastic GGX rays against the current depth and radiance buffers.");
 	{
 		auto guard = Util::DisableGuard(!settings.Enabled);
 		if (BeginSettingsTable("PIXL GI Visibility")) {
@@ -541,9 +950,9 @@ void HybridGI::DrawSettings()
 		}
 
 		ImGui::Spacing();
-		recompileFlag |= DrawPixlToggleField("Hybrid Reflections", &settings.EnableExperimentalSpecularGI);
+		recompileFlag |= DrawPixlToggleField("Screen-Space Reflections", &settings.EnableExperimentalSpecularGI);
 		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Stochastic GGX reflections traced through the hierarchical depth and radiance buffers. Screen hits are temporally reconstructed; misses can use the persistent world cache before the normal AmbientProbe/cubemap fallback. Changing this automatically rebuilds the reflection compute pipeline.");
+			ImGui::TextWrapped("Stochastic GGX reflections traced through the hierarchical screen-space depth and radiance buffers. Screen hits are temporally reconstructed; misses use the normal AmbientProbe/cubemap fallback. Changing this automatically rebuilds the reflection compute pipeline.");
 
 		{
 			auto reflectionGuard = Util::DisableGuard(!settings.EnableExperimentalSpecularGI);
@@ -553,9 +962,9 @@ void HybridGI::DrawSettings()
 				BeginSettingRow("Maximum Roughness", "Surfaces rougher than this use normal AmbientProbe/cubemaps only, avoiding low-value stochastic noise.");
 				ImGui::SliderFloat("##hybrid_max_roughness", &settings.ReflectionMaxRoughness, 0.20f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 				BeginSettingRow("Off-Screen World Fallback", "Lets the persistent world cache contribute when a reflection leaves the screen or has no reliable hit.");
-				PIXLUI::Toggle("##world_reflection_fallback", &settings.EnableVoxelReflections);
-				BeginSettingRow("Fallback Strength", "Strength of the coarse world-cache reflection fallback. Best on rough metal/glossy stone rather than perfect mirrors.");
-				{ auto g = Util::DisableGuard(!settings.EnableVoxelReflections || !settings.EnableWorldCache); ImGui::SliderFloat("##world_reflection_strength", &settings.VoxelReflectionStrength, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp); }
+				if (settings.EnableWorldCache) PIXLUI::Toggle("##world_reflection_fallback", &settings.EnableVoxelReflections);
+				if (settings.EnableWorldCache) BeginSettingRow("Fallback Strength", "Strength of the coarse world-cache reflection fallback. Best on rough metal/glossy stone rather than perfect mirrors.");
+				if (settings.EnableWorldCache) { auto g = Util::DisableGuard(!settings.EnableVoxelReflections); ImGui::SliderFloat("##world_reflection_strength", &settings.VoxelReflectionStrength, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp); }
 				ImGui::EndTable();
 			}
 		}
@@ -656,21 +1065,21 @@ void HybridGI::DrawSettings()
 						recompileFlag = true;
 
 					BeginSettingRow("Sample Directions", "Number of angular directions traced per pixel. More directions reduce directional noise but increase GI cost.");
-					Util::UIntSlider("##num_slices", &settings.NumSlices, 1, 10, "%d", ImGuiSliderFlags_AlwaysClamp);
+					Util::UIntSlider("##num_slices", &settings.NumSlices, 2, 8, "%d", ImGuiSliderFlags_AlwaysClamp);
 
 					BeginSettingRow("Steps Per Direction", "Number of horizon samples along each direction. More steps improve spatial accuracy and large-radius stability.");
-					Util::UIntSlider("##num_steps", &settings.NumSteps, 1, 20, "%d", ImGuiSliderFlags_AlwaysClamp);
+					Util::UIntSlider("##num_steps", &settings.NumSteps, 4, 24, "%d", ImGuiSliderFlags_AlwaysClamp);
 
-					BeginSettingRow("Experimental Adaptive Ray Tiles", "Compiles an experimental 8x8 tile classifier that reduces horizon directions and steps only in stable, low-frequency tiles. Disabled by default pending live image-quality and GPU-profiler validation.");
+					BeginSettingRow("Adaptive Ray Allocation", "Reduces SSGI sample directions only after temporal history is geometry-validated and converged. Newly visible, disoccluded, or lighting-reactive pixels keep the full ray count. Requires Temporal Denoiser; lower minimum work trades spatial noise for GPU savings.");
 					recompileFlag |= DrawPixlToggleField("##adaptive_ray_tiles", &settings.EnableAdaptiveRayAllocation);
                     BeginSettingRow("Experimental Cache Confidence", "Tracks world-cache lighting variance and observation reliability. Disabled by default pending visual validation; adds 512 KiB of cache storage.");
                     recompileFlag |= DrawPixlToggleField("##cache_intelligence", &settings.EnableCacheIntelligence);
                     BeginSettingRow("Experimental Cache Update Budget", "Prioritizes changed and uncertain cells using delayed GPU timings. Requires Cache Confidence; reserves 512 KiB while enabled. Reference updates remain active when timing data is unavailable.");
                     DrawPixlToggleField("##cache_update_budget", &settings.EnableBudgetedCacheUpdates);
 
-					BeginSettingRow("Adaptive Minimum Work", "Lowest fraction of configured directions and steps retained in a stable tile. This is applied independently to both loop dimensions; 50% can therefore approach one quarter of the horizon samples in qualifying tiles.");
+					BeginSettingRow("Adaptive Minimum Ray Fraction", "Lowest fraction of configured directions used for converged pixels. Steps per direction are unchanged; at 50%, stable pixels use about half the rays.");
 					{
-						auto adaptiveGuard = Util::DisableGuard(!settings.EnableAdaptiveRayAllocation);
+						auto adaptiveGuard = Util::DisableGuard(!settings.EnableAdaptiveRayAllocation || !settings.EnableTemporalDenoiser);
 						ImGui::SliderFloat("##adaptive_ray_minimum", &settings.AdaptiveRayMinimum, 0.35f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 					}
 
@@ -695,14 +1104,14 @@ void HybridGI::DrawSettings()
 				}
 			}
 
-			if (ImGui::CollapsingHeader("World Cache Quality", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (WorldCacheAvailableForSSGITest() && ImGui::CollapsingHeader("World Cache Quality", ImGuiTreeNodeFlags_DefaultOpen)) {
 				auto cacheGuard = Util::DisableGuard(!settings.EnableWorldCache);
 				if (BeginSettingsTable("PIXL GI Advanced Cache")) {
 					BeginSettingRow("World Samples", "Number of cache samples used during world-space reconstruction. Higher values reduce cache noise at additional cost.");
 					Util::UIntSlider("##world_samples", &settings.WorldCacheSampleCount, 1, 8, "%d", ImGuiSliderFlags_AlwaysClamp);
 
 					BeginSettingRow("Cone Trace Steps", "Maximum voxel steps used when sampling world irradiance/occlusion. Higher values see farther through the cache but cost more.");
-					Util::UIntSlider("##trace_steps", &settings.WorldCacheTraceSteps, 2, 6, "%d", ImGuiSliderFlags_AlwaysClamp);
+					Util::UIntSlider("##trace_steps", &settings.WorldCacheTraceSteps, 2, 3, "%d", ImGuiSliderFlags_AlwaysClamp);
 
 					BeginSettingRow("Near Voxel Size", "World-space size of high-detail cache cells around the camera. Smaller cells preserve more detail but cover less space.");
 					ImGui::SliderFloat("##near_voxel", &settings.WorldCacheCellSizeNear, 64.0f, 256.0f, "%.0f units", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
@@ -727,12 +1136,20 @@ void HybridGI::DrawSettings()
 		}
 	}
 
+	// Capture stays available outside Developer Mode without occupying the normal
+	// lighting controls. The capture restores the previous view and menu state.
+	if (ImGui::CollapsingHeader("Diagnostics")) {
+		if (ImGui::Button("Capture PIXL GI Diagnostic Set", { -1.0f, 0.0f }))
+			RequestDiagnosticCapture();
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Captures AO, diffuse GI, reflections and supporting lighting views in PIXL/Diagnostics/Captures. Keep the camera still until capture completes.");
+		if (diagnosticCaptureActive || diagnosticCaptureRequested.load(std::memory_order_acquire))
+			ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_HeaderActive), "Diagnostic capture active - keep the camera still");
+	}
+
 	// -------------------------------------------------------------------------
 	// DIAGNOSTICS
 	// -------------------------------------------------------------------------
-	if (globals::state->IsDeveloperMode()) {
-		ImGui::SeparatorText("Diagnostics");
-	}
 	if (globals::state->IsDeveloperMode() && ImGui::CollapsingHeader("Developer & Debug Tools")) {
 		static constexpr const char* debugViews[] = {
 			"Composite",
@@ -743,8 +1160,8 @@ void HybridGI::DrawSettings()
 			"Voxel Confidence / Coverage",
 			"Voxel Cascade",
 			"Cached Irradiance",
-			"Voxel Directional Occlusion",
-			"Voxel Reflection Fallback",
+			"Directional Occlusion (unavailable in SSGI)",
+			"Voxel Reflection Fallback (unavailable in SSGI)",
 			"Bent Normal",
 			"Directional Visibility",
 			"Physical Specular Occlusion",
@@ -757,20 +1174,13 @@ void HybridGI::DrawSettings()
 			BeginSettingRow("Full-Screen View", "Visualizes a single stage of the GI pipeline. Composite returns to normal gameplay output.");
 			int debugView = static_cast<int>(settings.DebugView);
 			if (ImGui::Combo("##debug_view", &debugView, debugViews, static_cast<int>(std::size(debugViews))))
-				settings.DebugView = static_cast<uint>(std::clamp(debugView, 0, static_cast<int>(std::size(debugViews)) - 1));
+				settings.DebugView = (debugView == 8 || debugView == 9) ? 0u :
+					static_cast<uint>(std::clamp(debugView, 0, static_cast<int>(std::size(debugViews)) - 1));
 
 			BeginSettingRow("Debug Exposure", "Display-only exposure multiplier used by diagnostic visualizations.");
 			ImGui::SliderFloat("##debug_gain", &settings.DebugGain, 0.1f, 16.0f, "%.2fx", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
 			ImGui::EndTable();
 		}
-
-		if (ImGui::Button("Capture PIXL GI Diagnostic Set", { -1.0f, 0.0f }))
-			RequestDiagnosticCapture();
-		if (auto _tt = Util::HoverTooltipWrapper())
-			ImGui::TextWrapped("Temporarily closes the menu, captures the presented GI/PBR diagnostic views after a short settle period, then writes screenshots plus a manifest, settings snapshot, shader hashes, GPU timings and log snapshot under PIXL/Diagnostics/Captures. Late transparencies and HUD elements are explicitly identified as presentation overlays.");
-
-		if (diagnosticCaptureActive || diagnosticCaptureRequested.load(std::memory_order_acquire))
-			ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_HeaderActive), "Diagnostic capture active - keep the camera still");
 
 		if (ImGui::TreeNode(T(TKEY("buffer_viewer"), "Buffer Viewer"))) {
 			static float debugRescale = 0.3f;
@@ -828,12 +1238,12 @@ void HybridGI::UpdateDiagnosticCapture()
 		diagnosticSavedDebugView = settings.DebugView;
 		diagnosticSavedMaterialDebugMode = globals::pipeline::materialForge.settings.LegacyPhysicalDebugMode;
 		Menu::GetSingleton()->IsEnabled = false;
-		diagnosticCaptureIndex = 0;
+		diagnosticCaptureIndex = NextDiagnosticView(0);
 		diagnosticRecords.clear();
 		diagnosticFrozenFrameIndex = globals::state->frameCount;
 		diagnosticCaptureActive = true;
 		diagnosticWaitingForScreenshot = false;
-		ApplyDiagnosticView(0);
+		ApplyDiagnosticView(diagnosticCaptureIndex);
 		logger::info("[PIXL Hybrid GI] diagnostic capture started at {}", diagnosticCaptureDirectory.string());
 		NotifyDiagnostic("PIXL GI dump started - keep the camera still");
 		return;
@@ -853,7 +1263,7 @@ void HybridGI::UpdateDiagnosticCapture()
 		}
 
 		diagnosticWaitingForScreenshot = false;
-		++diagnosticCaptureIndex;
+		diagnosticCaptureIndex = NextDiagnosticView(diagnosticCaptureIndex + 1);
 		if (diagnosticCaptureIndex >= PixlDiagnosticViews.size()) {
 			FinishDiagnosticCapture(true);
 			return;
@@ -880,6 +1290,49 @@ void HybridGI::UpdateDiagnosticCapture()
 	diagnosticWaitFrames = 0;
 }
 
+std::string_view HybridGI::DiagnosticViewUnavailableReason(size_t index) const
+{
+	const auto mode = PixlDiagnosticViews.at(index).giDebugView;
+	if (mode == 8u || mode == 9u)
+		return "legacy GI view is not implemented by the active SSGI kernel";
+	if ((mode >= 5u && mode <= 7u) || mode == 9u || (mode >= 14u && mode <= 19u)) {
+		if (!settings.EnableWorldCache || !WorldCacheAvailableForSSGITest())
+			return "world cache disabled in this build or configuration";
+		if (mode >= 14u && !settings.EnableCacheIntelligence)
+			return "cache intelligence disabled";
+		if (mode == 9u && !settings.EnableVoxelReflections)
+			return "voxel reflection fallback disabled";
+	}
+	if (mode == 8u && (!settings.EnableWorldCache || !settings.EnableDirectionalOcclusion || !WorldCacheAvailableForSSGITest()))
+		return "world cache directional occlusion disabled";
+	if (mode == 2u && !settings.EnableGI)
+		return "diffuse GI disabled";
+	if (mode == 1u && !settings.EnableAO)
+		return "PIXL ambient occlusion disabled";
+	if ((mode == 3u || mode == 13u) && !settings.EnableExperimentalSpecularGI)
+		return "screen-space reflections disabled";
+	if (mode == 10u && !settings.EnableBentNormalLighting)
+		return "bent-normal lighting disabled";
+	if (mode == 12u && !settings.EnableSpecularOcclusion)
+		return "specular occlusion disabled";
+	return {};
+}
+
+size_t HybridGI::DiagnosticAvailableViewCount() const
+{
+	size_t count = 0;
+	for (size_t index = 0; index < PixlDiagnosticViews.size(); ++index)
+		count += DiagnosticViewUnavailableReason(index).empty();
+	return count;
+}
+
+size_t HybridGI::NextDiagnosticView(size_t index) const
+{
+	while (index < PixlDiagnosticViews.size() && !DiagnosticViewUnavailableReason(index).empty())
+		++index;
+	return index;
+}
+
 void HybridGI::ApplyDiagnosticView(size_t index)
 {
 	const auto& view = PixlDiagnosticViews.at(index);
@@ -889,8 +1342,8 @@ void HybridGI::ApplyDiagnosticView(size_t index)
 	diagnosticWaitFrames = 0;
 	diagnosticWaitingForScreenshot = false;
 	logger::info("[PIXL Hybrid GI] diagnostic view {}/{}: {}",
-		index + 1,
-		PixlDiagnosticViews.size(),
+		diagnosticRecords.size() + 1,
+		DiagnosticAvailableViewCount(),
 		view.name);
 }
 
@@ -927,13 +1380,14 @@ void HybridGI::FinishDiagnosticCapture(bool complete)
 void HybridGI::WriteDiagnosticManifest(bool complete) const
 {
 	json root;
-	root["schemaVersion"] = 5;
+	root["schemaVersion"] = 7;
 	root["product"] = "PIXL PBR Rendering Engine";
+	root["productVersion"] = std::string(Plugin::DISPLAY_VERSION);
 	root["capture"] = {
 		{ "complete", complete },
 		{ "frameIndex", globals::state->frameCount },
 		{ "viewCount", diagnosticRecords.size() },
-		{ "expectedViewCount", PixlDiagnosticViews.size() },
+		{ "expectedViewCount", DiagnosticAvailableViewCount() },
 		{ "menuRestored", Menu::GetSingleton()->IsEnabled == diagnosticSavedMenuEnabled },
 		{ "captureStage", "presented-framebuffer" },
 		{ "opaqueDebugIsolation", true },
@@ -941,6 +1395,11 @@ void HybridGI::WriteDiagnosticManifest(bool complete) const
 		{ "hudIsolation", false },
 		{ "interpretation", "Each PNG contains an opaque PIXL debug visualization followed by Skyrim's late transparency/effect and HUD presentation passes. Repeated smoke or UI is overlay contamination, not data stored in every inspected buffer." }
 	};
+	for (size_t index = 0; index < PixlDiagnosticViews.size(); ++index) {
+		const auto reason = DiagnosticViewUnavailableReason(index);
+		if (!reason.empty())
+			root["skippedViews"].push_back({ { "name", PixlDiagnosticViews[index].name }, { "reason", reason } });
+	}
 	root["settings"]["hybridGI"] = settings;
 	const auto& reconstruction = globals::pipeline::imageReconstruction;
 	const auto& camera = globals::pipeline::cameraSuite;
@@ -1026,6 +1485,11 @@ void HybridGI::WriteDiagnosticManifest(bool complete) const
 	root["runtime"] = {
 		{ "featureLoaded", loaded },
 		{ "shadersOK", ShadersOK() },
+		{ "ambientOcclusionEnabled", settings.Enabled && settings.EnableAO },
+		{ "diffuseGIEnabled", settings.Enabled && settings.EnableGI },
+		{ "screenSpaceReflectionsEnabled", settings.Enabled && settings.EnableExperimentalSpecularGI },
+		{ "screenSpacePointLightShadowsEnabled", radiantGrid.settings.EnableScreenSpaceLocalShadows },
+		{ "localContactShadowsEnabled", globals::pipeline::materialForge.settings.EnableLocalContactShadows != 0u },
 		{ "diffuseGIAlwaysBoundWithHQSpecular", true },
 		{ "cacheConfidenceMaturation", true },
 		{ "asymmetricBrightOutlierRejection", true },
@@ -1154,8 +1618,25 @@ void HybridGI::WriteDiagnosticManifest(bool complete) const
 		{ "hybridReflections", hybridReflectionCompute != nullptr },
 		{ "hybridReflectionDenoise", hybridReflectionDenoiseCompute != nullptr }
 	};
+	if (auto* shaderCache = globals::shaderCache) {
+		const auto total = shaderCache->GetTotalTasks();
+		const auto completed = shaderCache->GetCompletedTasks();
+		const auto failed = shaderCache->GetFailedTasks();
+		const auto compiling = shaderCache->IsCompiling();
+		const auto currentFailed = shaderCache->GetCurrentFailedCount();
+		root["shaderCompilation"] = {
+			{ "compiling", compiling },
+			{ "totalTasks", total },
+			{ "completedTasks", completed },
+			{ "failedTasks", failed },
+			{ "currentFailedShaders", currentFailed },
+			{ "diskHitTasks", shaderCache->GetDiskHitTasks() },
+			{ "pendingTasks", total > completed + failed ? total - completed - failed : 0u },
+			{ "readyForVisualDiagnosis", !compiling && total == completed + failed && currentFailed == 0 }
+		};
+	}
 
-	bool allScreenshotsPresent = diagnosticRecords.size() == PixlDiagnosticViews.size();
+	bool allScreenshotsPresent = diagnosticRecords.size() == DiagnosticAvailableViewCount();
 	uint64_t screenshotBytes = 0;
 	for (const auto& record : diagnosticRecords) {
 		std::error_code fileError;
@@ -1208,7 +1689,7 @@ void HybridGI::WriteDiagnosticManifest(bool complete) const
 	}
 
 	constexpr std::array<std::string_view, 15> shaderFiles{
-		"gi.cs.hlsl", "worldCache.hlsli", "worldCacheInject.cs.hlsl", "worldCacheDecay.cs.hlsl",
+		"ssgi.cs.hlsl", "worldCache.hlsli", "worldCacheInject.cs.hlsl", "worldCacheDecay.cs.hlsl",
 		"hybridReflection.cs.hlsl", "hybridReflectionDenoise.cs.hlsl", "blur.cs.hlsl", "radianceDisocc.cs.hlsl",
 		"prefilterDepths.cs.hlsl", "prefilterRadiance.cs.hlsl", "prefilterNormal.cs.hlsl",
 		"upsample.cs.hlsl", "common.hlsli", "worldCacheMark.cs.hlsl", "worldCacheEvidence.cs.hlsl"
@@ -1251,10 +1732,16 @@ void HybridGI::LoadSettings(json& o_json)
 		return;
 	}
 	settings = o_json;
+	// This test build replaces the world cache and scene-voxel path with the
+	// standalone screen-space integrator. Ignore obsolete saved cache toggles.
+	settings.EnableWorldCache = kEnableWorldCacheForSSGITest && settings.EnableWorldCache;
+	settings.EnableDirectionalOcclusion = kEnableWorldCacheForSSGITest && settings.EnableDirectionalOcclusion;
+	settings.EnableWorldCacheSecondBounce = kEnableWorldCacheForSSGITest && settings.EnableWorldCacheSecondBounce;
 	// Append-only settings are loaded explicitly because the legacy settings
 	// serializer is already at its macro field limit. Old presets receive the
 	// PIXL defaults; new presets round-trip all four values.
 	settings.EnableContactDepth = o_json.value("EnableContactDepth", true);
+	settings.EnableAO = o_json.value("EnableAO", true);
 	settings.ContactDepthStrength = o_json.value("ContactDepthStrength", 0.35f);
 	settings.ContactDepthRadius = o_json.value("ContactDepthRadius", 96.0f);
 	settings.ContactDepthBias = o_json.value("ContactDepthBias", 0.08f);
@@ -1263,6 +1750,9 @@ void HybridGI::LoadSettings(json& o_json)
     settings.EnableBudgetedCacheUpdates = o_json.value("EnableBudgetedCacheUpdates", false);
 	settings.AdaptiveRayMinimum = o_json.value("AdaptiveRayMinimum", 0.50f);
 	settings.EnableEmitterInjection = o_json.value("EnableEmitterInjection", true);
+	settings.EnableCacheIntelligence = kEnableWorldCacheForSSGITest && settings.EnableCacheIntelligence;
+	settings.EnableBudgetedCacheUpdates = kEnableWorldCacheForSSGITest && settings.EnableBudgetedCacheUpdates;
+	settings.EnableEmitterInjection = kEnableWorldCacheForSSGITest && settings.EnableEmitterInjection;
 	settings.EmitterInjectionStrength = o_json.value("EmitterInjectionStrength", 0.65f);
 	const Settings defaults{};
 	const auto finiteOr = [](float value, float fallback) {
@@ -1274,8 +1764,13 @@ void HybridGI::LoadSettings(json& o_json)
 	settings.DepthFadeRange.x = finiteOr(settings.DepthFadeRange.x, defaults.DepthFadeRange.x);
 	settings.DepthFadeRange.y = finiteOr(settings.DepthFadeRange.y, defaults.DepthFadeRange.y);
 	settings.ResolutionMode = std::clamp(settings.ResolutionMode, 0, 2);
+	// Keep persisted/UI values inside the ranges implemented by ssgi.cs.hlsl.
+	settings.NumSlices = std::clamp(settings.NumSlices, 2u, 8u);
+	settings.NumSteps = std::clamp(settings.NumSteps, 4u, 24u);
 	settings.DebugView = std::min(settings.DebugView, 19u);
-	settings.WorldCacheTraceSteps = std::clamp(settings.WorldCacheTraceSteps, 2u, 6u);
+	if (settings.DebugView == 8u || settings.DebugView == 9u)
+		settings.DebugView = 0u;
+	settings.WorldCacheTraceSteps = std::clamp(settings.WorldCacheTraceSteps, 2u, 3u);
 	settings.WorldCacheTemporalResponse = std::clamp(settings.WorldCacheTemporalResponse, 0.02f, 1.0f);
 	settings.WorldCacheSecondBounceStrength = std::clamp(settings.WorldCacheSecondBounceStrength, 0.0f, 0.5f);
 	settings.VoxelReflectionStrength = std::clamp(settings.VoxelReflectionStrength, 0.0f, 1.5f);
@@ -1309,6 +1804,7 @@ void HybridGI::LoadSettings(json& o_json)
 void HybridGI::SaveSettings(json& o_json)
 {
 	o_json = settings;
+	o_json["EnableAO"] = settings.EnableAO;
 	o_json["EnableContactDepth"] = settings.EnableContactDepth;
 	o_json["ContactDepthStrength"] = settings.ContactDepthStrength;
 	o_json["ContactDepthRadius"] = settings.ContactDepthRadius;
@@ -1356,6 +1852,10 @@ void HybridGI::PostPostLoad()
 
 void HybridGI::SetupResources()
 {
+    // Legacy scene-voxel injection is intentionally dormant in the SSGI test
+    // implementation. It also avoids traversing live scene nodes from the
+    // shader setup hook, which appeared in the 2026-11-04 crash stack.
+    sceneVoxelDimension = 0;
     cacheScheduleCB.reset();
     texWorldUpdateTime.reset();
     texPreviousWorldUpdateTime.reset();
@@ -1394,11 +1894,124 @@ void HybridGI::SetupResources()
 		});
 	}
 
-	logger::debug("Creating buffers...");
-	{
+	// This buffer is part of the screen-space GI path, even when the optional
+	// world irradiance cache and its scene-voxel capture are disabled.
+	try {
 		ssgiCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<HybridGICB>(), "HybridGI::CB");
+	} catch (const std::exception& error) {
+		logger::error("[PIXL Hybrid GI] Screen-space constant buffer allocation failed; GI will remain unavailable: {}", error.what());
+		return;
 	}
 
+	if (WorldCacheAvailableForSSGITest() && settings.EnableWorldCache && sceneVoxelDimension > 0u) try {
+	logger::debug("Creating scene buffers and the HTrace-style voxel volume...");
+	{
+		sceneVoxelCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<SceneVoxelCB>(), "HybridGI::SceneVoxelCB");
+		sceneVoxelizeCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<SceneVoxelizeCB>(), "HybridGI::SceneVoxelizeCB");
+		sceneVoxelScrollCB = eastl::make_unique<ConstantBuffer>(ConstantBufferDesc<SceneVoxelScrollCB>(), "HybridGI::SceneVoxelScrollCB");
+		D3D11_BUFFER_DESC triangleDesc{};
+		triangleDesc.ByteWidth = PIXL::HybridGIInternal::kMaxGpuSceneTriangles * sizeof(PIXL::HybridGIInternal::GpuSceneTriangle);
+		triangleDesc.Usage = D3D11_USAGE_DYNAMIC;
+		triangleDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		triangleDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		triangleDesc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+		triangleDesc.StructureByteStride = sizeof(PIXL::HybridGIInternal::GpuSceneTriangle);
+		sceneTriangleBuffer = eastl::make_unique<Buffer>(triangleDesc, nullptr, "HybridGI::SceneTriangles");
+		D3D11_SHADER_RESOURCE_VIEW_DESC triangleSrv{};
+		triangleSrv.Format = DXGI_FORMAT_UNKNOWN;
+		triangleSrv.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+		triangleSrv.Buffer.NumElements = PIXL::HybridGIInternal::kMaxGpuSceneTriangles;
+		sceneTriangleBuffer->CreateSRV(triangleSrv);
+		D3D11_TEXTURE3D_DESC voxelDesc{};
+		voxelDesc.Width = sceneVoxelDimension;
+		voxelDesc.Height = sceneVoxelDimension;
+		voxelDesc.Depth = sceneVoxelDimension;
+		voxelDesc.MipLevels = 1;
+		voxelDesc.Format = DXGI_FORMAT_R32_UINT;
+		voxelDesc.Usage = D3D11_USAGE_DEFAULT;
+		voxelDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+		texSceneVoxels = eastl::make_unique<Texture3D>(voxelDesc, "HybridGI::CapturedSceneVoxels");
+		texSceneVoxelsScratch = eastl::make_unique<Texture3D>(voxelDesc, "HybridGI::CapturedSceneVoxelsScratch");
+		texSceneVoxelWinners = eastl::make_unique<Texture3D>(voxelDesc, "HybridGI::SceneVoxelRadianceWinners");
+		sceneVoxelContentsInitialized = false;
+		D3D11_SHADER_RESOURCE_VIEW_DESC voxelSrv{};
+		voxelSrv.Format = voxelDesc.Format;
+		voxelSrv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE3D;
+		voxelSrv.Texture3D.MipLevels = 1;
+		texSceneVoxels->CreateSRV(voxelSrv);
+		texSceneVoxelsScratch->CreateSRV(voxelSrv);
+		D3D11_UNORDERED_ACCESS_VIEW_DESC voxelUav{};
+		voxelUav.Format = voxelDesc.Format;
+		voxelUav.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE3D;
+		voxelUav.Texture3D.WSize = sceneVoxelDimension;
+		texSceneVoxels->CreateUAV(voxelUav);
+		texSceneVoxelsScratch->CreateUAV(voxelUav);
+		sceneVoxelUAV = texSceneVoxels->uav;
+		sceneVoxelScratchUAV = texSceneVoxelsScratch->uav;
+		texSceneVoxelWinners->CreateSRV(voxelSrv);
+		texSceneVoxelWinners->CreateUAV(voxelUav);
+		sceneVoxelWinnerUAV = texSceneVoxelWinners->uav;
+		texSceneVoxelSurface = eastl::make_unique<Texture3D>(voxelDesc, "HybridGI::SceneVoxelSurface");
+		texSceneVoxelSurfaceScratch = eastl::make_unique<Texture3D>(voxelDesc, "HybridGI::SceneVoxelSurfaceScratch");
+		texSceneVoxelSurface->CreateSRV(voxelSrv);
+		texSceneVoxelSurfaceScratch->CreateSRV(voxelSrv);
+		texSceneVoxelSurface->CreateUAV(voxelUav);
+		texSceneVoxelSurfaceScratch->CreateUAV(voxelUav);
+		sceneVoxelSurfaceUAV = texSceneVoxelSurface->uav;
+		sceneVoxelSurfaceScratchUAV = texSceneVoxelSurfaceScratch->uav;
+		texSceneVoxelMaterial = eastl::make_unique<Texture3D>(voxelDesc, "HybridGI::SceneVoxelMaterial");
+		texSceneVoxelMaterialScratch = eastl::make_unique<Texture3D>(voxelDesc, "HybridGI::SceneVoxelMaterialScratch");
+		texSceneVoxelMaterial->CreateSRV(voxelSrv);
+		texSceneVoxelMaterialScratch->CreateSRV(voxelSrv);
+		texSceneVoxelMaterial->CreateUAV(voxelUav);
+		texSceneVoxelMaterialScratch->CreateUAV(voxelUav);
+		sceneVoxelMaterialUAV = texSceneVoxelMaterial->uav;
+		sceneVoxelMaterialScratchUAV = texSceneVoxelMaterialScratch->uav;
+
+		D3D11_TEXTURE3D_DESC radianceVoxelDesc = voxelDesc;
+		radianceVoxelDesc.Format = DXGI_FORMAT_R32G32_UINT;
+		texSceneVoxelRadiance = eastl::make_unique<Texture3D>(radianceVoxelDesc, "HybridGI::SceneVoxelRadiance");
+		D3D11_SHADER_RESOURCE_VIEW_DESC radianceVoxelSrv{};
+		radianceVoxelSrv.Format = radianceVoxelDesc.Format;
+		radianceVoxelSrv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE3D;
+		radianceVoxelSrv.Texture3D.MipLevels = 1;
+		texSceneVoxelRadiance->CreateSRV(radianceVoxelSrv);
+		D3D11_UNORDERED_ACCESS_VIEW_DESC radianceVoxelUav{};
+		radianceVoxelUav.Format = radianceVoxelDesc.Format;
+		radianceVoxelUav.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE3D;
+		radianceVoxelUav.Texture3D.WSize = sceneVoxelDimension;
+		texSceneVoxelRadiance->CreateUAV(radianceVoxelUav);
+		sceneVoxelRadianceUAV = texSceneVoxelRadiance->uav;
+		const UINT emptyRadiance[4]{};
+		context->ClearUnorderedAccessViewUint(sceneVoxelRadianceUAV.get(), emptyRadiance);
+		const double voxelCells = static_cast<double>(sceneVoxelDimension) * sceneVoxelDimension * sceneVoxelDimension;
+		logger::info("[PIXL Hybrid GI] Scene voxel volume ready: {}^3 cells at {} world units/cell; texture storage is approximately {:.0f} MiB.",
+			sceneVoxelDimension, PIXL::HybridGIInternal::SceneVoxelGrid::kVoxelSize,
+			voxelCells * 36.0 / (1024.0 * 1024.0));
+	}
+
+	} catch (const std::exception& error) {
+		logger::error("[PIXL Hybrid GI] Scene voxel allocation failed; screen-space GI will continue: {}", error.what());
+		sceneVoxelDimension = 0;
+		sceneTriangleBuffer.reset();
+		texSceneVoxels.reset();
+		texSceneVoxelsScratch.reset();
+		texSceneVoxelWinners.reset();
+		texSceneVoxelRadiance.reset();
+		texSceneVoxelSurface.reset();
+		texSceneVoxelSurfaceScratch.reset();
+		texSceneVoxelMaterial.reset();
+		texSceneVoxelMaterialScratch.reset();
+		sceneVoxelUAV = nullptr;
+		sceneVoxelScratchUAV = nullptr;
+		sceneVoxelWinnerUAV = nullptr;
+		sceneVoxelRadianceUAV = nullptr;
+		sceneVoxelSurfaceUAV = nullptr;
+		sceneVoxelSurfaceScratchUAV = nullptr;
+		sceneVoxelMaterialUAV = nullptr;
+		sceneVoxelMaterialScratchUAV = nullptr;
+		sceneVoxelContentsInitialized = false;
+	}
 	logger::debug("Creating textures...");
 	{
 		D3D11_TEXTURE2D_DESC texDesc{
@@ -1537,6 +2150,7 @@ void HybridGI::SetupResources()
 			texPrevGeo->CreateUAV(uavDesc);
 		}
 
+		if constexpr (kEnableWorldCacheForSSGITest) {
 		// PIXL world cache: two flattened 32^3 cascades. Metadata and surface
 		// publication remain atomic R32_UINT. Three RGBA16F payloads hold nine L2
 		// luminance SH coefficients plus chroma ratios; sparse injection keeps the
@@ -1588,6 +2202,7 @@ void HybridGI::SetupResources()
 		for (auto* texture : { texWorldCacheSH0.get(), texWorldCacheSH1.get(), texWorldCacheSH2.get(),
 			texWorldCachePreviousSH0.get(), texWorldCachePreviousSH1.get(), texWorldCachePreviousSH2.get() })
 			context->ClearUnorderedAccessViewFloat(texture->uav.get(), clearFloat);
+		}
 	}
 
 	logger::debug("Loading noise texture...");
@@ -1671,7 +2286,12 @@ namespace
 		kShaderReflectionDenoise = 1u << 12,
 		kShaderWorldMark = 1u << 13,
         kShaderWorldEvidence = 1u << 14,
-        kShaderAll = (1u << 15) - 1u
+		kShaderVoxelize = 1u << 15,
+		kShaderVoxelScroll = 1u << 16,
+		kShaderVoxelRadianceSelect = 1u << 17,
+		kShaderVoxelRadianceResolve = 1u << 18,
+		kShaderVoxelLighting = 1u << 19,
+		kShaderAll = (1u << 20) - 1u
 	};
 }
 
@@ -1683,7 +2303,8 @@ void HybridGI::ClearShaderCache()
 		&prefilterRadianceCompute, &prefilterNormalCompute, &radianceDisoccCompute,
 		&giCompute, &blurCompute, &blurAtrousCompute, &upsampleCompute,
 		&worldCacheInjectCompute, &worldCacheSelectCompute, &worldCacheDecayCompute, &worldCacheMarkCompute, &worldCacheEvidenceCompute, &worldCacheEvidenceResolveCompute,
-		&hybridReflectionCompute, &hybridReflectionDenoiseCompute })
+		&hybridReflectionCompute, &hybridReflectionDenoiseCompute, &sceneVoxelizeCompute, &sceneVoxelScrollCompute,
+		&sceneVoxelRadianceSelectCompute, &sceneVoxelRadianceResolveCompute, &sceneVoxelLightingCompute })
 		*shader = nullptr;
 	CompileComputeShaders(kShaderAll);
 	queuedResetTemporalHistory = true;
@@ -1708,7 +2329,9 @@ void HybridGI::RecompileChangedShaders()
 		if (compiledGI != settings.EnableGI)
 			mask |= kShaderGI;
 		if (compiledHybridReflections != settings.EnableExperimentalSpecularGI)
-			mask |= kShaderRadianceDisocc | kShaderGI;
+			// The active SSGI/AO tracer has no reflection-dependent branch. Only
+			// history remapping needs the changed specular output contract.
+			mask |= kShaderRadianceDisocc;
 		if (compiledAdaptiveRayAllocation != settings.EnableAdaptiveRayAllocation)
 			mask |= kShaderGI;
 	}
@@ -1742,6 +2365,11 @@ void HybridGI::RecompileChangedShaders()
     clearIf(kShaderWorldEvidence, worldCacheEvidenceResolveCompute);
 	clearIf(kShaderReflection, hybridReflectionCompute);
 	clearIf(kShaderReflectionDenoise, hybridReflectionDenoiseCompute);
+	clearIf(kShaderVoxelize, sceneVoxelizeCompute);
+	clearIf(kShaderVoxelScroll, sceneVoxelScrollCompute);
+	clearIf(kShaderVoxelRadianceSelect, sceneVoxelRadianceSelectCompute);
+	clearIf(kShaderVoxelRadianceResolve, sceneVoxelRadianceResolveCompute);
+	clearIf(kShaderVoxelLighting, sceneVoxelLightingCompute);
 
 	CompileComputeShaders(mask);
 }
@@ -1756,34 +2384,33 @@ void HybridGI::CompileComputeShaders(std::uint32_t a_shaderMask)
 		std::vector<std::pair<const char*, const char*>> defines;
 	};
 
-	std::array<ShaderCompileInfo, 17> shaderInfos{{
+	std::array<ShaderCompileInfo, 14> shaderInfos{{
 		{ kShaderPrefilterDepth, &prefilterDepthsCompute, "prefilterDepths.cs.hlsl", { { "LINEAR_FILTER", "" } } },
 		{ kShaderPrefilterDepth, &reflectionDepthCompute, "prefilterDepths.cs.hlsl", { { "MIN_FILTER", "" } } },
 		{ kShaderPrefilterRadiance, &prefilterRadianceCompute, "prefilterRadiance.cs.hlsl", {} },
 		{ kShaderPrefilterNormal, &prefilterNormalCompute, "prefilterNormal.cs.hlsl", {} },
 		{ kShaderRadianceDisocc, &radianceDisoccCompute, "radianceDisocc.cs.hlsl", {} },
-		{ kShaderGI, &giCompute, "gi.cs.hlsl", {} },
+		{ kShaderGI, &giCompute, "ssgi.cs.hlsl", {} },
 		{ kShaderBlur, &blurCompute, "blur.cs.hlsl", {} },
 		{ kShaderBlurAtrous, &blurAtrousCompute, "blur.cs.hlsl", { { "ATROUS_STEP_2", "" } } },
 		{ kShaderUpsample, &upsampleCompute, "upsample.cs.hlsl", {} },
 		{ kShaderWorldInject, &worldCacheInjectCompute, "worldCacheInject.cs.hlsl", {} },
 		{ kShaderWorldSelect, &worldCacheSelectCompute, "worldCacheInject.cs.hlsl", { { "WORLD_CACHE_SELECT", "" } } },
 		{ kShaderWorldDecay, &worldCacheDecayCompute, "worldCacheDecay.cs.hlsl", {} },
-        { kShaderWorldMark, &worldCacheMarkCompute, "worldCacheMark.cs.hlsl", {} },
-        { kShaderWorldEvidence, &worldCacheEvidenceCompute, "worldCacheEvidence.cs.hlsl", {} },
-        { kShaderWorldEvidence, &worldCacheEvidenceResolveCompute, "worldCacheEvidence.cs.hlsl", {{ "RESOLVE_EVIDENCE", "" }} },
 		{ kShaderReflection, &hybridReflectionCompute, "hybridReflection.cs.hlsl", {} },
 		{ kShaderReflectionDenoise, &hybridReflectionDenoiseCompute, "hybridReflectionDenoise.cs.hlsl", {} },
 	}};
 
 	bool intelligenceCompileFailed = false;
 	for (auto& info : shaderInfos) {
-		if ((a_shaderMask & info.bit) == 0u || ((info.bit == kShaderWorldMark || info.bit == kShaderWorldEvidence) && !settings.EnableCacheIntelligence))
+		if ((a_shaderMask & info.bit) == 0u ||
+			((info.bit == kShaderWorldInject || info.bit == kShaderWorldSelect || info.bit == kShaderWorldDecay) && !settings.EnableWorldCache) ||
+			((info.bit == kShaderWorldMark || info.bit == kShaderWorldEvidence) && !settings.EnableCacheIntelligence))
 			continue;
 		// CompileShader hashes the complete define list. This explicit source
 		// revision forces only HybridGI's standalone compute artifacts to rebuild
 		// without raising the core feature compatibility version in Module.ini.
-		info.defines.push_back({ "PIXL_HYBRIDGI_MODULE_REVISION", "\"4-4-7\"" });
+		info.defines.push_back({ "PIXL_HYBRIDGI_MODULE_REVISION", "\"5-0-8-world-cache-ssgi\"" });
 		if (settings.ResolutionMode == 1)
 			info.defines.push_back({ "HALF_RES", "" });
 		if (settings.ResolutionMode == 2)
@@ -1800,7 +2427,6 @@ void HybridGI::CompileComputeShaders(std::uint32_t a_shaderMask)
 			info.defines.push_back({ "ADAPTIVE_RAY_ALLOCATION", "" });
         if (settings.EnableCacheIntelligence)
             info.defines.push_back({ "CACHE_INTELLIGENCE", "" });
-
 		auto path = std::filesystem::path("Data\\PIXL-Shaders\\HybridGI") / info.filename;
 		if (auto rawPtr = reinterpret_cast<ID3D11ComputeShader*>(Util::CompileShader(path.c_str(), info.defines, "cs_5_0")))
 			info.programPtr->attach(rawPtr);
@@ -1821,6 +2447,28 @@ void HybridGI::CompileComputeShaders(std::uint32_t a_shaderMask)
 		return;
 	}
 
+	const bool requiredCoreShadersReady = prefilterDepthsCompute && prefilterRadianceCompute &&
+		prefilterNormalCompute && radianceDisoccCompute && giCompute &&
+		(std::clamp(settings.ResolutionMode, 0, 2) == 0 || upsampleCompute);
+	if (!requiredCoreShadersReady) {
+		// Compilation can be cancelled when the global shader-cache generation
+		// changes during startup. Do not latch that transient null result as a
+		// completed configuration: retry with a short backoff until the shaders
+		// become available or the compiler reports a real source error.
+		compiledShaderConfigInitialized = false;
+		recompileFlag = true;
+		shaderCompileRetryAfter = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+		if (!coreShaderCompileWarningLogged) {
+			logger::warn("[HybridGI] Required compute shader set is incomplete (depth={}, radiance={}, normal={}, disocclusion={}, ssgi={}, upsample={}); retrying compilation.",
+				prefilterDepthsCompute != nullptr, prefilterRadianceCompute != nullptr,
+				prefilterNormalCompute != nullptr, radianceDisoccCompute != nullptr,
+				giCompute != nullptr, upsampleCompute != nullptr);
+			coreShaderCompileWarningLogged = true;
+		}
+		return;
+	}
+	coreShaderCompileWarningLogged = false;
+	shaderCompileRetryAfter = {};
 	compiledShaderConfigInitialized = true;
 	compiledResolutionMode = std::clamp(settings.ResolutionMode, 0, 2);
 	compiledTemporalDenoiser = settings.EnableTemporalDenoiser;
@@ -1968,8 +2616,12 @@ void HybridGI::UpdateSB()
 		const float rawDelta = globals::game::deltaTime ? *globals::game::deltaTime : static_cast<float>(RE::GetSecondsSinceLastFrame());
 		const float sanitizedDelta = PIXL::HybridGIInternal::SanitizeDeltaTime(rawDelta);
 		data.WorldCacheDeltaTime = sanitizedDelta;
+		const bool photoFinishSampling = globals::pipeline::pixelCapture.loaded &&
+			globals::pipeline::pixelCapture.IsPhotoFinishSampling() &&
+			globals::pipeline::pixelCapture.GetPhotoFinishStage() == PixelCapture::PhotoFinishStage::Accumulating;
 		const bool cacheUpdatesAllowed = settings.EnableGI && settings.EnableWorldCache &&
-			!diagnosticCaptureActive && globals::pipeline::materialForge.settings.LegacyPhysicalDebugMode == 0u;
+			!diagnosticCaptureActive && !photoFinishSampling &&
+			globals::pipeline::materialForge.settings.LegacyPhysicalDebugMode == 0u;
 		if (cacheUpdatesAllowed) {
 			worldCacheClock = PIXL::HybridGIInternal::AdvanceFixedRateClock(
 				worldCacheClock, worldCacheClockAccumulator, data.WorldCacheDeltaTime, 8.0f);
@@ -1988,13 +2640,13 @@ void HybridGI::UpdateSB()
 
 		const float workloadScale = PIXL::Renderer::GPUWorkloadBudgeter::Get().GetScale(
 			PIXL::Renderer::WorkloadDomain::HybridGI);
-		data.NumSlices = std::clamp(static_cast<uint>(std::lround(settings.NumSlices * workloadScale)), 1u, 10u);
-		data.NumSteps = std::clamp(static_cast<uint>(std::lround(settings.NumSteps * workloadScale)), 1u, 20u);
+		data.NumSlices = std::clamp(static_cast<uint>(std::lround(settings.NumSlices * workloadScale)), 2u, 8u);
+		data.NumSteps = std::clamp(static_cast<uint>(std::lround(settings.NumSteps * workloadScale)), 4u, 24u);
 		data.MinScreenRadius = std::clamp(settings.MinScreenRadius, 0.0f, 1.0f) * dynres.x;
 
 		const float aoRadius = std::clamp(settings.AORadius, 0.0f, 1024.0f);
 		const float giRadius = std::clamp(settings.GIRadius, 0.0f, 1024.0f);
-		const float contactRadius = settings.EnableContactDepth ? std::clamp(settings.ContactDepthRadius, 0.0f, 256.0f) : 0.0f;
+		const float contactRadius = settings.EnableAO && settings.EnableContactDepth ? std::clamp(settings.ContactDepthRadius, 0.0f, 256.0f) : 0.0f;
 		data.EffectRadius = std::max(std::max(aoRadius, giRadius), std::max(contactRadius, 1.0f));
 		data.AORadius = aoRadius / data.EffectRadius;
 		data.GIRadius = giRadius / data.EffectRadius;
@@ -2007,7 +2659,7 @@ void HybridGI::UpdateSB()
 		data.GIDistanceCompensation = std::clamp(settings.GIDistanceCompensation, -5.0f, 5.0f);
 		data.GICompensationMaxDist = aoRadius;
 
-		data.AOPower = std::clamp(settings.AOPower, 0.0f, 4.0f);
+		data.AOPower = settings.EnableAO ? std::clamp(settings.AOPower, 0.0f, 4.0f) : 0.0f;
 		data.GIStrength = std::clamp(settings.GIStrength, 0.0f, 4.0f);
 
 		data.DepthDisocclusion = std::clamp(settings.DepthDisocclusion, 0.0f, 0.2f);
@@ -2069,7 +2721,7 @@ void HybridGI::UpdateSB()
 		data.ReflectionWorldFallbackStrength = std::clamp(settings.ReflectionWorldFallbackStrength, 0.0f, 1.0f);
 		data.ReflectionRayBias = std::clamp(settings.ReflectionRayBias, 1.0f, 24.0f);
 		data.ReflectionRoughnessJitter = std::clamp(settings.ReflectionRoughnessJitter, 0.0f, 1.0f);
-		data.ContactDepthEnabled = settings.EnableContactDepth ? 1u : 0u;
+		data.ContactDepthEnabled = settings.EnableAO && settings.EnableContactDepth ? 1u : 0u;
 		data.ContactDepthStrength = std::clamp(settings.ContactDepthStrength, 0.0f, 0.75f);
 		data.ContactDepthRadius = std::clamp(settings.ContactDepthRadius, 24.0f, 256.0f);
 		data.ContactDepthBias = std::clamp(settings.ContactDepthBias, 0.0f, 0.35f);
@@ -2081,12 +2733,35 @@ void HybridGI::UpdateSB()
 
 void HybridGI::DrawHybridGI()
 {
+	// ReflectionContext is consumed later in this same deferred pass. Clear the
+	// previous frame before any early return so missing D3D state or a failed GI
+	// permutation cannot leave an old reflection SRV looking current.
+	PIXL::Renderer::ReflectionContext::Get().Invalidate();
     if (!settings.EnableCacheIntelligence || !settings.EnableBudgetedCacheUpdates) {
         cacheScheduleCB.reset(); texWorldUpdateTime.reset(); texPreviousWorldUpdateTime.reset(); cacheBudget.Reset();
     }
 	auto context = globals::d3d::context;
 	if (!context)
 		return;
+
+	// Interior cells reuse local coordinates. Scope cached world irradiance to
+	// the active interior so a door transition cannot expose the previous room's
+	// voxel data. Exterior cells keep the shared toroidal cache while streaming.
+	auto* player = RE::PlayerCharacter::GetSingleton();
+	auto* currentCell = player ? player->GetParentCell() : nullptr;
+	const bool currentSceneIsInterior = currentCell && currentCell->IsInteriorCell();
+	const std::uint32_t currentInteriorCellFormId = currentSceneIsInterior ? currentCell->GetFormID() : 0u;
+	if (currentCell) {
+		if (interiorSceneContextInitialized &&
+			(lastSceneWasInterior != currentSceneIsInterior ||
+				(currentSceneIsInterior && lastInteriorCellFormId != currentInteriorCellFormId))) {
+			queuedResetWorldHistory = true;
+		}
+		interiorSceneContextInitialized = true;
+		lastSceneWasInterior = currentSceneIsInterior;
+		lastInteriorCellFormId = currentInteriorCellFormId;
+	}
+
 	if (settings.EnableCacheIntelligence && (!texWorldCacheIntelligence || !texWorldCachePreviousIntelligence)) {
 		settings.EnableCacheIntelligence = false;
 		recompileFlag = true;
@@ -2115,18 +2790,34 @@ void HybridGI::DrawHybridGI()
 	if (!runtimeConfigInitialized) {
 		runtimeConfigInitialized = true;
 		lastEnableGI = settings.EnableGI;
+		lastEnableAO = settings.EnableAO;
 		lastEnableTemporalDenoiser = settings.EnableTemporalDenoiser;
 		lastEnableExperimentalSpecularGI = settings.EnableExperimentalSpecularGI;
 		lastEnableAdaptiveRayAllocation = settings.EnableAdaptiveRayAllocation;
 		lastEnableWorldCache = settings.EnableWorldCache;
         lastEnableCacheIntelligence = settings.EnableCacheIntelligence;
 		lastResolutionMode = std::clamp(settings.ResolutionMode, 0, 2);
+		lastAOPower = settings.AOPower;
+		lastAORadius = settings.AORadius;
+		lastGIRadius = settings.GIRadius;
+		lastGIStrength = settings.GIStrength;
+		lastGISaturation = settings.GISaturation;
+		lastThickness = settings.Thickness;
+		lastDepthFadeNear = settings.DepthFadeRange.x;
+		lastDepthFadeFar = settings.DepthFadeRange.y;
+		lastContactDepthStrength = settings.ContactDepthStrength;
+		lastContactDepthRadius = settings.ContactDepthRadius;
+		lastContactDepthBias = settings.ContactDepthBias;
+		lastNumSlices = settings.NumSlices;
+		lastNumSteps = settings.NumSteps;
+		lastEnableContactDepth = settings.EnableContactDepth;
 		lastWorldCacheCellSizeNear = settings.WorldCacheCellSizeNear;
 		lastWorldCacheCellSizeFar = settings.WorldCacheCellSizeFar;
 	} else {
 		const int currentResolutionMode = std::clamp(settings.ResolutionMode, 0, 2);
 		const bool temporalSemanticChanged =
 			lastEnableGI != settings.EnableGI ||
+			lastEnableAO != settings.EnableAO ||
 			lastEnableTemporalDenoiser != settings.EnableTemporalDenoiser ||
 			lastEnableExperimentalSpecularGI != settings.EnableExperimentalSpecularGI ||
 			lastEnableAdaptiveRayAllocation != settings.EnableAdaptiveRayAllocation ||
@@ -2135,6 +2826,35 @@ void HybridGI::DrawHybridGI()
 			lastResolutionMode != currentResolutionMode;
 		if (temporalSemanticChanged)
 			queuedResetTemporalHistory = true;
+
+		// The denoiser intentionally retains converged history at a low blend
+		// rate. If a user changes AO/GI strength, reach, thickness, or sampling,
+		// that history belongs to the old artistic target and can make the slider
+		// appear ineffective for many frames. Reset once on a real setting change;
+		// do not reset for tiny floating point noise from settings serialization.
+		constexpr float kArtisticSettingEpsilon = 1.0e-3f;
+		const auto changed = [](float a, float b) {
+			return std::abs(a - b) > kArtisticSettingEpsilon;
+		};
+		const bool giArtistryChanged =
+			changed(lastAOPower, settings.AOPower) ||
+			changed(lastAORadius, settings.AORadius) ||
+			changed(lastGIRadius, settings.GIRadius) ||
+			changed(lastGIStrength, settings.GIStrength) ||
+			changed(lastGISaturation, settings.GISaturation) ||
+			changed(lastThickness, settings.Thickness) ||
+			changed(lastDepthFadeNear, settings.DepthFadeRange.x) ||
+			changed(lastDepthFadeFar, settings.DepthFadeRange.y) ||
+			changed(lastContactDepthStrength, settings.ContactDepthStrength) ||
+			changed(lastContactDepthRadius, settings.ContactDepthRadius) ||
+			changed(lastContactDepthBias, settings.ContactDepthBias) ||
+			lastNumSlices != settings.NumSlices ||
+			lastNumSteps != settings.NumSteps ||
+			lastEnableContactDepth != settings.EnableContactDepth;
+		if (giArtistryChanged) {
+			queuedResetTemporalHistory = true;
+			logger::info("[HybridGI] SSGI/AO controls changed; invalidating accumulated lighting history.");
+		}
 
 		const bool cacheStructureChanged =
 			lastWorldCacheCellSizeNear != settings.WorldCacheCellSizeNear ||
@@ -2146,12 +2866,27 @@ void HybridGI::DrawHybridGI()
 			queuedResetTemporalHistory = true;
 
 		lastEnableGI = settings.EnableGI;
+		lastEnableAO = settings.EnableAO;
 		lastEnableTemporalDenoiser = settings.EnableTemporalDenoiser;
 		lastEnableExperimentalSpecularGI = settings.EnableExperimentalSpecularGI;
 		lastEnableAdaptiveRayAllocation = settings.EnableAdaptiveRayAllocation;
 		lastEnableWorldCache = settings.EnableWorldCache;
         lastEnableCacheIntelligence = settings.EnableCacheIntelligence;
 		lastResolutionMode = currentResolutionMode;
+		lastAOPower = settings.AOPower;
+		lastAORadius = settings.AORadius;
+		lastGIRadius = settings.GIRadius;
+		lastGIStrength = settings.GIStrength;
+		lastGISaturation = settings.GISaturation;
+		lastThickness = settings.Thickness;
+		lastDepthFadeNear = settings.DepthFadeRange.x;
+		lastDepthFadeFar = settings.DepthFadeRange.y;
+		lastContactDepthStrength = settings.ContactDepthStrength;
+		lastContactDepthRadius = settings.ContactDepthRadius;
+		lastContactDepthBias = settings.ContactDepthBias;
+		lastNumSlices = settings.NumSlices;
+		lastNumSteps = settings.NumSteps;
+		lastEnableContactDepth = settings.EnableContactDepth;
 		lastWorldCacheCellSizeNear = settings.WorldCacheCellSizeNear;
 		lastWorldCacheCellSizeFar = settings.WorldCacheCellSizeFar;
 	}
@@ -2159,10 +2894,18 @@ void HybridGI::DrawHybridGI()
 	// Rebuild requested permutations before capability validation. The previous
 	// order validated stale shaders, then could continue the same frame after a
 	// failed rebuild with a null program in a newly-required pass.
-	if (settings.Enabled && recompileFlag)
+	if (settings.Enabled && recompileFlag && std::chrono::steady_clock::now() >= shaderCompileRetryAfter)
 		RecompileChangedShaders();
 
-	if (!(settings.Enabled && ShadersOK())) {
+	const bool ready = ShadersOK();
+	static int lastReadiness = -1;
+	const int readiness = (settings.Enabled ? 1 : 0) | (ready ? 2 : 0) | (settings.EnableGI ? 4 : 0);
+	if (readiness != lastReadiness) {
+		logger::info("[HybridGI] Runtime readiness: enabled={} ready={} diffuseGI={} core={} upsample={} resolutionMode={}",
+			settings.Enabled, ready, settings.EnableGI, CoreShadersOK(), UpsampleShaderOK(), settings.ResolutionMode);
+		lastReadiness = readiness;
+	}
+	if (!(settings.Enabled && ready)) {
 		FLOAT clr[4] = { 0.f, 0.f, 0.f, 0.f };
 		if (texAo[outputAoIdx])
 			context->ClearUnorderedAccessViewFloat(texAo[outputAoIdx]->uav.get(), clr);
@@ -2265,12 +3008,25 @@ void HybridGI::DrawHybridGI()
 	// The world-space cache consumes the same irradiance field as diffuse GI;
 	// when the user selects AO-only, keep the cache resident but stop its update
 	// and decay workloads until GI is enabled again.
-	const bool worldCacheActive = settings.EnableGI && settings.EnableWorldCache && WorldCacheShadersOK();
-	const bool reflectionActive = settings.EnableExperimentalSpecularGI && ReflectionShadersOK() && EnsureReflectionDepth();
+	const bool worldCacheActive = WorldCacheAvailableForSSGITest() && settings.EnableWorldCache && settings.EnableGI && WorldCacheShadersOK();
+	const bool reflectionRequested = settings.EnableExperimentalSpecularGI;
+	const bool reflectionShadersReady = ReflectionShadersOK();
+	const bool reflectionDepthReady = !reflectionRequested ||
+		(reflectionShadersReady && EnsureReflectionDepth());
+	const bool reflectionActive = reflectionRequested && reflectionShadersReady && reflectionDepthReady;
+	static int lastReflectionReadiness = -1;
+	const int reflectionReadiness = (reflectionRequested ? 1 : 0) |
+		(reflectionShadersReady ? 2 : 0) | (reflectionDepthReady ? 4 : 0) |
+		(reflectionActive ? 8 : 0);
+	if (reflectionReadiness != lastReflectionReadiness) {
+		logger::info("[HybridGI] SSR readiness: requested={} shaders={} depthResources={} active={}",
+			reflectionRequested, reflectionShadersReady, reflectionDepthReady, reflectionActive);
+		lastReflectionReadiness = reflectionReadiness;
+	}
 	const bool diffuseBlurActive = settings.EnableBlur && BlurShadersOK();
 	const bool reflectionSpatialActive = reflectionActive && settings.EnableBlur && hybridReflectionDenoiseCompute.get() != nullptr;
 
-	std::array<ID3D11ShaderResourceView*, 18> srvs = { nullptr };
+	std::array<ID3D11ShaderResourceView*, 22> srvs = { nullptr };
 	std::array<ID3D11UnorderedAccessView*, 8> uavs = { nullptr };
 	std::array<ID3D11SamplerState*, 2> samplers = { pointClampSampler.get(), linearClampSampler.get() };
 	auto cb = ssgiCB->CB();
@@ -2538,9 +3294,17 @@ void HybridGI::DrawHybridGI()
 				context->CSSetUnorderedAccessViews(5, 1, &nullWinner, nullptr);
 				context->CSSetUnorderedAccessViews(5, 1, &uavs.at(5), nullptr);
 				context->CSSetShader(worldCacheInjectCompute.get(), nullptr, 0);
+				ID3D11ShaderResourceView* localShadowViews[2]{};
+				if (settings.EnableEmitterInjection && radiantGrid.IsLocalShadowCacheActive()) {
+					localShadowViews[0] = radiantGrid.localShadowBuffer ? radiantGrid.localShadowBuffer->srv.get() : nullptr;
+					localShadowViews[1] = radiantGrid.localShadowCache ? radiantGrid.localShadowCache->srv.get() : nullptr;
+				}
+				context->CSSetShaderResources(112, ARRAYSIZE(localShadowViews), localShadowViews);
 				globals::profiler->BeginPass("HybridGI::WorldCacheInject");
 				context->Dispatch((injectWidth + 7u) >> 3, (injectHeight + 7u) >> 3, 1);
 				globals::profiler->EndPass();
+				ID3D11ShaderResourceView* nullLocalShadowViews[2]{};
+				context->CSSetShaderResources(112, ARRAYSIZE(nullLocalShadowViews), nullLocalShadowViews);
                 if (settings.EnableCacheIntelligence) {
                     scheduleBuffer = previousScheduleBuffer.get();
                     context->CSSetConstantBuffers(4, 1, &scheduleBuffer);
@@ -2590,6 +3354,288 @@ void HybridGI::DrawHybridGI()
 
 		TracyD3D11Zone(globals::state->tracyCtx, "HybridGI - GI");
 
+		// Drain only owned per-pass snapshots. At most 16,384 triangles and 1,024
+		// shapes are admitted. A missing capture uploads an empty field (neutral GI).
+		std::vector<PIXL::HybridGIInternal::SceneTriangle> sceneTriangles;
+		std::vector<winrt::com_ptr<ID3D11ShaderResourceView>> sceneMaterialTextures;
+		std::uintptr_t sceneCellKey{}, sceneWorldKey{};
+		{
+			std::scoped_lock lock(sceneTriangleMutex);
+			const auto* scenePlayer = RE::PlayerCharacter::GetSingleton();
+			const auto currentCellKey = reinterpret_cast<std::uintptr_t>(scenePlayer ? scenePlayer->GetParentCell() : nullptr);
+			const auto currentWorldKey = reinterpret_cast<std::uintptr_t>(scenePlayer ? scenePlayer->GetWorldspace() : nullptr);
+			sceneCellKey = currentCellKey;
+			sceneWorldKey = currentWorldKey;
+			if (pendingSceneCellKey != currentCellKey || pendingSceneWorldKey != currentWorldKey) {
+				// Drop one-frame-old snapshots on any cell or worldspace transition;
+				// the following render-root capture will repopulate from the new scene.
+				pendingSceneTriangles.clear();
+				pendingSceneMaterialTextures.clear();
+				pendingSceneMaterialTextureIndices.clear();
+				pendingSceneGeometryTokens.clear();
+				pendingSceneCellKey = currentCellKey;
+				pendingSceneWorldKey = currentWorldKey;
+			}
+			sceneTriangles.swap(pendingSceneTriangles);
+			sceneMaterialTextures.swap(pendingSceneMaterialTextures);
+			pendingSceneMaterialTextureIndices.clear();
+			pendingSceneGeometryTokens.clear();
+		}
+		std::vector<std::uintptr_t> sceneTextureIdentities;
+		sceneTextureIdentities.reserve(sceneMaterialTextures.size());
+		for (const auto& texture : sceneMaterialTextures)
+			sceneTextureIdentities.push_back(reinterpret_cast<std::uintptr_t>(texture.get()));
+		const auto eye = Util::GetEyePosition();
+		const std::array<float, 3> cameraWorld{ eye.x, eye.y, eye.z };
+		SceneVoxelCB voxelData{};
+		SceneVoxelizeCB voxelizeData{};
+		const auto dimension = sceneVoxelDimension;
+		constexpr float voxelSize = PIXL::HybridGIInternal::SceneVoxelGrid::kVoxelSize;
+		const float halfExtent = dimension * voxelSize * 0.5f;
+		bool validVoxelOrigin = dimension > 0 &&
+			std::all_of(cameraWorld.begin(), cameraWorld.end(), [](float value) { return std::isfinite(value); });
+		for (std::size_t axis = 0; axis < 3; ++axis) {
+			const float snapped = validVoxelOrigin ? std::round(cameraWorld[axis] / voxelSize) * voxelSize : 0.0f;
+			voxelData.worldMin[axis] = snapped - halfExtent;
+			voxelizeData.worldMin[axis] = voxelData.worldMin[axis];
+		}
+		voxelData.voxelSize = voxelSize;
+		voxelData.dimension = dimension;
+		voxelData.radianceStride = std::clamp(settings.WorldCacheInjectionStride, 1u, 8u);
+		// SceneVoxelCB's final word is reserved in the shared ABI. For voxel
+		// lighting it carries the active RadiantGrid light count, allowing the
+		// world-space voxel pass to avoid camera-frustum cluster culling.
+		voxelData.padding = globals::pipeline::radiantGrid.lightCount;
+		voxelizeData.voxelSize = voxelSize;
+		voxelizeData.dimension = dimension;
+		const auto triangleCount = static_cast<std::uint32_t>(std::min<std::size_t>(sceneTriangles.size(), PIXL::HybridGIInternal::kMaxGpuSceneTriangles));
+		voxelizeData.triangleCount = validVoxelOrigin ? triangleCount : 0u;
+		voxelData.valid = validVoxelOrigin && triangleCount > 0u;
+		bool voxelFieldDirty = false;
+		if (texSceneVoxels && sceneVoxelUAV && texSceneVoxelSurface && sceneVoxelSurfaceUAV &&
+			texSceneVoxelMaterial && sceneVoxelMaterialUAV &&
+			sceneVoxelizeCB && sceneVoxelizeCompute && sceneTriangleBuffer) {
+			const bool sameOrigin = voxelizedSceneWorldMin == std::array<float, 3>{ voxelData.worldMin[0], voxelData.worldMin[1], voxelData.worldMin[2] };
+			const bool sameTriangles = voxelizedSceneTriangles.size() == sceneTriangles.size() &&
+				(sceneTriangles.empty() || std::memcmp(voxelizedSceneTriangles.data(), sceneTriangles.data(),
+					sceneTriangles.size() * sizeof(PIXL::HybridGIInternal::SceneTriangle)) == 0);
+			const bool sameMaterialTextures = voxelizedSceneMaterialTextureIdentities == sceneTextureIdentities;
+			const bool sameContext = voxelizedSceneCellKey == sceneCellKey && voxelizedSceneWorldKey == sceneWorldKey;
+			voxelFieldDirty = !sceneVoxelContentsInitialized || !sameOrigin || !sameTriangles || !sameMaterialTextures ||
+				voxelizedSceneOriginValid != validVoxelOrigin ||
+				!sameContext;
+			if (voxelFieldDirty) {
+				auto scroll = PIXL::HybridGIInternal::ComputeSceneVoxelScroll(
+					voxelizedSceneWorldMin,
+					{ voxelData.worldMin[0], voxelData.worldMin[1], voxelData.worldMin[2] },
+					voxelSize, dimension);
+				const bool hasScroll = scroll.valid && (scroll.sourceOffset[0] != 0 ||
+					scroll.sourceOffset[1] != 0 || scroll.sourceOffset[2] != 0);
+				const bool scrollExistingField = sceneVoxelContentsInitialized && !sameOrigin && sameTriangles &&
+					sameContext && validVoxelOrigin && voxelizedSceneOriginValid && hasScroll &&
+					texSceneVoxelsScratch && sceneVoxelScratchUAV && texSceneVoxelSurface && texSceneVoxelSurfaceScratch &&
+					sceneVoxelSurfaceUAV && sceneVoxelSurfaceScratchUAV && texSceneVoxelMaterial && texSceneVoxelMaterialScratch &&
+					sceneVoxelMaterialUAV && sceneVoxelMaterialScratchUAV && sceneVoxelScrollCB && sceneVoxelScrollCompute;
+
+				if (scrollExistingField) {
+					SceneVoxelScrollCB scrollData{};
+					std::copy(scroll.sourceOffset.begin(), scroll.sourceOffset.end(), scrollData.sourceOffset);
+					scrollData.dimension = dimension;
+					sceneVoxelScrollCB->Update(scrollData);
+					ID3D11ShaderResourceView* sourceVoxels[3] = { texSceneVoxels->srv.get(), texSceneVoxelSurface->srv.get(), texSceneVoxelMaterial->srv.get() };
+					ID3D11UnorderedAccessView* destinationVoxels[3] = { sceneVoxelScratchUAV.get(), sceneVoxelSurfaceScratchUAV.get(), sceneVoxelMaterialScratchUAV.get() };
+					auto* scrollCb = sceneVoxelScrollCB->CB();
+					context->CSSetShaderResources(0, ARRAYSIZE(sourceVoxels), sourceVoxels);
+					context->CSSetUnorderedAccessViews(0, ARRAYSIZE(destinationVoxels), destinationVoxels, nullptr);
+					context->CSSetConstantBuffers(4, 1, &scrollCb);
+					context->CSSetShader(sceneVoxelScrollCompute.get(), nullptr, 0);
+					context->Dispatch((dimension + 3u) / 4u, (dimension + 3u) / 4u, (dimension + 3u) / 4u);
+					ID3D11ShaderResourceView* nullScrollSrvs[3]{};
+					ID3D11UnorderedAccessView* nullScrollUavs[3]{};
+					ID3D11Buffer* nullScrollCb = nullptr;
+					context->CSSetShaderResources(0, ARRAYSIZE(nullScrollSrvs), nullScrollSrvs);
+					context->CSSetUnorderedAccessViews(0, ARRAYSIZE(nullScrollUavs), nullScrollUavs, nullptr);
+					context->CSSetConstantBuffers(4, 1, &nullScrollCb);
+					texSceneVoxels.swap(texSceneVoxelsScratch);
+					texSceneVoxelSurface.swap(texSceneVoxelSurfaceScratch);
+					texSceneVoxelMaterial.swap(texSceneVoxelMaterialScratch);
+					sceneVoxelUAV = texSceneVoxels->uav;
+					sceneVoxelScratchUAV = texSceneVoxelsScratch->uav;
+					sceneVoxelSurfaceUAV = texSceneVoxelSurface->uav;
+					sceneVoxelSurfaceScratchUAV = texSceneVoxelSurfaceScratch->uav;
+					sceneVoxelMaterialUAV = texSceneVoxelMaterial->uav;
+					sceneVoxelMaterialScratchUAV = texSceneVoxelMaterialScratch->uav;
+					voxelizeData.updateMode = 1u;
+					std::copy(scroll.sourceOffset.begin(), scroll.sourceOffset.end(), voxelizeData.scrollOffset);
+				} else {
+					// Context changes, changed geometry or a large/non-lattice move take
+					// the conservative full rebuild path.
+					const UINT clearValue[4] = {};
+					context->ClearUnorderedAccessViewUint(sceneVoxelUAV.get(), clearValue);
+					const UINT emptySurface[4] = { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX };
+					context->ClearUnorderedAccessViewUint(sceneVoxelSurfaceUAV.get(), emptySurface);
+					context->ClearUnorderedAccessViewUint(sceneVoxelMaterialUAV.get(), clearValue);
+					voxelizeData.updateMode = 0u;
+				}
+
+				bool uploadSucceeded = true;
+				if (voxelizeData.triangleCount > 0u) {
+					std::vector<PIXL::HybridGIInternal::GpuSceneTriangle> gpuTriangles;
+					gpuTriangles.reserve(voxelizeData.triangleCount);
+					for (std::uint32_t i = 0; i < voxelizeData.triangleCount; ++i) {
+						const auto& source = sceneTriangles[i];
+						gpuTriangles.push_back({ source.a, source.b, source.c, dimension * dimension, source.packedMaterial,
+							source.uvA, source.uvB, source.uvC, source.textureIndex });
+					}
+					D3D11_MAPPED_SUBRESOURCE mapped{};
+					if (SUCCEEDED(context->Map(sceneTriangleBuffer->resource.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+						std::memcpy(mapped.pData, gpuTriangles.data(), std::size_t(voxelizeData.triangleCount) * sizeof(PIXL::HybridGIInternal::GpuSceneTriangle));
+						context->Unmap(sceneTriangleBuffer->resource.get(), 0);
+						sceneVoxelizeCB->Update(voxelizeData);
+						ID3D11ShaderResourceView* triangleSrv = sceneTriangleBuffer->srv.get();
+						std::array<ID3D11ShaderResourceView*, PIXL::HybridGIInternal::kSceneMaterialTextureSlots> materialSrvs{};
+						for (std::size_t textureIndex = 0; textureIndex < sceneMaterialTextures.size() && textureIndex < materialSrvs.size(); ++textureIndex)
+							materialSrvs[textureIndex] = sceneMaterialTextures[textureIndex].get();
+						ID3D11UnorderedAccessView* voxelUavs[3] = { sceneVoxelUAV.get(), sceneVoxelSurfaceUAV.get(), sceneVoxelMaterialUAV.get() };
+						auto* voxelizeCb = sceneVoxelizeCB->CB();
+						context->CSSetShaderResources(0, 1, &triangleSrv);
+						context->CSSetShaderResources(1, static_cast<UINT>(materialSrvs.size()), materialSrvs.data());
+						ID3D11SamplerState* materialSampler = linearClampSampler.get();
+						context->CSSetSamplers(0, 1, &materialSampler);
+						context->CSSetUnorderedAccessViews(0, ARRAYSIZE(voxelUavs), voxelUavs, nullptr);
+						context->CSSetConstantBuffers(4, 1, &voxelizeCb);
+						context->CSSetShader(sceneVoxelizeCompute.get(), nullptr, 0);
+						context->Dispatch((voxelizeData.triangleCount + 63u) / 64u, 1, 1);
+						std::array<ID3D11ShaderResourceView*, PIXL::HybridGIInternal::kSceneMaterialTextureSlots + 1> nullTriangleSrvs{};
+						ID3D11UnorderedAccessView* nullVoxelUavs[3]{};
+						ID3D11Buffer* nullVoxelizeCb = nullptr;
+						context->CSSetShaderResources(0, static_cast<UINT>(nullTriangleSrvs.size()), nullTriangleSrvs.data());
+						ID3D11SamplerState* nullMaterialSampler = nullptr;
+						context->CSSetSamplers(0, 1, &nullMaterialSampler);
+						context->CSSetUnorderedAccessViews(0, ARRAYSIZE(nullVoxelUavs), nullVoxelUavs, nullptr);
+						context->CSSetConstantBuffers(4, 1, &nullVoxelizeCb);
+					} else {
+						uploadSucceeded = false;
+					}
+				}
+				if (uploadSucceeded) {
+					voxelizedSceneTriangles = sceneTriangles;
+					voxelizedSceneMaterialTextureIdentities = sceneTextureIdentities;
+					voxelizedSceneWorldMin = { voxelData.worldMin[0], voxelData.worldMin[1], voxelData.worldMin[2] };
+					voxelizedSceneCellKey = sceneCellKey;
+					voxelizedSceneWorldKey = sceneWorldKey;
+					voxelizedSceneOriginValid = validVoxelOrigin;
+					sceneVoxelContentsInitialized = true;
+				} else {
+					sceneVoxelContentsInitialized = false;
+					voxelData.valid = false;
+				}
+			}
+			sceneVoxelCB->Update(voxelData);
+		}
+		// Lighting and screen-radiance transfer each sweep the complete 256^3
+		// volume. Refresh immediately after geometry/origin changes, then amortize
+		// steady-state refreshes over eight frames instead of dispatching three
+		// full-volume workloads on every rendered frame.
+		constexpr std::uint32_t kSceneVoxelRadianceRefreshFrames = 8;
+		const auto voxelRefreshFrame = globals::state ? globals::state->frameCount : 0u;
+		const bool sceneVoxelRefreshDue = voxelFieldDirty ||
+			(voxelRefreshFrame % kSceneVoxelRadianceRefreshFrames == 0u);
+		const bool voxelRadianceReady = sceneVoxelCB && texSceneVoxelWinners && sceneVoxelWinnerUAV && texSceneVoxelRadiance &&
+			sceneVoxelRadianceUAV && sceneVoxelRadianceSelectCompute && sceneVoxelRadianceResolveCompute;
+		const bool voxelLightingReady = sceneVoxelCB && texSceneVoxels && texSceneVoxelSurface && texSceneVoxelMaterial &&
+			texSceneVoxelRadiance && sceneVoxelRadianceUAV && sceneVoxelLightingCompute;
+		if (voxelLightingReady && sceneVoxelRefreshDue) {
+			resetViews();
+			auto& voxelRadiantGrid = globals::pipeline::radiantGrid;
+			ID3D11ShaderResourceView* voxelSrvs[3] = {
+				texSceneVoxels->srv.get(), texSceneVoxelSurface->srv.get(), texSceneVoxelMaterial->srv.get()
+			};
+			ID3D11ShaderResourceView* lightSrvs[3] = {
+				voxelRadiantGrid.loaded && voxelRadiantGrid.lights ? voxelRadiantGrid.lights->srv.get() : nullptr,
+				voxelRadiantGrid.loaded && voxelRadiantGrid.lightIndexList ? voxelRadiantGrid.lightIndexList->srv.get() : nullptr,
+				voxelRadiantGrid.loaded && voxelRadiantGrid.lightGrid ? voxelRadiantGrid.lightGrid->srv.get() : nullptr
+			};
+			ID3D11ShaderResourceView* localShadowSrvs[2]{};
+			if (voxelRadiantGrid.IsLocalShadowCacheActive()) {
+				localShadowSrvs[0] = voxelRadiantGrid.localShadowBuffer ? voxelRadiantGrid.localShadowBuffer->srv.get() : nullptr;
+				localShadowSrvs[1] = voxelRadiantGrid.localShadowCache ? voxelRadiantGrid.localShadowCache->srv.get() : nullptr;
+			}
+			ID3D11UnorderedAccessView* radianceUav = sceneVoxelRadianceUAV.get();
+			ID3D11Buffer* strictLightsCb = voxelRadiantGrid.strictLightDataCB ? voxelRadiantGrid.strictLightDataCB->CB() : nullptr;
+			ID3D11Buffer* sceneVoxelBuffer = sceneVoxelCB->CB();
+			ID3D11SamplerState* voxelLightingSampler = linearClampSampler.get();
+			context->CSSetShaderResources(0, ARRAYSIZE(voxelSrvs), voxelSrvs);
+			context->CSSetShaderResources(35, ARRAYSIZE(lightSrvs), lightSrvs);
+			context->CSSetShaderResources(112, ARRAYSIZE(localShadowSrvs), localShadowSrvs);
+			context->CSSetUnorderedAccessViews(0, 1, &radianceUav, nullptr);
+			context->CSSetConstantBuffers(3, 1, &strictLightsCb);
+			context->CSSetConstantBuffers(4, 1, &sceneVoxelBuffer);
+			context->CSSetSamplers(0, 1, &voxelLightingSampler);
+			context->CSSetShader(sceneVoxelLightingCompute.get(), nullptr, 0);
+			globals::profiler->BeginPass("HybridGI::SceneVoxelLighting");
+			context->Dispatch((dimension + 3u) / 4u, (dimension + 3u) / 4u, (dimension + 3u) / 4u);
+			globals::profiler->EndPass();
+			ID3D11ShaderResourceView* nullVoxelSrvs[3]{};
+			ID3D11ShaderResourceView* nullLocalShadowSrvs[2]{};
+			ID3D11UnorderedAccessView* nullRadianceUav = nullptr;
+			ID3D11Buffer* nullVoxelCb = nullptr;
+			ID3D11SamplerState* nullVoxelSampler = nullptr;
+			context->CSSetShaderResources(0, ARRAYSIZE(nullVoxelSrvs), nullVoxelSrvs);
+			context->CSSetShaderResources(35, ARRAYSIZE(lightSrvs), nullVoxelSrvs);
+			context->CSSetShaderResources(112, ARRAYSIZE(nullLocalShadowSrvs), nullLocalShadowSrvs);
+			context->CSSetUnorderedAccessViews(0, 1, &nullRadianceUav, nullptr);
+			context->CSSetConstantBuffers(3, 1, &nullVoxelCb);
+			context->CSSetConstantBuffers(4, 1, &nullVoxelCb);
+			context->CSSetSamplers(0, 1, &nullVoxelSampler);
+		}
+		if (voxelRadianceReady && sceneVoxelRefreshDue) {
+			resetViews();
+			const UINT emptyWinner[4] = { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX };
+			context->ClearUnorderedAccessViewUint(sceneVoxelWinnerUAV.get(), emptyWinner);
+
+			ID3D11ShaderResourceView* radianceSelectSrvs[1] = { texWorkingDepth ? texWorkingDepth->srv.get() : nullptr };
+			ID3D11UnorderedAccessView* radianceSelectUavs[1] = { sceneVoxelWinnerUAV.get() };
+			ID3D11Buffer* sceneVoxelBuffer = sceneVoxelCB->CB();
+			context->CSSetShaderResources(0, ARRAYSIZE(radianceSelectSrvs), radianceSelectSrvs);
+			context->CSSetUnorderedAccessViews(0, ARRAYSIZE(radianceSelectUavs), radianceSelectUavs, nullptr);
+			context->CSSetConstantBuffers(1, 1, &cb);
+			context->CSSetConstantBuffers(3, 1, &sceneVoxelBuffer);
+			context->CSSetShader(sceneVoxelRadianceSelectCompute.get(), nullptr, 0);
+			const uint radianceStride = std::clamp(settings.WorldCacheInjectionStride, 1u, 8u);
+			globals::profiler->BeginPass("HybridGI::SceneVoxelRadianceSelect");
+			context->Dispatch((internalRes[0] + radianceStride * 8u - 1u) / (radianceStride * 8u),
+				(internalRes[1] + radianceStride * 8u - 1u) / (radianceStride * 8u), 1);
+			globals::profiler->EndPass();
+			ID3D11ShaderResourceView* nullRadianceSelectSrv = nullptr;
+			ID3D11UnorderedAccessView* nullRadianceSelectUav = nullptr;
+			context->CSSetShaderResources(0, 1, &nullRadianceSelectSrv);
+			context->CSSetUnorderedAccessViews(0, 1, &nullRadianceSelectUav, nullptr);
+
+			ID3D11ShaderResourceView* radianceResolveSrvs[3] = {
+				texSceneVoxelWinners->srv.get(), texWorkingDepth ? texWorkingDepth->srv.get() : nullptr,
+				texRadiance ? texRadiance->srv.get() : nullptr
+			};
+			ID3D11UnorderedAccessView* radianceResolveUav = sceneVoxelRadianceUAV.get();
+			context->CSSetShaderResources(0, ARRAYSIZE(radianceResolveSrvs), radianceResolveSrvs);
+			context->CSSetUnorderedAccessViews(0, 1, &radianceResolveUav, nullptr);
+			context->CSSetShader(sceneVoxelRadianceResolveCompute.get(), nullptr, 0);
+			globals::profiler->BeginPass("HybridGI::SceneVoxelRadianceResolve");
+			context->Dispatch((dimension + 3u) / 4u, (dimension + 3u) / 4u, (dimension + 3u) / 4u);
+			globals::profiler->EndPass();
+			ID3D11ShaderResourceView* nullRadianceResolveSrvs[3]{};
+			ID3D11UnorderedAccessView* nullRadianceResolveUav = nullptr;
+			context->CSSetShaderResources(0, ARRAYSIZE(nullRadianceResolveSrvs), nullRadianceResolveSrvs);
+			context->CSSetUnorderedAccessViews(0, 1, &nullRadianceResolveUav, nullptr);
+			ID3D11Buffer* nullSceneVoxelBuffer = nullptr;
+			context->CSSetConstantBuffers(3, 1, &nullSceneVoxelBuffer);
+		} else if (!voxelRadianceReady && sceneVoxelRadianceUAV) {
+			// Missing shaders/resources must leave a neutral voxel radiance field,
+			// never stale data from a previous device or scene generation.
+			const UINT emptyRadiance[4]{};
+			context->ClearUnorderedAccessViewUint(sceneVoxelRadianceUAV.get(), emptyRadiance);
+		}
+
 		resetViews();
 		srvs.at(0) = texWorkingDepth->srv.get();
 		srvs.at(1) = REX::W32::AsReal(rts[NORMALROUGHNESS].SRV);
@@ -2609,6 +3655,10 @@ void HybridGI::DrawHybridGI()
 			srvs.at(14) = REX::W32::AsReal(rts[REFLECTANCE].SRV);
 			srvs.at(15) = texBentVisibility[inputBentTexIdx]->srv.get();
 			srvs.at(16) = texAo[inputAoTexIdx]->srv.get();
+		srvs.at(18) = texSceneVoxels ? texSceneVoxels->srv.get() : nullptr;
+		srvs.at(19) = texSceneVoxelRadiance ? texSceneVoxelRadiance->srv.get() : nullptr;
+		srvs.at(20) = texSceneVoxelSurface ? texSceneVoxelSurface->srv.get() : nullptr;
+		srvs.at(21) = texSceneVoxelMaterial ? texSceneVoxelMaterial->srv.get() : nullptr;
 
 		uavs.at(0) = texAo[!inputAoTexIdx]->uav.get();
 		uavs.at(1) = texIlY[!inputGITexIdx]->uav.get();
@@ -2619,10 +3669,14 @@ void HybridGI::DrawHybridGI()
 
 		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 		context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
+		auto* sceneVoxelBuffer = sceneVoxelCB ? sceneVoxelCB->CB() : nullptr;
+		context->CSSetConstantBuffers(3, 1, &sceneVoxelBuffer);
 		context->CSSetShader(giCompute.get(), nullptr, 0);
 		globals::profiler->BeginPass("HybridGI::GI");
 		context->Dispatch((internalRes[0] + 7u) >> 3, (internalRes[1] + 7u) >> 3, 1);
 		globals::profiler->EndPass();
+		ID3D11Buffer* nullSceneVoxelBuffer = nullptr;
+		context->CSSetConstantBuffers(3, 1, &nullSceneVoxelBuffer);
 
 		inputAoTexIdx = !inputAoTexIdx;
 		inputGITexIdx = !inputGITexIdx;
@@ -2652,13 +3706,18 @@ void HybridGI::DrawHybridGI()
 		srvs.at(11) = texReflectionDepth->srv.get();
 		srvs.at(12) = settings.EnableTemporalDenoiser ?
 			texAccumFrames[lastFrameAccumTexIdx]->srv.get() : nullptr;
+		srvs.at(14) = texSceneVoxels ? texSceneVoxels->srv.get() : nullptr;
 		uavs.at(0) = texGiSpecular[!inputSpecTexIdx]->uav.get();
 		context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 		context->CSSetUnorderedAccessViews(0, 1, uavs.data(), nullptr);
+		auto* sceneVoxelBuffer = sceneVoxelCB ? sceneVoxelCB->CB() : nullptr;
+		context->CSSetConstantBuffers(3, 1, &sceneVoxelBuffer);
 		context->CSSetShader(hybridReflectionCompute.get(), nullptr, 0);
 		globals::profiler->BeginPass("HybridGI::HybridReflections");
 		context->Dispatch((internalRes[0] + 7u) >> 3, (internalRes[1] + 7u) >> 3, 1);
 		globals::profiler->EndPass();
+		ID3D11Buffer* nullSceneVoxelBuffer = nullptr;
+		context->CSSetConstantBuffers(3, 1, &nullSceneVoxelBuffer);
 		inputSpecTexIdx = !inputSpecTexIdx;
 		lastFrameSpecTexIdx = inputSpecTexIdx;
 	} else {
@@ -2697,10 +3756,14 @@ void HybridGI::DrawHybridGI()
 			srvs.at(2) = texAccumFrames[lastFrameAccumTexIdx]->srv.get();
 			srvs.at(3) = texIlY[inputGITexIdx]->srv.get();
 			srvs.at(4) = texIlCoCg[inputGITexIdx]->srv.get();
+			srvs.at(5) = texAo[inputAoTexIdx]->srv.get();
+			srvs.at(6) = texBentVisibility[inputBentTexIdx]->srv.get();
 
 			uavs.at(0) = texAccumFrames[!lastFrameAccumTexIdx]->uav.get();
 			uavs.at(1) = texIlY[!inputGITexIdx]->uav.get();
 			uavs.at(2) = texIlCoCg[!inputGITexIdx]->uav.get();
+			uavs.at(3) = texAo[!inputAoTexIdx]->uav.get();
+			uavs.at(4) = texBentVisibility[!inputBentTexIdx]->uav.get();
 
 			context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 			context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
@@ -2710,9 +3773,13 @@ void HybridGI::DrawHybridGI()
 			globals::profiler->EndPass();
 
 			inputGITexIdx = !inputGITexIdx;
+			inputAoTexIdx = !inputAoTexIdx;
+			inputBentTexIdx = !inputBentTexIdx;
 			lastFrameAccumTexIdx = !lastFrameAccumTexIdx;
 		}
 		lastFrameGITexIdx = inputGITexIdx;
+		lastFrameAoTexIdx = inputAoTexIdx;
+		lastFrameBentTexIdx = inputBentTexIdx;
 	}
 
 	// upsample

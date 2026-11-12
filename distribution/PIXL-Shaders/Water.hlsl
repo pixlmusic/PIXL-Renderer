@@ -2308,7 +2308,9 @@ PS_OUTPUT main(PS_INPUT input)
 			float intensityMultiplier = 1 - intensityFactor * intensityFactor;
 #					endif
 
-			float3 normalizedLightDirection = normalize(lightDirection);
+			float3 normalizedLightDirection = lightDist > 1.0e-4f
+				? lightDirection * rcp(lightDist)
+				: float3(0.0f, 0.0f, 1.0f);
 
 			float3 H = normalize(normalizedLightDirection - viewDirection);
 			float HdotN = saturate(dot(H, normal));
@@ -2324,7 +2326,13 @@ PS_OUTPUT main(PS_INPUT input)
 			float Vis = BRDF::Vis_SmithJointApprox(pixlWaterRoughness, NdotV, NdotL);
 			lightColor = Color::PointLight(light.color.xyz, isPointLightLinear) * D * Vis * F * NdotL * light.fade;
 #			endif
-			specularLighting += lightColor * intensityMultiplier;
+			float localShadowVisibility = 1.0f;
+			if (light.lightFlags & RadiantGrid::LightFlags::LocalShadow) {
+				localShadowVisibility = RadiantGrid::GetLocalShadow(LinearSampler, light.localShadowIndex,
+					input.WPosition.xyz, FrameBuffer::CameraPosAdjust.xyz, normalizedLightDirection, false,
+					Random::InterleavedGradientNoise(input.HPosition.xy, SharedData::FrameCount));
+			}
+			specularLighting += lightColor * intensityMultiplier * localShadowVisibility;
 		}
 	}
 	specularColor += specularLighting * 3;

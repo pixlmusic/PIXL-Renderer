@@ -229,15 +229,18 @@ namespace WaterOptics
 
         if (depth < 0.0f)
         {
-            // Reflected, above-water bounce is intentionally limited to nearby
-            // walls/ceilings and an actual water footprint (not the whole water tile).
+            // Cell water height does not prove that a water surface is visible at
+            // this XY: rivers can run beneath dry terrain in the same cell.
+            // Reflected caustics belong on nearby facing walls and ceilings, not
+            // upward-facing paths or banks above the water plane.
             if (SharedData::waterOpticsSettings.EnableEnhancedCaustics == 0)
                 return 1.0f.xxx;
             float height = -depth;
-            if (height >= maxReach)
+            float bounceReach = min(maxReach, 160.0f);
+            if (normal.z > 0.35f || height >= bounceReach)
                 return 1.0f.xxx;
-            float receiverFade = 1.0f - smoothstep(16.0f, maxReach, height);
-            receiverFade *= 1.0f - smoothstep(65.0f, maxReach * 0.92f,
+            float receiverFade = 1.0f - smoothstep(16.0f, bounceReach, height);
+            receiverFade *= 1.0f - smoothstep(24.0f, bounceReach * 0.92f,
                 length(projectedXY - worldPosition.xy));
             float3 towardWater = normalize(float3(-sun.xy, -sun.z));
             float normalResponse = smoothstep(0.0f, 0.45f,
@@ -252,12 +255,12 @@ namespace WaterOptics
                 saturate(SharedData::waterOpticsSettings.CausticsDispersion);
             float3 energy = CausticEnergy(SampleWaterPattern(uv, dispersion, 1.0f.xx));
             float strength = clamp(SharedData::waterOpticsSettings.ProjectedCausticsStrength,
-                0.0f, 3.0f);
+                0.0f, 2.0f);
             float footprintFade = 1.0f - smoothstep(0.018f, 0.065f,
                 CausticFootprint(1.0f));
             float3 bounce = max(energy - 1.0f.xxx, 0.0f.xxx) *
                 strength * receiverFade * normalResponse * sunVisibility * footprintFade * 0.32f;
-            return 1.0f.xxx + min(bounce, 1.20f.xxx);
+            return 1.0f.xxx + min(bounce, 0.65f.xxx);
         }
 
         // Underwater refracted light. Preserve coverage against dry neighboring
@@ -316,6 +319,12 @@ namespace WaterOptics
         float lightHeight = lightPosition.z - waterHeight;
         float reach = clamp(SharedData::waterOpticsSettings.ProjectedCausticsDistance,
             64.0f, 800.0f);
+        // The water-height grid is cell-wide. Restrict reflected local-light
+        // patterns to nearby vertical receivers so submerged river planes do
+        // not paint dry ground in the same exterior cell.
+        if (receiverHeight > 0.0f && (receiverNormal.z > 0.35f ||
+            receiverHeight >= min(reach, 160.0f)))
+            return 1.0f.xxx;
         if (receiverHeight > reach || receiverHeight < -560.0f ||
             abs(lightHeight) <= 0.5f)
             return 1.0f.xxx;
@@ -347,7 +356,7 @@ namespace WaterOptics
         float coverage = 1.0f - smoothstep(radius * 0.20f, radius * 1.20f,
             sourcePath);
         float receiverFade = receiverHeight > 0.0f
-            ? 1.0f - smoothstep(16.0f, reach, receiverHeight)
+            ? 1.0f - smoothstep(16.0f, min(reach, 160.0f), receiverHeight)
             : 1.0f - smoothstep(280.0f, 560.0f, -receiverHeight);
         float3 toSurface = normalize(waterPoint - worldPosition);
         float facing = receiverHeight > 0.0f

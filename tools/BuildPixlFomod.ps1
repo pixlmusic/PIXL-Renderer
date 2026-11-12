@@ -4,6 +4,7 @@ param(
     [string]$OutputDirectory = "",
     [string]$ArchivePath = "",
     [string]$AllowedOutputRoot = "",
+    [string]$PGLitePayloadDirectory = "",
     [ValidateSet("", "r2", "r3", "r4")][string]$ReleaseRevision = "",
     [string]$ProductVersion = "",
     [ValidateRange(0, 9)][int]$CompressionLevel = 7
@@ -12,7 +13,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $base = (Resolve-Path -LiteralPath $BasePackageDirectory).Path
-$revisionVersion = "1.0.9$ReleaseRevision"
+$revisionVersion = "1.1.0$ReleaseRevision"
 if ([string]::IsNullOrWhiteSpace($ProductVersion)) { $ProductVersion = $revisionVersion }
 elseif ($ReleaseRevision -and $ProductVersion -ne $revisionVersion) { throw 'ProductVersion conflicts with ReleaseRevision.' }
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -69,6 +70,8 @@ $creditsSource = Join-Path $repo 'distribution\SOURCE-AND-CREDITS.md'
 $creditsTarget = Join-Path $core 'SKSE\Plugins\PIXL\Documentation\SOURCE-AND-CREDITS.md'
 if (!(Test-Path -LiteralPath $creditsTarget)) { throw 'FOMOD core is missing its source-and-credits notice.' }
 Copy-Item -LiteralPath $creditsSource -Destination $creditsTarget -Force
+$installerNoticeTarget = Join-Path $core 'PIXL-INSTALLER-NOTICE.md'
+Copy-Item -LiteralPath (Join-Path $repo 'installer\PIXLRenderer\PIXL-INSTALLER-NOTICE.md') -Destination $installerNoticeTarget -Force
 $manifestPath = Join-Path $core 'PIXL-RENDERER.manifest.json'
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 $manifest.version = $ProductVersion
@@ -78,13 +81,75 @@ $creditEntry = @($manifest.files | Where-Object { $_.path -ceq $relativeCreditsP
 if ($creditEntry.Count -ne 1) { throw 'FOMOD core manifest must contain exactly one source-and-credits entry.' }
 $creditEntry[0].bytes = (Get-Item -LiteralPath $creditsTarget).Length
 $creditEntry[0].sha256 = (Get-FileHash -LiteralPath $creditsTarget -Algorithm SHA256).Hash
+$noticeEntry = @($manifest.files | Where-Object { $_.path -ceq 'PIXL-INSTALLER-NOTICE.md' })
+if ($noticeEntry.Count -ne 1) { throw 'FOMOD core manifest must contain exactly one installer notice entry.' }
+$noticeEntry[0].bytes = (Get-Item -LiteralPath $installerNoticeTarget).Length
+$noticeEntry[0].sha256 = (Get-FileHash -LiteralPath $installerNoticeTarget -Algorithm SHA256).Hash
 $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
 Copy-Tree (Join-Path $repo 'installer\PIXLRenderer\fomod') (Join-Path $output 'fomod')
 Copy-Tree (Join-Path $repo 'installer\PIXLRenderer\images') (Join-Path $output 'fomod\images')
-Copy-Item -LiteralPath (Join-Path $repo 'installer\PIXLRenderer\PIXL-INSTALLER-NOTICE.md') -Destination (Join-Path $core 'PIXL-INSTALLER-NOTICE.md')
+$pgliteAdapter = Join-Path $output 'PGLite-Adapter'
+New-Item -ItemType Directory -Path $pgliteAdapter -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $repo 'compatibility\PGLite-PIXLRenderer.patch') -Destination $pgliteAdapter -Force
+Copy-Item -LiteralPath (Join-Path $repo 'docs\compatibility\PGLITE.md') -Destination $pgliteAdapter -Force
+Copy-Item -LiteralPath (Join-Path $repo 'installer\PIXLRenderer\PGLite-ADAPTER-README.md') -Destination $pgliteAdapter -Force
+$includePGLiteRuntime = -not [string]::IsNullOrWhiteSpace($PGLitePayloadDirectory)
+if ($includePGLiteRuntime) {
+    $pglitePayload = (Resolve-Path -LiteralPath $PGLitePayloadDirectory).Path
+    foreach ($required in @('Runtime\SKSE\Plugins\PGLite.dll',
+        'Runtime\SKSE\Plugins\PGLite.ini',
+        'Runtime\textures\cubemaps\dynamic1pxcubemap_black.dds',
+        'Source\LICENSE', 'Source\PGLite\EXCEPTIONS.md', 'Source\PGLite\src\ShaderFrameworks.cpp')) {
+        if (!(Test-Path -LiteralPath (Join-Path $pglitePayload $required) -PathType Leaf)) {
+            throw "Incomplete PIXL-aware PGLite payload: $required"
+        }
+    }
+    Copy-Tree (Join-Path $pglitePayload 'Runtime') (Join-Path $output 'PGLite-Runtime')
+    Copy-Tree (Join-Path $pglitePayload 'Source') (Join-Path $output 'PGLite-Source')
+}
 
 $configPath = Join-Path $output 'fomod\ModuleConfig.xml'
 $configText = Get-Content -LiteralPath $configPath -Raw
+$runtimeChoice = @'
+            <plugin name="Install PIXL-aware PGLite runtime (experimental)">
+              <description>Requires the PGLite mod to be installed and active. This compatibility build replaces its PGLite.dll so PGLite detects PIXL Renderer and enables TruePBR. The installer checks for SKSE/Plugins/PGLite.dll before making this option available. Your PGLite.ini is preserved; if your mod manager reports a conflict, let this PIXL-aware DLL win.</description>
+              <files>
+                <file source="PGLite-Runtime\SKSE\Plugins\PGLite.dll" destination="SKSE\Plugins\PGLite.dll" priority="0" />
+                <file source="PGLite-Runtime\textures\cubemaps\dynamic1pxcubemap_black.dds" destination="textures\cubemaps\dynamic1pxcubemap_black.dds" priority="0" />
+                <folder source="PGLite-Adapter" destination="SKSE\Plugins\PIXL\Documentation\PGLite" priority="0" />
+              </files>
+              <typeDescriptor>
+                <dependencyType>
+                  <defaultType name="NotUsable" />
+                  <patterns>
+                    <pattern>
+                      <dependencies><fileDependency file="SKSE\Plugins\PGLite.dll" state="Active" /></dependencies>
+                      <type name="Optional" />
+                    </pattern>
+                  </patterns>
+                </dependencyType>
+              </typeDescriptor>
+            </plugin>
+            <plugin name="PGLite is missing - install PGLite first">
+              <description>PIXL Renderer does not include the PGLite mod. Install and activate PGLite, then rerun this installer to enable the PIXL compatibility addon. PIXL Core installs normally without PGLite.</description>
+              <conditionFlags><flag name="PGLiteMissing">On</flag></conditionFlags>
+              <typeDescriptor>
+                <dependencyType>
+                  <defaultType name="NotUsable" />
+                  <patterns>
+                    <pattern>
+                      <dependencies operator="Or">
+                        <fileDependency file="SKSE\Plugins\PGLite.dll" state="Missing" />
+                        <fileDependency file="SKSE\Plugins\PGLite.dll" state="Inactive" />
+                      </dependencies>
+                      <type name="Required" />
+                    </pattern>
+                  </patterns>
+                </dependencyType>
+              </typeDescriptor>
+            </plugin>
+'@
+$configText = $configText.Replace('<!-- PGLITE_RUNTIME_OPTION -->', $(if ($includePGLiteRuntime) { $runtimeChoice } else { '' }))
 $configText = [regex]::Replace($configText, '1\.0\.\d+(?:r\d+)?(?=(?:</moduleName>|" type=| highlights|</plugin>))', $ProductVersion)
 [IO.File]::WriteAllText($configPath, $configText, [Text.UTF8Encoding]::new($false))
 $infoPath = Join-Path $output 'fomod\info.xml'

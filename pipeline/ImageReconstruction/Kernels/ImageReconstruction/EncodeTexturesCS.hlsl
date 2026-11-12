@@ -29,15 +29,18 @@ RWTexture2D<float> DepthOutput : register(u3);
 		return;
 
 	float2 taaMask = TAAMask[dispatchID.xy];
+	taaMask = all(isfinite(taaMask)) ? saturate(taaMask) : 0.0f.xx;
 	// Water's stencil pass stores its coverage in the blue channel of Skyrim's
 	// normal/TAA/SSR target.  Opaque pixels are cleared to zero by PIXL's
 	// deferred composite, so this is a transparency hint rather than glossiness
 	// at the point where reconstruction runs.
-	float transparencyCompositionMask = saturate(NormalsWaterMask[dispatchID.xy].z);
+	float waterCoverage = NormalsWaterMask[dispatchID.xy].z;
+	float transparencyCompositionMask = isfinite(waterCoverage) ? saturate(waterCoverage) : 0.0f;
 	float reactiveMask = saturate(taaMask.x * 0.1 + taaMask.y);
 	float3 materialMask = MaterialMasks[dispatchID.xy];
 	float reconstructionActivity =
-		materialMask.x <= 1.0e-5f ? saturate(materialMask.y) : 0.0f;
+		all(isfinite(materialMask.xy)) && materialMask.x <= 1.0e-5f
+		? saturate(materialMask.y) : 0.0f;
 	float neighborhoodActivity = reconstructionActivity;
 
 	// One-pixel coverage expansion catches the immediate disocclusion fringe of
@@ -47,12 +50,12 @@ RWTexture2D<float> DepthOutput : register(u3);
 		[unroll] for (int activityX = -1; activityX <= 1; activityX++)
 		{
 			int2 activityPos = int2(dispatchID.xy) + int2(activityX, activityY);
-			if (all(activityPos >= 0) && all(activityPos < int2(TrueSamplingDim)))
-				neighborhoodActivity = max(
-					neighborhoodActivity,
-					(MaterialMasks[activityPos].x <= 1.0e-5f
-						? saturate(MaterialMasks[activityPos].y)
-						: 0.0f));
+			if (all(activityPos >= 0) && all(activityPos < int2(TrueSamplingDim))) {
+				const float3 neighborMaterial = MaterialMasks[activityPos];
+				const float neighborActivity = all(isfinite(neighborMaterial.xy)) &&
+					neighborMaterial.x <= 1.0e-5f ? saturate(neighborMaterial.y) : 0.0f;
+				neighborhoodActivity = max(neighborhoodActivity, neighborActivity);
+			}
 		}
 	}
 
@@ -80,7 +83,13 @@ RWTexture2D<float> DepthOutput : register(u3);
 			float transmittance = CloudReconstructionMask.Load(int3(cloudPixel, 0)).a;
 			cloudOpacity = isfinite(transmittance) ? saturate(1.0f - transmittance) : 0.0f;
 			// Cloud weather advection is independent of the sky's camera vector.
+			// DLSS otherwise retains too much history on half-resolution moving
+			// cloud detail, which reads as shimmer around illuminated cloud edges.
+#if defined(DLSS)
+			reactiveMask = max(reactiveMask, cloudOpacity * 0.76f);
+#else
 			reactiveMask = max(reactiveMask, cloudOpacity * 0.38f);
+#endif
 		}
 	}
 
@@ -96,6 +105,8 @@ RWTexture2D<float> DepthOutput : register(u3);
 		// fast camera pan, bias the whole sky toward current color so those
 		// disoccluded shapes clear promptly instead of lingering for many frames.
 		float skyMotionPixels = length(centerMotion * TrueSamplingDim);
+		// Preserve the established disocclusion response until visual A/B tests
+		// justify altering temporal thresholds for sky/geometry boundaries.
 		float skyPanReactivity = smoothstep(0.08f, 0.75f, skyMotionPixels) * 0.98f;
 		reactiveMask = max(reactiveMask, skyPanReactivity);
 	}
@@ -110,8 +121,8 @@ RWTexture2D<float> DepthOutput : register(u3);
 				continue;
 			float neighborDepth = DepthMask[samplePos];
 			bool neighborHasGeometry = isfinite(neighborDepth) && neighborDepth >= 0.0f && neighborDepth < 1.0f;
-		float2 neighborMotion = MotionVectorMask[samplePos];
-		if (neighborHasGeometry == silhouetteCenterHasGeometry) {
+			float2 neighborMotion = MotionVectorMask[samplePos];
+			if (neighborHasGeometry == silhouetteCenterHasGeometry) {
 			// Reprojected history can still stick at indoor object/wall edges where
 			// both samples have valid geometry. Mark both sides when depth separation
 			// and their screen-space motion disagree, not just sky silhouettes.
@@ -221,7 +232,7 @@ RWTexture2D<float> DepthOutput : register(u3);
 	// and reprojects history between them. Select a real representative; keep
 	// the soft weight solely for the bounded bias-current-colour hint.
 	float2 conditionedMotion = dilationWeight > 0.5f ? dilatedMotionVector : motionVector;
-	MotionVectorOutput[dispatchID.xy] = conditionedMotion;
+	MotionVectorOutput[dispatchID.xy] = all(isfinite(conditionedMotion)) ? conditionedMotion : 0.0f.xx;
 	float2 currentUV = (float2(dispatchID.xy) + 0.5f) / TrueSamplingDim;
 	float2 previousUV = currentUV + motionVector;
 	if (centerHasGeometry && (!all(isfinite(previousUV)) || any(previousUV < 0.0f) || any(previousUV >= 1.0f)))
@@ -234,15 +245,24 @@ RWTexture2D<float> DepthOutput : register(u3);
 	float2 motionDeltaPixels = (dilatedMotionVector - motionVector) * TrueSamplingDim;
 	float motionDisagreement = saturate((length(motionDeltaPixels) - 0.25) / 1.5);
 	reactiveMask = max(reactiveMask, dilationWeight * motionDisagreement * 0.35);
+#else
+	// The FSR permutation still owns the complete output-UAV contract.
+	// Never leave stale vectors in an allocated motion guide.
+	MotionVectorOutput[dispatchID.xy] = silhouetteMotionValid ? centerMotion : 0.0f.xx;
+	if (!silhouetteMotionValid)
+		reactiveMask = 1.0f;
 #endif
 
 #if defined(DEPTH_OUTPUT)
 	// Copy depth as R32_FLOAT so FSR DX11 backend receives a typed format.
 	// The raw depth resource is R24G8_TYPELESS which maps to FFX_SURFACE_FORMAT_UNKNOWN.
-	DepthOutput[dispatchID.xy] = DepthMask[dispatchID.xy];
+	const float inputDepth = DepthMask[dispatchID.xy];
+	DepthOutput[dispatchID.xy] = isfinite(inputDepth) ? saturate(inputDepth) : 1.0f;
 #endif
 
-	ReactiveMask[dispatchID.xy] = saturate(reactiveMask);
+	const uint reactiveBits = asuint(reactiveMask);
+	const bool reactiveFinite = (reactiveBits & 0x7f800000u) != 0x7f800000u;
+	ReactiveMask[dispatchID.xy] = reactiveFinite ? saturate(reactiveMask) : 1.0f;
 
 	TransparencyCompositionMask[dispatchID.xy] = transparencyCompositionMask;
 }

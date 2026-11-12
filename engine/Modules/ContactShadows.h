@@ -48,9 +48,9 @@ public:
 
 	struct BendSettings
 	{
-		float SurfaceThickness = 0.02f;
-		float BilinearThreshold = 0.02f;
-		float ShadowContrast = 1.0f;
+		float SurfaceThickness = 0.008f;
+		float BilinearThreshold = 0.035f;
+		float ShadowContrast = 2.0f;
 		uint Enable = 1;
 		uint SampleCount = 1;
 		float Strength = 1.0f;
@@ -107,11 +107,13 @@ public:
 	/** @brief Calculates the resolution-scaled and quantized sample count for the raymarch shader. */
 	uint GetScaledSampleCount();
 	uint lastCompiledSampleCount = 0;
+	uint lastSampleMultiplier = 0;
+	bool lastCompiledFloatDepth = false;
 	/**
 	 * @brief Returns the compiled raymarch compute shader, recompiling if the sample count changed.
 	 * @return The compiled ID3D11ComputeShader, or nullptr on failure.
 	 */
-	ID3D11ComputeShader* GetComputeRaymarch();
+	ID3D11ComputeShader* GetComputeRaymarch(bool floatDepthSRV);
 
 	/** @brief Clears the shadow texture and dispatches shadow ray marching if conditions are met. */
 	virtual void Prepass() override;

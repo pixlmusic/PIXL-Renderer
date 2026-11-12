@@ -13,10 +13,14 @@ Texture2D<half4> srcNormalRoughness : register(t1);
 Texture2D<unorm float> srcAccumFrames : register(t2);  // maybe half-res
 Texture2D<float4> srcIlY : register(t3);               // maybe half-res
 Texture2D<float2> srcIlCoCg : register(t4);            // maybe half-res
+Texture2D<unorm float> srcAo : register(t5);           // maybe half-res
+Texture2D<float4> srcBentVisibility : register(t6);
 
 RWTexture2D<unorm float> outAccumFrames : register(u0);
 RWTexture2D<float4> outIlY : register(u1);
 RWTexture2D<float2> outIlCoCg : register(u2);
+RWTexture2D<unorm float> outAo : register(u3);
+RWTexture2D<float4> outBentVisibility : register(u4);
 
 // samples = 8, min distance = 0.5, average samples on radius = 2
 static const float3 g_Poisson8[8] = {
@@ -103,9 +107,21 @@ float2x2 getRotationMatrix(float noise)
 	const float2 screenPos = uv;
 
 	float depth = READ_DEPTH(srcDepth, dtid);
+	if (!isfinite(depth) || depth <= FP_Z || depth >= DepthFadeRange.y) {
+		outIlY[dtid] = 0.0f;
+		outIlCoCg[dtid] = 0.0f;
+		outAo[dtid] = 0.0f;
+		outBentVisibility[dtid] = 0.0f;
+#ifdef TEMPORAL_DENOISER
+		outAccumFrames[dtid] = 1.0f / 255.0f;
+#endif
+		return;
+	}
 	float3 pos = ScreenToViewPosition(screenPos, depth);
-	float3 normal = GBuffer::DecodeNormal(
-		FULLRES_LOAD(srcNormalRoughness, dtid, FullFrameTextureUV(uv), samplerLinearClamp).xy);
+	// Positions below use positive trace depth, so normals and projection must
+	// use that same basis. Engine-view projection mirrors this footprint.
+	float3 normal = ToTraceView(GBuffer::DecodeNormal(
+		FULLRES_LOAD(srcNormalRoughness, dtid, FullFrameTextureUV(uv), samplerPointClamp).xy));
 
 	const float2 pixelDirRBViewspaceSizeAtCenterZ = depth.xx * NDCToViewMul.xy * RCP_OUT_FRAME_DIM;
 	const float worldRadius = radius * pixelDirRBViewspaceSizeAtCenterZ.x;
@@ -124,6 +140,8 @@ float2x2 getRotationMatrix(float noise)
 
 	const float4 ilY = srcIlY[dtid];
 	const float2 ilCoCg = srcIlCoCg[dtid];
+	const float ao = srcAo[dtid];
+	const float4 bentVisibility = srcBentVisibility[dtid];
 
 	// RELAX/FFX-inspired anti-firefly bounds and variance guidance. The cross
 	// footprint is deliberately small: it preserves Skyrim texture detail while
@@ -185,6 +203,8 @@ float2x2 getRotationMatrix(float noise)
 	if (historyFraction >= 0.75f && relativeSigmaY < 0.035f && chromaSigma < 0.02f) {
 		outIlY[dtid] = ilY;
 		outIlCoCg[dtid] = ilCoCg;
+		outAo[dtid] = ao;
+		outBentVisibility[dtid] = bentVisibility;
 		outAccumFrames[dtid] = accumFrames;
 		return;
 	}
@@ -192,17 +212,21 @@ float2x2 getRotationMatrix(float noise)
 
 	float4 ySum = ilY;
 	float2 coCgSum = ilCoCg;
+	float aoSum = ao;
+	float3 bentSum = GBuffer::DecodeNormal(bentVisibility.xy);
+	float visibilitySum = saturate(bentVisibility.z);
 #if defined(TEMPORAL_DENOISER)
 	float fSum = accumFrames;
 #endif
 	float wSum = 1;
+	float aoWeightSum = 1;
 	for (uint i = 0; i < numSamples; i++) {
 		float w = GaussianWeight(g_Poisson8[i].z);
 
 		float2 poissonOffset = g_Poisson8[i].xy;
 
 		float3 viewSamplePos = pos + TvBv[0] * poissonOffset.x + TvBv[1] * poissonOffset.y;
-		float2 screenPosSample = FrameBuffer::ViewToUV(viewSamplePos);
+		float2 screenPosSample = ViewToScreenPosition(viewSamplePos);
 
 		if (any(screenPosSample < 0) || any(screenPosSample > 1)) {
 				continue;
@@ -212,10 +236,12 @@ float2x2 getRotationMatrix(float noise)
 		uvSample = (floor(uvSample * OUT_FRAME_DIM) + 0.5) * RCP_OUT_FRAME_DIM;  // Snap to the pixel centre
 
 		float depthSample = srcDepth.SampleLevel(samplerPointClamp, FullFrameTextureUV(uvSample), RES_MIP);
-		float3 posSample = ScreenToViewPosition(screenPosSample, depthSample);
+		if (!isfinite(depthSample) || depthSample <= FP_Z || depthSample >= DepthFadeRange.y)
+			continue;
+		float3 posSample = ScreenToViewPosition(uvSample, depthSample);
 
 		float4 normalRoughnessSample = srcNormalRoughness.SampleLevel(samplerPointClamp, FullFrameTextureUV(uvSample), 0);
-		float3 normalSample = GBuffer::DecodeNormal(normalRoughnessSample.xy);
+		float3 normalSample = ToTraceView(GBuffer::DecodeNormal(normalRoughnessSample.xy));
 
 		// geometry weight
 		w *= saturate(1 - abs(dot(normal, posSample - pos)) * DistanceNormalisation);
@@ -229,6 +255,17 @@ float2x2 getRotationMatrix(float noise)
 			float2 sampleCoCg = srcIlCoCg.SampleLevel(samplerPointClamp, InternalFrameTextureUV(uvSample), 0);
 			sampleCoCg = clamp(sampleCoCg, localMinCoCg, localMaxCoCg);
 			coCgSum += sampleCoCg * w;
+			// Reuse the existing depth/normal bilateral footprint for visibility.
+			// AO previously bypassed spatial reconstruction entirely, leaving a
+			// low-ray-count stipple pattern that temporal accumulation alone could
+			// not remove around creases and contact points.
+			float sampleAo = srcAo.SampleLevel(samplerLinearClamp, InternalFrameTextureUV(uvSample), 0);
+			aoSum += sampleAo * w;
+			aoWeightSum += w;
+			float4 sampleBent = srcBentVisibility.SampleLevel(
+				samplerPointClamp, InternalFrameTextureUV(uvSample), 0);
+			bentSum += GBuffer::DecodeNormal(sampleBent.xy) * w;
+			visibilitySum += saturate(sampleBent.z) * w;
 #if defined(TEMPORAL_DENOISER)
 			fSum += srcAccumFrames.SampleLevel(samplerPointClamp, InternalFrameTextureUV(uvSample), 0) * w;
 #endif
@@ -238,6 +275,10 @@ float2x2 getRotationMatrix(float noise)
 
 	outIlY[dtid] = ySum / wSum;
 	outIlCoCg[dtid] = coCgSum / wSum;
+	outAo[dtid] = saturate(aoSum / max(aoWeightSum, 1e-5f));
+	float3 filteredBent = bentSum * rsqrt(max(dot(bentSum, bentSum), 1e-6f));
+	outBentVisibility[dtid] = float4(GBuffer::EncodeNormal(filteredBent),
+		saturate(visibilitySum / max(aoWeightSum, 1e-5f)), 1.0f);
 #if defined(TEMPORAL_DENOISER)
 	outAccumFrames[dtid] = fSum / wSum;
 #endif

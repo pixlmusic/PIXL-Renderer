@@ -23,6 +23,10 @@ $lighting = 'Lighting.hlsl'
 $pixel = @('WINPC', 'DX11', 'PSHADER')
 Add-Case 'SkinOptics.Actor' $lighting 'ps_5_0' ($pixel + @('SKINNED', 'SKIN', 'PIXL_SKIN'))
 Add-Case 'StrandShading.Hair' $lighting 'ps_5_0' ($pixel + @('HAIR', 'STRAND_SHADING'))
+Add-Case 'Lighting.LocalContact.PBR' $lighting 'ps_5_0' ($pixel + @('MATERIAL_FORGE', 'DEFERRED', 'CONTACT_SHADOWS', 'RADIANT_GRID'))
+Add-Case 'Lighting.LocalContact.MaterialForgeIndependent' $lighting 'ps_5_0' ($pixel + @('MATERIAL_FORGE', 'DEFERRED', 'RADIANT_GRID'))
+Add-Case 'Lighting.LocalContact.RadiantGridOnly' $lighting 'ps_5_0' ($pixel + @('DEFERRED', 'RADIANT_GRID'))
+Add-Case 'Lighting.LocalContact.Legacy' $lighting 'ps_5_0' ($pixel + @('SPECULAR', 'DEFERRED', 'CONTACT_SHADOWS', 'RADIANT_GRID'))
 Add-Case 'TissueDiffusion.Actor' $lighting 'ps_5_0' ($pixel + @('SKINNED', 'SKIN', 'PIXL_SKIN', 'TISSUE_DIFFUSION', 'DEFERRED'))
 Add-Case 'ContactShadows.Deferred' $lighting 'ps_5_0' ($pixel + @('DEFERRED', 'CONTACT_SHADOWS'))
 Add-Case 'NaturalLighting.RadiantGrid' $lighting 'ps_5_0' ($pixel + @('NATURAL_LIGHTING', 'RADIANT_GRID'))
@@ -30,6 +34,23 @@ Add-Case 'VolumeOcclusion.Lighting' $lighting 'ps_5_0' ($pixel + @('VOLUME_OCCLU
 Add-Case 'TerrainSeam.Landscape' $lighting 'ps_5_0' ($pixel + @('LANDSCAPE', 'DEFERRED', 'TERRAIN_SEAM'))
 
 $compute = @('COMPUTESHADER', 'WINPC', 'DX11')
+Add-Case 'HybridGI.SSGI' 'HybridGI/ssgi.cs.hlsl' 'cs_5_0'
+$deferredComposite = 'DeferredCompositeCS.hlsl'
+Add-Case 'DeferredComposite.Vanilla' $deferredComposite 'cs_5_0' $compute
+Add-Case 'DeferredComposite.HybridGI' $deferredComposite 'cs_5_0' ($compute + @('HYBRID_GI'))
+Add-Case 'DeferredComposite.HybridGI.WorldProbes' $deferredComposite 'cs_5_0' ($compute + @('HYBRID_GI', 'WORLD_PROBES', 'AMBIENT_PROBE', 'SKY_BOUNCE'))
+Add-Case 'DeferredComposite.HybridGI.InteriorTerrainSeam' $deferredComposite 'cs_5_0' ($compute + @('HYBRID_GI', 'INTERIOR', 'TERRAIN_SEAM'))
+$imageReconstruction = 'ImageReconstruction/'
+Add-Case 'ImageReconstruction.EncodeTextures.TAA' ($imageReconstruction + 'EncodeTexturesCS.hlsl') 'cs_5_0' $compute
+Add-Case 'ImageReconstruction.EncodeTextures.DLSS' ($imageReconstruction + 'EncodeTexturesCS.hlsl') 'cs_5_0' ($compute + @('DLSS'))
+Add-Case 'ImageReconstruction.EncodeTextures.FSR' ($imageReconstruction + 'EncodeTexturesCS.hlsl') 'cs_5_0' ($compute + @('FSR', 'DEPTH_OUTPUT'))
+Add-Case 'ImageReconstruction.RCAS' ($imageReconstruction + 'RCAS/RCAS.hlsl') 'cs_5_0' $compute
+$pixelImage = @('WINPC', 'DX11', 'PSHADER')
+Add-Case 'ImageReconstruction.DepthRefractionUpscale' ($imageReconstruction + 'DepthRefractionUpscalePS.hlsl') 'ps_5_0' $pixelImage
+Add-Case 'ImageReconstruction.UnderwaterMaskUpscale' ($imageReconstruction + 'UnderwaterMaskUpscalePS.hlsl') 'ps_5_0' $pixelImage
+Add-Case 'ImageReconstruction.SpatialFallback' ($imageReconstruction + 'SpatialFallbackPS.hlsl') 'ps_5_0' $pixelImage
+Add-Case 'ImageReconstruction.CopyDepth' ($imageReconstruction + 'CopyDepthToSharedBufferPS.hlsl') 'ps_5_0' $pixelImage
+Add-Case 'ImageReconstruction.FullscreenVertex' ($imageReconstruction + 'UpscaleVS.hlsl') 'vs_5_0' @('WINPC', 'DX11', 'VSHADER')
 $contact = 'ContactShadows/RaymarchCS.hlsl'
 Add-Case 'ContactShadows.Raymarch.Standard' $contact 'cs_5_0' ($compute + @('SAMPLE_COUNT=64'))
 Add-Case 'ContactShadows.Raymarch.TerrainSeam' $contact 'cs_5_0' ($compute + @('SAMPLE_COUNT=64', 'TERRAIN_SEAM'))

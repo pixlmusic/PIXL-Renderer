@@ -22,6 +22,9 @@
 #include "Modules/LightVolumes.h"
 #include "Modules/Waterbody.h"
 
+#include <array>
+#include <cstring>
+
 std::unordered_map<void*, std::pair<std::unique_ptr<uint8_t[]>, size_t>> ShaderBytecodeMap;
 
 // Versioned, synchronous bridge: records are borrowed for this draw only.
@@ -832,6 +835,21 @@ namespace Hooks
 		{
 			const bool temporal = Util::GetTemporal();
 			Util::SetTemporal(false);
+
+			// Keep PIXL's work for this shared engine entry in one detour. Installing
+			// separate core, ImageReconstruction, and CameraSuite detours on the same
+			// address makes hook order depend on other UI plugins and can route a
+			// single menu frame through multiple framebuffer setup paths.
+			auto& imageReconstruction = globals::pipeline::imageReconstruction;
+			auto& cameraSuite = globals::pipeline::cameraSuite;
+			if (imageReconstruction.loaded) {
+				imageReconstruction.PostDisplay();
+				if (!imageReconstruction.d3d12SwapChainActive && cameraSuite.loaded)
+					cameraSuite.SetUIBuffer();
+			} else if (cameraSuite.loaded) {
+				cameraSuite.SetUIBuffer();
+			}
+
 			func(a1);
 			Util::SetTemporal(temporal);
 		}
@@ -1163,13 +1181,128 @@ namespace Hooks
 
 	struct BSLightingShader_SetupGeometry_GeometrySetupConstantPointLights
 	{
-		static void thunk(RE::BSGraphics::PixelShader* PixelShader, RE::BSRenderPass* Pass, DirectX::XMMATRIX& Transform, uint32_t LightCount, uint32_t ShadowLightCount, float WorldScale, uint32_t)
+		struct RangeValidationCacheEntry
 		{
-			if (globals::pipeline::radiantGrid.loaded)
-				globals::pipeline::radiantGrid.BSLightingShader_SetupGeometry_GeometrySetupConstantPointLights(Pass);
-			else
-				func(PixelShader, Pass, Transform, LightCount, ShadowLightCount, WorldScale, 0);
+			std::uintptr_t address = 0;
+			std::size_t size = 0;
+			uint32_t frame = UINT32_MAX;
+			bool readable = false;
+			bool executableChecked = false;
+			bool executable = false;
+		};
+
+		static bool IsReadableRange(const void* a_address, std::size_t a_size)
+		{
+			if (!a_address || a_size == 0)
+				return false;
+			const auto start = reinterpret_cast<std::uintptr_t>(a_address);
+			if (start < 0x10000u || start > UINTPTR_MAX - a_size)
+				return false;
+			const auto end = start + a_size;
+			for (auto cursor = start; cursor < end;) {
+				MEMORY_BASIC_INFORMATION info{};
+				if (!VirtualQuery(reinterpret_cast<const void*>(cursor), &info, sizeof(info)) ||
+					info.State != MEM_COMMIT || (info.Protect & (PAGE_GUARD | PAGE_NOACCESS)))
+					return false;
+				const DWORD protection = info.Protect & 0xFFu;
+				if (protection != PAGE_READONLY && protection != PAGE_READWRITE && protection != PAGE_WRITECOPY &&
+					protection != PAGE_EXECUTE_READ && protection != PAGE_EXECUTE_READWRITE && protection != PAGE_EXECUTE_WRITECOPY)
+					return false;
+				const auto regionEnd = reinterpret_cast<std::uintptr_t>(info.BaseAddress) + info.RegionSize;
+				if (regionEnd <= cursor)
+					return false;
+				cursor = std::min(regionEnd, end);
+			}
+			return true;
 		}
+
+		static bool IsReadableRangeCached(const void* a_address, std::size_t a_size, std::array<RangeValidationCacheEntry, 512>& a_cache)
+		{
+			if (!a_address || a_size == 0)
+				return false;
+			const uint32_t frame = globals::state ? globals::state->frameCount : UINT32_MAX - 1u;
+			const auto address = reinterpret_cast<std::uintptr_t>(a_address);
+			const auto slot = ((address >> 4u) ^ (a_size >> 3u)) % a_cache.size();
+			auto& entry = a_cache[slot];
+			if (entry.frame == frame && entry.address == address && entry.size == a_size)
+				return entry.readable;
+			entry = { address, a_size, frame, IsReadableRange(a_address, a_size) };
+			return entry.readable;
+		}
+
+		static bool IsExecutableAddressCached(const void* a_address, std::array<RangeValidationCacheEntry, 512>& a_cache)
+		{
+			if (!IsReadableRangeCached(a_address, 1, a_cache))
+				return false;
+			const auto address = reinterpret_cast<std::uintptr_t>(a_address);
+			const auto slot = ((address >> 4u) ^ (std::size_t{ 1 } >> 3u)) % a_cache.size();
+			auto& entry = a_cache[slot];
+			if (entry.executableChecked)
+				return entry.executable;
+			MEMORY_BASIC_INFORMATION info{};
+			if (VirtualQuery(a_address, &info, sizeof(info)) && info.State == MEM_COMMIT) {
+				const DWORD protection = info.Protect & 0xFFu;
+				entry.executable = protection == PAGE_EXECUTE || protection == PAGE_EXECUTE_READ ||
+					protection == PAGE_EXECUTE_READWRITE || protection == PAGE_EXECUTE_WRITECOPY;
+			}
+			entry.executableChecked = true;
+			return entry.executable;
+		}
+
+		static bool IsReadableEngineObject(const void* a_object, std::size_t a_size,
+			std::array<RangeValidationCacheEntry, 512>& a_cache)
+		{
+			if (!a_object || (reinterpret_cast<std::uintptr_t>(a_object) & (alignof(void*) - 1u)) != 0 ||
+				!IsReadableRangeCached(a_object, a_size, a_cache))
+				return false;
+			const auto vtable = *static_cast<const std::uintptr_t*>(a_object);
+			if (!IsReadableRangeCached(reinterpret_cast<const void*>(vtable), sizeof(std::uintptr_t), a_cache))
+				return false;
+			const auto firstVirtual = *reinterpret_cast<const std::uintptr_t*>(vtable);
+			return IsExecutableAddressCached(reinterpret_cast<const void*>(firstVirtual), a_cache);
+		}
+
+		static void thunk(RE::BSGraphics::PixelShader* PixelShader, RE::BSRenderPass* Pass, DirectX::XMMATRIX& Transform, uint32_t LightCount, uint32_t ShadowLightCount, float WorldScale, uint32_t RenderSpace)
+		{
+			// Preserve Skyrim's point-light constants and native shadow bindings for
+			// coherent passes. During world/cell transitions the engine can leave a
+			// stale BSLight/NiLight pointer in sceneLights. Non-null is insufficient:
+			// recent failures presented a float bit-pattern (0x3F800000) as a light
+			// pointer. Validate the object memory and vtable before native dereference.
+			// Geometry setup executes once for each rendered shape, often many
+			// thousands of times per frame. Cache page checks for the current frame;
+			// querying Windows VM metadata separately for every light on every draw
+			// made the defensive path itself a significant CPU workload.
+			thread_local std::array<RangeValidationCacheEntry, 512> validationCache{};
+			bool validLightList = Pass && Pass->numLights <= 32 &&
+				LightCount <= Pass->numLights && ShadowLightCount <= Pass->numLights;
+			if (validLightList && Pass->numLights != 0) {
+				validLightList = IsReadableRangeCached(Pass->sceneLights, sizeof(RE::BSLight*) * Pass->numLights, validationCache);
+				for (uint32_t i = 0; validLightList && i < Pass->numLights; ++i) {
+					auto* bsLight = Pass->sceneLights[i];
+					validLightList = IsReadableEngineObject(bsLight, sizeof(RE::BSLight), validationCache);
+					if (validLightList) {
+						auto* niLight = bsLight->light.get();
+						validLightList = IsReadableEngineObject(niLight, sizeof(RE::NiLight), validationCache);
+					}
+				}
+			}
+
+			if (validLightList) {
+				func(PixelShader, Pass, Transform, LightCount, ShadowLightCount, WorldScale, RenderSpace);
+			} else if (!invalidLightListLogged) {
+				logger::warn("[RadiantGrid] Skipped Skyrim point-light setup for a malformed render-pass light list (pass={}, lights={}, shadows={}, requested={}, requestedShadows={}).",
+					static_cast<bool>(Pass), Pass ? Pass->numLights : 0, Pass ? Pass->numShadowLights : 0,
+					LightCount, ShadowLightCount);
+				invalidLightListLogged = true;
+			}
+
+			if (globals::pipeline::radiantGrid.loaded && validLightList)
+				globals::pipeline::radiantGrid.BSLightingShader_SetupGeometry_GeometrySetupConstantPointLights(Pass);
+			else if (globals::pipeline::radiantGrid.loaded)
+				globals::pipeline::radiantGrid.ResetGeometryLightData();
+		}
+		static inline bool invalidLightListLogged = false;
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
@@ -1320,13 +1453,42 @@ namespace Hooks
 			}
 		}
 
-		if (REL::Module::get().version() >= SKSE::RUNTIME_SSE_1_7_104) {
-			// The 1.7.104 function has a five-byte store at +0xB0C and the next
-			// instruction begins at +0xB11. The legacy AE patch site +0xB0E
-			// overlaps both; the observed illegal-instruction crash at +0xB12
-			// confirms that the call patch corrupts the function. Preserve the
-			// native point-light setup until a verified call site is available.
-			logger::warn("[RadiantGrid] Skipping SetupGeometry point-light hook on runtime {}; preserving Skyrim's native point-light setup.", REL::Module::get().version().string());
+		if (REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104) {
+			// 1.7.104 moved GeometrySetupConstantPointLights to +0xB30. Validate
+			// the argument setup and CALL opcode; the rel32 bytes vary with
+			// executable layout and the target may be an executable section thunk.
+			constexpr std::uintptr_t kPointLightCallOffset = 0xB30;
+			constexpr std::array<std::uint8_t, 11> kExpectedCallsite{
+				0x49, 0x8B, 0xD4,             // mov rdx, r12 (BSRenderPass*)
+				0x48, 0x8B, 0xCF,             // mov rcx, rdi (PixelShader*)
+				0x44, 0x89, 0x6C, 0x24, 0x20  // shadow light count argument
+			};
+			const auto callAddress = REL::RelocationID(100565, 107300).address() + kPointLightCallOffset;
+			const auto* callBytes = reinterpret_cast<const std::uint8_t*>(callAddress - kExpectedCallsite.size());
+			std::int32_t relativeTarget = 0;
+			std::memcpy(&relativeTarget, reinterpret_cast<const void*>(callAddress + 1), sizeof(relativeTarget));
+			const auto targetAddress = static_cast<std::uintptr_t>(
+				static_cast<std::intptr_t>(callAddress + 5) + relativeTarget);
+			// This exact argument sequence plus the CALL opcode is the runtime
+			// signature for the point-light setup site. Some 1.7.104 builds route
+			// the call through an executable thunk outside .textx, so requiring the
+			// rel32 target to land in that one PE section incorrectly rejects the
+			// verified callsite and leaves Skyrim's four-light path untouched.
+			const bool validCallsite =
+				std::memcmp(callBytes, kExpectedCallsite.data(), kExpectedCallsite.size()) == 0 &&
+				*reinterpret_cast<const std::uint8_t*>(callAddress) == 0xE8;
+			if (validCallsite) {
+				stl::write_thunk_call<BSLightingShader_SetupGeometry_GeometrySetupConstantPointLights>(callAddress);
+				globals::pipeline::radiantGrid.pointLightSetupCallsiteHooked = true;
+				logger::info("[RadiantGrid] Hooked Skyrim 1.7.104 SetupGeometry point-light call at +0xB30 (resolved target 0x{:X}).",
+					targetAddress);
+			} else {
+				logger::warn("[RadiantGrid] 1.7.104 point-light callsite validation failed at +0xB30 (prefix={}, opcode={:02X}); keeping native point-light setup.",
+					std::memcmp(callBytes, kExpectedCallsite.data(), kExpectedCallsite.size()) == 0,
+					*reinterpret_cast<const std::uint8_t*>(callAddress));
+			}
+		} else if (REL::Module::get().version() > SKSE::RUNTIME_SSE_1_7_104) {
+			logger::warn("[RadiantGrid] No validated SetupGeometry point-light callsite for runtime {}; preserving Skyrim's native point-light setup.", REL::Module::get().version().string());
 		} else {
 			stl::write_thunk_call<BSLightingShader_SetupGeometry_GeometrySetupConstantPointLights>(REL::RelocationID(100565, 107300).address() + REL::Relocate(0x523, 0xB0E));
 		}

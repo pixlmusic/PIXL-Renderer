@@ -21,6 +21,7 @@ cbuffer VolumetricFogCB : register(b0)
 #define VolumetricFogHasSkyBounce ((VolumetricFogGridSizeAndFlags.w & 8u) != 0u)
 #define VolumetricFogHasPrevConservativeDepth ((VolumetricFogGridSizeAndFlags.w & 16u) != 0u)
 #define VolumetricFogHasLocalLights ((VolumetricFogGridSizeAndFlags.w & 32u) != 0u)
+#define VolumetricFogHasLocalShadows ((VolumetricFogGridSizeAndFlags.w & 64u) != 0u)
 #define VolumetricFogInvGridSize VolumetricFogInvGridSizeAndNearFade.xyz
 #define VolumetricFogNearFadeInDistanceInv VolumetricFogInvGridSizeAndNearFade.w
 #define VolumetricFogHistoryWeight VolumetricFogHistoryParameters.x

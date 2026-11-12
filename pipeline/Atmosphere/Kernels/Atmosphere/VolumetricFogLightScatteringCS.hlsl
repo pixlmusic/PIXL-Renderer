@@ -102,11 +102,10 @@ float2 FixupHistoryUV(float2 uv, float previousCellDepth, out bool validHistory)
 	float2 fullResOffset = fullResUV - screenCoord;
 	float2 gatherUV = (screenCoord + 1.0f) / size;
 
-	// The conservative depth texture stores farthest depth in red and nearest
-	// depth in green. Reprojection must validate against the nearest surface;
-	// accepting the farthest sample in a mixed sky/geometry froxel preserves old
-	// fog across silhouettes and produces the visible rotation trails.
-	float4 previousSceneDepths = PrevConservativeDepthTexture.GatherGreen(LinearSampler, gatherUV);
+	// Keep the prior conservative-depth acceptance so the fog history remains
+	// continuous across camera motion. The physical camera's post-process ghosting
+	// was addressed there; aggressively rejecting froxel history added noise here.
+	float4 previousSceneDepths = PrevConservativeDepthTexture.GatherRed(LinearSampler, gatherUV);
 	bool4 validSamples = previousSceneDepths >= previousCellDepth;
 
 	validHistory = true;
@@ -328,6 +327,15 @@ float3 AccumulateLocalLightScattering(
 
 		const bool isPointLightLinear = light.lightFlags & RadiantGrid::LightFlags::Linear;
 		float3 lightColor = Color::PointLight(light.color.xyz, isPointLightLinear) * attenuation * light.fade;
+		// Fog is an extended receiver. Reuse the cached Skyrim local shadow map,
+		// but cap it to one gather-filtered tap per froxel so shadowed practicals
+		// do not multiply the volumetric light loop by the material PCF setting.
+		if (VolumetricFogHasLocalShadows && (light.lightFlags & RadiantGrid::LightFlags::LocalShadow)) {
+			const float shadowVisibility = RadiantGrid::GetLocalShadow(
+				LinearSampler, light.localShadowIndex, positionWS,
+				FrameBuffer::CameraPosAdjust.xyz, L, false, 0.0f, 1u);
+			lightColor *= saturate(shadowVisibility);
+		}
 		localScattering += lightColor * phase;
 	}
 
@@ -428,22 +436,7 @@ float4 ComputeLightScattering(uint3 coord, float3 cellOffset, float directionalS
 	{
 		historyAlpha = 0.0f;
 	}
-	else
-	{
-		// Scattering is view dependent. Reduce reuse in proportion to the
-		// reprojected screen-space travel so static fog remains smooth while camera
-		// rotation cannot drag an old sky-facing lobe over terrain silhouettes.
-		float2 currentVolumeUV = (float2(dispatchID.xy) + 0.5f.xx) * VolumetricFogInvGridSize.xy;
-		float motionInFroxels = length(
-			(historyUV.xy - currentVolumeUV) * float2(VolumetricFogGridSize.xy));
-		// Reduce reuse faster during camera motion so view-dependent scattering
-		// cannot leave a lingering shaft after the current froxel has moved away.
-		historyAlpha *= exp2(-8.0f * motionInFroxels);
-	}
-
-	// Partially rejected history needs the same stable current-frame estimate as a
-	// full miss; otherwise motion trades ghosting for visibly noisy fog.
-	uint sampleCount = historyAlpha < 0.25f ? VolumetricFogHistoryMissSampleCount : 1u;
+	uint sampleCount = historyAlpha < 0.001f ? VolumetricFogHistoryMissSampleCount : 1u;
 	// Shadow visibility varies slowly across the sub-voxel jitter pattern. Sample
 	// the center once and reuse it for all history-miss radiance samples instead
 	// of repeating cascaded shadow PCF and world-space cloud/terrain tests.

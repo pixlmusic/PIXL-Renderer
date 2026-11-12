@@ -72,15 +72,24 @@ groupshared float3 g_scratchRadiance[8][8];
 	const uint2 pixCoord = baseCoord * 2;
 	const float2 uv = InternalPixelTextureUV(pixCoord + .5f);
 
-	float4 rad0 = srcRadiance.GatherRed(samplerPointClamp, uv);
-	float4 rad1 = srcRadiance.GatherGreen(samplerPointClamp, uv);
-	float4 rad2 = srcRadiance.GatherBlue(samplerPointClamp, uv);
-
-	float3 radiance0 = float3(rad0.w, rad1.w, rad2.w);
-	float3 radiance1 = float3(rad0.z, rad1.z, rad2.z);
-	float3 radiance2 = float3(rad0.x, rad1.x, rad2.x);
-	float3 radiance3 = float3(rad0.y, rad1.y, rad2.y);
-
+	// The texture is physically full-backed but has a compact active output.
+	// Border/padded lanes must not gather old data from outside that viewport.
+	const uint2 maxPixel = max(uint2(OUT_FRAME_DIM), uint2(1, 1)) - 1u;
+	float3 radiance0, radiance1, radiance2, radiance3;
+	if (all(pixCoord + uint2(1, 1) < uint2(OUT_FRAME_DIM))) {
+		float4 rad0 = srcRadiance.GatherRed(samplerPointClamp, uv);
+		float4 rad1 = srcRadiance.GatherGreen(samplerPointClamp, uv);
+		float4 rad2 = srcRadiance.GatherBlue(samplerPointClamp, uv);
+		radiance0 = float3(rad0.w, rad1.w, rad2.w);
+		radiance1 = float3(rad0.z, rad1.z, rad2.z);
+		radiance2 = float3(rad0.x, rad1.x, rad2.x);
+		radiance3 = float3(rad0.y, rad1.y, rad2.y);
+	} else {
+		radiance0 = srcRadiance.Load(int3(min(pixCoord, maxPixel), 0));
+		radiance1 = srcRadiance.Load(int3(min(pixCoord + uint2(1, 0), maxPixel), 0));
+		radiance2 = srcRadiance.Load(int3(min(pixCoord + uint2(0, 1), maxPixel), 0));
+		radiance3 = srcRadiance.Load(int3(min(pixCoord + uint2(1, 1), maxPixel), 0));
+	}
 	// [Improvement] Optional soft-knee firefly clamp (see RadianceFireflyClamp
 	// in common.hlsli - disabled by default at 0, so existing setups are
 	// unaffected). Applying it here, at MIP 0, suppresses outliers once before
@@ -92,14 +101,14 @@ groupshared float3 g_scratchRadiance[8][8];
 	radiance3 = filterNaN(filterInf(ClampFireflies(radiance3, RadianceFireflyClamp)));
 	ClampIsolatedRadiance4(radiance0, radiance1, radiance2, radiance3);
 
-	outRadiance0[pixCoord + uint2(0, 0)] = radiance0;
-	outRadiance0[pixCoord + uint2(1, 0)] = radiance1;
-	outRadiance0[pixCoord + uint2(0, 1)] = radiance2;
-	outRadiance0[pixCoord + uint2(1, 1)] = radiance3;
+	if (all(pixCoord + uint2(0, 0) < uint2(OUT_FRAME_DIM))) outRadiance0[pixCoord + uint2(0, 0)] = radiance0;
+	if (all(pixCoord + uint2(1, 0) < uint2(OUT_FRAME_DIM))) outRadiance0[pixCoord + uint2(1, 0)] = radiance1;
+	if (all(pixCoord + uint2(0, 1) < uint2(OUT_FRAME_DIM))) outRadiance0[pixCoord + uint2(0, 1)] = radiance2;
+	if (all(pixCoord + uint2(1, 1) < uint2(OUT_FRAME_DIM))) outRadiance0[pixCoord + uint2(1, 1)] = radiance3;
 
 	// MIP 1
 	float3 rm1 = RadianceMIPFilter(radiance0, radiance1, radiance2, radiance3);
-	outRadiance1[baseCoord] = rm1;
+	if (all(baseCoord < ((uint2(OUT_FRAME_DIM) + 1u) >> 1))) outRadiance1[baseCoord] = rm1;
 	g_scratchRadiance[groupThreadID.x][groupThreadID.y] = rm1;
 
 	GroupMemoryBarrierWithGroupSync();
@@ -113,7 +122,7 @@ groupshared float3 g_scratchRadiance[8][8];
 		float3 inBR = g_scratchRadiance[groupThreadID.x + 1][groupThreadID.y + 1];
 
 		float3 rm2 = RadianceMIPFilter(inTL, inTR, inBL, inBR);
-		outRadiance2[baseCoord / 2] = rm2;
+		if (all(baseCoord / 2 < ((uint2(OUT_FRAME_DIM) + 3u) >> 2))) outRadiance2[baseCoord / 2] = rm2;
 		g_scratchRadiance[groupThreadID.x][groupThreadID.y] = rm2;
 	}
 
@@ -128,7 +137,7 @@ groupshared float3 g_scratchRadiance[8][8];
 		float3 inBR = g_scratchRadiance[groupThreadID.x + 2][groupThreadID.y + 2];
 
 		float3 rm3 = RadianceMIPFilter(inTL, inTR, inBL, inBR);
-		outRadiance3[baseCoord / 4] = rm3;
+		if (all(baseCoord / 4 < ((uint2(OUT_FRAME_DIM) + 7u) >> 3))) outRadiance3[baseCoord / 4] = rm3;
 		g_scratchRadiance[groupThreadID.x][groupThreadID.y] = rm3;
 	}
 
@@ -143,6 +152,6 @@ groupshared float3 g_scratchRadiance[8][8];
 		float3 inBR = g_scratchRadiance[groupThreadID.x + 4][groupThreadID.y + 4];
 
 		float3 rm4 = RadianceMIPFilter(inTL, inTR, inBL, inBR);
-		outRadiance4[baseCoord / 8] = rm4;
+		if (all(baseCoord / 8 < ((uint2(OUT_FRAME_DIM) + 15u) >> 4))) outRadiance4[baseCoord / 8] = rm4;
 	}
 }

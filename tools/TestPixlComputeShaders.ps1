@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$ShaderRoot,
     [Parameter(Mandatory = $true)][string]$Fxc,
-    [ValidateSet('All', 'Atmosphere')][string]$Scope = 'All'
+    [ValidateSet('All', 'Atmosphere', 'RadiantGrid')][string]$Scope = 'All'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,7 +17,7 @@ $jobs = [Collections.Generic.List[object]]::new()
 # combination of temporal, GI, experimental reflection, and adaptive switches.
 $kernels = @(
     'prefilterDepths.cs.hlsl', 'prefilterRadiance.cs.hlsl', 'prefilterNormal.cs.hlsl',
-    'radianceDisocc.cs.hlsl', 'gi.cs.hlsl', 'blur.cs.hlsl', 'blur.cs.hlsl',
+    'radianceDisocc.cs.hlsl', 'ssgi.cs.hlsl', 'blur.cs.hlsl', 'blur.cs.hlsl',
     'upsample.cs.hlsl', 'worldCacheInject.cs.hlsl', 'worldCacheDecay.cs.hlsl',
     'hybridReflection.cs.hlsl', 'hybridReflectionDenoise.cs.hlsl', 'worldCacheInject.cs.hlsl',
     'prefilterDepths.cs.hlsl'
@@ -42,6 +42,9 @@ foreach ($resolution in 0..2) {
     }
 }
 # Matches Atmosphere's four shader getters and their loaded-module switches.
+$jobs.Add([pscustomobject]@{ path = 'RadiantGrid/ClusterBuildingCS.hlsl'; defines = @() })
+$jobs.Add([pscustomobject]@{ path = 'RadiantGrid/ClusterCullingCS.hlsl'; defines = @() })
+$jobs.Add([pscustomobject]@{ path = 'RadiantGrid/LocalShadowCopyCS.hlsl'; defines = @() })
 foreach ($mask in 0..7) {
     $defines = @()
     if ($mask -band 1) { $defines += 'RADIANT_GRID' }
@@ -55,9 +58,17 @@ $jobs.Add([pscustomobject]@{ path = 'Microclimates/MicroclimateFieldCS.hlsl'; de
 foreach ($kernel in @('VolumetricFogConservativeDepthCS.hlsl', 'VolumetricFogIntegrationCS.hlsl')) {
     $jobs.Add([pscustomobject]@{ path = 'Atmosphere/' + $kernel; defines = @() })
 }
+$jobs.Add([pscustomobject]@{ path = 'HybridGI/sceneVoxelize.cs.hlsl'; defines = @() })
+$jobs.Add([pscustomobject]@{ path = 'HybridGI/sceneVoxelScroll.cs.hlsl'; defines = @() })
+$jobs.Add([pscustomobject]@{ path = 'HybridGI/sceneVoxelRadianceSelect.cs.hlsl'; defines = @() })
+$jobs.Add([pscustomobject]@{ path = 'HybridGI/sceneVoxelRadianceResolve.cs.hlsl'; defines = @() })
+$jobs.Add([pscustomobject]@{ path = 'HybridGI/sceneVoxelLighting.cs.hlsl'; defines = @() })
 
 if ($Scope -eq 'Atmosphere') {
     $jobs = @($jobs | Where-Object { $_.path -like 'Atmosphere/*' -or $_.path -like 'Microclimates/*' })
+}
+if ($Scope -eq 'RadiantGrid') {
+    $jobs = @($jobs | Where-Object { $_.path -like 'RadiantGrid/*' })
 }
 $results = [Collections.Generic.List[object]]::new()
 for ($index = 0; $index -lt $jobs.Count; ++$index) {

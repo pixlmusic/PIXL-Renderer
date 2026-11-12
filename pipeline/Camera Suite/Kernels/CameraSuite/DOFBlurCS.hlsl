@@ -203,10 +203,13 @@ void main(uint3 dispatchID : SV_DispatchThreadID)
 		if (sampleDepth > centerDepth * 1.12f && centerDepth < 199999.0f)
 			depthWeight = 0.0f;
 #else
-		// Signed CoC already rejects focused and foreground occluders. Raw depth
-		// rejection here incorrectly separated two blurred background surfaces and
-		// preserved mountain/tree cut-outs against the sky.
-		float depthWeight = sampleCoC > 0.0f ? 1.0f : 0.0f;
+		// Keep blurred background from bleeding across a nearer actor silhouette.
+		// Only attenuate samples that are in front of the destination; distant
+		// background surfaces and sky retain the broad bokeh gather.
+		float relativeForegroundSeparation = max(centerDepth - sampleDepth, 0.0f) /
+			max(centerDepth, 64.0f);
+		float foregroundEdgeWeight = 1.0f - smoothstep(0.015f, 0.12f, relativeForegroundSeparation);
+		float depthWeight = (sampleCoC > 0.0f ? 1.0f : 0.0f) * foregroundEdgeWeight;
 #endif
 		tapWeight *= depthWeight;
 		float3 sampleColor = LoadLinear(sampleUV);

@@ -131,8 +131,13 @@ namespace SharedData
 	{
 		uint EnableLightsVisualisation;
 		uint LightsVisualisationMode;
-		float2 pad0; // x: suppress vanilla cloud meshes while PIXL Volumetric Clouds is active
+		uint EnableScreenSpaceLocalShadows;
+		uint pad0;
 		uint4 ClusterSize;
+		uint EnableLocalShadows;
+		uint LocalShadowSamples;
+		float LocalShadowFilterRadius;
+		float LocalShadowTexelSize;
 	};
 
 	struct RainResponseSettings

@@ -2,7 +2,6 @@
 
 #if defined(PSHADER)
 #	include "Common/FrameBuffer.hlsli"
-#	include "Common/Math.hlsli"
 #	include "Common/SharedData.hlsli"
 
 typedef VS_OUTPUT PS_INPUT;
@@ -64,7 +63,9 @@ PS_OUTPUT main(PS_INPUT input)
 			uint depthWidth, depthHeight;
 			SceneDepth.GetDimensions(depthWidth, depthHeight);
 			if (depthWidth > 0u && depthHeight > 0u) {
-				uint2 depthPixel = min(uint2(saturate(uv) * float2(depthWidth, depthHeight)), uint2(depthWidth - 1u, depthHeight - 1u));
+				uint2 depthPixel = uint2(clamp(
+					floor(uv * float2(depthWidth, depthHeight) - 0.5f),
+					0.0f.xx, float2(depthWidth - 1u, depthHeight - 1u)));
 				uint2 maskPixel = min(uint2(saturate(uv) * float2(maskWidth, maskHeight)), uint2(maskWidth - 1u, maskHeight - 1u));
 				float nearestDepth = 1.0f;
 				uint2 nearestMaskPixel = maskPixel;
@@ -74,7 +75,7 @@ PS_OUTPUT main(PS_INPUT input)
 					for (uint x = 0u; x < 2u; ++x) {
 						uint2 p = min(depthPixel + uint2(x, y), uint2(depthWidth - 1u, depthHeight - 1u));
 						float sampleDepth = SceneDepth.Load(int3(p, 0));
-						if (IsFiniteScalar(sampleDepth) && sampleDepth < nearestDepth) {
+						if (IsFiniteScalar(sampleDepth) && sampleDepth >= 0.0f && sampleDepth < nearestDepth) {
 							nearestDepth = sampleDepth;
 							float2 sampleUV = (float2(p) + 0.5f) / float2(depthWidth, depthHeight);
 							nearestMaskPixel = min(uint2(sampleUV * float2(maskWidth, maskHeight)), uint2(maskWidth - 1u, maskHeight - 1u));
@@ -86,7 +87,7 @@ PS_OUTPUT main(PS_INPUT input)
 			}
 		}
 	}
-	psout.UnderwaterMask = saturate(mask);
+	psout.UnderwaterMask = IsFiniteScalar(mask) ? saturate(mask) : 0.0f;
 
 	return psout;
 }

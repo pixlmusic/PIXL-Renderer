@@ -450,7 +450,7 @@ public:
 	std::uint64_t dofHistoryId = 0;
 	float lastExposureCompensationEV = 0.0f;
 	bool exposureHistoryValid = false;
-	bool exposureHoldLogged = false;
+	bool exposureLockLogged = false;
 	bool cinematicDoFLoaded = false;
 
 	// Update environment state once per frame, including extra FG/capture composites.

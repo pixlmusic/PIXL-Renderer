@@ -106,7 +106,7 @@ public:
 		/** Maximum number of local contact-shadow rays evaluated per pixel (one through four). */
 		uint LocalContactShadowLightCount = 4;
 		/** Maximum world-space length of each local contact-shadow ray. */
-		float LocalContactShadowLength = 96.0f;
+		float LocalContactShadowLength = 24.0f;
 		/** Opacity of local contact shadows. */
 		float LocalContactShadowStrength = 0.7f;
 		/** Enables derivative-based geometric specular anti-aliasing. */

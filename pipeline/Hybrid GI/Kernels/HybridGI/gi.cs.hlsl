@@ -61,6 +61,10 @@ Texture2D<float4> srcWorldSH1 : register(t11);
 Texture2D<float4> srcWorldSH2 : register(t12);
 Texture2D<uint> srcWorldNormal : register(t13);
 Texture2D<uint> srcWorldIntelligence : register(t17);
+Texture3D<uint> srcSceneVoxelOccupancy : register(t18);
+Texture3D<uint2> srcSceneVoxelRadiance : register(t19);
+Texture3D<uint> srcSceneVoxelSurface : register(t20);
+Texture3D<uint> srcSceneVoxelMaterial : register(t21);
 Texture2D<float3> srcReflectance : register(t14);
 Texture2D<float4> srcPrevBentVisibility : register(t15);
 Texture2D<unorm float> srcPrevAo : register(t16);
@@ -71,6 +75,205 @@ RWTexture2D<float2> outCoCg : register(u2);
 RWTexture2D<float4> outGISpecular : register(u3);
 RWTexture2D<uint> outPrevGeo : register(u4);
 RWTexture2D<float4> outBentVisibility : register(u5);
+
+cbuffer SceneVoxelCB : register(b3)
+{
+	float3 SceneVoxelWorldMin;
+	float SceneVoxelSize;
+	uint SceneVoxelDimension;
+	uint SceneVoxelValid;
+	uint SceneVoxelRadianceStride;
+	uint SceneVoxelPadding;
+};
+
+bool ReadSceneVoxelSurfaceNormal(float3 worldPosition, out float3 normal);
+bool DecodeSceneVoxelSurfaceNormal(uint packed, out float3 normal);
+
+bool ReadSceneVoxelRadiance(float3 worldPosition, out float3 radiance)
+{
+	radiance = 0.0f;
+	if (SceneVoxelValid == 0u || SceneVoxelDimension == 0u || !(SceneVoxelSize > 0.0f))
+		return false;
+	float3 gridPosition = (worldPosition - SceneVoxelWorldMin) / SceneVoxelSize - 0.5f;
+	int3 baseCell = int3(floor(gridPosition));
+	float3 cellFraction = frac(gridPosition);
+	float3 referenceNormal;
+	bool hasReferenceNormal = ReadSceneVoxelSurfaceNormal(worldPosition, referenceNormal);
+	float3 accumulatedRadiance = 0.0f;
+	float accumulatedWeight = 0.0f;
+	[unroll] for (uint z = 0u; z < 2u; ++z) {
+		[unroll] for (uint y = 0u; y < 2u; ++y) {
+			[unroll] for (uint x = 0u; x < 2u; ++x) {
+				int3 cell = baseCell + int3(x, y, z);
+				if (any(cell < 0) || any(cell >= int(SceneVoxelDimension)) ||
+					srcSceneVoxelOccupancy.Load(int4(cell, 0)) == 0u)
+					continue;
+				float3 surfaceNormal;
+				uint packedNormal = srcSceneVoxelSurface.Load(int4(cell, 0));
+				if (!DecodeSceneVoxelSurfaceNormal(packedNormal, surfaceNormal) ||
+					(hasReferenceNormal && dot(surfaceNormal, referenceNormal) < 0.65f))
+					continue;
+				uint2 packed = srcSceneVoxelRadiance.Load(int4(cell, 0));
+				if ((packed.y >> 16u) != 0x3c00u)
+					continue;
+				float3 sampleRadiance = float3(f16tof32(packed.x & 0xffffu), f16tof32(packed.x >> 16u),
+					f16tof32(packed.y & 0xffffu));
+				if (!all(isfinite(sampleRadiance)))
+					continue;
+				float3 axisWeight = lerp(1.0f - cellFraction, cellFraction, float3(x, y, z));
+				float weight = axisWeight.x * axisWeight.y * axisWeight.z;
+				accumulatedRadiance += sampleRadiance * weight;
+				accumulatedWeight += weight;
+			}
+		}
+	}
+	if (accumulatedWeight <= 1.0e-4f)
+		return false;
+	radiance = accumulatedRadiance / accumulatedWeight;
+	return all(isfinite(radiance));
+}
+
+bool ReadSceneVoxelEmissive(float3 worldPosition, out float3 radiance)
+{
+	radiance = 0.0f;
+	if (SceneVoxelValid == 0u || SceneVoxelDimension == 0u || !(SceneVoxelSize > 0.0f))
+		return false;
+	int3 cell = int3(floor((worldPosition - SceneVoxelWorldMin) / SceneVoxelSize));
+	if (any(cell < 0) || any(cell >= int(SceneVoxelDimension)))
+		return false;
+	uint packed = srcSceneVoxelMaterial.Load(int4(cell, 0));
+	if ((packed & 0x80000000u) == 0u)
+		return false;
+	float3 encoded = float3((packed >> 15u) & 0xffu, (packed >> 7u) & 0xffu, packed & 0x7fu) / float3(255.0f, 255.0f, 127.0f);
+	float denominator = max(1.0f / 256.0f, 1.0f - max(encoded.x, max(encoded.y, encoded.z)));
+	radiance = encoded / denominator;
+	return any(radiance > 1e-5f);
+}
+
+bool DecodeSceneVoxelSurfaceNormal(uint packed, out float3 normal)
+{
+	normal = 0.0f;
+	if ((packed & 0x80000000u) == 0u || packed == 0xffffffffu)
+		return false;
+	float2 oct = float2(packed & 0x7fffu, (packed >> 15u) & 0x7fffu) / 32767.0f * 2.0f - 1.0f;
+	normal = float3(oct, 1.0f - abs(oct.x) - abs(oct.y));
+	if (normal.z < 0.0f)
+		normal.xy = (1.0f - abs(normal.yx)) * float2(normal.x < 0.0f ? -1.0f : 1.0f, normal.y < 0.0f ? -1.0f : 1.0f);
+	float lengthSquared = dot(normal, normal);
+	if (!(lengthSquared > 1.0e-8f))
+		return false;
+	normal *= rsqrt(lengthSquared);
+	return true;
+}
+
+bool ReadSceneVoxelSurfaceNormal(float3 worldPosition, out float3 normal)
+{
+	normal = 0.0f;
+	if (SceneVoxelValid == 0u || SceneVoxelDimension == 0u || !(SceneVoxelSize > 0.0f))
+		return false;
+	int3 cell = int3(floor((worldPosition - SceneVoxelWorldMin) / SceneVoxelSize));
+	if (any(cell < 0) || any(cell >= int(SceneVoxelDimension)))
+		return false;
+	return DecodeSceneVoxelSurfaceNormal(srcSceneVoxelSurface.Load(int4(cell, 0)), normal);
+}
+
+bool SceneVoxelOccupied(float3 worldPosition)
+{
+	if (SceneVoxelValid == 0u || SceneVoxelDimension == 0u || !(SceneVoxelSize > 0.0f))
+		return false;
+	int3 cell = int3(floor((worldPosition - SceneVoxelWorldMin) / SceneVoxelSize));
+	if (any(cell < 0) || any(cell >= int(SceneVoxelDimension)))
+		return false;
+	return srcSceneVoxelOccupancy.Load(int4(cell, 0)) != 0u;
+}
+
+bool SceneVoxelTraceSegment(float3 startWS, float3 endWS, out float hitT)
+{
+	hitT = 1.0f;
+	if (SceneVoxelValid == 0u || SceneVoxelDimension == 0u || !(SceneVoxelSize > 0.0f))
+		return false;
+	float3 startGrid = (startWS - SceneVoxelWorldMin) / SceneVoxelSize;
+	float3 endGrid = (endWS - SceneVoxelWorldMin) / SceneVoxelSize;
+	if (!all(isfinite(startGrid)) || !all(isfinite(endGrid)))
+		return false;
+	float3 delta = endGrid - startGrid;
+	float3 worldDelta = endWS - startWS;
+	float worldLengthSquared = dot(worldDelta, worldDelta);
+	if (!(worldLengthSquared > 1.0e-8f) || !isfinite(worldLengthSquared))
+		return false;
+	float3 rayDirection = worldDelta * rsqrt(worldLengthSquared);
+	int3 cell = int3(floor(startGrid));
+	int3 endCell = int3(floor(endGrid));
+	int3 stepDirection = int3(delta.x >= 0.0f ? 1 : -1, delta.y >= 0.0f ? 1 : -1, delta.z >= 0.0f ? 1 : -1);
+	float3 tDelta = float3(abs(delta.x) > 1.0e-6f ? abs(rcp(delta.x)) : 1.0e20f,
+		abs(delta.y) > 1.0e-6f ? abs(rcp(delta.y)) : 1.0e20f,
+		abs(delta.z) > 1.0e-6f ? abs(rcp(delta.z)) : 1.0e20f);
+	float3 nextBoundary = float3(cell) + float3(stepDirection.x > 0 ? 1.0f : 0.0f,
+		stepDirection.y > 0 ? 1.0f : 0.0f, stepDirection.z > 0 ? 1.0f : 0.0f);
+	float3 tMax = float3(abs(delta.x) > 1.0e-6f ? (nextBoundary.x - startGrid.x) / delta.x : 1.0e20f,
+		abs(delta.y) > 1.0e-6f ? (nextBoundary.y - startGrid.y) / delta.y : 1.0e20f,
+		abs(delta.z) > 1.0e-6f ? (nextBoundary.z - startGrid.z) / delta.z : 1.0e20f);
+	float entryT = 0.0f;
+	// A 3D DDA crosses at most three grid planes per cell along a diagonal.
+	// Scale the finite traversal budget with the active volume dimension; the
+	// previous fixed 64-step cap silently truncated rays in larger voxel fields.
+	[loop] for (uint step = 0u; step < SceneVoxelDimension * 3u; ++step) {
+		if (any(cell < 0) || any(cell >= int(SceneVoxelDimension)))
+			return false;
+		if (srcSceneVoxelOccupancy.Load(int4(cell, 0)) != 0u) {
+			float3 surfaceNormal;
+			uint packedNormal = srcSceneVoxelSurface.Load(int4(cell, 0));
+			// Fine geometric normals reject conservative voxel hits where a ray only
+			// grazes along the captured face. Missing normal payload keeps the old
+			// conservative occupancy behaviour.
+			if (!DecodeSceneVoxelSurfaceNormal(packedNormal, surfaceNormal) ||
+				abs(dot(surfaceNormal, rayDirection)) >= 0.035f) {
+				hitT = saturate(entryT);
+				return true;
+			}
+		}
+		if (all(cell == endCell))
+			return false;
+		if (tMax.x <= tMax.y && tMax.x <= tMax.z) { entryT = tMax.x; cell.x += stepDirection.x; tMax.x += tDelta.x; }
+		else if (tMax.y <= tMax.z) { entryT = tMax.y; cell.y += stepDirection.y; tMax.y += tDelta.y; }
+		else { entryT = tMax.z; cell.z += stepDirection.z; tMax.z += tDelta.z; }
+	}
+	return false;
+}
+
+bool SceneVoxelSegmentOccluded(float3 startWS, float3 endWS)
+{
+	float hitT;
+	return SceneVoxelTraceSegment(startWS, endWS, hitT);
+}
+
+float TraceSceneGeometryAO(float3 receiverPositionWS, float3 receiverNormalWS)
+{
+	if (SceneVoxelValid == 0u)
+		return 0.0f;
+	float3 referenceAxis = abs(receiverNormalWS.z) < 0.85f ? float3(0.0f, 0.0f, 1.0f) : float3(0.0f, 1.0f, 0.0f);
+	float3 tangent = normalize(cross(referenceAxis, receiverNormalWS));
+	float3 bitangent = normalize(cross(receiverNormalWS, tangent));
+	float blocked = 0.0f;
+	[unroll] for (uint ray = 0u; ray < 4u; ++ray) {
+		float angle = (float(ray) + 0.5f) * (Math::PI * 0.5f);
+		float sineAngle, cosineAngle;
+		sincos(angle, sineAngle, cosineAngle);
+		float3 direction = normalize(receiverNormalWS + 0.65f * (tangent * cosineAngle + bitangent * sineAngle));
+		bool hit = false;
+		[unroll] for (uint step = 0u; step < 2u; ++step) {
+			float distance = SceneVoxelSize * (1.25f + 0.85f * float(step));
+			float3 segmentStart = receiverPositionWS + receiverNormalWS * (SceneVoxelSize * 0.55f) + direction * (SceneVoxelSize * (0.4f + 0.85f * float(step)));
+			float3 segmentEnd = receiverPositionWS + receiverNormalWS * (SceneVoxelSize * 0.55f) + direction * distance;
+			if (SceneVoxelSegmentOccluded(segmentStart, segmentEnd)) {
+				hit = true;
+				break;
+			}
+		}
+		blocked += hit ? 0.25f : 0.0f;
+	}
+	return blocked;
+}
 
 float GetDepthFade(float depth)
 {
@@ -147,11 +350,12 @@ bool ReadWorldVoxelCascade(
 				// A back-facing/dark surface still blocks transport; rejecting its
 				// radiance must not turn the occupied voxel into a hole.
 				if (readRadiance && leakWeight > 1e-3) {
+					float geometricVisibility = 1.0f;
 					irradiance = WorldCacheEvaluateRadiance(
 						srcWorldSH0.Load(int3(atlasCoord, 0)),
 						srcWorldSH1.Load(int3(atlasCoord, 0)),
 						srcWorldSH2.Load(int3(atlasCoord, 0)),
-						-sourceDirection) * leakWeight;
+						-sourceDirection) * leakWeight * geometricVisibility;
 					// Smooth only across a nearby shared face when both cells describe
 					// the same surface. This removes visible voxel steps without blurring
 					// corners or mixing unrelated walls and floors.
@@ -182,7 +386,7 @@ bool ReadWorldVoxelCascade(
 										srcWorldSH0.Load(int3(neighborCoord, 0)),
 										srcWorldSH1.Load(int3(neighborCoord, 0)),
 										srcWorldSH2.Load(int3(neighborCoord, 0)),
-										-sourceDirection) * neighborGate;
+										-sourceDirection) * neighborGate * geometricVisibility;
 								float weight = 0.5f * (1.0f - GISmootherStep(edgeDistance * 4.0f));
 									irradiance = lerp(irradiance, neighborRadiance, weight);
 									occupancy = lerp(occupancy, neighborOccupancy, weight);
@@ -281,16 +485,59 @@ void SampleWorldCache(
             receiverNormalWS, cacheTangent, cacheBitangent, rotation);
 		float rayTransmittance = 1.0;
 		bool foundIrradiance = false;
+		float3 rayIrradiance = 0.0;
+		float rayOpacity = 0.0;
+		float rayCascadeMix = 0.0;
 		float stepPower = 1.0;
+		float previousDistance = SceneVoxelSize * 1.25f;
 		[loop] for (uint stepIndex = 0; stepIndex < traceSteps; ++stepIndex) {
 			float stepScale = stepPower + 0.5;
 			float distance = min(WorldCacheRadius, baseStep * stepScale);
+			// Stop at the first captured mesh surface, but let that surface receive
+			// its own world-cache radiance before blocking anything farther away.
+			float intervalStart = min(previousDistance, distance);
+			float3 segmentStart = receiverPositionWS + receiverNormalWS * (SceneVoxelSize * 0.55f) + direction * intervalStart;
+			float3 segmentEnd = receiverPositionWS + receiverNormalWS * (SceneVoxelSize * 0.55f) + direction * distance;
+			float geometryHitT = 1.0f;
+			bool geometryHit = distance > previousDistance &&
+				SceneVoxelTraceSegment(segmentStart, segmentEnd, geometryHitT);
+			float sampleDistance = distance;
+			if (geometryHit) {
+				float segmentLength = max(distance - intervalStart, 1e-4f);
+				float enterSurface = min(geometryHitT + SceneVoxelSize * (0.05f / segmentLength), 1.0f);
+				sampleDistance = lerp(intervalStart, distance, enterSurface);
+			}
+			previousDistance = distance;
 			float3 sampleIrradiance = 0.0;
 			float cascade = 0.0;
 			float occupancy = 0.0;
-			if (ReadWorldVoxel(receiverPositionWS + direction * distance, receiverPositionWS, receiverNormalWS, direction, cameraWS,
-					sampleIrradiance, cascade, occupancy, !foundIrradiance)) {
-				float attenuation = rcp(1.0 + distance * inverseRadius);
+			float3 samplePosition = receiverPositionWS + direction * sampleDistance;
+			bool hasWorldCache = ReadWorldVoxel(samplePosition, receiverPositionWS, receiverNormalWS, direction, cameraWS,
+				sampleIrradiance, cascade, occupancy, !foundIrradiance);
+			float3 voxelLocalRadiance;
+			bool hasVoxelLocalRadiance = geometryHit && ReadSceneVoxelRadiance(samplePosition, voxelLocalRadiance);
+			if (hasVoxelLocalRadiance) {
+				// Bring RadiantGrid's world-space point-light evaluation into the same
+				// first-hit transport as the irradiance cache. Keep this as a partial
+				// bounce because the cache may already contain some of that light.
+				sampleIrradiance += voxelLocalRadiance * 0.35f;
+			}
+			float3 voxelEmissiveRadiance;
+			bool hasVoxelEmissive = geometryHit && ReadSceneVoxelEmissive(samplePosition, voxelEmissiveRadiance);
+			if (hasVoxelEmissive) {
+				// Emission is intrinsic to the voxelized material and remains a valid
+				// first-hit source. Screen-resolved radiance is deliberately excluded:
+				// one raster winner per coarse voxel made GI change in visible blocks as
+				// the camera moved, and could override the temporally stable world cache.
+				sampleIrradiance = voxelEmissiveRadiance;
+				occupancy = 1.0f;
+			}
+			if (hasWorldCache || geometryHit) {
+				// The voxel field supplies a stable geometric hit/occluder. Its sparse
+				// screen-radiance estimate is not used as indirect illumination.
+				if (geometryHit)
+					occupancy = 1.0f;
+				float attenuation = rcp(1.0 + sampleDistance * inverseRadius);
 				float transportWeight = occupancy * rayTransmittance;
 				if (computeDirectionalOcclusion)
 					directionalOcclusion += occupancy * rayTransmittance * attenuation;
@@ -322,6 +569,12 @@ void SampleWorldCache(
 				}
 				if (rayTransmittance < 0.05)
 					break;
+			}
+			if (geometryHit) {
+				if (computeDirectionalOcclusion && occupancy <= 1.0f / 255.0f)
+					directionalOcclusion += rayTransmittance * rcp(1.0f + sampleDistance * inverseRadius);
+				rayTransmittance = 0.0f;
+				break;
 			}
 			stepPower += stepPower;
 		}
@@ -503,8 +756,10 @@ float ClassifyAdaptiveRayDemand(
 void CalculateGI(
 	uint2 dtid, float2 uv, float viewspaceZ, float3 viewspaceNormal,
 	uint effectiveNumSlices, uint effectiveNumSteps, uint effectiveCacheRays,
-	out float o_ao, out sh2 o_currY, out float2 o_currCoCg, out float4 o_currGIAOSpecular, out float4 o_bentVisibility)
+	out float o_ao, out sh2 o_currY, out float2 o_currCoCg, out float4 o_currGIAOSpecular,
+	out float4 o_bentVisibility, out float o_cacheContributionY)
 {
+	o_cacheContributionY = 0.0f;
 	float2 normalizedScreenPos = uv;
 
 	const float rcpNumSlices = rcp((float)effectiveNumSlices);
@@ -818,9 +1073,12 @@ void CalculateGI(
 		// Union rather than addition keeps total occlusion energy bounded.
 		visibility = 1.0f - (1.0f - saturate(visibility)) * (1.0f - contactDepth);
 	}
+	// AO is a diffuse visibility cue. A high user strength must not turn a broad
+	// floor or wall into a black surface; keep a visible lighting floor even when
+	// the horizon mask, contact term, and world cache agree on heavy occlusion.
+	visibility = min(saturate(visibility), 0.72f);
 
 	float3 rawBentVS = bentWeightAccum > 1e-4f ? normalize(bentDirectionAccum / bentWeightAccum) : viewspaceNormal;
-
 	// Directional visibility is a screen-space observation, so its confidence
 	// must describe more than the distance fade. Near a viewport boundary the
 	// horizon footprint is clipped and an "open" direction may simply mean that
@@ -902,12 +1160,14 @@ void CalculateGI(
 			// strengths. Confidence still suppresses unwarmed or stale voxels.
 			float cacheConfidence = saturate(cacheHitRatio * 2.2f);
 			float cacheBlend = WorldCacheStrength * 0.60f * cacheConfidence;
+			o_cacheContributionY = max(cacheY.x * cacheBlend, 0.0f);
 			radianceY += cacheY * cacheBlend;
 			radianceCoCg += cacheCoCg * cacheBlend * GISaturation;
 		}
 		if (needCacheDirectional) {
 			float voxelAO = cacheDirectionalOcclusion * WorldCacheDirectionalOcclusionStrength * 0.40f * (1.0f - depthFade);
 			visibility = 1.0f - (1.0f - visibility) * (1.0f - saturate(voxelAO));
+			visibility = min(visibility, 0.72f);
 		}
 		bool needCacheReflection = (DebugView == 9u);
 #	if defined(GI_SPECULAR) && !defined(HYBRID_REFLECTIONS)
@@ -919,6 +1179,15 @@ void CalculateGI(
 				cacheReflectionRadiance, cacheReflectionHit);
 		}
 	}
+	// Mesh-derived visibility supplements screen-space AO at room-scale
+	// contact ranges. It is neutral until valid opaque geometry was captured.
+	if (SceneVoxelValid != 0u && DebugView == 0u) {
+		float3 receiverPositionWS = ViewToWorldPosition(pixCenterPos, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
+		float3 receiverNormalWS = normalize(ViewToWorldVector(viewspaceNormal, FrameBuffer::CameraViewInverse));
+		float geometryAO = TraceSceneGeometryAO(receiverPositionWS, receiverNormalWS) * 0.28f * (1.0f - depthFade);
+		visibility = 1.0f - (1.0f - saturate(visibility)) * (1.0f - saturate(geometryAO));
+		visibility = min(visibility, 0.72f);
+	}
 
 	// GIStrength is an artistic diffuse-indirect control, not ownership of the
 	// shared scene-radiance hierarchy. Apply it only when the diffuse transport
@@ -926,6 +1195,7 @@ void CalculateGI(
 	// canonical scene-radiance units.
 	radianceY *= max(GIStrength, 0.0f);
 	radianceCoCg *= max(GIStrength, 0.0f);
+	o_cacheContributionY *= max(GIStrength, 0.0f);
 
 	if ((DebugView >= 5u && DebugView <= 9u) || (DebugView >= 14u && DebugView <= 19u)) {
 		float3 debugColor = 0.0;
@@ -1035,8 +1305,10 @@ void CalculateGI(
 		viewspaceNormal = GBuffer::DecodeNormal(normalSample);
 	}
 
-	uint effectiveNumSlices = NumSlices;
-	uint effectiveNumSteps = NumSteps;
+	// Sanitise user/configuration-provided budgets before they feed rcp() and
+	// angular sampling. Zero is never a valid ray-marching permutation.
+	uint effectiveNumSlices = max(NumSlices, 1u);
+	uint effectiveNumSteps = max(NumSteps, 1u);
     uint effectiveCacheRays = clamp(WorldCacheSampleCount, 1u, 8u);
 #if defined(ADAPTIVE_RAY_ALLOCATION)
 	if (groupThreadID.x == 0u && groupThreadID.y == 0u && groupThreadID.z == 0u)
@@ -1089,22 +1361,24 @@ void CalculateGI(
 	half4 currGIAOSpecular = half4(0, 0, 0, 0);
 	half4 currBentVisibility = half4(encodedWorldNormal, 1.0h, 0.0h);
 
-	bool needGI = viewspaceZ > FP_Z && viewspaceZ < DepthFadeRange.y;
+	bool needGI = isfinite(viewspaceZ) && viewspaceZ > FP_Z && viewspaceZ < DepthFadeRange.y;
 	if (needGI) {
 		float4 tempY;
 		float2 tempCoCg;
 		float4 tempSpec;
 		float4 tempBentVisibility;
+		float cacheContributionY;
 
 		CalculateGI(
 			pxCoord, uv, viewspaceZ, viewspaceNormal,
 			effectiveNumSlices, effectiveNumSteps, effectiveCacheRays,
-			currAo, tempY, tempCoCg, tempSpec, tempBentVisibility);
+			currAo, tempY, tempCoCg, tempSpec, tempBentVisibility, cacheContributionY);
 
 		currY = (half4)tempY;
 		currCoCg = (half2)tempCoCg;
 		currGIAOSpecular = (half4)tempSpec;
 		currBentVisibility = (half4)tempBentVisibility;
+		cacheContributionY = max(filterNaN(cacheContributionY), 0.0f);
 
 #ifdef TEMPORAL_DENOISER
 		float accumulatedFrames = srcAccumFrames[pxCoord] * 255.0f;
@@ -1202,7 +1476,14 @@ void CalculateGI(
 		// changes already reduce accepted history in radianceDisocc.
 		float historyReactivity = smoothstep(0.10f, 0.45f, relativeRadianceChange) *
 			smoothstep(0.006f, 0.045f, absoluteRadianceChange);
-		lerpFactor = max(lerpFactor, historyReactivity * 0.55f);
+		// A newly published world-cache sample is already temporally filtered in
+		// the cache. Do not let its 8 Hz update cadence force the full GI history
+		// to jump toward that sample. Direct-light changes still shorten accepted
+		// history in radianceDisocc and retain their normal response.
+		float cacheSignalShare = saturate(cacheContributionY /
+			max(abs((float)currY.x), 0.04f));
+		float reactiveResponse = lerp(0.55f, 0.16f, cacheSignalShare);
+		lerpFactor = max(lerpFactor, historyReactivity * reactiveResponse);
 
 		// The horizon AO was already motion/depth/normal reprojected by
 		// radianceDisocc, but historically that remapped value was never consumed.
@@ -1242,10 +1523,13 @@ void CalculateGI(
 #endif
 	}
 
-	currY = filterNaN(currY);
-	currCoCg = filterNaN(currCoCg);
-	currGIAOSpecular = filterNaN(currGIAOSpecular);
-	currBentVisibility = filterNaN(currBentVisibility);
+	// Sanitise both NaN and infinity: a half-precision overflow can otherwise
+	// survive the temporal path and poison a whole denoiser neighbourhood.
+	currAo = saturate(filterInf(filterNaN(currAo)));
+	currY = filterInf(filterNaN(currY));
+	currCoCg = filterInf(filterNaN(currCoCg));
+	currGIAOSpecular = filterInf(filterNaN(currGIAOSpecular));
+	currBentVisibility = filterInf(filterNaN(currBentVisibility));
 
 	outAo[pxCoord] = currAo;
 	outY[pxCoord] = (float4)currY;

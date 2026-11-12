@@ -26,6 +26,8 @@ void RCAS::Initialize()
 
 	logger::info("[RCAS] Creating resources");
 	CreateComputeShader();
+	if (!rcasComputeShader)
+		return; // Permit retry after a missing shader payload is installed.
 	rcasConfigCB = new ConstantBuffer(ConstantBufferDesc<RCASConfig>());
 }
 
@@ -46,6 +48,9 @@ bool RCAS::ApplySharpen(
 	ID3D11ShaderResourceView* motionVectors,
 	float2 inputDimensions)
 {
+	if (!globals::state || !globals::d3d::context ||
+		!globals::game::graphicsState || !globals::profiler)
+		return false;
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "RCAS Sharpening");
 
@@ -60,6 +65,11 @@ bool RCAS::ApplySharpen(
 
 	uint32_t screenWidth = globals::game::graphicsState->screenWidth;
 	uint32_t screenHeight = globals::game::graphicsState->screenHeight;
+	if (!screenWidth || !screenHeight) {
+		globals::profiler->EndPass();
+		state->EndPerfEvent();
+		return false;
+	}
 
 	RCASConfig config{};
 	// RCAS's resolve denominator remains positive for attenuation in [0, 1].
@@ -91,6 +101,8 @@ bool RCAS::ApplySharpen(
 	ID3D11UnorderedAccessView* nullUAVs[] = { nullptr };
 	context->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullptr);
 
+	ID3D11Buffer* nullCB = nullptr;
+	context->CSSetConstantBuffers(0, 1, &nullCB);
 	context->CSSetShader(nullptr, nullptr, 0);
 
 	globals::profiler->EndPass();

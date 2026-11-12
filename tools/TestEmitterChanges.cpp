@@ -34,6 +34,11 @@ int main()
     Check(particleTracker.Update(particles, 3, 7).count == 2);
     Check(particleTracker.Update(std::span(particles).last(1), 4, 7).count == 1);
     Check(particleTracker.Update(std::span(particles).last(1), 5, 7).count == 0);
+    particles[1].shadowRevision = 17;
+    const auto shadowRefresh = particleTracker.Update(std::span(particles).last(1), 6, 7);
+    Check(shadowRefresh.count == 2);
+    Check(shadowRefresh.spheres[0] == particles[1].sphere && shadowRefresh.spheres[1] == particles[1].sphere);
+    Check(particleTracker.Update(std::span(particles).last(1), 7, 7).count == 0);
     tracker.Update(lights, 9, 0);
     for (int i = 0; i < 5; ++i) {
         lights[0].sphere[0] += 0.25f;

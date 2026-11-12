@@ -65,7 +65,7 @@ IndirectContext CreateIndirectLightingContext(float3 worldNormal, float3 vertexN
 	return context;
 }
 
-/** PIXL's finite-emitter inverse-distance path before user blending. */
+/** PIXL's finite-emitter inverse-square path before user blending. */
 float GetPhysicalLocalLightAttenuation(float distance, float radius, float fadeZone, float sizeBias)
 {
 	distance = IsFiniteLightingScalar(distance) ? max(distance, 0.0f) : 0.0f;
@@ -73,11 +73,12 @@ float GetPhysicalLocalLightAttenuation(float distance, float radius, float fadeZ
 	fadeZone = IsFiniteLightingScalar(fadeZone) ? max(fadeZone, 0.0f) : 0.0f;
 	sizeBias = IsFiniteLightingScalar(sizeBias) ? max(sizeBias, 0.0f) : 0.0f;
 	float emitterRadius = max(SharedData::materialForgeSettings.LocalLightMinimumDistance, 1.0f);
-	float denominator = sqrt(max(distance * distance + max(sizeBias, emitterRadius * emitterRadius), 1.0f));
-	// Use inverse-distance (1/d) attenuation. The source intensity is already
+	float denominator = max(distance * distance + max(sizeBias, emitterRadius * emitterRadius), 1.0f);
+	// Use inverse-square (1/d^2) attenuation. The source intensity is already
 	// carried by the light colour/fade payload; the finite emitter radius keeps
 	// the near-field response bounded for authored practical lights.
-	float physicalAttenuation = saturate((0.8f * METRES_TO_UNITS) / denominator);
+	float referenceDistance = 0.8f * METRES_TO_UNITS;
+	float physicalAttenuation = saturate(referenceDistance * referenceDistance / denominator);
 
 	float effectiveFadeZone = fadeZone > 0.0f ? fadeZone : rcp(max(radius * 0.2f, 1.0f));
 	float cutoff = saturate((radius - distance) * effectiveFadeZone);

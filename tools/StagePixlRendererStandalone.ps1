@@ -24,7 +24,7 @@ if (-not [string]::IsNullOrWhiteSpace($NeuralRuntimePath)) {
     throw 'NR runtimes are manual-install only and cannot be bundled. Omit -NeuralRuntimePath.'
 }
 $sourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$revisionVersion = "1.0.9$PackageRevision"
+$revisionVersion = "1.1.0$PackageRevision"
 if ([string]::IsNullOrWhiteSpace($ProductVersion)) { $ProductVersion = $revisionVersion }
 elseif ($PackageRevision -and $ProductVersion -ne $revisionVersion) { throw 'ProductVersion conflicts with PackageRevision.' }
 if ($ProductVersion -notmatch '^\d+\.\d+\.\d+(?:r\d+)?$') { throw "Invalid package product version: $ProductVersion" }
@@ -179,7 +179,7 @@ New-Item -ItemType Directory -Path $shaderRoot,$moduleCatalog,$configRoot,$profi
 Copy-Tree (Join-Path $sourceRoot "distribution\PIXL-Shaders") $shaderRoot
 if ($Channel -ne 'LIVE-TEST') {
     # Experimental modules stay available in local live-test packages, but are
-    # not part of the public 1.0.9 installer until their release gate is lifted.
+    # not part of the public 1.1.0 installer until their release gate is lifted.
     # Water.hlsl still uses the shared wave-band math, so retain that include
     # while excluding only the ocean-only spray and breaker entry points.
     foreach ($experimentalShader in @('OceanSpray.hlsl', 'OceanBreakers.hlsl')) {
@@ -264,11 +264,16 @@ if ($includePipelineLibrary) {
     $libraryIni = Join-Path $pipelineRoot "Library.ini"
     if (-not (Test-Path -LiteralPath $libraryIni)) { throw "Missing validated PIXL pipeline metadata: $libraryIni" }
     $metadata = Get-Content -LiteralPath $libraryIni -Raw
-    foreach ($cacheKey in @('Layout', 'ShaderABI', 'ShaderRevision')) {
+    foreach ($cacheKey in @('Layout', 'ShaderABI')) {
         $match = [regex]::Match($metadata, '(?im)^\s*' + [regex]::Escape($cacheKey) + '\s*=\s*([^\r\n;#]+)')
         if (!$match.Success -or !$match.Groups[1].Value.Trim().Equals($expectedCache[$cacheKey], [StringComparison]::Ordinal)) {
             throw "Pipeline library has an incompatible $cacheKey (expected $($expectedCache[$cacheKey]))"
         }
+    }
+    $cachedRevisionMatch = [regex]::Match($metadata, '(?im)^\s*ShaderRevision\s*=\s*([^\r\n;#]+)')
+    $cachedShaderRevision = if ($cachedRevisionMatch.Success) { $cachedRevisionMatch.Groups[1].Value.Trim() } else { '' }
+    if ($cachedShaderRevision -cne $expectedCache.ShaderRevision) {
+        Write-Warning "Shader cache revision differs (cached '$cachedShaderRevision', current '$($expectedCache.ShaderRevision)'). Artifacts are content-closure keyed; exact source/compiler identities gate reuse and changed shaders compile on demand."
     }
     $pipelineCount = (Get-ChildItem -LiteralPath $pipelineRoot -File -Recurse -Filter "*.pixlbin").Count
     if ($pipelineCount -lt 3000) { throw "Pipeline library is incomplete ($pipelineCount stages; expected at least 3000)" }
@@ -283,30 +288,38 @@ if ($includePipelineLibrary) {
         if ($line -match '^\s*\[([^\]]+)\]') { $section = $matches[1]; $cacheSections[$section] = @{} }
         elseif ($section -and $line -match '^\s*([^=]+?)\s*=\s*(.*?)\s*$') { $cacheSections[$section][$matches[1]] = $matches[2] }
     }
-    # Product version is provenance only. ShaderCache validates the shared
-    # layout/ABI and each active module independently, so an older
-    # ABI-compatible GOG cache remains valid for this beta build.
+    # Product, shader revision, and module versions are provenance. Runtime
+    # artifact identities cover the complete compile input; Layout and ShaderABI
+    # remain package-wide compatibility gates.
     if ([string]::IsNullOrWhiteSpace($cacheSections['Cache']['PluginVersion'])) {
         throw 'Pipeline cache metadata has no product-version provenance.'
     }
-    foreach ($key in $expectedCache.Keys) {
+    foreach ($key in @('Layout', 'ShaderABI')) {
         if ($cacheSections['Cache'][$key] -cne $expectedCache[$key]) {
             throw "Stale/incompatible pipeline cache $key (expected $($expectedCache[$key]))."
         }
+    }
+    if ($cacheSections['Cache']['ShaderRevision'] -cne $expectedCache.ShaderRevision) {
+        Write-Warning 'Packaging a content-addressed cache with different shader revision provenance; runtime will trust per-artifact identity, not this revision string.'
     }
     foreach ($descriptor in Get-ChildItem -LiteralPath $moduleCatalog -Filter '*.ini' -File) {
         $moduleText = Get-Content -LiteralPath $descriptor.FullName -Raw
         $id = [regex]::Match($moduleText, '(?m)^\s*Id\s*=\s*([^\r\n]+)').Groups[1].Value.Trim()
         $version = [regex]::Match($moduleText, '(?m)^\s*Version\s*=\s*([^\r\n]+)').Groups[1].Value.Trim()
-        if (!$cacheSections.ContainsKey($id)) { throw "Missing module cache identity: $id" }
+        if (!$cacheSections.ContainsKey($id)) {
+            Write-Warning "Cached module identity is missing for $id; runtime will validate this module and selectively invalidate dependent shader families."
+            continue
+        }
         $cachedEnabled = $cacheSections[$id]['Enabled'] -match '^(?i:true|1|yes|on)$'
         # RenderModule::ValidateCache intentionally ignores a module version while
         # that module is disabled: no permutations containing its define can be
         # active, and an unloaded module may not have populated its runtime version
         # string when Library.ini is finalized. Mirror that runtime contract here.
-        # Once enabled, exact version identity remains mandatory.
+        # Runtime validates module identity and selectively invalidates that
+        # module's affected permutations. Cache metadata may therefore come from
+        # an earlier compatible build; it is provenance, not artifact identity.
         if ($cachedEnabled -and $cacheSections[$id]['Version'] -ne $version) {
-            throw "Stale/missing enabled module cache identity: $id (expected $version)"
+            Write-Warning "Cached module $id is version '$($cacheSections[$id]['Version'])'; current descriptor is '$version'. Runtime will selectively invalidate its dependent shader families."
         }
     }
     foreach ($stage in Get-ChildItem -LiteralPath $pipelineRoot -File -Recurse -Filter '*.pixlbin') {
@@ -314,9 +327,26 @@ if ($includePipelineLibrary) {
         $validStageShard = $relative -match '^(Vertex|Pixel|Compute)[\\/]'
         $validStandalone = $relative -match '^Standalone[\\/]v1[\\/][0-9a-fA-F]{64}\.pixlbin$'
         if (-not ($validStageShard -or $validStandalone)) { throw "Unrecognized cache stage path: $relative" }
+        $identitySource = $stage.FullName + '.identity'
+        if (-not (Test-Path -LiteralPath $identitySource -PathType Leaf)) {
+            throw "Pipeline cache artifact is missing its required identity sidecar: $relative"
+        }
+        $identity = [IO.File]::ReadAllBytes($identitySource)
+        if ($identity.Length -ne 80 -or [Text.Encoding]::ASCII.GetString($identity, 0, 4) -ne 'PXAC' -or
+            [BitConverter]::ToUInt32($identity, 4) -ne 1 -or
+            [BitConverter]::ToUInt64($identity, 8) -ne $stage.Length) {
+            throw "Pipeline cache artifact has invalid identity metadata: $relative"
+        }
+        $artifactBytes = [IO.File]::ReadAllBytes($stage.FullName)
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try { $payloadHash = $sha256.ComputeHash($artifactBytes) } finally { $sha256.Dispose() }
+        if ([Convert]::ToBase64String($payloadHash) -ne [Convert]::ToBase64String([byte[]]$identity[48..79])) {
+            throw "Pipeline cache artifact does not match its identity metadata: $relative"
+        }
         $cacheDestination = Join-Path $cacheOutput $relative
         New-Item -ItemType Directory -Path (Split-Path -Parent $cacheDestination) -Force | Out-Null
         Copy-Item -LiteralPath $stage.FullName -Destination $cacheDestination
+        Copy-Item -LiteralPath $identitySource -Destination ($cacheDestination + '.identity')
     }
 
     # ShaderCache uses file mtimes as a fast source-change check when the file
@@ -324,6 +354,8 @@ if ($includePipelineLibrary) {
     # copied so archive extraction cannot make a valid cache look stale.
     $cacheStamp = [DateTime]::UtcNow
     Get-ChildItem -LiteralPath (Join-Path $output "PIXL\PipelineLibrary") -File -Recurse -Filter '*.pixlbin' |
+        ForEach-Object { $_.LastWriteTimeUtc = $cacheStamp }
+    Get-ChildItem -LiteralPath (Join-Path $output "PIXL\PipelineLibrary") -File -Recurse -Filter '*.pixlbin.identity' |
         ForEach-Object { $_.LastWriteTimeUtc = $cacheStamp }
 }
 
@@ -420,6 +452,7 @@ $manifestFiles = Get-ChildItem -LiteralPath $output -File -Recurse | Sort-Object
     shaderCompilePattern = $expectedCache.Layout
     shaderABI = $expectedCache.ShaderABI
     shaderRevision = $expectedCache.ShaderRevision
+    cachedShaderRevision = if ($includePipelineLibrary) { $cachedShaderRevision } else { $null }
     generatedUtc = [DateTime]::UtcNow.ToString("o")
     files = $manifestFiles
 } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $output "PIXL-RENDERER.manifest.json") -Encoding utf8

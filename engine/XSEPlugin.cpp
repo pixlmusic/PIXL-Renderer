@@ -292,6 +292,7 @@ bool Load()
 	I18n::GetSingleton()->Init();
 
 	state->Load();
+	globals::shaderCache->ApplyStartupCompilerThreadSettings();
 	state->LoadTheme();  // Load theme settings from SettingsTheme.json
 
 	// Initialize theme system - create default themes and discover existing ones

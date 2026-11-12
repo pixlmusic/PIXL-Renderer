@@ -110,7 +110,7 @@
                        "volumetricHistoryDepthRejection":  16.0,
                        "volumetricHistoryMissSampleCount":  4,
                        "volumetricHistoryRadianceClamp":  2.5,
-                       "volumetricHistoryWeight":  0.6499999761581421,
+                       "volumetricHistoryWeight":  0.8199999928474426,
                        "volumetricLocalLightScatteringIntensity":  1.0800000429153442,
                        "volumetricSampleJitterMultiplier":  0.0,
                        "volumetricShadowBias":  0.004000000189989805,
@@ -505,10 +505,10 @@
                       "EnableAdaptiveRayAllocation":  true,
                       "EnableBentNormalLighting":  true,
                       "EnableBlur":  true,
-                      "EnableBudgetedCacheUpdates":  true,
-                      "EnableCacheIntelligence":  true,
+                      "EnableBudgetedCacheUpdates":  false,
+                      "EnableCacheIntelligence":  false,
                       "EnableContactDepth":  true,
-                      "EnableDirectionalOcclusion":  true,
+                      "EnableDirectionalOcclusion":  false,
                       "EnableEmitterInjection":  true,
                       "EnableExperimentalSpecularGI":  true,
                       "EnableGI":  true,
@@ -545,8 +545,8 @@
                       "UpsampleEdgeThreshold":  0.10000000149011612,
                       "VoxelReflectionRoughnessCutoff":  0.8600000143051147,
                       "VoxelReflectionStrength":  1.2400000095367432,
-                      "WorldCacheCellSizeFar":  512.0,
-                      "WorldCacheCellSizeNear":  96.0,
+                      "WorldCacheCellSizeFar":  256.0,
+                      "WorldCacheCellSizeNear":  64.0,
                       "WorldCacheInjectionStride":  3,
                       "WorldCacheLeakReduction":  0.8199999928474426,
                       "WorldCacheMaxAge":  72,
@@ -554,7 +554,7 @@
                       "WorldCacheSampleCount":  6,
                       "WorldCacheSecondBounceStrength":  0.3799999952316284,
                       "WorldCacheStrength":  0.7099999785423279,
-                      "WorldCacheTemporalResponse":  0.07000000029802322,
+                      "WorldCacheTemporalResponse":  0.20,
                       "WorldCacheTraceSteps":  3
                   },
     "ImageReconstruction":  {
@@ -976,7 +976,7 @@
                                    "WindSpeed":  0.49000000953674316
                                },
     "Pixel Capture":  {
-                          "ApplyCropToScreenshot":  true,
+                          "ApplyCropToScreenshot":  false,
                           "CopyToClipboard":  true,
                           "CropH":  0.8399999737739563,
                           "CropPresets":  [
@@ -1099,6 +1099,7 @@
                        },
     "Radiant Grid":  {
                          "EnableLightsVisualisation":  false,
+                         "EnableScreenSpaceLocalShadows":  true,
                          "EnableParticleLights":  true,
                          "EnableParticleLightsCulling":  true,
                          "LightsVisualisationMode":  0
@@ -1356,8 +1357,8 @@
                          "EnableEnhancedSSR":  1,
                          "FoamScale":  1.0,
                          "FoamStrength":  0.3799999952316284,
-                         "ProjectedCausticsDistance":  598.0,
-                         "ProjectedCausticsStrength":  2.2899999618530273,
+                         "ProjectedCausticsDistance":  180.0,
+                         "ProjectedCausticsStrength":  1.0,
                          "ReflectionBrightness":  0.7200000286102295,
                          "SSRDistanceScale":  1.2000000476837158,
                          "SSREdgeFade":  0.6000000238418579,
