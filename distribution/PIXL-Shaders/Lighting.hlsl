@@ -4978,8 +4978,10 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 		uint contactCandidateCount = RadiantGrid::NumStrictLights + fallbackContactCandidateCount +
 			clusteredContactCandidateCount + (sdfShadowsActive ? 4u : 0u);
 		[loop] for (uint candidateIndex = 0; candidateIndex < contactCandidateCount; ++candidateIndex) {
-			RadiantGrid::Light candidateLight;
-			uint candidateKey;
+			// Initialize before the bounded-index dispatch. Every in-range branch
+			// assigns both fields, but FXC cannot prove that across the dynamic loop.
+			RadiantGrid::Light candidateLight = (RadiantGrid::Light)0;
+			uint candidateKey = 0u;
 			bool fromContactSet = false;
 			bool fromSDFSet = false;
 			if (candidateIndex < RadiantGrid::NumStrictLights) {

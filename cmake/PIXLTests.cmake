@@ -80,7 +80,17 @@ if(BUILD_TESTING)
         set_tests_properties(PIXLTestHybridGIActiveGPU PROPERTIES LABELS "shader;warp" WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
         target_link_libraries(PIXLTestHybridGIIntelligenceGPU PRIVATE d3d11 d3dcompiler)
         set_tests_properties(PIXLTestHybridGIIntelligenceGPU PROPERTIES LABELS "portable;shader;warp" WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
-        set(PIXL_WINDOWS_MODERNISATION_TESTS PIXLTestCompilationArtifacts PIXLTestModernShaderMath PIXLTestDofTiles PIXLTestOceanDynamicsFFT PIXLTestMaterialSurface PIXLTestHybridGIIntelligenceGPU)
+        set(PIXL_WINDOWS_MODERNISATION_TESTS
+            PIXLTestCompilationArtifacts
+            PIXLTestModernShaderMath
+            PIXLTestDofTiles
+            PIXLTestOceanDynamicsFFT
+            PIXLTestMaterialSurface
+            PIXLTestHybridGIIntelligenceGPU
+            PIXLTestRadiantGridClusterGPU
+            PIXLTestHybridGISceneVoxelizeGPU
+            PIXLTestHybridReflectionTraceGPU
+            PIXLTestShaderCacheMetadataCompatibility)
     endif()
 	pixl_add_portable_test(PIXLTestReactiveFXSpawnSafety
 		"${CMAKE_SOURCE_DIR}/tools/TestReactiveFXSpawnSafety.cpp")
@@ -151,6 +161,7 @@ if(BUILD_TESTING)
             ${PIXL_WINDOWS_MODERNISATION_TESTS}
             PIXLTestEmitterChanges
             PIXLTestHybridGICacheBudget
+            PIXLTestHybridGISceneVoxelizer
             PIXLTestHybridGIGeometryPrototype
             PIXLTestSDFGeometry
             PIXLTestSDFNifGeometryReader

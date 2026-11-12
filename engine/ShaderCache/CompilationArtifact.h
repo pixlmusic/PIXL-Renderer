@@ -374,21 +374,21 @@ private:
                 (static_cast<size_t>(digest[0]) | (static_cast<size_t>(digest[1]) << 8) |
                     (static_cast<size_t>(digest[2]) << 16)) & (BucketCount - 1);
             auto& bucket = buckets[bucketIndex];
-            if (FAILED(hr)) {
-                failures.fetch_add(1, std::memory_order_relaxed);
-                std::unique_lock workLock(bucket.mutex);
-                if (epoch != Generation()) return E_ABORT;
-                if (bucket.generation != epoch) { bucket.key.clear(); bucket.blob.Reset(); bucket.failures.clear(); bucket.generation = epoch; }
-                if (bucket.failures.size() >= 64) bucket.failures.clear();
-                bucket.failures.insert(key);
-                *errors = diagnostics.Detach();
-                return hr;
-            }
             {
                 std::unique_lock workLock(bucket.mutex);
                 if (epoch != Generation()) return E_ABORT;
                 if (bucket.generation != epoch) { bucket.key.clear(); bucket.blob.Reset(); bucket.failures.clear(); bucket.generation = epoch; }
+                // Preprocess failures have a stable content identity too. Check
+                // and latch them under the same stripe lock so repeated missing
+                // root/include requests do not redo preprocessing every frame.
                 if (bucket.failures.contains(key)) return E_PENDING;
+                if (FAILED(hr)) {
+                    failures.fetch_add(1, std::memory_order_relaxed);
+                    if (bucket.failures.size() >= 64) bucket.failures.clear();
+                    bucket.failures.insert(key);
+                    *errors = diagnostics.Detach();
+                    return hr;
+                }
                 if (bucket.key == key && bucket.blob) {
                     inMemoryHits.fetch_add(1, std::memory_order_relaxed);
                     return bucket.blob.CopyTo(output);
