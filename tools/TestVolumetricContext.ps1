@@ -33,12 +33,12 @@ if ([math]::Abs($fogDefaults.automaticWeatherStrength - 0.50) -gt 1e-6 -or
 	throw 'Shipped fog defaults no longer match the promoted runtime profile and motion-stability settings'
 }
 $cloudDefaults = $settingsDefaults.'PIXL Volumetric Clouds'
-if ($settingsDefaults.Version -ne '1-0-9-0' -or $cloudDefaults.Quality -ne 2 -or
-	$cloudDefaults.CloudThickness -ne 65000 -or $cloudDefaults.EnableHighCloudLayer -ne $true -or
+if ($settingsDefaults.Version -ne '1-1-0-0' -or $cloudDefaults.Quality -ne 2 -or
+	$cloudDefaults.CloudThickness -ne 72044 -or $cloudDefaults.EnableHighCloudLayer -ne $false -or
 	[math]::Abs($cloudDefaults.TemporalResponse - 0.68) -gt 1e-6) {
-	throw 'Shipped cloud defaults must retain the promoted high-cloud layer at balanced quality with reduced temporal history'
+	throw 'Shipped 1.1.0 cloud defaults must match the approved balanced profile and temporal response'
 }
-if ($cloudTemporal -notmatch 'float weatherMotion\s*=\s*saturate\(length\(WindTime\.xy\).*?WeatherSecondary\.z\s*\*\s*0\.08f\)' -or
+if ($cloudTemporal -notmatch 'float weatherMotion\s*=\s*saturate\(length\(frameTravel\)\s*/\s*6000\.0f\s*\+\s*WeatherSecondary\.z\s*\*\s*0\.05f\)' -or
 	$cloudTemporal -notmatch 'rejection\s*=\s*saturate\(depthError\s*/\s*max\(min\(Temporal\.w,\s*0\.045f\),\s*0\.001f\)\s*\+\s*weatherMotion\)' -or
 	$hdrSun -notmatch 'min\(0\.15f\s*\*\s*log2\(maxBoost\s*/\s*kMinHdrSunBoost\),\s*0\.6f\)') {
 	throw 'Sun and cloud temporal response must retain bounded weather-motion and HDR stability shaping'
@@ -72,7 +72,7 @@ if ($scattering -notmatch 'ComputeSkyLightScattering\(float3 positionWS\)' -or
 	$scattering -notmatch 'EvaluateDiffuse\(skyBounceSH, kSkyBounceUp,') {
 	throw 'Volumetric ambient sky must use stable world-space hemisphere directions, independent of camera rotation'
 }
-if ($scattering -notmatch '(?s)float directionalShadow = 1\.0f;.*?SampleDirectionalShadow\(centerPositionWS\).*?SampleDirectionalWorldShadow\(centerPositionWS\).*?ComputeLightScattering\(dispatchID, cellOffset, directionalShadow\)') {
+if ($scattering -notmatch '(?s)float directionalShadow = 1\.0f;.*?directionalShadow\s*=\s*SampleDirectionalShadow\(centerPositionWS\)\s*\*\s*SampleDirectionalWorldShadow\(centerPositionWS\);.*?directionalScattering\s*=.*?directionalShadow\s*\*\s*\(phaseSum\s*/\s*float\(sampleCount\)\)') {
 	throw 'Volumetric history-miss samples must share one center-sampled directional visibility result'
 }
 if ($lighting -notmatch 'Atmosphere/Atmosphere\.hlsli' -or $lighting -notmatch 'Atmosphere::GetAtmosphere\(') {

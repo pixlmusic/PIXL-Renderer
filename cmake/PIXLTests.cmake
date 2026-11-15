@@ -83,6 +83,7 @@ if(BUILD_TESTING)
         target_link_libraries(PIXLTestHybridGIIntelligenceGPU PRIVATE d3d11 d3dcompiler)
         set_tests_properties(PIXLTestHybridGIIntelligenceGPU PROPERTIES LABELS "portable;shader;warp" WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
         set(PIXL_WINDOWS_MODERNISATION_TESTS
+            PIXLTestCompilationArtifactFast
             PIXLTestCompilationArtifacts
             PIXLTestModernShaderMath
             PIXLTestDofTiles

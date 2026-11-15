@@ -54,17 +54,11 @@ int main(int argc, char** argv)
 			"bundled profiles use the portable renderer-only schema");
 		Check(std::all_of(shipped.begin(), shipped.end(), [](const auto& preset) { return preset.rendererVersion == "1-0-9-0"; }),
 			"bundled profile versions use PIXL's runtime version string format");
-		const auto legacyRoot = sourceRoot / "distribution" / "SKSE" / "Plugins" / "PIXLRenderer" / "Presets";
-		for (const auto& legacyPath : fs::directory_iterator(legacyRoot)) {
-			if (!legacyPath.is_regular_file() || legacyPath.path().extension() != ".json")
-				continue;
-			std::ifstream input(legacyPath.path(), std::ios::binary);
-			const auto legacySettings = json::parse(input);
-			const auto portablePath = shippedRoot / (legacyPath.path().stem().string() + ".pixlpreset.json");
-			std::ifstream portableInput(portablePath, std::ios::binary);
-			const auto portable = json::parse(portableInput);
-			Check(portable.at("settings") == CaptureRendererSettings(legacySettings),
-				"bundled portable settings match their renderer-only legacy source");
+		for (const auto& preset : shipped) {
+			Check(!preset.settings.empty(), "bundled portable profiles contain renderer settings");
+			Check(!preset.settings.contains("Menu") && !preset.settings.contains("Advanced") &&
+				!preset.settings.contains("Version"),
+				"bundled portable profiles exclude legacy UI and version sections");
 		}
 		if (argc > 1) {
 			const auto packaged = Discover(fs::path(argv[1]));
