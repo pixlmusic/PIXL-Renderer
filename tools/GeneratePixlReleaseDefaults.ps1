@@ -145,6 +145,7 @@ function Apply-QualityContract([object]$Config, [int]$Tier) {
     $skin.EnableSkinDetail = $Tier -ge 1
     $skin.UseSSS = $true
     $Config.'Tissue Diffusion'.BurleySamples = @(6, 12, 24, 64)[$Tier]
+    $Config.'Disable at Boot'.StrandShading = $true
     $Config.'Strand Shading'.Enabled = 1
     $Config.'Strand Shading'.HairMode = [int]($Tier -ge 2)
     $Config.'Strand Shading'.EnableSelfShadow = [int]($Tier -ge 1)

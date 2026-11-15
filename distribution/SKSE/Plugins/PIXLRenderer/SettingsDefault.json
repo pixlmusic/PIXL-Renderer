@@ -282,7 +282,7 @@
     "SkySync": false,
     "SkyVeil": false,
     "Skylighting": false,
-    "StrandShading": false,
+    "StrandShading": true,
     "SubsurfaceScattering": false,
     "TerrainBlending": false,
     "TerrainDetail": false,
