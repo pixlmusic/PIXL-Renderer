@@ -57,17 +57,12 @@ if (Test-Path -LiteralPath $pgliteRuntime) {
         $sources -notcontains 'PGLite-Runtime\SKSE\Plugins\PGLite.dll') {
         throw 'PGLite runtime is present without its optional installer choice.'
     }
-    $pgliteActiveGate = @($pgliteRuntimeChoice[0].SelectNodes('.//fileDependency[@file="SKSE\Plugins\PGLite.dll" and @state="Active"]'))
-    $pgliteMissingNotice = @($config.SelectNodes('//plugin[@name="PGLite is missing - install PGLite first"]'))
-    if ($pgliteMissingNotice.Count -ne 1) {
-        throw 'PGLite missing-prerequisite notice is absent.'
+    if (@($pgliteRuntimeChoice[0].SelectNodes('.//fileDependency')).Count -ne 0 -or
+        @($pgliteRuntimeChoice[0].SelectNodes('./typeDescriptor/type[@name="Optional"]')).Count -ne 1) {
+        throw 'PGLite compatibility must remain manually selectable when mod managers cannot detect another mod DLL.'
     }
-    $pgliteMissingGate = @($pgliteMissingNotice[0].SelectNodes('.//fileDependency[@file="SKSE\Plugins\PGLite.dll" and (@state="Missing" or @state="Inactive")]'))
-    if ($pgliteActiveGate.Count -ne 1 -or $pgliteMissingGate.Count -ne 2) {
-        throw 'PGLite compatibility is missing its active-file gate or missing/inactive prerequisite notice.'
-    }
-    if ((Get-Content -LiteralPath $configPath -Raw) -notmatch '(?is)PGLite is missing.*?Install and activate PGLite') {
-        throw 'PGLite prerequisite notice does not tell users to install and activate PGLite.'
+    if ((Get-Content -LiteralPath $configPath -Raw) -notmatch '(?is)Choose this only if PGLite is installed and enabled.*?manual selection') {
+        throw 'PGLite installer choice must explain its manual prerequisite and selection.'
     }
     if (@($pgliteRuntimeChoice[0].SelectNodes('.//@destination') | ForEach-Object { $_.Value }) -contains 'SKSE\Plugins\PGLite.ini') {
         throw 'The PGLite runtime option must preserve an existing user INI.'

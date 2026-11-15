@@ -110,39 +110,13 @@ $configPath = Join-Path $output 'fomod\ModuleConfig.xml'
 $configText = Get-Content -LiteralPath $configPath -Raw
 $runtimeChoice = @'
             <plugin name="Install PIXL-aware PGLite runtime">
-              <description>Requires the PGLite mod to be installed and active. This compatibility build installs a PIXL-aware PGLite.dll so PGLite recognizes PIXL Renderer. The installer checks for SKSE/Plugins/PGLite.dll before making this option available. Your PGLite.ini is preserved; if your mod manager reports a conflict, let this PIXL-aware DLL win.</description>
+              <description>Choose this only if PGLite is installed and enabled in this game profile. Some mod managers do not expose another mod's SKSE DLL to FOMOD file detection, so this choice remains available for manual selection. It installs a PIXL-aware PGLite.dll so PGLite recognizes PIXL Renderer. Your PGLite.ini is preserved; if your mod manager reports a conflict, let this PIXL-aware DLL win.</description>
               <files>
                 <file source="PGLite-Runtime\SKSE\Plugins\PGLite.dll" destination="SKSE\Plugins\PGLite.dll" priority="0" />
                 <file source="PGLite-Runtime\textures\cubemaps\dynamic1pxcubemap_black.dds" destination="textures\cubemaps\dynamic1pxcubemap_black.dds" priority="0" />
               </files>
               <typeDescriptor>
-                <dependencyType>
-                  <defaultType name="NotUsable" />
-                  <patterns>
-                    <pattern>
-                      <dependencies><fileDependency file="SKSE\Plugins\PGLite.dll" state="Active" /></dependencies>
-                      <type name="Optional" />
-                    </pattern>
-                  </patterns>
-                </dependencyType>
-              </typeDescriptor>
-            </plugin>
-            <plugin name="PGLite is missing - install PGLite first">
-              <description>PIXL Renderer does not include the PGLite mod. Install and activate PGLite, then rerun this installer to enable the PIXL compatibility addon. PIXL Core installs normally without PGLite.</description>
-              <conditionFlags><flag name="PGLiteMissing">On</flag></conditionFlags>
-              <typeDescriptor>
-                <dependencyType>
-                  <defaultType name="NotUsable" />
-                  <patterns>
-                    <pattern>
-                      <dependencies operator="Or">
-                        <fileDependency file="SKSE\Plugins\PGLite.dll" state="Missing" />
-                        <fileDependency file="SKSE\Plugins\PGLite.dll" state="Inactive" />
-                      </dependencies>
-                      <type name="Required" />
-                    </pattern>
-                  </patterns>
-                </dependencyType>
+                <type name="Optional" />
               </typeDescriptor>
             </plugin>
 '@
