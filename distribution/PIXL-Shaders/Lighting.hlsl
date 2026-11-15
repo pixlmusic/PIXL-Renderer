@@ -5613,7 +5613,12 @@ worldNormal = ActorSurfaceEffects::ApplyNormal(worldNormal, pixlActorSurface);
 #	endif
 
 #	if defined(HAIR)
-	float3 vertexColor = lerp(1, Color::ColorToLinear(TintColor.xyz), Color::ColorToLinear(input.Color.y));
+	float hairTintWeight = Color::ColorToLinear(input.Color.y).x;
+	// Some hair cards have no authored tint weight. Keep ordinary Skyrim hair
+	// tinted by its actor color in that case, without enabling Strand Shading.
+	if (hairTintWeight < 1.0e-3f && dot(saturate(TintColor.xyz), float3(0.2126f, 0.7152f, 0.0722f)) < 0.5f)
+		hairTintWeight = 1.0f;
+	float3 vertexColor = lerp(1, Color::ColorToLinear(TintColor.xyz), hairTintWeight);
 	float vertexAO = 1;
 #		if defined(STRAND_SHADING)
 	if (SharedData::strandShadingSettings.Enabled)
