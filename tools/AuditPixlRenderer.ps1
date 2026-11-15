@@ -15,6 +15,8 @@ if ([string]::IsNullOrWhiteSpace($BuildDirectory)) {
     $BuildDirectory = Join-Path $repo "build\PIXL-12C\Release"
 }
 $errors = [Collections.Generic.List[string]]::new()
+$packageExcludedModuleIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+$packageExcludedAssets = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 
 # Repository hygiene is part of the release contract. Build products belong
 # below ignored output roots, and public tooling must not encode one
@@ -415,6 +417,33 @@ if ($PackageDirectory) {
         if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
             try {
                 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+                if ($manifest.channel -eq 'RELEASE') {
+                    # RELEASE staging deliberately excludes modules marked
+                    # Unreleased. Keep source/runtime review exhaustive while
+                    # validating the package against its channel contract.
+                    foreach ($moduleDirectory in Get-ChildItem -LiteralPath (Join-Path $repo 'pipeline') -Directory) {
+                        $descriptorPath = Join-Path $moduleDirectory.FullName 'Module.ini'
+                        if (-not (Test-Path -LiteralPath $descriptorPath -PathType Leaf)) { continue }
+                        $descriptorText = Get-Content -LiteralPath $descriptorPath -Raw
+                        if ($descriptorText -notmatch '(?im)^\s*Unreleased\s*=\s*(true|1|yes|on)\s*$') { continue }
+                        $idMatch = [regex]::Match($descriptorText, '(?m)^\s*Id\s*=\s*([^\r\n]+?)\s*$')
+                        if ($idMatch.Success) { $null = $packageExcludedModuleIds.Add($idMatch.Groups[1].Value.Trim()) }
+                        $kernelRoot = Join-Path $moduleDirectory.FullName 'Kernels'
+                        if (-not (Test-Path -LiteralPath $kernelRoot -PathType Container)) { continue }
+                        $kernelPrefix = $kernelRoot.TrimEnd([char]92) + [char]92
+                        foreach ($kernel in Get-ChildItem -LiteralPath $kernelRoot -File -Recurse) {
+                            $relative = $kernel.FullName.Substring($kernelPrefix.Length)
+                            if (-not (Test-Path -LiteralPath (Join-Path $distributionShaderRoot $relative) -PathType Leaf)) {
+                                $null = $packageExcludedAssets.Add($relative)
+                            }
+                        }
+                    }
+                    foreach ($releaseExcludedOceanAsset in @(
+                        'OceanDynamics\OceanSpray.hlsl',
+                        'OceanDynamics\OceanBreakers.hlsl')) {
+                        $null = $packageExcludedAssets.Add($releaseExcludedOceanAsset)
+                    }
+                }
                 $shaderCacheSource = Get-Content -LiteralPath (Join-Path $repo 'engine\ShaderCache.cpp') -Raw
                 foreach ($identity in @(
                     @{ Manifest = 'shaderABI'; Constant = 'kSharedShaderABI' },
@@ -436,6 +465,7 @@ if ($PackageDirectory) {
                 } else {
                     $compiledVersions = Get-Content -LiteralPath $moduleVersionsHeader -Raw
                     foreach ($id in $activeDescriptorIds) {
+                        if ($packageExcludedModuleIds.Contains($id)) { continue }
                         $sourceDescriptor = Get-ChildItem -LiteralPath (Join-Path $repo 'pipeline') -Directory |
                             ForEach-Object { Join-Path $_.FullName 'Module.ini' } |
                             Where-Object { (Test-Path -LiteralPath $_ -PathType Leaf) -and
@@ -508,6 +538,7 @@ if ($PackageDirectory) {
         )) { Require-PackageFile $package $file }
 
         foreach ($assetRef in $runtimeAssetRefs) {
+            if ($packageExcludedAssets.Contains($assetRef)) { continue }
             Require-PackageFile $package ("PIXL-Shaders\" + $assetRef)
         }
 
@@ -544,6 +575,7 @@ if ($PackageDirectory) {
         # A manifest proves self-consistency, not that this is the current
         # authoritative source. Verify every shipping shader/vendor asset too.
         foreach ($asset in $shippingAssetSources.GetEnumerator()) {
+            if ($packageExcludedAssets.Contains($asset.Key)) { continue }
             $stagedPath = Join-Path $package ("PIXL-Shaders\" + $asset.Key)
             if (-not (Test-Path -LiteralPath $stagedPath -PathType Leaf)) {
                 Add-Error "Shipping shader asset not staged: $($asset.Key)"
@@ -558,6 +590,7 @@ if ($PackageDirectory) {
             $null = $packagedModuleIds.Add($_.BaseName)
         }
         foreach ($id in $activeDescriptorIds) {
+            if ($packageExcludedModuleIds.Contains($id)) { continue }
             if (-not $packagedModuleIds.Contains($id)) { Add-Error "Active module descriptor was not staged: $id" }
         }
         foreach ($id in $packagedModuleIds) {
