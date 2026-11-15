@@ -16,6 +16,7 @@ int main(int argc,char** argv)
         auto source=std::string("namespace Color {\n")+
             Section(Read("distribution/PIXL-Shaders/Common/Color.hlsli"),"float3 RGBToYCoCg(","float3 Saturation(")+"}\n"+
             Section(Read("pipeline/Hybrid GI/Kernels/HybridGI/common.hlsli"),"#define ISNAN(","// [Optimization] Half")+
+            Section(Read("pipeline/Hybrid GI/Kernels/HybridGI/worldCache.hlsli"),"float3 WorldCacheSafeNormalize(","#define WORLD_STATE_UNOBSERVED")+
             Section(Read("pipeline/Hybrid GI/Kernels/HybridGI/worldCache.hlsli"),"float2 EncodeWorldOctahedron(","float WorldCacheCellSize(")+
             Read("tools/shaders/HybridGICacheEncoding.cs.hlsl");
         ComPtr<ID3DBlob> code,errors;

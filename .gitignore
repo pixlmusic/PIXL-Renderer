@@ -2,6 +2,7 @@
 /build/
 /bin/
 /dist/
+/vcpkg_installed/
 /out/
 /obj/
 **/obj/
@@ -112,6 +113,7 @@ __folder_managed_by_vortex
 *.ckpt
 *.safetensors
 /extern/DirectXShaderCompiler/
+/extern/nifly/
 
 # Optional neural-rendering runtime is installed separately.
 nvngx_dlssnr.dll

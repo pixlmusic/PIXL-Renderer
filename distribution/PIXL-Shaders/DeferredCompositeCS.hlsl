@@ -35,8 +35,8 @@ Texture2D<float> DepthTexture : register(t4);
 Texture2D<unorm float> DepthTexture : register(t4);
 #endif
 
-#if defined(WORLD_PROBES)
 Texture2D<float3> ReflectanceTexture : register(t5);
+#if defined(WORLD_PROBES)
 TextureCube<float3> EnvTexture : register(t6);
 TextureCube<float3> EnvReflectionsTexture : register(t7);
 SamplerState LinearSampler : register(s0);
@@ -184,7 +184,10 @@ void SampleHybridGISpecular(uint2 pixCoord, sh2 lobe, out float3 legacyIl, out f
 	// Masks2.x stores 1 - vertexAO (Lighting.hlsl only); cleared to 0 for
 	// pixels with no vertex AO contribution, so vertexAO defaults to 1.
 	float vertexAO = 1.0 - Masks2Texture[dispatchID.xy].x;
-	ssgiAo = saturate(ssgiAo / max(vertexAO, EPSILON_DIVISION));
+	// Both inputs are visibility factors: combine independent SSGI and vertex
+	// occlusion multiplicatively. Dividing by vertexAO counteracted occlusion
+	// and could erase crevice shading on meshes with authored vertex AO.
+	ssgiAo = saturate(ssgiAo * vertexAO);
 
 	float3 linAlbedo = Color::IrradianceToLinear(albedo / Color::PBRLightingScale);
 	float3 multiBounceHybridGIAo = MultiBounceAO(linAlbedo, ssgiAo);
@@ -232,7 +235,10 @@ void SampleHybridGISpecular(uint2 pixCoord, sh2 lobe, out float3 legacyIl, out f
 
 		diffuseColor = max(0.0, diffuseColor - directionalAmbientColor);
 		linDiffuseColor = Color::IrradianceToLinear(diffuseColor);
-		linDiffuseColor *= sqrt(multiBounceHybridGIAo);
+		// The residual is Skyrim's direct diffuse plus emissive contribution.
+		// Screen-space AO estimates indirect visibility, so keep this term intact;
+		// otherwise contact crevices darken direct point lights even when their
+		// actual shadow test says the receiver is lit.
 		diffuseColor = Color::IrradianceToGamma(linDiffuseColor);
 		diffuseColor += Color::IrradianceToGamma(Color::IrradianceToLinear(directionalAmbientColor) * multiBounceHybridGIAo);
 		linDiffuseColor = Color::IrradianceToLinear(diffuseColor);
@@ -248,7 +254,11 @@ void SampleHybridGISpecular(uint2 pixCoord, sh2 lobe, out float3 legacyIl, out f
 	float3 reflectance = ReflectanceTexture[dispatchID.xy];
 
 	if (any(reflectance > 0.0)) {
-		float3 V = -normalize(positionWS.xyz);
+		// Reflections depend on the direction from this surface to the camera,
+		// not the direction to the world origin. The latter changes with cell
+		// position and makes probe/specular response disappear in many scenes.
+		float3 cameraPositionWS = mul(FrameBuffer::CameraViewInverse, float4(0, 0, 0, 1)).xyz;
+		float3 V = normalize(cameraPositionWS - positionWS.xyz);
 		float3 R = reflect(-V, normalWS);
 
 		float roughness = 1.0 - glossiness;
@@ -368,6 +378,17 @@ void SampleHybridGISpecular(uint2 pixCoord, sh2 lobe, out float3 legacyIl, out f
 
 #endif
 
+#if defined(HYBRID_GI) && !defined(WORLD_PROBES)
+	// Screen-space reflections do not require an environment-probe module.
+	// An unavailable trace has zero confidence and preserves the native result.
+	float4 screenReflection = SsgiSpecularTexture[dispatchID.xy];
+	if (all(isfinite(screenReflection))) {
+		float3 reflection = ReflectanceTexture[dispatchID.xy] * max(screenReflection.rgb, 0.0f) * saturate(screenReflection.a);
+		color += reflection;
+		pixlDebugSpecularGI = reflection;
+	}
+#endif
+
 	color = Color::IrradianceToGamma(color);
 
 #if defined(HYBRID_GI)
@@ -390,8 +411,15 @@ void SampleHybridGISpecular(uint2 pixCoord, sh2 lobe, out float3 legacyIl, out f
 			diagnostic = pixlBentVisibility.www;
 		else if (PixlGIDebugMode == 12u)
 			diagnostic = pixlSpecularVisibility.xxx;
-		else if (PixlGIDebugMode == 13u)
-			diagnostic = pixlDebugSpecularGI;
+		else if (PixlGIDebugMode == 13u) {
+			// View 3 shows the final material-weighted reflection. View 13 shows
+			// the traced incident radiance that can actually enter the composite.
+			// Keep hit confidence visible here so a bright but invalid trace does
+			// not masquerade as a working reflection.
+			float4 tracedReflection = SsgiSpecularTexture[dispatchID.xy];
+			diagnostic = all(isfinite(tracedReflection)) ?
+				max(tracedReflection.rgb, 0.0f) * saturate(tracedReflection.a) : 0.0f;
+		}
 		color = saturate(Color::IrradianceToGamma(max(diagnostic * PixlGIDebugGain, 0.0)));
 	}
 #endif

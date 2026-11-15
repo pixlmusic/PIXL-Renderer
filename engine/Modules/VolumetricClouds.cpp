@@ -1,4 +1,4 @@
-// PIXL Renderer - world-space volumetric cloud prototype.
+// PIXL Renderer - world-space volumetric cloud module.
 // Copyright (C) 2026 PIXL Studio
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -20,6 +20,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <utility>
 
 namespace
 {
@@ -27,6 +28,9 @@ namespace
 	constexpr float kWeatherUpdateInterval = 0.20f;
 	constexpr float kWeatherExtent = 1048576.0f;
 	constexpr double kCloudAdvectionPeriod = 4096.0 / 0.000020;
+	// Upper and lower noise phases are reduced separately per frequency.
+	// Aurora frequencies (0.014/0.009/0.004) are integer multiples of 0.001.
+	constexpr double kAuroraPeriodSeconds = 6283.185307179586;
 	constexpr float kCloudCurvatureRadius = 445900000.0f;
 	// Keep workload tiers together: Performance, Balanced, High, Ultra.
 	constexpr std::array<std::uint32_t, 4> kCloudDownsample{ 4u, 4u, 2u, 2u };
@@ -175,7 +179,7 @@ namespace
 			RE::TESWeather::kTotalLayers);
 		float combinedCoverage = 0.0f;
 		for (std::uint32_t layer = 0; layer < layerCount; ++layer) {
-			if ((weather->cloudLayerDisabledBits & (1u << layer)) != 0)
+			if (layer >= 32u || (weather->cloudLayerDisabledBits & (1u << layer)) != 0)
 				continue;
 			// A declared layer with zero alpha is still authored data (notably for
 			// clear weather) and must not trigger the cloudy classification fallback.
@@ -202,7 +206,7 @@ namespace
 
 	WeatherProfile BuildWeatherProfile(const WeatherManager::WeatherContext& context)
 	{
-		const float transition = std::clamp(context.transition.lerpFactor, 0.0f, 1.0f);
+		const float transition = FiniteClamp(context.transition.lerpFactor, 1.0f, 0.0f, 1.0f);
 		const float gameHour = globals::game::sky && std::isfinite(globals::game::sky->currentGameHour)
 			? globals::game::sky->currentGameHour
 			: 12.0f;
@@ -222,7 +226,7 @@ namespace
 		auto authoredOrClassifiedCloudiness = [](float authored, bool hasAuthored,
 			WeatherManager::WeatherClass weatherClass, float fallback) {
 			const float floor = WeatherCloudFloor(weatherClass);
-			float value = hasAuthored ? authored : (floor > 0.0f ? floor : fallback);
+			float value = hasAuthored ? authored : (floor > 0.0f ? floor : FiniteClamp(fallback, 0.42f, 0.0f, 1.0f));
 			// Keep weather-mod cloud maps authoritative when they are denser, while
 			// giving classified cloudy/rain/snow/storm records a visible minimum.
 			if (floor > 0.0f)
@@ -234,9 +238,9 @@ namespace
 		const float toCloudsProfile = authoredOrClassifiedCloudiness(
 			toClouds, hasToCloudLayers, toClass, context.cloudiness);
 		const float clouds = std::clamp(std::lerp(fromCloudsProfile, toCloudsProfile, transition), 0.0f, 1.0f);
-		const float precipitation = std::clamp(context.precipitation, 0.0f, 1.0f);
-		const float storm = std::clamp(context.storminess, 0.0f, 1.0f);
-		const float fog = std::clamp(context.fogIntensity, 0.0f, 1.0f);
+		const float precipitation = FiniteClamp(context.precipitation, 0.0f, 0.0f, 1.0f);
+		const float storm = FiniteClamp(context.storminess, 0.0f, 0.0f, 1.0f);
+		const float fog = FiniteClamp(context.fogIntensity, 0.0f, 0.0f, 1.0f);
 		WeatherProfile profile{};
 		// Preserve the tuned cloudy-day look while allowing authored clear records
 		// and the semantic clear fallback (0.14) to reach exactly zero.
@@ -263,7 +267,7 @@ namespace
 		profile.precipitation = precipitation;
 		profile.storm = storm;
 		profile.fog = fog;
-		profile.sunVisibility = std::clamp(context.sunVisibility, 0.0f, 1.0f);
+		profile.sunVisibility = FiniteClamp(context.sunVisibility, 1.0f, 0.0f, 1.0f);
 		// Preserve the configured low cloud base for mountain immersion. Weather
 		// variation controls the cloud top and vertical development instead of
 		// sinking storm bases or replacing the user's tuned cloud layer.
@@ -387,6 +391,7 @@ struct VolumetricClouds::Runtime
 	std::chrono::steady_clock::time_point lastWallClockUpdate{ std::chrono::steady_clock::now() };
 	float weatherAccumulator{ kWeatherUpdateInterval };
 	float weatherSimulationAccumulator{};
+	double auroraPhase{};  // wraps at the common period of the integer-harmonic aurora frequencies
 	double cloudDisplacementX{};
 	double cloudDisplacementY{};
 	double upperCloudDisplacementX{};
@@ -425,11 +430,19 @@ bool VolumetricClouds::CompileShaders()
 		shader.attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(path, {}, "cs_5_0", entry)));
 		return shader;
 	};
-	runtime->weatherShader = compile(shaderPath, "WeatherMapCS");
-	runtime->raymarchShader = compile(shaderPath, "RaymarchCS");
-	runtime->temporalShader = compile(shaderPath, "TemporalCS");
-	runtime->compositeShader = compile(shaderPath, "CompositeCS");
-	return runtime->weatherShader && runtime->raymarchShader && runtime->temporalShader && runtime->compositeShader;
+	// All-or-nothing hot reload: a failed entry point must never discard the
+	// last fully working shader set or leave four mismatched generations.
+	auto weather = compile(shaderPath, "WeatherMapCS");
+	auto raymarch = compile(shaderPath, "RaymarchCS");
+	auto temporal = compile(shaderPath, "TemporalCS");
+	auto composite = compile(shaderPath, "CompositeCS");
+	if (!weather || !raymarch || !temporal || !composite)
+		return false;
+	runtime->weatherShader = std::move(weather);
+	runtime->raymarchShader = std::move(raymarch);
+	runtime->temporalShader = std::move(temporal);
+	runtime->compositeShader = std::move(composite);
+	return true;
 }
 
 void VolumetricClouds::SetupResources()
@@ -453,13 +466,11 @@ void VolumetricClouds::SetupResources()
 	} catch (const std::exception& error) {
 		logger::error("[PIXL Volumetric Clouds] resource initialization failed: {}", error.what());
 		loaded = false;
-		settings.Enabled = false;
 		return;
 	}
 	if (!CompileShaders()) {
 		logger::error("[PIXL Volumetric Clouds] one or more compute shaders failed to compile; module disabled");
 		loaded = false;
-		settings.Enabled = false;
 		return;
 	}
 	if (runtime->temporalHistoryId == 0) {
@@ -486,16 +497,25 @@ bool VolumetricClouds::EnsureFrameResources(std::uint32_t width, std::uint32_t h
 		runtime->lowWidth == lowWidth && runtime->lowHeight == lowHeight && runtime->activeQuality == quality)
 		return true;
 	try {
-		runtime->rawCloud = CreateTexture2D(lowWidth, lowHeight, DXGI_FORMAT_R16G16B16A16_FLOAT,
+		// Keep the old allocation intact until the entire new set succeeds.
+		// These distances must be R32_FLOAT: FP16 overflows beyond 65,504
+		// Skyrim units, while cloud layers can extend to 800,000 units.
+		auto rawCloud = CreateTexture2D(lowWidth, lowHeight, DXGI_FORMAT_R16G16B16A16_FLOAT,
 			"VolumetricClouds::RawRadiance");
-		runtime->rawDepth = CreateTexture2D(lowWidth, lowHeight, DXGI_FORMAT_R16_FLOAT,
+		auto rawDepth = CreateTexture2D(lowWidth, lowHeight, DXGI_FORMAT_R32_FLOAT,
 			"VolumetricClouds::RawDepth");
+		std::array<std::unique_ptr<Texture2D>, 2> historyCloud;
+		std::array<std::unique_ptr<Texture2D>, 2> historyDepth;
 		for (std::uint32_t index = 0; index < 2; ++index) {
-			runtime->historyCloud[index] = CreateTexture2D(lowWidth, lowHeight, DXGI_FORMAT_R16G16B16A16_FLOAT,
+			historyCloud[index] = CreateTexture2D(lowWidth, lowHeight, DXGI_FORMAT_R16G16B16A16_FLOAT,
 				index == 0 ? "VolumetricClouds::HistoryRadianceA" : "VolumetricClouds::HistoryRadianceB");
-			runtime->historyDepth[index] = CreateTexture2D(lowWidth, lowHeight, DXGI_FORMAT_R16_FLOAT,
+			historyDepth[index] = CreateTexture2D(lowWidth, lowHeight, DXGI_FORMAT_R32_FLOAT,
 				index == 0 ? "VolumetricClouds::HistoryDepthA" : "VolumetricClouds::HistoryDepthB");
 		}
+		runtime->rawCloud = std::move(rawCloud);
+		runtime->rawDepth = std::move(rawDepth);
+		runtime->historyCloud = std::move(historyCloud);
+		runtime->historyDepth = std::move(historyDepth);
 	} catch (const std::exception& error) {
 		if (!runtime->resourceFailureLogged) {
 			logger::error("[PIXL Volumetric Clouds] frame resource creation failed: {}", error.what());
@@ -514,7 +534,7 @@ bool VolumetricClouds::EnsureFrameResources(std::uint32_t width, std::uint32_t h
 	runtime->activeQuality = quality;
 	runtime->resourceFailureLogged = false;
 	InvalidateHistory();
-	const std::uint64_t historyBytes = static_cast<std::uint64_t>(lowWidth) * lowHeight * (8u + 2u) * 2u;
+	const std::uint64_t historyBytes = static_cast<std::uint64_t>(lowWidth) * lowHeight * (8u + 4u) * 2u;
 	if (runtime->temporalHistoryId != 0)
 		PIXL::Renderer::TemporalContext::Get().SetHistoryMemory(runtime->temporalHistoryId, historyBytes);
 	logger::info("[PIXL Volumetric Clouds] frame resources {}x{} -> {}x{} (quality {})",
@@ -543,10 +563,15 @@ void VolumetricClouds::Reset()
 void VolumetricClouds::ClearShaderCache()
 {
 	if (!CompileShaders()) {
-		settings.Enabled = false;
-		logger::error("[PIXL Volumetric Clouds] shader reload failed; rendering disabled");
+		logger::error("[PIXL Volumetric Clouds] shader reload failed; retaining previous working shader set");
+		return;
 	}
 	InvalidateHistory();
+	// The new shader generation may redefine weather-map alpha/shadow data.
+	if (runtime) {
+		runtime->weatherValid = false;
+		runtime->weatherAccumulator = kWeatherUpdateInterval;
+	}
 }
 
 void VolumetricClouds::DrawClouds()
@@ -642,8 +667,12 @@ void VolumetricClouds::DrawClouds()
 		simulationDelta = 0.0;
 	// A large calendar jump (wait, fast travel, or console time change) is a
 	// deliberate discontinuity: do not blend the old cloud image into the new one.
-	if (simulationDelta > 2.0)
+	if (simulationDelta > 2.0) {
 		InvalidateHistory();
+		rt.weatherValid = false;
+		rt.weatherAccumulator = kWeatherUpdateInterval;
+	}
+	AdvancePeriodic(rt.auroraPhase, boundedDeltaTime, kAuroraPeriodSeconds);
 	rt.weatherAccumulator = std::min(rt.weatherAccumulator + boundedDeltaTime, 1.0f);
 	rt.weatherSimulationAccumulator = std::min(
 		rt.weatherSimulationAccumulator + static_cast<float>(std::min(simulationDelta, 1.0e7)), 1.0e7f);
@@ -660,11 +689,12 @@ void VolumetricClouds::DrawClouds()
 	}
 	const float cameraX = static_cast<float>(temporalSnapshot.current.absoluteCameraPosition[0]);
 	const float cameraY = static_cast<float>(temporalSnapshot.current.absoluteCameraPosition[1]);
-	const float stormStrength = std::clamp(weatherContext.storminess, 0.0f, 1.0f);
+	const float stormStrength = FiniteClamp(weatherContext.storminess, 0.0f, 0.0f, 1.0f);
 	// Keep the PIXL aurora available alongside Skyrim's authored effect. The cloud
 	// compositor naturally veils both layers where volumetric density is present.
 	const float auroraWeatherGate = 1.0f - std::clamp(
-		std::max(weatherContext.precipitation, weatherContext.snowIntensity) * 1.4f, 0.0f, 1.0f);
+		std::max(FiniteClamp(weatherContext.precipitation, 0.0f, 0.0f, 1.0f),
+			FiniteClamp(weatherContext.snowIntensity, 0.0f, 0.0f, 1.0f)) * 1.4f, 0.0f, 1.0f);
 	const float auroraStrength = FiniteClamp(settings.AuroraIntensity, 0.35f, 0.0f, 1.5f) * auroraWeatherGate;
 	float lightningFlash = 0.0f;
 	const auto* lightningWeather = weatherContext.transition.currentWeather;
@@ -675,7 +705,7 @@ void VolumetricClouds::DrawClouds()
 			weatherContext.weatherClass == WeatherManager::WeatherClass::Storm ||
 			weatherContext.weatherClass == WeatherManager::WeatherClass::Rain);
 	const bool lightningWeatherActive = settings.LightningIntensity > 0.001f && authoredLightning &&
-		rainyWeather && weatherContext.precipitation > 0.05f;
+		rainyWeather && FiniteClamp(weatherContext.precipitation, 0.0f, 0.0f, 1.0f) > 0.05f;
 	// Wait/fast-travel must not replay skipped bolts; inactive storms reset the same timer.
 	if (simulationDelta > 2.0 || !lightningWeatherActive) {
 		rt.lightningAge = 10.0f;
@@ -751,6 +781,10 @@ void VolumetricClouds::DrawClouds()
 	}
 
 	const WeatherProfile targetProfile = BuildWeatherProfile(weatherContext);
+	// Discrete calendar jumps must not transport the formation into a new
+	// weather epoch while retaining old coverage/height for several minutes.
+	if (simulationDelta > 2.0)
+		rt.weatherProfileValid = false;
 	const WeatherProfile profile = SmoothWeatherProfile(targetProfile, rt.weatherProfile,
 		rt.weatherProfileValid, boundedDeltaTime);
 	const std::uint32_t quality = std::min(settings.Quality, 3u);
@@ -758,14 +792,15 @@ void VolumetricClouds::DrawClouds()
 	if (globals::game::sky && std::isfinite(globals::game::sky->windAngle))
 		windAngle = globals::game::sky->windAngle;
 	const float windUserScale = FiniteClamp(settings.WindSpeed, 0.41f, 0.0f, 4.0f) / 0.41f;
-	const float windSpeed = (45.0f + weatherContext.windIntensity * 420.0f) *
+	const float weatherWind = FiniteClamp(weatherContext.windIntensity, 0.0f, 0.0f, 2.0f);
+	const float windSpeed = (45.0f + weatherWind * 420.0f) *
 		profile.windScale * windUserScale;
 	const float windVelocityX = std::cos(windAngle) * windSpeed;
 	const float windVelocityY = std::sin(windAngle) * windSpeed;
 	constexpr float degreesToRadians = 0.01745329251994329577f;
 	const float upperWindAngle = windAngle +
 		FiniteClamp(settings.HighCloudWindDirection, 28.0f, -180.0f, 180.0f) * degreesToRadians;
-	const float upperWindBaseSpeed = (45.0f + weatherContext.windIntensity * 420.0f) *
+	const float upperWindBaseSpeed = (45.0f + weatherWind * 420.0f) *
 		profile.upperWindScale * FiniteClamp(settings.HighCloudWindSpeed, 0.72f, 0.0f, 2.0f) / 0.72f;
 	const float upperWindVelocityX = std::cos(upperWindAngle) * upperWindBaseSpeed;
 	const float upperWindVelocityY = std::sin(upperWindAngle) * upperWindBaseSpeed;
@@ -774,12 +809,14 @@ void VolumetricClouds::DrawClouds()
 	// Integrate each frame's wind vector into a persistent path. Applying the
 	// latest direction to total elapsed time would rotate old travel whenever
 	// Skyrim's wind direction changed, making clouds appear to ping-pong.
-	AdvancePeriodic(rt.cloudDisplacementX, windX * simulationDelta, kCloudAdvectionPeriod);
-	AdvancePeriodic(rt.cloudDisplacementY, windY * simulationDelta, kCloudAdvectionPeriod);
-	AdvancePeriodic(rt.upperCloudDisplacementX,
-		static_cast<double>(upperWindVelocityX) * simulationDelta, kCloudAdvectionPeriod);
-	AdvancePeriodic(rt.upperCloudDisplacementY,
-		static_cast<double>(upperWindVelocityY) * simulationDelta, kCloudAdvectionPeriod);
+	// Absolute double-precision travel drives phase-reduced noise coordinates;
+	// never wrap the authoritative path at an unrelated fixed world period.
+	rt.cloudDisplacementX += windX * simulationDelta;
+	rt.cloudDisplacementY += windY * simulationDelta;
+	// Keep the authoritative upper-layer travel in double precision. A shared
+	// modulo period cannot preserve its three different shader frequencies.
+	rt.upperCloudDisplacementX += static_cast<double>(upperWindVelocityX) * simulationDelta;
+	rt.upperCloudDisplacementY += static_cast<double>(upperWindVelocityY) * simulationDelta;
 	AdvancePeriodic(rt.weatherAdvectionX, windX * simulationDelta,
 		static_cast<double>(kWeatherExtent * 0.33f) * 4096.0);
 	AdvancePeriodic(rt.weatherAdvectionY, windY * simulationDelta,
@@ -806,7 +843,7 @@ void VolumetricClouds::DrawClouds()
 	constants.weather = { std::clamp(profile.coverage * FiniteClamp(settings.Coverage, 0.73f, 0.0f, 2.0f), 0.0f, 1.0f),
 		profile.density * FiniteClamp(settings.Density, 1.91f, 0.1f, 2.5f), profile.type, profile.precipitation };
 	constants.weatherSecondary = { profile.storm, profile.fog,
-		std::clamp(weatherContext.transition.lerpFactor, 0.0f, 1.0f), profile.sunVisibility };
+		FiniteClamp(weatherContext.transition.lerpFactor, 1.0f, 0.0f, 1.0f), profile.sunVisibility };
 	constants.windTime = { windVelocityX, windVelocityY,
 		FiniteClamp(settings.OriginalSkyExposure, 0.0f, -3.0f, 2.0f), rt.weatherSimulationAccumulator };
 	float3 strikeColor{ 0.78f, 0.88f, 1.0f };
@@ -818,9 +855,12 @@ void VolumetricClouds::DrawClouds()
 			strikeColor = { 0.78f, 0.88f, 1.0f };
 	}
 	constants.cloudMotion = { constants.windTime.x, constants.windTime.y,
-		static_cast<float>(std::min(simulationDelta, 0.10)), strikeColor.x };
-	constants.cloudOffset = { static_cast<float>(rt.cloudDisplacementX),
-		static_cast<float>(rt.cloudDisplacementY), static_cast<float>(rt.weatherDisplacementX),
+		static_cast<float>(std::min(simulationDelta, 2.0)), strikeColor.x };
+	// Preserve the existing packed displacement field without exposing huge
+	// floating-point values; density now consumes the exact noise-domain phases.
+	constants.cloudOffset = { static_cast<float>(std::fmod(rt.cloudDisplacementX, kCloudAdvectionPeriod)),
+		static_cast<float>(std::fmod(rt.cloudDisplacementY, kCloudAdvectionPeriod)),
+		static_cast<float>(rt.weatherDisplacementX),
 		static_cast<float>(rt.weatherDisplacementY) };
 	constants.weatherAdvection = { static_cast<float>(rt.weatherAdvectionX),
 		static_cast<float>(rt.weatherAdvectionY), strikeColor.y, strikeColor.z };
@@ -850,7 +890,7 @@ void VolumetricClouds::DrawClouds()
 	constants.composite = { FiniteClamp(settings.ShadowStrength, 0.52f, 0.0f, 1.0f), 180000.0f,
 		FiniteClamp(settings.OriginalSkyContrast, 1.0f, 0.5f, 2.0f),
 		static_cast<float>(std::min(settings.DebugMode, 2u)) };
-	constants.skyEffects = { auroraStrength, rt.weatherSimulationAccumulator, lightningFlash,
+	constants.skyEffects = { auroraStrength, static_cast<float>(rt.auroraPhase), lightningFlash,
 		rt.lightningSeed };
 	constants.lightningPosition = { static_cast<float>(rt.lightningX),
 		static_cast<float>(rt.lightningY), static_cast<float>(rt.lightningGroundZ), 0.0f };
@@ -868,8 +908,36 @@ void VolumetricClouds::DrawClouds()
 		FiniteClamp(settings.ShapeScale, 1.08f, 0.2f, 3.0f) * 0.68f,
 		FiniteClamp(settings.HighCloudDetail, 0.65f, 0.1f, 2.0f) * profile.upperDetail,
 		FiniteClamp(settings.Erosion, 0.62f, 0.0f, 1.5f) * 0.72f };
+	const auto noisePhase = [](double worldTravel, double scale, double period) {
+		const double reduced = std::fmod(worldTravel * scale, period);
+		return static_cast<float>(reduced < 0.0 ? reduced + period : reduced);
+	};
+	const double baseScale = 0.000012 * std::max(static_cast<double>(constants.upperShape.y), 0.05);
+	const double detailScale = 0.000075 * std::max(static_cast<double>(constants.upperShape.z), 0.05);
 	constants.upperWind = { upperWindVelocityX, upperWindVelocityY,
-		static_cast<float>(rt.upperCloudDisplacementX), static_cast<float>(rt.upperCloudDisplacementY) };
+		noisePhase(rt.upperCloudDisplacementX, baseScale, 4096.0),
+		noisePhase(rt.upperCloudDisplacementY, baseScale, 4096.0) };
+	constants.upperNoisePhase = {
+		noisePhase(rt.upperCloudDisplacementX, baseScale * 0.45, 2048.0),
+		noisePhase(rt.upperCloudDisplacementY, baseScale * 0.45, 2048.0),
+		noisePhase(rt.upperCloudDisplacementX, detailScale, 21504.0),
+		noisePhase(rt.upperCloudDisplacementY, detailScale, 21504.0) };
+	const double lowerBaseScale = 0.000020 * std::max(static_cast<double>(constants.shape.x), 0.05);
+	const double lowerDetailScale = 0.000105 * std::max(static_cast<double>(constants.shape.y), 0.05);
+	constants.lowerNoisePhase = {
+		noisePhase(rt.cloudDisplacementX, lowerBaseScale, 4096.0),
+		noisePhase(rt.cloudDisplacementY, lowerBaseScale, 4096.0),
+		noisePhase(rt.cloudDisplacementX, lowerDetailScale, 21504.0),
+		noisePhase(rt.cloudDisplacementY, lowerDetailScale, 21504.0) };
+	// Frame-to-frame motion must use exactly the displacement integrated into
+	// the density field. It must not be clamped to 0.1 game seconds, or scaled
+	// per height (the density does neither). Long jumps invalidate history.
+	if (simulationDelta <= 2.0) {
+		constants.frameDisplacement = { static_cast<float>(windX * simulationDelta),
+			static_cast<float>(windY * simulationDelta),
+			static_cast<float>(static_cast<double>(upperWindVelocityX) * simulationDelta),
+			static_cast<float>(static_cast<double>(upperWindVelocityY) * simulationDelta) };
+	}
 	try {
 		rt.constants->Update(constants);
 	} catch (const std::exception& error) {
@@ -1114,8 +1182,8 @@ void VolumetricClouds::DrawSettings()
 		InvalidateHistory();
 		if (runtime)
 			runtime->weatherAccumulator = kWeatherUpdateInterval;
-		PIXL::Renderer::TemporalContext::Get().Invalidate(
-			PIXL::Renderer::TemporalInvalidationReason::SettingsChange, "PIXL Volumetric Clouds settings changed");
+		// This setting belongs only to clouds. Do not evict unrelated GI,
+		// DOF or reconstruction histories on every cloud-slider adjustment.
 	}
 }
 
@@ -1124,14 +1192,26 @@ void VolumetricClouds::LoadSettings(json& value)
 	if (!value.is_object()) {
 		settings = {};
 		InvalidateHistory();
+		if (runtime) {
+			runtime->weatherValid = false;
+			runtime->weatherAccumulator = kWeatherUpdateInterval;
+		}
 		return;
 	}
 	// Preserve historical defaults, JSON keys, and finite clamping for older profiles.
 	const auto readFloat = [&value](const char* key, float fallback, float minimum, float maximum) {
-		return FiniteClamp(value.value(key, fallback), fallback, minimum, maximum);
+		const auto entry = value.find(key);
+		if (entry == value.end() || !entry->is_number())
+			return fallback;
+		try { return FiniteClamp(entry->get<float>(), fallback, minimum, maximum); }
+		catch (const json::exception&) { return fallback; }
 	};
-	settings.Enabled = value.value("Enabled", true);
-	settings.Quality = std::min(value.value("Quality", 2u), 3u);
+	const auto readBool = [&value](const char* key, bool fallback) {
+		const auto entry = value.find(key);
+		return entry != value.end() && entry->is_boolean() ? entry->get<bool>() : fallback;
+	};
+	settings.Enabled = readBool("Enabled", true);
+	settings.Quality = static_cast<std::uint32_t>(readFloat("Quality", 2.0f, 0.0f, 3.0f));
 	settings.Coverage = readFloat("Coverage", 0.73f, 0.0f, 2.0f);
 	settings.Density = readFloat("Density", 1.91f, 0.1f, 2.5f);
 	settings.VanillaCloudVisibility = readFloat("VanillaCloudVisibility", 0.25f, 0.0f, 1.0f);
@@ -1141,7 +1221,7 @@ void VolumetricClouds::LoadSettings(json& value)
 	settings.LightningIntensity = readFloat("LightningIntensity", 1.0f, 0.0f, 2.0f);
 	settings.CloudBase = readFloat("CloudBase", 15435.0f, 0.0f, 120000.0f);
 	settings.CloudThickness = readFloat("CloudThickness", 65000.0f, 2000.0f, 90000.0f);
-	settings.EnableHighCloudLayer = value.value("EnableHighCloudLayer", false);
+	settings.EnableHighCloudLayer = readBool("EnableHighCloudLayer", false);
 	settings.HighCloudBase = readFloat("HighCloudBase", 30000.0f, 20000.0f, 70000.0f);
 	settings.HighCloudTop = readFloat("HighCloudTop", 100000.0f, 65000.0f, 110000.0f);
 	settings.HighCloudCoverage = readFloat("HighCloudCoverage", 0.42f, 0.0f, 1.0f);
@@ -1166,6 +1246,11 @@ void VolumetricClouds::LoadSettings(json& value)
 	settings.ShadowStrength = readFloat("ShadowStrength", 0.20f, 0.0f, 1.0f);
 	settings.TemporalResponse = readFloat("TemporalResponse", 0.68f, 0.0f, 0.98f);
 	settings.DebugMode = 0u;
+	InvalidateHistory();
+	if (runtime) {
+		runtime->weatherValid = false;
+		runtime->weatherAccumulator = kWeatherUpdateInterval;
+	}
 }
 
 void VolumetricClouds::SaveSettings(json& value)
@@ -1196,6 +1281,11 @@ void VolumetricClouds::SaveSettings(json& value)
 void VolumetricClouds::RestoreDefaultSettings()
 {
 	settings = {};
+	InvalidateHistory();
+	if (runtime) {
+		runtime->weatherValid = false;
+		runtime->weatherAccumulator = kWeatherUpdateInterval;
+	}
 }
 
 void VolumetricClouds::RegisterWeatherVariables()

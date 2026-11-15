@@ -1,4 +1,4 @@
-// PIXL Renderer - world-space volumetric cloud prototype.
+// PIXL Renderer - world-space volumetric cloud module.
 // Copyright (C) 2026 PIXL Studio
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -79,16 +79,22 @@ struct VolumetricClouds : RenderModule
 		std::uint32_t updateWeather{};
 		float4 upperLayer{}; // base, top, weather coverage, density
 		float4 upperShape{}; // weather type, shape scale, detail scale, erosion
-		float4 upperWind{};  // independent wind velocity xy, integrated displacement xy
+		float4 upperWind{};  // independent wind velocity xy, base-noise phase zw
+		float4 frameDisplacement{};  // actual wind displacement this frame: lower xy, upper zw
+		float4 upperNoisePhase{};  // warp phase xy, detail phase zw (noise-domain periodic)
+		float4 lowerNoisePhase{};  // base/warp phase xy, detail phase zw
 	};
 	STATIC_ASSERT_ALIGNAS_16(CloudConstants);
-	static_assert(sizeof(CloudConstants) == 352, "Volumetric cloud CPU/HLSL ABI mismatch");
+	static_assert(sizeof(CloudConstants) == 400, "Volumetric cloud CPU/HLSL ABI mismatch");
 	static_assert(offsetof(CloudConstants, cloudMotion) == 96);
 	static_assert(offsetof(CloudConstants, weatherMap) == 144);
 	static_assert(offsetof(CloudConstants, skyEffects) == 256);
 	static_assert(offsetof(CloudConstants, primarySteps) == 288);
 	static_assert(offsetof(CloudConstants, upperLayer) == 304);
 	static_assert(offsetof(CloudConstants, upperWind) == 336);
+	static_assert(offsetof(CloudConstants, frameDisplacement) == 352);
+	static_assert(offsetof(CloudConstants, upperNoisePhase) == 368);
+	static_assert(offsetof(CloudConstants, lowerNoisePhase) == 384);
 
 	VolumetricClouds();
 	~VolumetricClouds();
@@ -99,8 +105,7 @@ struct VolumetricClouds : RenderModule
 	std::string GetDisplayName() override { return "PIXL Volumetric Clouds"; }
 	std::string GetShortName() override { return "VolumetricClouds"; }
 	std::string_view GetCategory() const override { return ModuleGroups::kSky; }
-	// This experimental core module is being shipped for direct live testing.
-	// Keep its render pass enabled by default; users can still disable it at boot.
+	// Core sky module: enabled by default, with the existing user override.
 	bool IsDisabledByDefault() const override { return false; }
 	std::string_view GetShaderDefineName() override { return {}; }
 	bool HasShaderDefine(RE::BSShader::Type) override { return false; }

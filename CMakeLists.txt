@@ -12,10 +12,10 @@ set(VCPKG_BUILD_TYPE release CACHE STRING "")
 project(
     # gersemi: ignore
     PIXLRenderer
-    VERSION 1.0.9
+    VERSION 1.1.0
     LANGUAGES CXX
 )
-set(PIXL_DISPLAY_VERSION "1.0.9")
+set(PIXL_DISPLAY_VERSION "1.1.0")
 
 include(CTest)
 option(PIXL_PORTABLE_TESTS_ONLY "Configure only game-independent PIXL validation" OFF)

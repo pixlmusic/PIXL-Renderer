@@ -32,6 +32,9 @@ struct IndirectContext
 	float3 worldNormal;
 	float3 vertexNormal;
 	float3 viewDir;
+#if defined(HAIR) && defined(STRAND_SHADING)
+	float3 hairTangent;
+#endif
 };
 
 struct DirectLightingOutput

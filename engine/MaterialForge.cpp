@@ -23,11 +23,14 @@
 #include "I18n/I18n.h"
 #include "ShaderCache.h"
 #include "State.h"
+#include "Menu.h"
+#include "Modules/PulseProfiler.h"
 #include "Util.h"
 
 #include <cmath>
 #include <cctype>
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <limits>
@@ -883,36 +886,12 @@ void MaterialForge::DrawSettings()
 			ImGui::TreePop();
 		}
 
-		ImGui::SeparatorText("Physical Light Quality");
-		DrawUIntCheckbox("Inverse-Distance Local Lights", settings.EnablePhysicalLocalLightFalloff);
-		DrawTooltip("When enabled, blends Skyrim's conventional radius falloff toward PIXL's regularized inverse-distance model (1/d). At 0 the lights use the vanilla falloff; at 1 they use the full model. Disable to restore Natural Lighting's per-light falloff exactly.");
+		ImGui::SeparatorText("Surface Quality");
 		DrawUIntCheckbox("Procedural Fur Shells", gEnableProceduralFurShells);
 		DrawTooltip("Adds eight procedurally covered geometry layers to confidently classified animal coats and explicit fur or pelt materials. The layered draw costs more GPU work.");
 		if (ImGui::SliderFloat("Fur Shell Length", &gFurShellLength, 0.2f, 4.0f, "%.1f units", ImGuiSliderFlags_AlwaysClamp))
 			FurShells::SetShellLength(gFurShellLength);
 		DrawTooltip("Controls how far the fur layers extrude from the surface. Shorter values give a tighter coat and reduce silhouette expansion; longer values make the fur more visible.");
-		if (settings.EnablePhysicalLocalLightFalloff != 0) {
-			ImGui::SliderFloat("Physical Falloff Strength", &settings.PhysicalLocalLightFalloffStrength,
-				0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			DrawTooltip("0.00 matches Skyrim's conventional light-radius falloff; 1.00 uses full inverse-distance (1/d) falloff. Lower values preserve more of the vanilla look.");
-			ImGui::SliderFloat("Local Emitter Radius", &settings.LocalLightMinimumDistance,
-				7.0f, 70.0f, "%.0f units", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
-			DrawTooltip("Finite emitter radius used near the light to keep inverse-distance attenuation bounded. Larger values produce broader, softer near-light response.");
-		}
-		DrawUIntCheckbox("Local Contact Shadows", settings.EnableLocalContactShadows);
-		DrawTooltip("Traces a short, temporally stable screen-space visibility ray for the strongest local lights. Updates in real time; disable for the lowest GPU cost.");
-		if (settings.EnableLocalContactShadows != 0) {
-			int contactLightCount = static_cast<int>(settings.LocalContactShadowLightCount);
-			if (ImGui::SliderInt("Contact-Shadow Lights / Pixel", &contactLightCount, 1, 4, "%d", ImGuiSliderFlags_AlwaysClamp))
-				settings.LocalContactShadowLightCount = static_cast<uint>(std::clamp(contactLightCount, 1, 4));
-			DrawTooltip("Number of strongest local lights eligible for a short screen-space contact-shadow ray per pixel. Higher values shadow more nearby lights and increase GPU cost; full shadow maps remain limited by Skyrim.");
-			ImGui::SliderFloat("Contact-Shadow Length", &settings.LocalContactShadowLength,
-				16.0f, 256.0f, "%.0f units", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
-			DrawTooltip("Maximum world-space reach of each local-light contact ray. Long rays cover more geometry but can expose screen-space misses.");
-			ImGui::SliderFloat("Contact-Shadow Strength", &settings.LocalContactShadowStrength,
-				0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-			DrawTooltip("Opacity of accepted local contact shadows. Lower values blend more gently with Skyrim's existing shadowing.");
-		}
 		DrawUIntCheckbox("Geometric Specular AA", settings.EnableSpecularAA);
 		DrawTooltip("Widens GGX roughness from screen-space normal variance to reduce shimmering on small or highly detailed geometry. Updates in real time.");
 		if (settings.EnableSpecularAA != 0) {
@@ -947,7 +926,10 @@ void MaterialForge::DrawSettings()
 			"Effective Metalness (Authored + Inferred)",
 			"TEST: Final GGX Roughness = 0.50",
 			"TEST: Final GGX Roughness Floor = 0.15",
-			"TEST: Final Roughness Below 0.05 (Magenta)"
+			"TEST: Final Roughness Below 0.05 (Magenta)",
+			"Local Light Potential (No Shadows)",
+			"Local Light After Shadows",
+			"Local Light After Shadow Map"
 		};
 		int debugMode = static_cast<int>(settings.LegacyPhysicalDebugMode);
 		if (ImGui::Combo(T(TKEY("legacy_physical_debug_mode"), "Physical Material Debug"), &debugMode,
@@ -973,6 +955,8 @@ void MaterialForge::DrawSettings()
 			ImGui::TextDisabled("Temporarily raises only final legacy/Complex Material GGX roughness values below 0.15. The frame remains normally shaded.");
 		} else if (settings.LegacyPhysicalDebugMode == 15) {
 			ImGui::TextDisabled("Magenta identifies pixels whose final material roughness is below 0.05; all other pixels retain their normal shading.");
+		} else if (settings.LegacyPhysicalDebugMode >= 16 && settings.LegacyPhysicalDebugMode <= 18) {
+			ImGui::TextDisabled("Compare local light before shadows, after native/cached shadow maps, and after contact/screen-space shadows.");
 		}
 		if (settings.LegacyPhysicalDebugMode != 0) {
 			ImGui::TextDisabled("Lighting geometry only; particles, flames, sky, and UI may remain visible");
@@ -1244,7 +1228,7 @@ void MaterialForge::LoadSettings(json& o_json)
 	// Slider bounds are used for authored values; runtime snow is handled below.
 	auto bit = [](uint& v) { v = v ? 1u : 0u; };
 	bit(settings.EnableLegacyPhysicalDirectLighting);
-	settings.LegacyPhysicalDebugMode = (std::min)(settings.LegacyPhysicalDebugMode, 15u);
+	settings.LegacyPhysicalDebugMode = (std::min)(settings.LegacyPhysicalDebugMode, 18u);
 	bit(settings.EnableLegacyMetalInference);
 	bit(settings.EnablePhysicalLocalLightFalloff);
 	bit(settings.EnableLocalContactShadows);
@@ -1259,7 +1243,7 @@ void MaterialForge::LoadSettings(json& o_json)
 	settings.LegacyMetalInferenceStrength = FiniteClamp(settings.LegacyMetalInferenceStrength, 0.85f, 0.f, 1.f);
 	settings.LegacyMetalInferenceThreshold = FiniteClamp(settings.LegacyMetalInferenceThreshold, 0.32f, 0.05f, 0.8f);
 	settings.LegacyMetalInferenceMaximum = FiniteClamp(settings.LegacyMetalInferenceMaximum, 0.55f, 0.f, 1.f);
-	settings.LocalContactShadowLength = FiniteClamp(settings.LocalContactShadowLength, 96.f, 16.f, 256.f);
+	settings.LocalContactShadowLength = FiniteClamp(settings.LocalContactShadowLength, 24.f, 16.f, 48.f);
 	settings.LocalContactShadowStrength = FiniteClamp(settings.LocalContactShadowStrength, 0.7f, 0.f, 1.f);
 	settings.SpecularAAStrength = FiniteClamp(settings.SpecularAAStrength, 0.75f, 0.f, 2.f);
 	settings.SpecularAAVarianceClamp = FiniteClamp(settings.SpecularAAVarianceClamp, 0.18f, 0.01f, 0.5f);
@@ -1874,9 +1858,15 @@ struct BSLightingShaderProperty_GetRenderPasses
 			isPbr = true;
 		}
 		std::string geometryHierarchy;
+		bool isObjectLODSubtree = false;
 		for (auto* object = static_cast<RE::NiAVObject*>(geometry); object != nullptr && geometryHierarchy.size() < 512u; object = object->parent) {
 			const char* objectName = object->name.c_str();
 			if (objectName != nullptr && *objectName != '\0') {
+				std::string normalizedName(objectName);
+				std::ranges::transform(normalizedName, normalizedName.begin(), [](unsigned char character) {
+					return static_cast<char>(std::tolower(character));
+				});
+				isObjectLODSubtree |= normalizedName == "objectlodroot";
 				if (!geometryHierarchy.empty())
 					geometryHierarchy.push_back('\\');
 				geometryHierarchy.append(objectName);
@@ -1899,6 +1889,12 @@ struct BSLightingShaderProperty_GetRenderPasses
 						PhysicalMaterial::ClassifyAutomaticFur(*pbrMaterial, pbrMaterial->inputFilePath));
 			}
 		}
+		// LOD roots are scene proxies rather than the authored fur surface. They
+		// can carry names/textures such as "Fur\\HagravenHouse01" and use the
+		// ordinary lighting technique, so the technique check alone cannot keep
+		// shell extrusion off these large proxy meshes.
+		if (isObjectLODSubtree)
+			automaticFurConfidence = 0.0f;
 		float automaticHairConfidence = property->material != nullptr
 			? PhysicalMaterial::ClassifyAutomaticHair(
 				  *static_cast<RE::BSLightingShaderMaterialBase*>(property->material),
@@ -2337,9 +2333,59 @@ struct BSLightingShader_SetupGeometry
 		}
 
 		shader->currentRawTechnique &= ~0b111000u;
-		shader->currentRawTechnique |= (std::min((pass->numLights - 1), 7) << 3);
+		// A transition pass may temporarily carry no scene lights. The encoded
+		// light count is a three-bit technique field; avoid unsigned underflow.
+		const uint32_t sceneLightCount = pass ? pass->numLights : 0u;
+		shader->currentRawTechnique |= (std::min(sceneLightCount > 0u ? sceneLightCount - 1u : 0u, 7u) << 3);
 
+		const bool measure = globals::menu && globals::menu->overlayVisible &&
+			globals::pipeline::pulseProfiler.loaded && globals::pipeline::pulseProfiler.IsOverlayVisible();
+		// Sample the next vtable hook chain and MaterialForge's own post-setup
+		// separately. The existing nativeLightingSetupTicks measure the entire
+		// *next hook chain*, not an exclusive Skyrim-native function duration.
+		struct HookTimingWindow
+		{
+			std::uint32_t firstFrame = UINT32_MAX;
+			std::uint64_t calls = 0;
+			std::uint64_t samples = 0;
+			std::int64_t chainTicks = 0;
+			std::int64_t postTicks = 0;
+			std::int64_t maxChainTicks = 0;
+			std::int64_t maxPostTicks = 0;
+		};
+		static thread_local HookTimingWindow timing{};
+		if (!measure && timing.firstFrame != UINT32_MAX)
+			timing = {};
+		if (measure) {
+			const std::uint32_t frame = globals::state->frameCount;
+			if (timing.firstFrame == UINT32_MAX)
+				timing.firstFrame = frame;
+			if (static_cast<std::uint32_t>(frame - timing.firstFrame) >= 120u) {
+				LARGE_INTEGER frequency{};
+				if (timing.samples && QueryPerformanceFrequency(&frequency) && frequency.QuadPart > 0) {
+					const double tickMs = 1000.0 / static_cast<double>(frequency.QuadPart);
+					logger::info(
+						"[MaterialForge][LightingPerf] draws={} samples={} nextHookAvg={:.4f}ms nextHookMax={:.4f}ms postAvg={:.4f}ms postMax={:.4f}ms (sampled 1/64 over 120 frames)",
+						timing.calls, timing.samples,
+						static_cast<double>(timing.chainTicks) * tickMs / timing.samples,
+						static_cast<double>(timing.maxChainTicks) * tickMs,
+						static_cast<double>(timing.postTicks) * tickMs / timing.samples,
+						static_cast<double>(timing.maxPostTicks) * tickMs);
+				}
+				timing = {};
+			timing.firstFrame = frame;
+			}
+			++timing.calls;
+		}
+		const bool sample = measure && ((timing.calls & 63u) == 0u);
+		LARGE_INTEGER beforeNative{}, afterNative{};
+		if (measure) QueryPerformanceCounter(&beforeNative);
 		func(shader, pass, renderFlags);
+		if (measure) {
+			QueryPerformanceCounter(&afterNative);
+			globals::state->nativeLightingSetupTicks.fetch_add(
+				afterNative.QuadPart - beforeNative.QuadPart, std::memory_order_relaxed);
+		}
 
 		const uint32_t activeTechnique = pass ? pass->passEnum - 0x4800002D : 0u;
 		const bool automaticFur = (activeTechnique & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::AutoFur)) != 0;
@@ -2433,6 +2479,17 @@ struct BSLightingShader_SetupGeometry
 		if (globals::pipeline::materialForge.legacyTuningCB) {
 			ID3D11Buffer* legacyTuning = globals::pipeline::materialForge.legacyTuningCB->CB();
 			context->PSSetConstantBuffers(10, 1, &legacyTuning);
+		}
+		if (sample) {
+			LARGE_INTEGER afterPost{};
+			QueryPerformanceCounter(&afterPost);
+			const auto chainTicks = (std::max)(std::int64_t{ 0 }, static_cast<std::int64_t>(afterNative.QuadPart - beforeNative.QuadPart));
+			const auto postTicks = (std::max)(std::int64_t{ 0 }, static_cast<std::int64_t>(afterPost.QuadPart - afterNative.QuadPart));
+			++timing.samples;
+			timing.chainTicks += chainTicks;
+			timing.postTicks += postTicks;
+			timing.maxChainTicks = (std::max)(timing.maxChainTicks, chainTicks);
+			timing.maxPostTicks = (std::max)(timing.maxPostTicks, postTicks);
 		}
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
@@ -2997,7 +3054,10 @@ void MaterialForge::SetShaderResources(ID3D11DeviceContext* a_context)
 			&textures[batchStart]);
 
 		// Clear the bits we just processed
-		uint32_t clearMask = ((1u << batchCount) - 1u) << batchStart;
+		// A full 32-bit run must not evaluate (1u << 32), which is undefined.
+		// There are currently only 12 slots, but keep this correct if expanded.
+		const uint32_t clearMask = batchCount == 32u
+			? UINT32_MAX : (((1u << batchCount) - 1u) << batchStart);
 		mask &= ~clearMask;
 	}
 

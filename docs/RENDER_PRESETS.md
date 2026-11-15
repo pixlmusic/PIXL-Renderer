@@ -4,7 +4,7 @@ PIXL renderer presets save and share rendering settings as portable JSON files. 
 
 ## Use a preset
 
-1. Open PIXL Renderer with **Page Down** and choose **General → Renderer Presets**.
+1. Open PIXL Renderer with **Page Down** and choose **General > Renderer Presets**.
 2. Select a bundled profile, a preset you saved, or one supplied by a mod.
 3. Review its author, description and renderer version, then choose **Apply for next launch**.
 4. Restart Skyrim through SKSE. PIXL keeps a timestamped copy of the previous `UserGraphics.json` before applying the profile.

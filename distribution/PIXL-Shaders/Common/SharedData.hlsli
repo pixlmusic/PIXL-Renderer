@@ -108,7 +108,8 @@ namespace SharedData
 		bool EnableHeightBlending;
 		bool EnableShadows;
 		bool EnableParallaxWarpingFix;
-		uint2 pad0;
+		uint ComplexMaterialAutoDetection;
+		uint pad0;
 	};
 
 	struct WorldProbeCaptureSettings
@@ -131,8 +132,13 @@ namespace SharedData
 	{
 		uint EnableLightsVisualisation;
 		uint LightsVisualisationMode;
-		float2 pad0; // x: suppress vanilla cloud meshes while PIXL Volumetric Clouds is active
+		uint EnableScreenSpaceLocalShadows;
+		uint pad0;
 		uint4 ClusterSize;
+		uint EnableLocalShadows;
+		uint LocalShadowSamples;
+		float LocalShadowFilterRadius;
+		float LocalShadowTexelSize;
 	};
 
 	struct RainResponseSettings

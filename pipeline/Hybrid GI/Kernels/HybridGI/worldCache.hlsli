@@ -14,6 +14,21 @@
 #define WORLD_CACHE_INVALID_HASH 0u
 #define WORLD_CACHE_EPSILON 1e-5f
 
+// Camera, surface, and cell positions can coincide at clip/cascade boundaries.
+// Keep degenerate vectors out of the irradiance SH basis and use an explicit
+// world-up fallback for invalid normals so one bad observation cannot poison a
+// persistent world-cache record with NaNs.
+float3 WorldCacheSafeNormalize(float3 value, float3 fallback)
+{
+    float lengthSquared = dot(value, value);
+    // Ordered comparisons reject NaN (the first condition becomes true) and
+    // the upper bound rejects overflow/infinity without triggering FXC's
+    // /WX warning that isfinite is redundant under /Gis.
+    if (!(lengthSquared > 1.0e-12f) || lengthSquared > 1.0e30f)
+        return fallback;
+    return value * rsqrt(lengthSquared);
+}
+
 // Companion word: logarithmic relative variance, unresolved light change,
 // material class, explicit observation state. Hash/age remain authoritative.
 #define WORLD_STATE_UNOBSERVED 0u
@@ -36,7 +51,10 @@ uint WorldObservedMaterial(float2 tissueAndDeformation)
 
 float WorldMaterialResponse(uint material)
 {
-    return material == 1u ? 0.28f : material == 2u ? 0.18f : 0.0f;
+    // Dynamic annotations already make their cells update-priority. Keep their
+    // temporal floor modest so changing screen-space winners do not flash the
+    // coarse world voxel at every 30 Hz publication.
+    return material == 1u ? 0.12f : material == 2u ? 0.09f : 0.0f;
 }
 
 uint WorldCacheRayBudget(uint maximum, float demand, float minimumFraction, uint tileKey, uint clock)
@@ -76,7 +94,9 @@ bool WorldCacheScheduleCell(uint hash, uint age, float confidence, uint intellig
 bool WorldCacheExpired(uint metadata, uint intelligence, uint clock, uint maxAge)
 {
     if ((metadata & 0x00ffffffu) == WORLD_CACHE_INVALID_HASH) return false;
-    uint lifetime = maxAge;
+    // Ages are stored modulo 256; a >=255-tick lifetime cannot be reliably
+    // distinguished from a wrapped entry. Keep one tick of headroom.
+    uint lifetime = min(maxAge, 254u);
 #ifdef CACHE_INTELLIGENCE
     uint state = intelligence >> 28;
     if (state == WORLD_STATE_EMPTY || state == WORLD_STATE_EMPTY_PENDING ||
@@ -114,6 +134,23 @@ float WorldIntelligenceVariance(uint packed)
     return exp2(float(packed & 65535u) * (16.0f / 65535.0f)) - 1.0f;
 }
 
+// Uncertain cells are refreshed every cache tick. Reduce their per-observation
+// step in proportion to measured radiance variance so repeated noisy winners
+// do not turn that priority into visible 30 Hz pumping. A stable cell is
+// unchanged; explicit stale-light refreshes bypass this response damping.
+float WorldCacheVarianceDampedResponse(float response, float relativeVariance)
+{
+    return saturate(response) * rcp(1.0f + max(relativeVariance, 0.0f));
+}
+
+// Retain emitter invalidation confidence through three cache publications.
+// Clearing the evidence on the first successful sample made reliability jump
+// between stale and fully trusted when a moving emitter crossed cache ticks.
+uint WorldCacheDecayLightChange(uint evidence)
+{
+    return evidence > 64u ? evidence - 64u : 0u;
+}
+
 float WorldIntelligenceReliability(uint packed)
 {
 #ifndef CACHE_INTELLIGENCE
@@ -123,7 +160,10 @@ float WorldIntelligenceReliability(uint packed)
     if (state < WORLD_STATE_DARK || state > WORLD_STATE_STALE_LIGHT)
         return 0.0f;
     float change = float((packed >> 16) & 255u) / 255.0f;
-    return rcp(1.0f + WorldIntelligenceVariance(packed)) * (1.0f - change);
+    // Emitter invalidation also prioritizes the cell for refresh. Keep most of
+    // its previous radiance as a short-lived fallback while that observation
+    // arrives; multiplying by (1-change) removed 75% of marked light at once.
+    return rcp(1.0f + WorldIntelligenceVariance(packed)) * (1.0f - 0.35f * change);
 #endif
 }
 
@@ -208,7 +248,7 @@ float3 DecodeWorldOctahedron(float2 encoded)
     s.x = (s.x == 0.0f) ? 1.0f : s.x;
     s.y = (s.y == 0.0f) ? 1.0f : s.y;
     n.xy -= s * t;
-    return normalize(n);
+    return WorldCacheSafeNormalize(n, float3(0.0f, 0.0f, 1.0f));
 }
 
 uint PackWorldSurface(float3 normal, float occupancy, float confidence)
@@ -241,7 +281,7 @@ void WorldCacheProjectRadiance(float3 radiance, float3 surfaceNormal,
 {
     radiance = max(filterInf(filterNaN(radiance)), 0.0f);
 
-    float3 n = normalize(surfaceNormal);
+    float3 n = WorldCacheSafeNormalize(surfaceNormal, float3(0.0f, 0.0f, 1.0f));
     float3 ycocg = Color::RGBToYCoCg(radiance);
     float luminanceY = max(ycocg.x, 0.0f);
     float invLuminanceY = rcp(max(luminanceY, 1e-4f));
@@ -278,7 +318,7 @@ void WorldCacheProjectRadiance(float3 radiance, float3 surfaceNormal,
 
 float WorldCacheEvaluateLuminance(float4 sh0, float4 sh1, float4 sh2, float3 direction)
 {
-    float3 d = normalize(direction);
+    float3 d = WorldCacheSafeNormalize(direction, float3(0.0f, 0.0f, 1.0f));
 
     const float SH_L0 = 0.2820947918f;
     const float SH_L1 = 0.4886025119f;
@@ -390,14 +430,16 @@ float WorldCacheAgeFade(uint age, uint maxAge)
     // rediscovered after camera movement. Fade them after one quarter of their
     // lifetime so stale lighting does not remain at full strength for most of
     // the cache window. GI, secondary bounce, and voxel reflections share this.
-    float softStart = (float)maxAge * 0.25f;
-    return 1.0f - smoothstep(softStart, (float)max(maxAge, 1u), (float)age);
+    uint boundedAge = min(maxAge, 254u);
+    float softStart = (float)boundedAge * 0.25f;
+    return 1.0f - smoothstep(softStart, (float)max(boundedAge, 1u), (float)age);
 }
 
 void WorldCacheBasis(float3 normalWS, out float3 tangent, out float3 bitangent)
 {
+    normalWS = WorldCacheSafeNormalize(normalWS, float3(0.0f, 0.0f, 1.0f));
     float3 up = abs(normalWS.z) < 0.95f ? float3(0, 0, 1) : float3(0, 1, 0);
-    tangent = normalize(cross(up, normalWS));
+    tangent = WorldCacheSafeNormalize(cross(up, normalWS), float3(1.0f, 0.0f, 0.0f));
     bitangent = cross(normalWS, tangent);
 }
 
@@ -415,7 +457,9 @@ float3 WorldCacheDirectionFromBasis(uint index, uint count, float3 normalWS,
     float sinTheta = sqrt(saturate(1.0f - cosTheta * cosTheta));
     float s, c;
     sincos(phi, s, c);
-    return normalize(tangent * (c * sinTheta) + bitangent * (s * sinTheta) + normalWS * cosTheta);
+    return WorldCacheSafeNormalize(
+        tangent * (c * sinTheta) + bitangent * (s * sinTheta) + normalWS * cosTheta,
+        WorldCacheSafeNormalize(normalWS, float3(0.0f, 0.0f, 1.0f)));
 }
 
 float3 WorldCacheDirection(uint index, uint count, float3 normalWS, float rotation)

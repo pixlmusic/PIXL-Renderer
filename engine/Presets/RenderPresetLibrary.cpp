@@ -27,6 +27,7 @@ namespace PIXL::Presets
 		std::atomic_uint64_t g_writeSequence{ 0 };
 		std::mutex g_pendingPresetMutex;
 		std::optional<json> g_pendingPresetSettings;
+		bool ContainsPrivatePath(const json& value);
 
 		bool IsTextField(const json& metadata, const char* key, std::size_t maxLength,
 			bool required, std::string& output, std::string& error)
@@ -97,6 +98,10 @@ namespace PIXL::Presets
 				error = "Preset contains a machine-local screenshot destination.";
 				return false;
 			}
+			if (ContainsPrivatePath(settings)) {
+				error = "Preset contains a machine-local absolute path.";
+				return false;
+			}
 			return true;
 		}
 
@@ -109,6 +114,77 @@ namespace PIXL::Presets
 			if (target.is_array() && incoming.is_array())
 				return true;
 			return target.type() == incoming.type();
+		}
+
+		bool IsAbsoluteLocalPath(std::string_view value)
+		{
+			if (value.size() >= 3 && std::isalpha(static_cast<unsigned char>(value[0])) &&
+				value[1] == ':' && (value[2] == '\\' || value[2] == '/'))
+				return true;
+			if (value.starts_with("\\\\") || value.starts_with("//") ||
+				value.starts_with("%USERPROFILE%") || value.starts_with("%LOCALAPPDATA%") ||
+				value.starts_with("~/"))
+				return true;
+			return false;
+		}
+
+		bool ContainsPrivatePath(const json& value)
+		{
+			if (value.is_string())
+				return IsAbsoluteLocalPath(value.get_ref<const std::string&>());
+			if (value.is_array())
+				return std::any_of(value.begin(), value.end(), [](const json& item) {
+					return ContainsPrivatePath(item);
+				});
+			if (!value.is_object())
+				return false;
+			for (const auto& [key, child] : value.items()) {
+				std::string normalized = key;
+				std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
+					return static_cast<char>(std::tolower(c));
+				});
+				if (normalized == "screenshotpath" || ContainsPrivatePath(child))
+					return true;
+			}
+			return false;
+		}
+
+		void StripAbsolutePathValues(json& value)
+		{
+			if (value.is_string())
+				return;
+			if (value.is_array()) {
+				for (auto it = value.begin(); it != value.end();) {
+					if (it->is_string() && IsAbsoluteLocalPath(it->get_ref<const std::string&>()))
+						it = value.erase(it);
+					else {
+						StripAbsolutePathValues(*it);
+						++it;
+					}
+				}
+				return;
+			}
+			if (!value.is_object())
+				return;
+
+			for (auto it = value.begin(); it != value.end();) {
+				std::string key = it.key();
+				std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
+					return static_cast<char>(std::tolower(c));
+				});
+				const bool hadChildren = (it.value().is_object() || it.value().is_array()) && !it.value().empty();
+				if (key == "screenshotpath" ||
+					(it.value().is_string() && IsAbsoluteLocalPath(it.value().get_ref<const std::string&>())))
+					it = value.erase(it);
+				else {
+					StripAbsolutePathValues(it.value());
+					if (hadChildren && (it.value().is_object() || it.value().is_array()) && it.value().empty()) {
+						it = value.erase(it);
+						continue;
+					}
+					++it;
+				}
+			}
 		}
 
 		void MergeValue(json& target, const json& incoming, MergeSummary& summary)
@@ -220,10 +296,9 @@ namespace PIXL::Presets
 		output.erase("Menu");
 		output.erase("Advanced");
 		output.erase("Version");
-		// A screenshot destination is a machine-local path, not a renderer look.
-		// Keep the recipient's current destination when compatible settings merge.
-		if (output.contains("Pixel Capture") && output["Pixel Capture"].is_object())
-			output["Pixel Capture"].erase("ScreenshotPath");
+		// Machine-local paths are not renderer looks. Omit them so recipients keep
+		// their own paths when compatible settings are merged.
+		StripAbsolutePathValues(output);
 		if (output.contains("General")) {
 			json rendererGeneral = json::object();
 			const auto& general = output["General"];

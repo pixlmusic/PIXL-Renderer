@@ -1152,7 +1152,14 @@ namespace
 			ImGui::EndDisabled();
 		} else if (name == "MaterialLayers") {
 			auto& s = globals::pipeline::materialLayers.settings;
-			toggle("Complex Materials", &s.EnableComplexMaterial);
+			static constexpr const char* complexMaterialModes[] = { "Off", "Auto Detect", "Always On" };
+			int complexMaterialMode = s.EnableComplexMaterial == 0u ? 0 :
+				(s.ComplexMaterialAutoDetection != 0u ? 1 : 2);
+			if (ImGui::Combo("Complex Materials", &complexMaterialMode, complexMaterialModes,
+				static_cast<int>(std::size(complexMaterialModes)))) {
+				s.EnableComplexMaterial = complexMaterialMode == 0 ? 0u : 1u;
+				s.ComplexMaterialAutoDetection = complexMaterialMode == 1 ? 1u : 0u;
+			}
 			toggle("Parallax Depth", &s.EnableParallax);
 			toggle("Parallax Shadows", &s.EnableShadows);
 		} else if (name == "WindowLife") {
@@ -5519,6 +5526,16 @@ bool TuningWorkspaceRenderer::IsDirectorPhotoModeActive()
 {
 	return
 		g_directorPhotoMode.active;
+}
+
+bool TuningWorkspaceRenderer::IsDirectorExposureLocked()
+{
+	// Lock as soon as the entry transaction begins, keep it through both Photo
+	// and Video viewfinders, and release only after camera/capture teardown ends.
+	return g_directorPhotoMode.active ||
+		g_directorEntryPending.load(std::memory_order_acquire) ||
+		g_directorExitRequested.load(std::memory_order_acquire) ||
+		g_directorCaptureLocked.load(std::memory_order_acquire);
 }
 
 bool TuningWorkspaceRenderer::IsDirectorStillPhotoModeActive()

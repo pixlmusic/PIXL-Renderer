@@ -83,7 +83,7 @@ struct PixelCapture : public RenderModule
 	/** @brief True after temporal sampling while the worker is refining/saving. */
 	[[nodiscard]] bool IsPhotoFinishProcessing() const;
 
-	bool applyCropToScreenshot = true;
+	bool applyCropToScreenshot = false;
 
 	// Settings
 	std::string screenshotPath = "Screenshots";

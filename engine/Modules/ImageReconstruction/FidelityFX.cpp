@@ -1,12 +1,31 @@
 #include "FidelityFX.h"
 
 #include <directx/d3dx12.h>
+#include <algorithm>
+#include <bit>
+#include <cmath>
 
 #include "../../State.h"
 #include "../../Utils/FileSystem.h"
 #include "../CameraSuite.h"
 #include "../ImageReconstruction.h"
 #include "DX12SwapChain.h"
+
+namespace
+{
+	// Keep the structured exception boundary free of C++ objects that require
+	// unwinding; MSVC rejects __try in such functions (C2712).
+	bool DispatchFsr3Safely(FfxFsr3Context* context, const FfxFsr3DispatchUpscaleDescription* parameters, bool* exceptionRaised) noexcept
+	{
+		*exceptionRaised = false;
+		__try {
+			return ffxFsr3ContextDispatchUpscale(context, parameters) == FFX_OK;
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			*exceptionRaised = true;
+			return false;
+		}
+	}
+}
 
 ffxFunctions ffxModule;
 
@@ -57,6 +76,11 @@ void FidelityFX::LoadFFX()
 
 void FidelityFX::SetupFrameGeneration()
 {
+	if (!module || !ffxModule.CreateContext || !ffxModule.Configure || !ffxModule.Dispatch) {
+		frameGenContextCreated = false;
+		frameGenerationRuntimeFault = true;
+		return;
+	}
 	auto& swapChain = globals::pipeline::imageReconstruction.dx12SwapChain;
 
 	ffx::CreateContextDescFrameGeneration createFg{};
@@ -70,7 +94,8 @@ void FidelityFX::SetupFrameGeneration()
 
 	frameGenerationRuntimeFault = false;
 	frameGenerationFailureLogged = false;
-	if (ffx::CreateContext(frameGenContext, nullptr, createFg, backendDesc) != ffx::ReturnCode::Ok) {
+	frameGenContextCreated = ffx::CreateContext(frameGenContext, nullptr, createFg, backendDesc) == ffx::ReturnCode::Ok;
+	if (!frameGenContextCreated) {
 		logger::critical("[FidelityFX] Failed to create frame generation context; generated frames are disabled for this session");
 		frameGenerationRuntimeFault = true;
 		frameGenerationFailureLogged = true;
@@ -88,7 +113,12 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 {
 	auto& imageReconstruction = globals::pipeline::imageReconstruction;
 	auto& swapChain = globals::pipeline::imageReconstruction.dx12SwapChain;
-	a_useFrameGeneration = a_useFrameGeneration && !frameGenerationRuntimeFault;
+	if (!frameGenContextCreated) {
+		isFrameGenActive = false;
+		return;
+	}
+	a_useFrameGeneration = a_useFrameGeneration && featureFSR3FG &&
+		!frameGenerationRuntimeFault && swapChain.swapChain && swapChain.commandQueue;
 	bool frameGenerationSucceeded = a_useFrameGeneration;
 	auto latchFrameGenerationFailure = [&](std::string_view a_stage) {
 		frameGenerationSucceeded = false;
@@ -104,7 +134,7 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 	float peakNits = hdr ? static_cast<float>(hdr->settings.hdrPeakNits) : 1000.0f;
 
 	// Clamp peak nits to safe range [1.0f, 10000.0f] to prevent invalid values
-	peakNits = std::clamp(peakNits, 1.0f, 10000.0f);
+	peakNits = std::isfinite(peakNits) ? std::clamp(peakNits, 1.0f, 10000.0f) : 1000.0f;
 
 	// Detect if HDR parameters changed - if so, we need to reset FG history
 	// because frames in the history were encoded with different parameters
@@ -115,10 +145,13 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 	prevHDRActive = a_isHDR;
 	prevPeakNits = peakNits;
 
-	// Store HDR state atomically for the callback to access (may be read from async thread)
-	// Use seq_cst for both to ensure the callback sees both values consistently
-	hdrPeakNits.store(peakNits, std::memory_order_seq_cst);
-	isHDRActive.store(a_isHDR, std::memory_order_seq_cst);
+	// Expose legacy individual fields for diagnostics; the async callback must
+	// read a *single* packed snapshot to avoid pairing old nits with new HDR mode.
+	hdrPeakNits.store(peakNits, std::memory_order_release);
+	isHDRActive.store(a_isHDR, std::memory_order_release);
+	const std::uint64_t packedHDR = (static_cast<std::uint64_t>(a_isHDR) << 32) |
+		static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(peakNits));
+	hdrPackedState.store(packedHDR, std::memory_order_release);
 	// Do not clear a reset requested by a loading/camera discontinuity merely
 	// because HDR parameters happened to remain unchanged this frame.
 	if (hdrParamsChanged)
@@ -132,13 +165,13 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 		configParameters.frameGenerationCallback = [](ffxDispatchDescFrameGeneration* params, void* pUserCtx) -> ffxReturnCode_t {
 			// Tell FidelityFX the color space so it can properly interpolate. Fixes pixel smearing that occured with HDR on.
 			// PQ requires decoding to linear for correct motion interpolation
-			// Read atomically with seq_cst since this callback may run on async thread
-			bool hdrActive = FidelityFX::isHDRActive.load(std::memory_order_seq_cst);
+			const std::uint64_t packedHDR = FidelityFX::hdrPackedState.load(std::memory_order_acquire);
+			const bool hdrActive = (packedHDR >> 32) != 0u;
 			if (hdrActive) {
 				params->backbufferTransferFunction = FFX_API_BACKBUFFER_TRANSFER_FUNCTION_PQ;
-				// Set luminance range for PQ decoding (0 to peak nits)
+				// Both fields come from one atomic publication.
 				params->minMaxLuminance[0] = 0.0f;
-				params->minMaxLuminance[1] = FidelityFX::hdrPeakNits.load(std::memory_order_seq_cst);
+				params->minMaxLuminance[1] = std::bit_cast<float>(static_cast<std::uint32_t>(packedHDR));
 			} else {
 				params->backbufferTransferFunction = FFX_API_BACKBUFFER_TRANSFER_FUNCTION_SRGB;
 			}
@@ -193,6 +226,10 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 	// Register UI buffer with FidelityFX only when FG is active
 	// When paused, UI is composited in HDROutputCS to avoid flickering from inconsistent FidelityFX compositing
 	ffx::ConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12 uiConfig{};
+	if (a_useFrameGeneration && (!swapChain.uiBufferWrapped || !swapChain.uiBufferWrapped->resource)) {
+		latchFrameGenerationFailure("UI resource validation");
+		a_useFrameGeneration = false;
+	}
 	if (a_useFrameGeneration) {
 		uiConfig.uiResource = ffxApiGetResourceDX12(swapChain.uiBufferWrapped->resource.get());
 		// Use both premultiplied alpha and double buffering for consistent blending
@@ -209,6 +246,11 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 			latchFrameGenerationFailure("UI composition");
 	}
 
+	if (a_useFrameGeneration && frameGenerationSucceeded &&
+		(!swapChain.depthBufferShared12 || !swapChain.motionVectorBufferShared12 ||
+		 !swapChain.depthBufferShared12->resource || !swapChain.motionVectorBufferShared12->resource)) {
+		latchFrameGenerationFailure("guide validation");
+	}
 	if (a_useFrameGeneration && frameGenerationSucceeded) {
 		ffx::DispatchDescFrameGenerationPrepare dispatchParameters{};
 
@@ -277,8 +319,8 @@ void FidelityFX::Present(bool a_useFrameGeneration, bool a_isHDR)
 void FidelityFX::CreateFSRResources()
 {
 	// Prevent multiple allocations
-	if (fsrScratchBuffer) {
-		logger::warn("[FidelityFX] FSR resources already created, skipping allocation");
+	if (fsrContextCreated || fsrScratchBuffer) {
+		logger::debug("[FidelityFX] FSR resources already initialized or being allocated");
 		return;
 	}
 
@@ -331,14 +373,19 @@ void FidelityFX::CreateFSRResources()
 		fsrScratchBuffer = nullptr;
 		return;
 	}
+	fsrContextCreated = true;
 	logger::info("[FidelityFX] Created FSR3 context (Display: {}x{}, Render: {}x{})",
 		displayWidth, displayHeight, renderWidth, renderHeight);
 }
 
 void FidelityFX::DestroyFSRResources()
 {
-	if (ffxFsr3ContextDestroy(&fsrContext[0]) != FFX_OK)
-		logger::critical("[FidelityFX] Failed to destroy FSR3 context!");
+	if (fsrContextCreated) {
+		if (ffxFsr3ContextDestroy(&fsrContext[0]) != FFX_OK)
+			logger::error("[FidelityFX] Failed to destroy FSR3 context");
+		fsrContextCreated = false;
+		fsrContext[0] = {};
+	}
 
 	// Free the scratch buffer to prevent memory leak
 	if (fsrScratchBuffer) {
@@ -346,6 +393,7 @@ void FidelityFX::DestroyFSRResources()
 		fsrScratchBuffer = nullptr;
 	}
 
+	fsrUpscaleScratch = nullptr;
 	// Reset crash logging flag when resources are destroyed
 	fsrDispatchCrashLogged = false;
 }
@@ -357,7 +405,8 @@ FfxResource ffxGetResource(ID3D11Resource* dx11Resource,
 	FfxResource resource = {};
 	resource.resource = reinterpret_cast<void*>(const_cast<ID3D11Resource*>(dx11Resource));
 	resource.state = state;
-	resource.description = GetFfxResourceDescriptionDX11(dx11Resource);
+	if (dx11Resource)
+		resource.description = GetFfxResourceDescriptionDX11(dx11Resource);
 
 #ifdef _DEBUG
 	if (ffxResName) {
@@ -372,9 +421,19 @@ bool FidelityFX::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_d
 {
 	auto context = globals::d3d::context;
 	auto state = globals::state;
+	if (!fsrContextCreated || !context || !state || !globals::game::graphicsState ||
+		!globals::game::deltaTime || !globals::game::cameraNear || !globals::game::cameraFar ||
+		!a_upscalingTexture || !a_depth ||
+		!a_reactiveMask || !a_transparencyCompositionMask || !a_motionVectors)
+		return false;
 
 	float2 screenSize{ (float)globals::game::graphicsState->screenWidth, (float)globals::game::graphicsState->screenHeight };
 	auto renderSize = Util::ConvertToDynamic(screenSize);
+	if (!std::isfinite(renderSize.x) || !std::isfinite(renderSize.y) ||
+		renderSize.x < 1.0f || renderSize.y < 1.0f ||
+		screenSize.x < 1.0f || screenSize.y < 1.0f ||
+		renderSize.x > screenSize.x || renderSize.y > screenSize.y)
+		return false;
 
 	auto& imageReconstruction = globals::pipeline::imageReconstruction;
 	auto jitter = imageReconstruction.jitter;
@@ -384,11 +443,67 @@ bool FidelityFX::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_d
 
 	FfxFsr3DispatchUpscaleDescription dispatchParameters{};
 	dispatchParameters.commandList = ffxGetCommandListDX11(context);
-	dispatchParameters.color = ffxGetResource(a_upscalingTexture, L"FSR3_Input_OutputColor");
+	// FSR reads the reduced-resolution input while writing the full output.
+	// A separate full-resolution UAV is mandatory: the engine kMAIN color
+	// target cannot be both the dispatch input and output in the same pass.
+	winrt::com_ptr<ID3D11Texture2D> sourceTexture;
+	if (FAILED(a_upscalingTexture->QueryInterface(IID_PPV_ARGS(sourceTexture.put())))) {
+		if (state->frameAnnotations) state->EndPerfEvent();
+		return false;
+	}
+	D3D11_TEXTURE2D_DESC sourceDesc{};
+	sourceTexture->GetDesc(&sourceDesc);
+	if (!sourceDesc.Width || !sourceDesc.Height || sourceDesc.ArraySize != 1u ||
+		sourceDesc.MipLevels != 1u || sourceDesc.SampleDesc.Count != 1u) {
+		if (state->frameAnnotations) state->EndPerfEvent();
+		return false;
+	}
+	// Reuse the existing sharpener target only if its physical format, extent
+	// and UAV capabilities agree with the main target. Do not require it for FSR.
+	ID3D11Resource* outputResource = nullptr;
+	if (imageReconstruction.sharpenerTexture && imageReconstruction.sharpenerTexture->resource) {
+		auto* candidate = imageReconstruction.sharpenerTexture->resource.get();
+		winrt::com_ptr<ID3D11Texture2D> candidateTexture;
+		if (candidate != a_upscalingTexture &&
+			SUCCEEDED(candidate->QueryInterface(IID_PPV_ARGS(candidateTexture.put())))) {
+			D3D11_TEXTURE2D_DESC candidateDesc{};
+			candidateTexture->GetDesc(&candidateDesc);
+			if (candidateDesc.Width == sourceDesc.Width && candidateDesc.Height == sourceDesc.Height &&
+				candidateDesc.Format == sourceDesc.Format && candidateDesc.ArraySize == 1u &&
+				candidateDesc.MipLevels == 1u &&
+				(candidateDesc.BindFlags & D3D11_BIND_UNORDERED_ACCESS))
+				outputResource = candidate;
+		}
+	}
+	if (!outputResource) {
+		D3D11_TEXTURE2D_DESC scratchDesc = sourceDesc;
+		scratchDesc.Usage = D3D11_USAGE_DEFAULT;
+		scratchDesc.CPUAccessFlags = 0;
+		scratchDesc.MiscFlags = 0;
+		scratchDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+		bool mustRecreate = !fsrUpscaleScratch;
+		if (fsrUpscaleScratch) {
+			D3D11_TEXTURE2D_DESC previous{};
+			fsrUpscaleScratch->GetDesc(&previous);
+			mustRecreate = previous.Width != scratchDesc.Width ||
+				previous.Height != scratchDesc.Height || previous.Format != scratchDesc.Format;
+		}
+		if (mustRecreate) {
+			fsrUpscaleScratch = nullptr;
+			if (!globals::d3d::device ||
+				FAILED(globals::d3d::device->CreateTexture2D(&scratchDesc, nullptr, fsrUpscaleScratch.put()))) {
+				logger::error("[FidelityFX] FSR output UAV allocation failed; using spatial fallback");
+				if (state->frameAnnotations) state->EndPerfEvent();
+				return false;
+			}
+		}
+		outputResource = fsrUpscaleScratch.get();
+	}
+	dispatchParameters.color = ffxGetResource(a_upscalingTexture, L"FSR3_InputColor");
 	dispatchParameters.depth = ffxGetResource(a_depth, L"FSR3_InputDepth");
 	dispatchParameters.motionVectors = ffxGetResource(a_motionVectors, L"FSR3_InputMotionVectors");
 	dispatchParameters.exposure = ffxGetResource(nullptr, L"FSR3_InputExposure");
-	dispatchParameters.upscaleOutput = ffxGetResource(a_upscalingTexture, L"FSR3_OutputColor");
+	dispatchParameters.upscaleOutput = ffxGetResource(outputResource, L"FSR3_OutputColor", FFX_RESOURCE_STATE_UNORDERED_ACCESS);
 	dispatchParameters.reactive = ffxGetResource(a_reactiveMask, L"FSR3_InputReactiveMap");
 	dispatchParameters.transparencyAndComposition = ffxGetResource(a_transparencyCompositionMask, L"FSR3_TransparencyAndCompositionMap");
 
@@ -400,29 +515,31 @@ bool FidelityFX::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_d
 	dispatchParameters.jitterOffset.x = -jitter.x;
 	dispatchParameters.jitterOffset.y = -jitter.y;
 
-	dispatchParameters.frameTimeDelta = *globals::game::deltaTime * 1000.f;
+	const float delta = *globals::game::deltaTime;
+	dispatchParameters.frameTimeDelta = std::isfinite(delta) ? std::clamp(delta * 1000.0f, 0.1f, 1000.0f) : 16.67f;
 	dispatchParameters.cameraFar = *globals::game::cameraFar;
 	dispatchParameters.cameraNear = *globals::game::cameraNear;
 	dispatchParameters.enableSharpening = true;
-	dispatchParameters.sharpness = a_sharpness;
+	dispatchParameters.sharpness = std::isfinite(a_sharpness) ? std::clamp(a_sharpness, 0.0f, 1.0f) : 0.0f;
 	dispatchParameters.cameraFovAngleVertical = Util::GetVerticalFOVRad();
 	dispatchParameters.viewSpaceToMetersFactor = 0.01428222656f;
 	dispatchParameters.reset = a_resetHistory;
 	dispatchParameters.preExposure = 1.0f;
 	dispatchParameters.flags = 0;
 
-	bool evaluated = false;
-	__try {
-		evaluated = ffxFsr3ContextDispatchUpscale(&fsrContext[0], &dispatchParameters) == FFX_OK;
-		if (!evaluated)
-			logger::critical("[FidelityFX] Failed to dispatch imageReconstruction!");
-	} __except (EXCEPTION_EXECUTE_HANDLER) {
+	bool dispatchException = false;
+	const bool evaluated = DispatchFsr3Safely(&fsrContext[0], &dispatchParameters, &dispatchException);
+	if (dispatchException) {
 		if (!fsrDispatchCrashLogged) {
 			logger::critical("[FidelityFX] FSR3 dispatch crashed - another graphics injector may be interfering with swapchain or compute operations.");
 			fsrDispatchCrashLogged = true;
 		}
+	} else if (!evaluated) {
+		logger::critical("[FidelityFX] Failed to dispatch imageReconstruction!");
 	}
 
+	if (evaluated)
+		context->CopyResource(a_upscalingTexture, outputResource);
 	if (state->frameAnnotations)
 		state->EndPerfEvent();
 	return evaluated;

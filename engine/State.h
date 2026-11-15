@@ -71,6 +71,39 @@ public:
 	// Frame time tracking per shader type (in milliseconds)
 	float frameTimePerType[RE::BSShader::Type::Total + 1];      ///< Per-type frame time in milliseconds.
 	float smoothFrameTimePerType[RE::BSShader::Type::Total + 1]; ///< EMA-smoothed per-type frame time in milliseconds.
+	std::atomic<int64_t> nativeDirtyStateTicks{ 0 };
+	std::atomic<int64_t> pixlDirtyStateTicks{ 0 };
+	std::atomic<int64_t> beginTechniqueTicks{ 0 };
+	std::atomic<int64_t> lightingSetupBeforeTicks{ 0 };
+	std::atomic<int64_t> lightingSetupChainTicks{ 0 };
+	std::atomic<int64_t> lightingSetupAfterTicks{ 0 };
+	std::atomic<int64_t> nativeLightingSetupTicks{ 0 };
+	float smoothNativeDirtyStateMs = 0.0f;
+	float smoothPixlDirtyStateMs = 0.0f;
+	float smoothBeginTechniqueMs = 0.0f;
+	float smoothLightingSetupBeforeMs = 0.0f;
+	float smoothLightingSetupChainMs = 0.0f;
+	float smoothLightingSetupAfterMs = 0.0f;
+	float smoothNativeLightingSetupMs = 0.0f;
+	// These are between-SetDirtyStates CPU wall-time intervals, not GPU time.
+	// A maximum and count make intermittent stalls visible independently of
+	// the per-shader accumulated intervals or their nested hook timings.
+	static constexpr float kLongStateFlushIntervalMs = 16.67f;
+	float maxStateFlushIntervalThisFrameMs = 0.0f;
+	uint32_t longStateFlushIntervalsThisFrame = 0;
+	float smoothMaxStateFlushIntervalMs = 0.0f;
+	float smoothLongStateFlushIntervals = 0.0f;
+	void RecordDirtyStateTiming(int64_t nativeTicks, int64_t pixlTicks)
+	{
+		nativeDirtyStateTicks.fetch_add(nativeTicks, std::memory_order_relaxed);
+		pixlDirtyStateTicks.fetch_add(pixlTicks, std::memory_order_relaxed);
+	}
+	void RecordLightingSetupTiming(int64_t beforeTicks, int64_t chainTicks, int64_t afterTicks)
+	{
+		lightingSetupBeforeTicks.fetch_add(beforeTicks, std::memory_order_relaxed);
+		lightingSetupChainTicks.fetch_add(chainTicks, std::memory_order_relaxed);
+		lightingSetupAfterTicks.fetch_add(afterTicks, std::memory_order_relaxed);
+	}
 
 	// Timing state for per-type frame time tracking using QueryPerformanceCounter
 	LARGE_INTEGER frameTimingFrequency;
@@ -394,6 +427,9 @@ public:
 	PermutationCB permutationDataPrevious{};
 
 	Util::FrameChecker frameChecker;
+	// High-level scene/weather update ownership: per rendered frame, not per draw.
+	// Render-thread only; UINT32_MAX forces the first update even at frame zero.
+	std::uint32_t lastSceneWeatherUpdateFrame = UINT32_MAX;
 	uint frameCount = 0;
 	// Thread-safe mirror of frameCount maintained by the render thread.
 	// Off-thread readers (MCP listener, future telemetry) must read this

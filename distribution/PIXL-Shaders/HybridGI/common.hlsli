@@ -157,7 +157,9 @@ float2 filterNaN(float2 v) { return float2(filterNaN(v.x), filterNaN(v.y)); }
 float3 filterNaN(float3 v) { return float3(filterNaN(v.x), filterNaN(v.y), filterNaN(v.z)); }
 float4 filterNaN(float4 v) { return float4(filterNaN(v.x), filterNaN(v.y), filterNaN(v.z), filterNaN(v.w)); }
 
-float filterInf(float v) { return isinf(v) ? 0 : v; }
+// Use the IEEE-754 exponent/mantissa directly: FXC's strict mode folds
+// isinf(1.#INF) and rejects the resulting infinity constant as a warning.
+float filterInf(float v) { return ((asuint(v) & 0x7fffffffu) == 0x7f800000u) ? 0.0f : v; }
 float2 filterInf(float2 v) { return float2(filterInf(v.x), filterInf(v.y)); }
 float3 filterInf(float3 v) { return float3(filterInf(v.x), filterInf(v.y), filterInf(v.z)); }
 float4 filterInf(float4 v) { return float4(filterInf(v.x), filterInf(v.y), filterInf(v.z), filterInf(v.w)); }
@@ -174,7 +176,9 @@ half2 filterNaN(half2 v) { return half2(filterNaN(v.x), filterNaN(v.y)); }
 half3 filterNaN(half3 v) { return half3(filterNaN(v.x), filterNaN(v.y), filterNaN(v.z)); }
 half4 filterNaN(half4 v) { return half4(filterNaN(v.x), filterNaN(v.y), filterNaN(v.z), filterNaN(v.w)); }
 
-half filterInf(half v) { return isinf(v) ? (half)0 : v; }
+// The maximum finite IEEE binary16 value is 65504. Comparing after promotion
+// catches half-precision infinities while avoiding FXC's redundant-isinf warning.
+half filterInf(half v) { return abs((float)v) > 65504.0f ? (half)0 : v; }
 half2 filterInf(half2 v) { return half2(filterInf(v.x), filterInf(v.y)); }
 half3 filterInf(half3 v) { return half3(filterInf(v.x), filterInf(v.y), filterInf(v.z)); }
 half4 filterInf(half4 v) { return half4(filterInf(v.x), filterInf(v.y), filterInf(v.z), filterInf(v.w)); }
@@ -312,6 +316,23 @@ float3 ViewToWorldPosition(const float3 pos, const float4x4 invView)
 float3 ViewToWorldVector(const float3 vec, const float4x4 invView)
 {
 	return mul((float3x3)invView, vec);
+}
+
+// Screen-space tracing uses positive depth; Skyrim's camera matrices and
+// GBuffer normals use negative forward Z. Reflect only Z at this boundary.
+float3 ToTraceView(float3 engineView)
+{
+	return engineView * float3(1, 1, -1);
+}
+
+float3 TraceViewToWorldPosition(float3 position, float4x4 inverseView)
+{
+	return ViewToWorldPosition(ToTraceView(position), inverseView);
+}
+
+float3 TraceViewToWorldVector(float3 direction, float4x4 inverseView)
+{
+	return ViewToWorldVector(ToTraceView(direction), inverseView);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

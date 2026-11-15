@@ -7,7 +7,7 @@
 Lighting, materials, atmosphere and motion—working together to bring Skyrim into focus.</p>
 
 <p align="center">
-  <a href="https://github.com/pixlmusic/PIXL-Renderer/tree/v1.0.9.0"><img alt="Version 1.0.9.0" src="https://img.shields.io/badge/version-1.0.9.0-75D9E8?style=for-the-badge&labelColor=17232B"></a>
+  <a href="https://github.com/pixlmusic/PIXL-Renderer/tree/v1.1.0.0"><img alt="Version 1.1.0.0" src="https://img.shields.io/badge/version-1.1.0.0-75D9E8?style=for-the-badge&labelColor=17232B"></a>
   <a href="https://github.com/pixlmusic/PIXL-Renderer/actions/workflows/portable-validation.yml"><img alt="Portable validation" src="https://img.shields.io/github/actions/workflow/status/pixlmusic/PIXL-Renderer/portable-validation.yml?branch=main&label=validation&style=for-the-badge&labelColor=17232B"></a>
   <img alt="Skyrim Special Edition · DirectX 11" src="https://img.shields.io/badge/Skyrim%20SE-DirectX%2011-9CC8D0?style=for-the-badge&labelColor=17232B">
   <a href="COPYING"><img alt="GPL 3.0 or later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-A8C7B8?style=for-the-badge&labelColor=17232B"></a>
@@ -39,7 +39,7 @@ Lighting, materials, atmosphere and motion—working together to bring Skyrim in
 
 PIXL brings lighting, materials, atmosphere, water, terrain, characters and camera tools together in one native **DirectX 11 + SKSE** renderer. The goal is a more coherent, physically convincing image that still feels like Skyrim.
 
-> **CURRENT CHECKPOINT · 1.0.9.0**
+> **CURRENT CHECKPOINT · 1.1.0.0**
 > Live testing targets **Steam Skyrim SE 1.6.1170**. The installer includes a preloaded shader cache; missing or invalidated permutations compile locally. Compatibility still depends on the exact game executable, hardware and mod setup—see [Compatibility & troubleshooting](docs/MOD_COMPATIBILITY.md).
 >
 > **Live-test note:** irradiance-cache flicker is under investigation. Results can vary by scene; this checkpoint does not claim the issue is resolved in every situation.
@@ -49,7 +49,7 @@ PIXL brings lighting, materials, atmosphere, water, terrain, characters and came
   <sub>One coordinated renderer, with user-controlled reconstruction and quality.</sub>
 </p>
 
-## 1.0.9 highlights
+## 1.1.0 highlights
 
 | System | What changed |
 |---|---|
@@ -61,7 +61,7 @@ PIXL brings lighting, materials, atmosphere, water, terrain, characters and came
 
 Changed permutations can compile during first launch. Let startup compilation finish before judging performance or image quality. Existing user settings remain in `UserGraphics.json` and take precedence over defaults.
 
-See the [1.0.9 changelog](docs/CHANGELOG.md), [release scorecard](docs/release_polish/RELEASE_SCORECARD.md), and [mod compatibility guide](docs/MOD_COMPATIBILITY.md) for current details and validation limits.
+See the [1.1.0 changelog](docs/CHANGELOG.md), [release scorecard](docs/release_polish/RELEASE_SCORECARD.md), and [mod compatibility guide](docs/MOD_COMPATIBILITY.md) for current details and validation limits.
 Learn how to [save, install and share renderer presets](docs/RENDER_PRESETS.md).
 
 ## What makes PIXL different?
@@ -164,7 +164,7 @@ This is a third-party experimental runtime, not an NVIDIA-approved PIXL download
 - A DirectX 11-capable GPU. DLSS/DLAA require supported NVIDIA hardware and an available runtime.
 - Borderless/windowed mode for frame generation and the optional Neural Rendering sidecar.
 
-The current 1.0.9 live-test target is **Steam Skyrim SE 1.6.1170**. Do not infer compatibility with another executable from its SE/AE label; use the exact runtime notes in [mod compatibility and troubleshooting](docs/MOD_COMPATIBILITY.md). That guide also covers assets, weather, grass interaction, WindowLife and ENB/ReShade distinctions.
+The current 1.1.0 live-test target is **Steam Skyrim SE 1.6.1170**. Do not infer compatibility with another executable from its SE/AE label; use the exact runtime notes in [mod compatibility and troubleshooting](docs/MOD_COMPATIBILITY.md). That guide also covers assets, weather, grass interaction, WindowLife and ENB/ReShade distinctions.
 
 ### Install and first launch
 

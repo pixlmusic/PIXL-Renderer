@@ -34,6 +34,8 @@ bool LightIntersectsCluster(float3 position, float radiusSquared, ClusterAABB cl
 	uint visibleLightCount = 0;
 	uint4 contactLightIndices = 0xffffffffu;
 	float4 contactLightScores = -1.0f;
+	uint4 sdfLightIndices = 0xffffffffu;
+	float4 sdfLightScores = -1.0f;
 
 	uint clusterIndex = dispatchThreadId.x +
 	                    dispatchThreadId.y * ClusterSize.x +
@@ -55,37 +57,63 @@ bool LightIntersectsCluster(float3 position, float radiusSquared, ClusterAABB cl
 		{
 			visibleLightCount++;
 
-			// Select once per cluster instead of rescanning every light in every
-			// material pixel. The exact per-pixel pass later compares these two
-			// candidates against all strict lights.
-			float3 toLight = positionVS - clusterCenter;
-			float luminance = dot(max(light.color, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
-			float score = luminance * max(light.fade, 0.0f) /
-				max(dot(toLight, toLight) + max(light.sizeBias, 1.0f), 1.0f);
-			if (score > contactLightScores.x) {
-				contactLightScores.w = contactLightScores.z;
-				contactLightIndices.w = contactLightIndices.z;
-				contactLightScores.z = contactLightScores.y;
-				contactLightIndices.z = contactLightIndices.y;
-				contactLightScores.y = contactLightScores.x;
-				contactLightIndices.y = contactLightIndices.x;
-				contactLightScores.x = score;
-				contactLightIndices.x = i;
-			} else if (score > contactLightScores.y) {
-				contactLightScores.w = contactLightScores.z;
-				contactLightIndices.w = contactLightIndices.z;
-				contactLightScores.z = contactLightScores.y;
-				contactLightIndices.z = contactLightIndices.y;
-				contactLightScores.y = score;
-				contactLightIndices.y = i;
-			} else if (score > contactLightScores.z) {
-				contactLightScores.w = contactLightScores.z;
-				contactLightIndices.w = contactLightIndices.z;
-				contactLightScores.z = score;
-				contactLightIndices.z = i;
-			} else if (score > contactLightScores.w) {
-				contactLightScores.w = score;
-				contactLightIndices.w = i;
+			// Rank geometric SDF candidates independently, including mapped lights.
+			// The lighting shader only applies a completed SDF result where it adds
+			// visibility information to the native result.
+			float3 sdfToLight = positionVS - clusterCenter;
+			float sdfLuminance = dot(max(light.color, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
+			float sdfScore = sdfLuminance * max(light.fade, 0.0f) /
+				max(dot(sdfToLight, sdfToLight) + max(light.sizeBias, 1.0f), 1.0f);
+			if (sdfScore > sdfLightScores.x) {
+				sdfLightScores.w = sdfLightScores.z; sdfLightIndices.w = sdfLightIndices.z;
+				sdfLightScores.z = sdfLightScores.y; sdfLightIndices.z = sdfLightIndices.y;
+				sdfLightScores.y = sdfLightScores.x; sdfLightIndices.y = sdfLightIndices.x;
+				sdfLightScores.x = sdfScore; sdfLightIndices.x = i;
+			} else if (sdfScore > sdfLightScores.y) {
+				sdfLightScores.w = sdfLightScores.z; sdfLightIndices.w = sdfLightIndices.z;
+				sdfLightScores.z = sdfLightScores.y; sdfLightIndices.z = sdfLightIndices.y;
+				sdfLightScores.y = sdfScore; sdfLightIndices.y = i;
+			} else if (sdfScore > sdfLightScores.z) {
+				sdfLightScores.w = sdfLightScores.z; sdfLightIndices.w = sdfLightIndices.z;
+				sdfLightScores.z = sdfScore; sdfLightIndices.z = i;
+			} else if (sdfScore > sdfLightScores.w) {
+				sdfLightScores.w = sdfScore; sdfLightIndices.w = i;
+			}
+
+			// Rank all influential lights. A mapped light receives a short contact
+			// refinement only where its current shadow-map result is fully lit.
+			{
+				// Select once per cluster instead of rescanning every light in every
+				// material pixel. The per-pixel pass then ranks these candidates.
+				float3 toLight = positionVS - clusterCenter;
+				float luminance = dot(max(light.color, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
+				float score = luminance * max(light.fade, 0.0f) /
+					max(dot(toLight, toLight) + max(light.sizeBias, 1.0f), 1.0f);
+				if (score > contactLightScores.x) {
+					contactLightScores.w = contactLightScores.z;
+					contactLightIndices.w = contactLightIndices.z;
+					contactLightScores.z = contactLightScores.y;
+					contactLightIndices.z = contactLightIndices.y;
+					contactLightScores.y = contactLightScores.x;
+					contactLightIndices.y = contactLightIndices.x;
+					contactLightScores.x = score;
+					contactLightIndices.x = i;
+				} else if (score > contactLightScores.y) {
+					contactLightScores.w = contactLightScores.z;
+					contactLightIndices.w = contactLightIndices.z;
+					contactLightScores.z = contactLightScores.y;
+					contactLightIndices.z = contactLightIndices.y;
+					contactLightScores.y = score;
+					contactLightIndices.y = i;
+				} else if (score > contactLightScores.z) {
+					contactLightScores.w = contactLightScores.z;
+					contactLightIndices.w = contactLightIndices.z;
+					contactLightScores.z = score;
+					contactLightIndices.z = i;
+				} else if (score > contactLightScores.w) {
+					contactLightScores.w = score;
+					contactLightIndices.w = i;
+				}
 			}
 			if (visibleLightCount >= MAX_CLUSTER_LIGHTS)
 				break;
@@ -112,7 +140,8 @@ bool LightIntersectsCluster(float3 position, float radiusSquared, ClusterAABB cl
 
 	LightGrid output = {
 		offset, visibleLightCount, contactLightIndices.x, contactLightIndices.y,
-		contactLightIndices.z, contactLightIndices.w, 0u, 0u
+		contactLightIndices.z, contactLightIndices.w,
+		sdfLightIndices.x, sdfLightIndices.y, sdfLightIndices.z, sdfLightIndices.w, 0u, 0u
 	};
 
 	lightGrid[clusterIndex] = output;

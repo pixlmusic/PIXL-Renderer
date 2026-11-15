@@ -817,6 +817,12 @@ PS_OUTPUT main(PS_INPUT input)
 				pixlLocalEffectScale *
 				light.fade *
 				Color::EffectLightingMult();
+			float localShadowVisibility = 1.0f;
+			if (light.lightFlags & RadiantGrid::LightFlags::LocalShadow) {
+				localShadowVisibility = RadiantGrid::GetLocalShadow(LinearSampler, light.localShadowIndex,
+					input.WorldPosition.xyz, FrameBuffer::CameraPosAdjust.xyz, localLightDir, false,
+					Random::InterleavedGradientNoise(input.Position.xy, SharedData::FrameCount));
+			}
 
 #			if defined(SOFT) && !defined(ADDBLEND)
 			// Soft smoke receives nearby torches/fires as participating-media light.
@@ -824,7 +830,7 @@ PS_OUTPUT main(PS_INPUT input)
 			// lights retain a conservative unresolved visibility rather than being
 			// deleted completely.
 			float unresolvedShadowVisibility =
-				(light.lightFlags & RadiantGrid::LightFlags::Shadow) ? 0.48f : 1.0f;
+				(light.lightFlags & RadiantGrid::LightFlags::Shadow) ? 0.48f : localShadowVisibility;
 			float3 particleViewDir = normalize(-input.WorldPosition.xyz);
 
 			// Stable spatial variation prevents every plume from carrying the same
@@ -847,8 +853,9 @@ PS_OUTPUT main(PS_INPUT input)
 #			else
 			// Preserve previous behavior for non-soft lit effects: shadow lights
 			// remain omitted because exact per-pixel point shadowing is unavailable.
-			if (light.lightFlags & RadiantGrid::LightFlags::Shadow)
+			if ((light.lightFlags & RadiantGrid::LightFlags::Shadow) && !(light.lightFlags & RadiantGrid::LightFlags::LocalShadow))
 				continue;
+			lightColor *= localShadowVisibility;
 #			endif
 
 			propertyColor += lightColor;

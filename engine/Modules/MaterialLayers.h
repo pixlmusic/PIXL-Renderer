@@ -61,7 +61,10 @@ struct MaterialLayers : RenderModule
 		uint EnableShadows = 1;
 		uint EnableParallaxWarpingFix = 1;
 
-		uint pad[2]{};
+		// In Auto mode the lighting shader enables the Complex Material path only
+		// when the environment-mask alpha matches the authored height signature.
+		uint ComplexMaterialAutoDetection = 1;
+		uint pad{};
 	};
 	STATIC_ASSERT_ALIGNAS_16(Settings);
 	static_assert(sizeof(Settings) == 32, "MaterialLayers::Settings must remain the StableABI 32-byte block.");

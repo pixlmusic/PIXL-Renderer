@@ -43,25 +43,25 @@ void readHistory(
 	inout half2 prev_visibility_confidence, inout float bent_direction_wsum,
 	inout half2 strongest_bent_encoded, inout float strongest_bent_weight, inout float wsum)
 {
-	const float2 uv = (pixCoord + .5) * RCP_OUT_FRAME_DIM;
-	const float2 screen_pos = uv;
-	if (any(screen_pos < 0) || any(screen_pos > 1))
+	// Bilinear taps can lie one pixel outside the previous viewport. Test the
+	// integer address before *any* texture read; UV-only tests are insufficient
+	// if the logical output extent is not an exact integer multiple of the scale.
+	if (any(pixCoord < int2(0, 0)) || any(pixCoord >= int2(OUT_FRAME_DIM)))
 		return;
+	const float2 screen_pos = (float2(pixCoord) + 0.5f) * RCP_OUT_FRAME_DIM;
 
 	float prev_depth;
 	float2 prev_normal_encoded;
 	UnpackPrevGeometry(srcPrevGeo[pixCoord], prev_depth, prev_normal_encoded);
 	const float3 prev_normal = GBuffer::DecodeNormal(prev_normal_encoded);  // stored in world space
 
-	// Early reject: skip bilinear taps on a different surface before the
-	// expensive world-space reconstruction.  Use a wider threshold than the
-	// world-space check to avoid rejecting valid taps displaced by parallax
-	// (e.g. camera rotation).
-	if (abs(curr_depth - prev_depth) > curr_depth * DepthDisocclusion * 3)
+	// View depth changes during rotation even for the same world-space surface.
+	// Validate the stored sample here, then use world position below.
+	if (!isfinite(prev_depth) || prev_depth <= FP_Z)
 		return;
 
 	float3 prev_pos = ScreenToViewPosition(screen_pos, prev_depth);
-	prev_pos = ViewToWorldPosition(prev_pos, PrevInvViewMat) + FrameBuffer::CameraPreviousPosAdjust.xyz;
+	prev_pos = TraceViewToWorldPosition(prev_pos, PrevInvViewMat) + FrameBuffer::CameraPreviousPosAdjust.xyz;
 
 	float3 delta_pos = curr_pos - prev_pos;
 	float normal_prod = saturate(dot(curr_normal, prev_normal));
@@ -94,6 +94,10 @@ void readHistory(
 };
 
 [numthreads(8, 8, 1)] void main(const uint2 pixCoord : SV_DispatchThreadID) {
+	// The C++ dispatch rounds up in 8x8 groups; skip padded threads before
+	// they access shared ping-pong history or write outside the active viewport.
+	if (any(pixCoord >= uint2(OUT_FRAME_DIM)))
+		return;
 
 	const float2 uv = (pixCoord + .5) * RCP_OUT_FRAME_DIM;
 	const float2 screen_pos = uv;
@@ -118,9 +122,12 @@ void readHistory(
 
 	const float curr_depth = READ_DEPTH(srcCurrDepth, pixCoord);
 
-	if (curr_depth < FP_Z) {
+	if (!isfinite(curr_depth) || curr_depth <= FP_Z) {
 		outRadianceDisocc[pixCoord] = half3(0, 0, 0);
 		outAccumFrames[pixCoord] = 1.0 / 255.0;
+		// Always initialize the AO UAV too: reusing a ping-pong history target
+		// here previously retained invalid foreground/sky occlusion.
+		outRemappedAo[pixCoord] = 0.0f;
 		outRemappedIlY[pixCoord] = half4(0, 0, 0, 0);
 		outRemappedIlCoCg[pixCoord] = half2(0, 0);
 		outRemappedPrevGISpecular[pixCoord] = 0.0;
@@ -133,7 +140,7 @@ void readHistory(
 		float3 curr_normal = GBuffer::DecodeNormal(FULLRES_LOAD(srcCurrNormal, pixCoord, FullFrameTextureUV(screen_pos), samplerLinearClamp).xy);
 		curr_normal = normalize(ViewToWorldVector(curr_normal, FrameBuffer::CameraViewInverse));
 		float3 curr_pos = ScreenToViewPosition(screen_pos, curr_depth);
-		curr_pos = ViewToWorldPosition(curr_pos, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
+		curr_pos = TraceViewToWorldPosition(curr_pos, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
 
 		float2 prev_px_coord = prev_uv * OUT_FRAME_DIM;
 		int2 prev_px_lu = floor(prev_px_coord - 0.5);
@@ -212,6 +219,16 @@ void readHistory(
 		float acceptedHistory = saturate(wsum * 4.0f);
 		prevAccum = min(prevAccum,
 			lerp((float)MaxAccumFrames, responsiveHistory, acceptedHistory));
+
+		// Keep history on moving surfaces, but shorten its convergence window as
+		// reprojection travels farther. A fully settled pixel still uses the
+		// configured history length; fast camera/object motion refreshes over
+		// roughly eight frames instead of carrying stale GI until a hard rejection.
+		float motionPixels = length((prev_screen_pos - screen_pos) * float2(OUT_FRAME_DIM));
+		float motionResponse = smoothstep(0.75f, 5.0f, motionPixels);
+		float motionHistoryCap = lerp((float)MaxAccumFrames,
+			min((float)MaxAccumFrames, 8.0f), motionResponse);
+		prevAccum = min(prevAccum, motionHistoryCap);
 	}
 
 	accum_frames = max(1, min(prevAccum + 1, MaxAccumFrames));

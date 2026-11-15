@@ -135,15 +135,15 @@ void WorkshopToolsRenderer::RenderLoggingSection()
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T("menu.advanced.compiler_threads_tooltip",
 							  "Number of threads used to compile shaders at startup. "
-							  "Defaults to all logical cores minus one for OS headroom (E-cores included). "
-							  "Higher values finish compilation faster but may make the system less responsive."));
+							  "Defaults to about 83% of the available high-performance logical cores. "
+							  "The worker pool applies changes on the next launch. More threads can reduce throughput on large Lighting shaders when memory bandwidth is saturated."));
 	}
 	ImGui::SliderInt(T("menu.advanced.background_compiler_threads", "Background Compiler Threads"), &shaderCache->backgroundCompilationThreadCount, 1, maxCompilerThreads);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text("%s", T("menu.advanced.background_compiler_threads_tooltip",
 							  "Number of threads used to compile shaders during gameplay. "
 							  "Defaults to half of performance cores to avoid impacting the render thread. "
-							  "Higher values finish compilation faster but may cause stuttering."));
+							  "The worker pool applies changes on the next launch. Higher values may finish sooner but can cause stuttering."));
 	}
 
 	ImGui::Columns(2, nullptr, false);

@@ -10,6 +10,9 @@ struct ID3D12Resource;
 
 /**
  * Optional, experimental NVIDIA DLSS Neural Rendering bridge.
+ * Retains PIXL's existing short-lived NGX module-path compatibility scope
+ * around vendor calls. This is a private-runtime integration and must be
+ * tested with the supported NVIDIA DLL versions on Windows.
  *
  * The runtime is discovered dynamically and all work is recorded on PIXL's
  * existing DX12 sidecar command list.  A missing or incompatible DLL therefore

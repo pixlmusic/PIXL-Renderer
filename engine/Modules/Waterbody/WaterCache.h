@@ -8,6 +8,7 @@
 #include <thread>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <string>
 #include <chrono>
 
@@ -90,7 +91,7 @@ public:
 	/** @brief Deletes existing caches, regenerates, and reloads them. */
 	bool RegenerateCaches();
 	/** @brief Generates disk caches for all valid worldspaces asynchronously. */
-	bool GenerateCaches();
+	bool GenerateCaches(bool a_missingOnly = false);
 
 	/** @brief Returns whether an asynchronous cache build is currently running. */
 	bool IsBuildRunning() const { return async.running.load(); }
@@ -240,6 +241,7 @@ private:
 	using CacheMap = std::unordered_map<std::string, std::shared_ptr<RuntimeCache>>;
 
 	std::atomic<std::shared_ptr<const CacheMap>> cacheMap{ std::make_shared<CacheMap>() };
+	std::unordered_set<std::string> missingWorldspaceCaches;
 
 	// Guards currentCache/currentWorldSpace against concurrent terrain-streaming and cache-reload threads.
 	std::mutex currentCacheMutex;

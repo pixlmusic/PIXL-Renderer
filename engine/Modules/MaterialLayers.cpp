@@ -13,7 +13,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	EnableTerrain,
 	EnableHeightBlending,
 	EnableShadows,
-	EnableParallaxWarpingFix)
+	EnableParallaxWarpingFix,
+	ComplexMaterialAutoDetection)
 
 // TuningSettings has 76 serialized members. The nlohmann convenience
 // macro is intentionally not used here: its variadic FOR_EACH expansion is
@@ -382,12 +383,16 @@ void MaterialLayers::DrawSettings()
 	ImGui::TextWrapped("Authored height maps take priority. Synthetic relief adds depth where compatible authored data is unavailable.");
 	ImGui::Separator();
 	if (ImGui::TreeNodeEx(T(TKEY("complex_material"), "Complex Material"), ImGuiTreeNodeFlags_DefaultOpen)) {
-		Util::UIntCheckbox(T(TKEY("enable_complex_material"), "Enable Complex Material"), &settings.EnableComplexMaterial);
+		static constexpr const char* complexMaterialModes[] = { "Off", "Auto Detect", "Always On" };
+		int complexMaterialMode = settings.EnableComplexMaterial == 0u ? 0 :
+			(settings.ComplexMaterialAutoDetection != 0u ? 1 : 2);
+		if (ImGui::Combo(T(TKEY("enable_complex_material"), "Complex Material Mode"),
+			&complexMaterialMode, complexMaterialModes, static_cast<int>(std::size(complexMaterialModes)))) {
+			settings.EnableComplexMaterial = complexMaterialMode == 0 ? 0u : 1u;
+			settings.ComplexMaterialAutoDetection = complexMaterialMode == 1 ? 1u : 0u;
+		}
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", T(TKEY("enable_complex_material_tooltip"),
-								  "Enables support for the Complex Material specification which makes use of the environment mask. "
-								  "This includes parallax, as well as more realistic metals and specular reflections. "
-								  "May lead to some warped textures on modded content which have an invalid alpha channel in their environment mask. "));
+			ImGui::TextWrapped("Auto Detect reads authored Complex Material data from each eligible environment mask. Ordinary masks stay on Skyrim's normal material path. Always On preserves legacy interpretation for unusual packs; Off disables Complex Material support.");
 		}
 
 		ImGui::Spacing();

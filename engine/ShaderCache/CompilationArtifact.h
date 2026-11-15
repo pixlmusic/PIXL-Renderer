@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -114,6 +115,7 @@ class CompilationArtifacts
     {
         ID3DInclude& inner;
         Hash& hash;
+        std::vector<std::pair<std::string, Digest>> opened;
         RecordingInclude(ID3DInclude& resolver, Hash& digest) : inner(resolver), hash(digest) {}
         HRESULT Open(D3D_INCLUDE_TYPE type, LPCSTR name, LPCVOID parent, LPCVOID* data, UINT* size) override
         {
@@ -122,6 +124,7 @@ class CompilationArtifacts
                 hash.Field(name ? name : "");
                 hash.Add(&hr, sizeof(hr));
                 if (SUCCEEDED(hr) && *size) hash.Field(std::string_view(static_cast<const char*>(*data), *size));
+                if (SUCCEEDED(hr)) opened.emplace_back(name ? name : "", HashBytes(*data, *size));
             } catch (...) {
                 if (SUCCEEDED(hr)) inner.Close(*data);
                 return E_FAIL;
@@ -165,6 +168,96 @@ class CompilationArtifacts
         DeleteFileW(temp.c_str());
         return false;
     }
+    // A validated stage can skip FXC preprocessing on later launches. The
+    // request covers root bytes, macros, compiler and flags; each opened include
+    // is checked by content before the original identity/payload pair is read.
+    static void WriteFastIndex(const std::filesystem::path& path, const Digest& request,
+        const Digest& artifact, const std::vector<std::pair<std::string, Digest>>& includes)
+    {
+        if (includes.size() > 256) return;
+        // FXC can open the same include several times for one permutation.
+        // Validate each distinct file once on later launches. If it changed
+        // during preprocessing, the fast index cannot represent that snapshot.
+        std::unordered_map<std::string, Digest> unique;
+        for (const auto& [name, digest] : includes) {
+            if (name.empty() || name.size() > 1024) return;
+            const auto [it, inserted] = unique.emplace(name, digest);
+            if (!inserted && it->second != digest) return;
+        }
+        std::vector<char> bytes;
+        auto append = [&](const void* data, size_t size) {
+            const auto* first = static_cast<const char*>(data);
+            bytes.insert(bytes.end(), first, first + size);
+        };
+        const uint32_t magic = 0x46415850; // PXAF
+        const uint32_t version = 1;
+        const uint32_t count = static_cast<uint32_t>(unique.size());
+        append(&magic, sizeof(magic)); append(&version, sizeof(version));
+        append(request.data(), request.size()); append(artifact.data(), artifact.size());
+        append(&count, sizeof(count));
+        for (const auto& [name, digest] : unique) {
+            const uint32_t length = static_cast<uint32_t>(name.size());
+            append(&length, sizeof(length)); append(name.data(), name.size());
+            append(digest.data(), digest.size());
+        }
+        AtomicWrite(path.wstring() + L".fast", bytes.data(), bytes.size());
+    }
+    bool TryFastArtifact(const std::filesystem::path& path, const Digest& request,
+        ID3DInclude& include, Blob& result, const std::string& includeRoot, uint64_t epoch)
+    {
+        try {
+        std::vector<char> bytes;
+        if (!Read(path.wstring() + L".fast", bytes) || bytes.size() < 76) return false;
+        size_t offset = 0;
+        auto take = [&](void* out, size_t size) {
+            if (size > bytes.size() - offset) return false;
+            memcpy(out, bytes.data() + offset, size);
+            offset += size;
+            return true;
+        };
+        uint32_t magic = 0, version = 0, count = 0;
+        Digest savedRequest{}, artifact{};
+        if (!take(&magic, 4) || !take(&version, 4) || magic != 0x46415850 || version != 1 ||
+            !take(savedRequest.data(), savedRequest.size()) || savedRequest != request ||
+            !take(artifact.data(), artifact.size()) || !take(&count, 4) || count > 256) return false;
+        for (uint32_t i = 0; i < count; ++i) {
+            uint32_t length = 0;
+            if (!take(&length, 4) || !length || length > 1024 || length > bytes.size() - offset) return false;
+            std::string name(bytes.data() + offset, length);
+            offset += length;
+            Digest expected{};
+            if (!take(expected.data(), expected.size())) return false;
+            Digest actual{};
+            const auto memoKey = includeRoot.empty() ? std::string{} : includeRoot + '\n' + name;
+            bool memoHit = false;
+            if (!memoKey.empty()) {
+                std::shared_lock lock(includeMemoMutex);
+                const auto it = includeMemo.find(memoKey);
+                if (it != includeMemo.end() && it->second.generation == epoch) {
+                    actual = it->second.digest;
+                    memoHit = true;
+                }
+            }
+            if (memoHit) {
+                includeMemoHits.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                LPCVOID data = nullptr;
+                UINT size = 0;
+                if (FAILED(include.Open(D3D_INCLUDE_LOCAL, name.c_str(), nullptr, &data, &size))) return false;
+                try { actual = HashBytes(data, size); }
+                catch (...) { include.Close(data); throw; }
+                include.Close(data);
+                includeReads.fetch_add(1, std::memory_order_relaxed);
+                if (!memoKey.empty() && epoch == Generation()) {
+                    std::unique_lock lock(includeMemoMutex);
+                    includeMemo[memoKey] = { epoch, actual };
+                }
+            }
+            if (actual != expected) return false;
+        }
+        return offset == bytes.size() && ReadArtifact(path, artifact, result);
+        } catch (...) { return false; }
+    }
     struct Bucket
     {
         std::mutex mutex;
@@ -204,6 +297,12 @@ class CompilationArtifacts
     std::atomic<uint64_t> diskHits{};
     std::atomic<uint64_t> actualCompiles{};
     std::atomic<uint64_t> failures{};
+    struct MemoDigest { uint64_t generation; Digest digest; };
+    std::shared_mutex includeMemoMutex;
+    std::unordered_map<std::string, MemoDigest> includeMemo;
+    std::atomic<uint64_t> fastArtifactHits{};
+    std::atomic<uint64_t> includeReads{};
+    std::atomic<uint64_t> includeMemoHits{};
     std::shared_mutex publication;
 
 public:
@@ -219,6 +318,9 @@ public:
         uint64_t diskHits{};
         uint64_t actualCompiles{};
         uint64_t failures{};
+        uint64_t fastArtifactHits{};
+        uint64_t includeReads{};
+        uint64_t includeMemoHits{};
     };
 
     std::shared_lock<std::shared_mutex> LockPublication() { return std::shared_lock(publication); }
@@ -230,15 +332,24 @@ public:
             preprocessingCalls.load(std::memory_order_relaxed), preprocessingNanoseconds.load(std::memory_order_relaxed),
             compilerNanoseconds.load(std::memory_order_relaxed), preprocessedBytes.load(std::memory_order_relaxed),
             inMemoryHits.load(std::memory_order_relaxed), diskHits.load(std::memory_order_relaxed),
-            actualCompiles.load(std::memory_order_relaxed), failures.load(std::memory_order_relaxed) };
+            actualCompiles.load(std::memory_order_relaxed), failures.load(std::memory_order_relaxed),
+            fastArtifactHits.load(std::memory_order_relaxed), includeReads.load(std::memory_order_relaxed),
+            includeMemoHits.load(std::memory_order_relaxed) };
     }
-    void Invalidate() { std::unique_lock lock(publication); generation.fetch_add(1, std::memory_order_acq_rel); }
+    void Invalidate()
+    {
+        std::unique_lock lock(publication);
+        generation.fetch_add(1, std::memory_order_acq_rel);
+        std::unique_lock memoLock(includeMemoMutex);
+        includeMemo.clear();
+    }
 
     // Raw stage-shard DXBC paths stay intact. A versioned identity sidecar makes
     // legacy/mixed/truncated pairs miss safely. Standalones use a content key path.
     HRESULT Compile(const std::filesystem::path& source, const D3D_SHADER_MACRO* macros, ID3DInclude& include,
         const char* entry, const char* profile, UINT flags, const std::filesystem::path& stagePath,
-        bool diskEnabled, ID3DBlob** output, ID3DBlob** errors, bool* diskHit = nullptr)
+        bool diskEnabled, ID3DBlob** output, ID3DBlob** errors, bool* diskHit = nullptr,
+        bool stableIncludeRoot = false)
     {
         if (!output || !errors || !entry || !profile) return E_INVALIDARG;
         requests.fetch_add(1, std::memory_order_relaxed);
@@ -268,7 +379,8 @@ public:
             requestHash.Add(compiler.data(), compiler.size());
             requestHash.Field(stagePath.lexically_normal().generic_string());
             requestHash.Add(&diskEnabled, sizeof(diskEnabled));
-            requestHash.Add(&epoch, sizeof(epoch));
+            // Keep the on-disk fast identity stable across process launches and
+            // cache invalidations. RequestState separately checks its generation.
             if (macros) for (auto macro = macros; macro->Name; ++macro) {
                 const bool hasDefinition = macro->Definition != nullptr;
                 requestHash.Field(macro->Name);
@@ -311,8 +423,26 @@ public:
                 return result;
             }
 
-            const HRESULT result = CompileUncoalesced(source, sourceBytes, sourceReadable, macros, include,
-                entry, profile, flags, stagePath, diskEnabled, epoch, output, errors, diskHit);
+            Blob fastBlob;
+            const bool fastHit = diskEnabled && !stagePath.empty() &&
+                TryFastArtifact(stagePath, requestDigest, include, fastBlob,
+                    stableIncludeRoot ? source.parent_path().lexically_normal().generic_string() : std::string{}, epoch);
+            HRESULT result;
+            if (fastHit) {
+                std::shared_lock publishLock(publication);
+                if (epoch != Generation()) {
+                    result = E_ABORT;
+                } else {
+                    diskHits.fetch_add(1, std::memory_order_relaxed);
+                    fastArtifactHits.fetch_add(1, std::memory_order_relaxed);
+                    *output = fastBlob.Detach();
+                    if (diskHit) *diskHit = true;
+                    result = S_OK;
+                }
+            } else {
+                result = CompileUncoalesced(source, sourceBytes, sourceReadable, macros, include,
+                    entry, profile, flags, stagePath, diskEnabled, epoch, requestDigest, output, errors, diskHit);
+            }
             {
                 std::lock_guard lock(request->mutex);
                 request->result = result;
@@ -337,7 +467,7 @@ private:
     HRESULT CompileUncoalesced(const std::filesystem::path& source, const std::vector<char>& sourceBytes,
         bool sourceReadable, const D3D_SHADER_MACRO* macros, ID3DInclude& include,
         const char* entry, const char* profile, UINT flags, const std::filesystem::path& stagePath,
-        bool diskEnabled, uint64_t epoch, ID3DBlob** output, ID3DBlob** errors, bool* diskHit)
+        bool diskEnabled, uint64_t epoch, const Digest& requestDigest, ID3DBlob** output, ID3DBlob** errors, bool* diskHit)
     {
         if (!output || !errors || !entry || !profile) return E_INVALIDARG;
         *output = nullptr;
@@ -374,20 +504,25 @@ private:
                 (static_cast<size_t>(digest[0]) | (static_cast<size_t>(digest[1]) << 8) |
                     (static_cast<size_t>(digest[2]) << 16)) & (BucketCount - 1);
             auto& bucket = buckets[bucketIndex];
-            std::unique_lock workLock(bucket.mutex);
-            if (epoch != Generation()) return E_ABORT;
-            if (bucket.generation != epoch) { bucket.key.clear(); bucket.blob.Reset(); bucket.failures.clear(); bucket.generation = epoch; }
-            if (bucket.failures.contains(key)) return E_PENDING;
-            if (FAILED(hr)) {
-                failures.fetch_add(1, std::memory_order_relaxed);
-                if (bucket.failures.size() >= 64) bucket.failures.clear();
-                bucket.failures.insert(key);
-                *errors = diagnostics.Detach();
-                return hr;
-            }
-            if (bucket.key == key && bucket.blob) {
-                inMemoryHits.fetch_add(1, std::memory_order_relaxed);
-                return bucket.blob.CopyTo(output);
+            {
+                std::unique_lock workLock(bucket.mutex);
+                if (epoch != Generation()) return E_ABORT;
+                if (bucket.generation != epoch) { bucket.key.clear(); bucket.blob.Reset(); bucket.failures.clear(); bucket.generation = epoch; }
+                // Preprocess failures have a stable content identity too. Check
+                // and latch them under the same stripe lock so repeated missing
+                // root/include requests do not redo preprocessing every frame.
+                if (bucket.failures.contains(key)) return E_PENDING;
+                if (FAILED(hr)) {
+                    failures.fetch_add(1, std::memory_order_relaxed);
+                    if (bucket.failures.size() >= 64) bucket.failures.clear();
+                    bucket.failures.insert(key);
+                    *errors = diagnostics.Detach();
+                    return hr;
+                }
+                if (bucket.key == key && bucket.blob) {
+                    inMemoryHits.fetch_add(1, std::memory_order_relaxed);
+                    return bucket.blob.CopyTo(output);
+                }
             }
             const auto path = stagePath.empty() ? std::filesystem::path(L"Data/PIXL/PipelineLibrary/Standalone/v1") / (key + ".pixlbin") : stagePath;
             Blob blob;
@@ -410,6 +545,9 @@ private:
             if (epoch != Generation()) return E_ABORT;
             if (FAILED(hr) || !blob) {
                 failures.fetch_add(1, std::memory_order_relaxed);
+                std::unique_lock workLock(bucket.mutex);
+                if (epoch != Generation()) return E_ABORT;
+                if (bucket.generation != epoch) { bucket.key.clear(); bucket.blob.Reset(); bucket.failures.clear(); bucket.generation = epoch; }
                 if (bucket.failures.size() >= 64) bucket.failures.clear();
                 bucket.failures.insert(key);
                 *errors = diagnostics.Detach();
@@ -426,6 +564,13 @@ private:
                         AtomicWrite(path.wstring() + L".identity", &metadata, sizeof(metadata));
                 }
             }
+            if (diskEnabled && !stagePath.empty() && blob)
+                WriteFastIndex(path, requestDigest, digest, recorder.opened);
+            // Keep expensive preprocess/compile/disk work outside the stripe lock;
+            // unrelated shaders can share this bucket during startup compilation.
+            std::unique_lock workLock(bucket.mutex);
+            if (epoch != Generation()) return E_ABORT;
+            if (bucket.generation != epoch) { bucket.key.clear(); bucket.blob.Reset(); bucket.failures.clear(); bucket.generation = epoch; }
             // At most 32 MiB retained; oversized bytecode still has disk reuse.
             bucket.key = key;
             bucket.blob = blob->GetBufferSize() <= 1024 * 1024 ? blob : Blob{};

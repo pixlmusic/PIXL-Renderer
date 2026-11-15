@@ -84,11 +84,16 @@ void State::Draw()
 	auto& skyBounce = globals::pipeline::skyBounce;
 
 	if (shaderCache->IsEnabled()) {
-		// Process deferred cell transitions (interior detection)
-		sceneSettingsManager->Update();
-
-		ZoneScopedN("WeatherManager::UpdateFeatures");
-		weatherManager->UpdateFeatures();
+		// Rendering can flush dirty state thousands of times per frame. Scene
+		// overrides and authored-weather variables are frame-level work; once per
+		// frame is sufficient. A mid-frame event is serviced on the next frame,
+		// while WeatherManager::GetContext remains available to direct consumers.
+		if (lastSceneWeatherUpdateFrame != frameCount) {
+			lastSceneWeatherUpdateFrame = frameCount;
+			sceneSettingsManager->Update();
+			ZoneScopedN("WeatherManager::UpdateFeatures");
+			weatherManager->UpdateFeatures();
+		}
 
 		if (terrainSeam.loaded && terrainSeam.settings.Enabled) {
 			ZoneScopedN("TerrainSeam::TerrainShaderHacks");
@@ -164,6 +169,29 @@ void State::Debug()
 	auto lock = Lock();
 
 	if (frameChecker.IsNewFrame()) {
+		if (frameTimingFrequency.QuadPart == 0)
+			QueryPerformanceFrequency(&frameTimingFrequency);
+		const float ticksToMs = 1000.0f / static_cast<float>(frameTimingFrequency.QuadPart);
+		smoothNativeDirtyStateMs = smoothNativeDirtyStateMs * 0.95f +
+			static_cast<float>(nativeDirtyStateTicks.exchange(0, std::memory_order_relaxed)) * ticksToMs * 0.05f;
+		smoothPixlDirtyStateMs = smoothPixlDirtyStateMs * 0.95f +
+			static_cast<float>(pixlDirtyStateTicks.exchange(0, std::memory_order_relaxed)) * ticksToMs * 0.05f;
+		smoothBeginTechniqueMs = smoothBeginTechniqueMs * 0.95f +
+			static_cast<float>(beginTechniqueTicks.exchange(0, std::memory_order_relaxed)) * ticksToMs * 0.05f;
+		smoothLightingSetupBeforeMs = smoothLightingSetupBeforeMs * 0.95f +
+			static_cast<float>(lightingSetupBeforeTicks.exchange(0, std::memory_order_relaxed)) * ticksToMs * 0.05f;
+		smoothLightingSetupChainMs = smoothLightingSetupChainMs * 0.95f +
+			static_cast<float>(lightingSetupChainTicks.exchange(0, std::memory_order_relaxed)) * ticksToMs * 0.05f;
+		smoothLightingSetupAfterMs = smoothLightingSetupAfterMs * 0.95f +
+			static_cast<float>(lightingSetupAfterTicks.exchange(0, std::memory_order_relaxed)) * ticksToMs * 0.05f;
+		smoothNativeLightingSetupMs = smoothNativeLightingSetupMs * 0.95f +
+			static_cast<float>(nativeLightingSetupTicks.exchange(0, std::memory_order_relaxed)) * ticksToMs * 0.05f;
+		smoothMaxStateFlushIntervalMs = smoothMaxStateFlushIntervalMs * 0.95f +
+			maxStateFlushIntervalThisFrameMs * 0.05f;
+		smoothLongStateFlushIntervals = smoothLongStateFlushIntervals * 0.95f +
+			static_cast<float>(longStateFlushIntervalsThisFrame) * 0.05f;
+		maxStateFlushIntervalThisFrameMs = 0.0f;
+		longStateFlushIntervalsThisFrame = 0;
 		// Smooth draw calls and frame times for all shader types
 		for (int i = 0; i < magic_enum::enum_integer(RE::BSShader::Type::Total) + 1; ++i) {
 			smoothDrawCalls[i] = smoothDrawCalls[i] * static_cast<float>(0.95) + drawCalls[i] * static_cast<float>(0.05);
@@ -179,9 +207,6 @@ void State::Debug()
 		globals::shaderCache->ResetFrameShaderTracking();
 
 		// Start timing for this frame
-		if (frameTimingFrequency.QuadPart == 0) {
-			QueryPerformanceFrequency(&frameTimingFrequency);
-		}
 		QueryPerformanceCounter(&frameStartTime);
 		frameTimingActive = true;
 	}
@@ -194,7 +219,15 @@ void State::Debug()
 		// Calculate elapsed time in milliseconds
 		float elapsed = (currentTime.QuadPart - frameStartTime.QuadPart) * 1000.0f / frameTimingFrequency.QuadPart;
 
-		// Add elapsed time to the current shader type
+		// Record the worst between-flush delay. This is a wall-clock gap and
+		// can include CPU work, driver blocking and scheduling waits.
+		if (std::isfinite(elapsed) && elapsed >= 0.0f) {
+			maxStateFlushIntervalThisFrameMs = std::max(maxStateFlushIntervalThisFrameMs, elapsed);
+			if (elapsed >= kLongStateFlushIntervalMs)
+				++longStateFlushIntervalsThisFrame;
+		}
+		// Existing attribution: interval ends at the currently active shader.
+		// It is not an exclusive timing measurement for that shader class.
 		frameTimePerType[magic_enum::enum_integer(currentShader->shaderType.get())] += elapsed;
 		frameTimePerType[magic_enum::enum_integer(RE::BSShader::Type::Total)] += elapsed;
 
@@ -909,6 +942,24 @@ void State::SetupResources()
 		ft = 0.0f;
 	for (auto& sft : smoothFrameTimePerType)
 		sft = 0.0f;
+	nativeDirtyStateTicks.store(0, std::memory_order_relaxed);
+	pixlDirtyStateTicks.store(0, std::memory_order_relaxed);
+	beginTechniqueTicks.store(0, std::memory_order_relaxed);
+	lightingSetupBeforeTicks.store(0, std::memory_order_relaxed);
+	lightingSetupChainTicks.store(0, std::memory_order_relaxed);
+	lightingSetupAfterTicks.store(0, std::memory_order_relaxed);
+	nativeLightingSetupTicks.store(0, std::memory_order_relaxed);
+	smoothNativeDirtyStateMs = 0.0f;
+	smoothPixlDirtyStateMs = 0.0f;
+	smoothBeginTechniqueMs = 0.0f;
+	smoothLightingSetupBeforeMs = 0.0f;
+	smoothLightingSetupChainMs = 0.0f;
+	smoothLightingSetupAfterMs = 0.0f;
+	smoothNativeLightingSetupMs = 0.0f;
+	maxStateFlushIntervalThisFrameMs = 0.0f;
+	longStateFlushIntervalsThisFrame = 0;
+	smoothMaxStateFlushIntervalMs = 0.0f;
+	smoothLongStateFlushIntervals = 0.0f;
 
 	frameTimingActive = false;
 

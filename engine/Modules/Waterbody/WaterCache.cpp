@@ -100,8 +100,9 @@ bool WaterCache::SetCurrentWorldSpaceLocked(const RE::TESWorldSpace* worldSpace)
 	worldSpace = ResolveWaterParent(worldSpace);
 	if (!worldSpace)
 		return false;
-	if (currentCache && currentWorldSpaceFormID == worldSpace->GetFormID())
-		return true;
+	const RE::FormID worldSpaceFormID = worldSpace->GetFormID();
+	if (currentWorldSpaceFormID == worldSpaceFormID)
+		return static_cast<bool>(currentCache);
 
 	const char* editorID = worldSpace->GetFormEditorID();
 	if (!editorID || !*editorID)
@@ -125,10 +126,13 @@ bool WaterCache::SetCurrentWorldSpaceLocked(const RE::TESWorldSpace* worldSpace)
 
 	const auto it = snap->find(newWorldSpace);
 	if (it == snap->end()) {
-		logger::error("[Waterbody] [Cache] Failed to get runtime cache for {}", newWorldSpace);
+		// Cache the negative lookup for this worldspace. Water geometry asks this
+		// during rendering, so logging every miss flushed the file logger hundreds
+		// of times per second when a worldspace cache was absent.
+		logger::warn("[Waterbody] [Cache] Runtime cache unavailable for {}; water uses the vanilla fallback until caches reload", newWorldSpace);
 		currentCache.reset();
-		currentWorldSpace.clear();
-		currentWorldSpaceFormID = 0;
+		currentWorldSpace = newWorldSpace;
+		currentWorldSpaceFormID = worldSpaceFormID;
 		return false;
 	}
 
@@ -248,8 +252,8 @@ void WaterCache::GenerateTamrielPrecache()
 bool WaterCache::LoadOrGenerateCaches()
 {
 	if (!LoadCaches()) {
-		logger::info("[Waterbody] [Cache] Could not load caches - regenerating...");
-		return RegenerateCaches();
+		logger::info("[Waterbody] [Cache] Worldspace caches are missing - generating only unavailable caches...");
+		return GenerateCaches(true);
 	}
 
 	return true;
@@ -276,6 +280,7 @@ bool WaterCache::LoadCaches()
 	auto worldSpaces = GetValidWorldSpaces();
 
 	auto newCacheMap = std::make_shared<CacheMap>();
+	std::unordered_set<std::string> missingCacheKeys;
 	uint32_t unavailableCount = 0;
 
 	for (auto& worldSpace : worldSpaces) {
@@ -294,6 +299,7 @@ bool WaterCache::LoadCaches()
 		const auto fileName = std::format("{}_ocean2_cache.wc", key);
 		if (!TryReadCacheFromFile(fileName, diskCache.header, diskCache.instructions)) {
 			logger::info("[Waterbody] [Cache] Could not locate disk cache for {}", key);
+			missingCacheKeys.insert(key);
 			unavailableCount++;
 			continue;
 		}
@@ -303,6 +309,7 @@ bool WaterCache::LoadCaches()
 		auto newCache = std::make_unique<RuntimeCache>();
 		if (!TryBuildRuntimeCache(diskCache, *newCache)) {
 			logger::warn("[Waterbody] [Cache] Failed to build runtime cache for {}", key);
+			missingCacheKeys.insert(key);
 			unavailableCount++;
 			continue;
 		}
@@ -313,8 +320,11 @@ bool WaterCache::LoadCaches()
 	if (unavailableCount) {
 		logger::info("[Waterbody] [Cache] Loaded {} / {} worldspace caches ({} unavailable)", newCacheMap->size(), worldSpaces.size(), unavailableCount);
 	}
+	const bool allCachesAvailable = missingCacheKeys.empty();
 
 	if (newCacheMap->empty()) {
+		std::scoped_lock lock(currentCacheMutex);
+		missingWorldspaceCaches = std::move(missingCacheKeys);
 		return false;
 	}
 
@@ -322,6 +332,7 @@ bool WaterCache::LoadCaches()
 	// worldspace from one snapshot and its stale cache from another.
 	{
 		std::scoped_lock lock(currentCacheMutex);
+		missingWorldspaceCaches = std::move(missingCacheKeys);
 		if (!currentWorldSpace.empty()) {
 			if (const auto it = newCacheMap->find(currentWorldSpace); it != newCacheMap->end()) {
 				currentCache = it->second;
@@ -339,10 +350,10 @@ bool WaterCache::LoadCaches()
 	const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 	logger::info("[Waterbody] [Cache] Caches loaded in {} ms", ms);
 
-	return true;
+	return allCachesAvailable;
 }
 
-bool WaterCache::GenerateCaches()
+bool WaterCache::GenerateCaches(const bool a_missingOnly)
 {
 	// The gate covers the whole enqueue/monitor lifecycle, not just construction
 	// of the worker pool. A second invocation must not replace a running pool.
@@ -352,7 +363,21 @@ bool WaterCache::GenerateCaches()
 	}
 
 	try {
-		const auto worldSpaces = GetValidWorldSpaces();
+		const auto validWorldSpaces = GetValidWorldSpaces();
+		std::vector<RE::TESWorldSpace*> worldSpaces;
+		std::unordered_set<std::string> missing;
+		if (a_missingOnly) {
+			std::scoped_lock lock(currentCacheMutex);
+			missing = missingWorldspaceCaches;
+		}
+		worldSpaces.reserve(validWorldSpaces.size());
+		for (auto* worldSpace : validWorldSpaces) {
+			const char* editorID = worldSpace ? worldSpace->GetFormEditorID() : nullptr;
+			if (!editorID || !IsSafeCacheKey(editorID))
+				continue;
+			if (!a_missingOnly || missing.contains(editorID))
+				worldSpaces.push_back(worldSpace);
+		}
 		if (worldSpaces.empty()) {
 			async.running.store(false, std::memory_order_release);
 			return false;
@@ -377,8 +402,8 @@ bool WaterCache::GenerateCaches()
 		async.failed.store(false, std::memory_order_relaxed);
 		buildProgress.Start(static_cast<uint32_t>(worldSpaces.size()));
 
-		logger::info("[Waterbody] [Cache] Building {} worldspaces on {} threads",
-			worldSpaces.size(), threads);
+		logger::info("[Waterbody] [Cache] Building {}{} worldspaces on {} threads",
+			worldSpaces.size(), a_missingOnly ? " missing" : "", threads);
 
 		for (auto* worldSpace : worldSpaces) {
 			const char* editorID = worldSpace ? worldSpace->GetFormEditorID() : nullptr;

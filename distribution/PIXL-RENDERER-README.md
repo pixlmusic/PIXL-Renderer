@@ -1,4 +1,4 @@
-# PIXL Renderer 1.0.9
+# PIXL Renderer 1.1.0
 
 An integrated DirectX 11 renderer for Skyrim Special Edition.
 
@@ -31,7 +31,7 @@ Owner testing covers Skyrim SE 1.5.97, GOG 1.6.1179.0, and Steam 1.6.1170.
 
 ### Water
 
-PIXL 1.0.9 uses PIXL's own water rendering. Lakes, rivers, and other water use
+PIXL 1.1.0 uses PIXL's own water rendering. Lakes, rivers, and other water use
 the PIXL/Skyrim path shipped with the renderer.
 
 ### Install and first launch

@@ -268,7 +268,8 @@ namespace
 		workspace.labels.reserve(workspace.presets.size());
 		workspace.labelPointers.reserve(workspace.presets.size());
 		for (const auto& preset : workspace.presets) {
-			workspace.labels.push_back(preset.name + (preset.legacy ? "  ·  LEGACY" : ""));
+			workspace.labels.push_back(preset.name + (preset.legacy ? std::format("  -  {}",
+				T("menu.presets.legacy_tag", "LEGACY")) : ""));
 			workspace.labelPointers.push_back(workspace.labels.back().c_str());
 		}
 		workspace.selectedIndex = -1;
@@ -338,18 +339,20 @@ namespace
 				ImGui::TextColored(theme.StatusPalette.InfoColor, "%s", selected.name.c_str());
 				if (!selected.author.empty()) {
 					ImGui::SameLine();
-					ImGui::TextDisabled("by %s", selected.author.c_str());
+					ImGui::TextDisabled(T("menu.presets.author_by", "by %s"), selected.author.c_str());
 				}
 				if (!selected.description.empty())
 					ImGui::TextWrapped("%s", selected.description.c_str());
-				ImGui::TextDisabled("%s · %zu setting groups · %s",
-					selected.legacy ? "Legacy snapshot" : "PIXL preset format",
+				ImGui::TextDisabled(T("menu.presets.profile_summary", "%s - %zu setting groups - %s"),
+					selected.legacy ? T("menu.presets.legacy_format", "Legacy snapshot") :
+						T("menu.presets.current_format", "PIXL preset format"),
 					selected.settings.size(),
-					selected.rendererVersion.empty() ? "renderer version not specified" : selected.rendererVersion.c_str());
+					selected.rendererVersion.empty() ? T("menu.presets.version_unspecified", "renderer version not specified") :
+						selected.rendererVersion.c_str());
 				if (!selected.rendererVersion.empty() && selected.rendererVersion != Plugin::VERSION.string()) {
 					ImGui::Spacing();
 					ImGui::TextColored(theme.StatusPalette.InfoColor,
-						"Settings from a different renderer version may be skipped when their names or types changed.");
+						T("menu.presets.version_warning", "Settings from a different renderer version may be skipped when their names or types changed."));
 				}
 				ImGui::EndChild();
 
@@ -358,7 +361,7 @@ namespace
 					auto* state = State::GetSingleton();
 					if (!state) {
 						workspace.feedbackSuccess = false;
-						workspace.feedback = "Renderer settings are not available right now.";
+						workspace.feedback = T("menu.presets.renderer_unavailable", "Renderer settings are not available right now.");
 					} else {
 						state->SaveToJson(currentSettings);
 						const auto apply = PIXL::Presets::ApplyToUserConfig(
@@ -366,14 +369,18 @@ namespace
 						workspace.feedbackSuccess = apply.success;
 						if (apply.success) {
 							PIXL::Presets::StagePendingRendererSettings(selected.settings);
-							workspace.feedback = std::format(
-								"Preset saved for next launch. Restart Skyrim to apply all settings. Backup: {}. Applied {} values; skipped {} unsupported values.",
-								apply.backupPath.empty() ? "no previous user file" : apply.backupPath.filename().string(),
-								apply.merge.applied, apply.merge.unsupported + apply.merge.typeMismatches);
+							const std::string backupName = apply.backupPath.empty() ? "no previous user file" :
+								apply.backupPath.filename().string();
+							const auto skippedCount = apply.merge.unsupported + apply.merge.typeMismatches;
+							workspace.feedback = std::vformat(T("menu.presets.apply_success",
+								"Preset saved for next launch. Restart Skyrim to apply all settings. Backup: {}. Applied {} values; skipped {} unsupported values."),
+								std::make_format_args(
+								backupName, apply.merge.applied, skippedCount));
 							logger::info("Applied renderer preset '{}' for next launch ({} values, {} compatibility skips)",
 								selected.name, apply.merge.applied, apply.merge.unsupported + apply.merge.typeMismatches);
 						} else {
-							workspace.feedback = std::format("Preset could not be applied: {}", apply.error);
+							workspace.feedback = std::vformat(T("menu.presets.apply_failure", "Preset could not be applied: {}"),
+								std::make_format_args(apply.error));
 							logger::warn("Could not apply renderer preset '{}': {}", selected.name, apply.error);
 						}
 					}
@@ -412,7 +419,7 @@ namespace
 			std::string savedName;
 			auto* state = State::GetSingleton();
 			if (!state) {
-				error = "Renderer settings are not available right now.";
+				error = T("menu.presets.renderer_unavailable", "Renderer settings are not available right now.");
 			} else {
 				state->SaveToJson(currentSettings);
 				auto document = PIXL::Presets::CreateDocument(workspace.name.data(), workspace.author.data(),
@@ -422,8 +429,14 @@ namespace
 					Util::PathHelpers::GetRendererPresetsPath() / "User", document, savedPath, error);
 			}
 			workspace.feedbackSuccess = saved;
-			workspace.feedback = saved ? std::format("Preset saved: {}", savedPath.filename().string()) :
-				std::format("Preset could not be saved: {}", error);
+			if (saved) {
+				const auto filename = savedPath.filename().string();
+				workspace.feedback = std::vformat(T("menu.presets.save_success", "Preset saved: {}"),
+					std::make_format_args(filename));
+			} else {
+				workspace.feedback = std::vformat(T("menu.presets.save_failure", "Preset could not be saved: {}"),
+					std::make_format_args(error));
+			}
 			workspace.feedbackUntil = ImGui::GetTime() + 12.0;
 			if (saved) {
 				workspace.name.fill('\0');

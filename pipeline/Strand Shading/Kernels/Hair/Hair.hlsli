@@ -20,6 +20,13 @@ namespace Hair
 
 	Texture2D<float> TexTangentShift : register(t73);
 
+	float SampleTangentShift(float2 uv)
+	{
+		// Explicit LOD is required because hair lighting is evaluated from
+		// variable-count light loops, where implicit gradients are undefined.
+		return TexTangentShift.SampleLevel(SampColorSampler, uv, 0.0f).x - 0.5f;
+	}
+
 	// Physical fibre constants hoisted out of hot lighting paths. These values
 	// were previously recomputed through pow/sqrt expressions and are invariant.
 	static const float PIXL_HAIR_F0 = 0.0465205690f;
@@ -40,11 +47,17 @@ namespace Hair
 
 	float3 ReorientTangent(float3 T, float3 N)
 	{
-		// Reorient tangent to be orthogonal to normal. Explicit rsqrt avoids NaNs
-		// on degenerate strand tangents while compiling to the same normalization
-		// class of instructions as normalize().
+		// Reorient the hair-card bitangent to the shading normal. Some cap/scalp
+		// vertices have a degenerate bitangent; choose a deterministic orthogonal
+		// axis there so the fibre model never receives a zero strand direction.
 		float3 projectedT = T - N * dot(T, N);
-		return projectedT * rsqrt(max(dot(projectedT, projectedT), EPSILON_LENGTH_SQ));
+		float tangentLengthSq = dot(projectedT, projectedT);
+		if (!isfinite(tangentLengthSq) || tangentLengthSq < EPSILON_LENGTH_SQ) {
+			float3 fallbackAxis = abs(N.z) < 0.92f ? float3(0.0f, 0.0f, 1.0f) : float3(0.0f, 1.0f, 0.0f);
+			projectedT = cross(fallbackAxis, N);
+			tangentLengthSq = max(dot(projectedT, projectedT), EPSILON_LENGTH_SQ);
+		}
+		return projectedT * rsqrt(tangentLengthSq);
 	}
 
 	// [Kajiya et al. 1989, "Rendering fur with three dimensional textures."]
@@ -81,7 +94,7 @@ namespace Hair
 
 	float3 ShiftWorldNormal(float3 T, float3 N, float n, float2 uv)
 	{
-		const float shift = TexTangentShift.SampleLevel(SampColorSampler, uv, 0).x - 0.5f;
+		const float shift = SampleTangentShift(uv);
 		return ShiftNormal(T, N, shift + n);
 	}
 
@@ -111,7 +124,7 @@ namespace Hair
 		float3 TshiftSecondary;
 
 		if (SharedData::strandShadingSettings.EnableTangentShift) {
-			const float shift = TexTangentShift.SampleLevel(SampColorSampler, uv, 0).x - 0.5;
+			const float shift = SampleTangentShift(uv);
 			TshiftPrimary = ShiftTangent(T, N, shift + SharedData::strandShadingSettings.PrimaryTangentShift);
 			TshiftSecondary = ShiftTangent(T, N, shift + SharedData::strandShadingSettings.SecondaryTangentShift);
 		} else {
@@ -201,7 +214,11 @@ namespace Hair
 		Mp = Hair_g(B[0], ThetaH - Alpha[0]);
 		Np = 0.25 * cosHalfPhi;
 		Fp = BRDF::F_Schlick(F0, sqrt(saturate(0.5 + 0.5 * VdotL))).x;
-		R = (Mp * Np) * (Fp * lerp(1, backlit, saturate(-VdotL)));
+		// The R lobe is nearly achromatic at grazing angles, which reads as a
+		// bright white contour on dark hair cards. Retain dielectric reflection,
+		// but let the fibre pigment tint most of that energy.
+		float3 rTint = lerp(1.0f.xxx, sqrt(saturate(baseColor)), 0.70f);
+		R = (Mp * Np) * (Fp * rTint * lerp(1, backlit, saturate(-VdotL)));
 
 		// TT
 		Mp = Hair_g(B[1], ThetaH - Alpha[1]);
@@ -274,7 +291,7 @@ namespace Hair
 		const float roughness = 1 - saturate(shininess * 0.01);
 
 		if (SharedData::strandShadingSettings.EnableTangentShift) {
-			const float shift = TexTangentShift.SampleLevel(SampColorSampler, uv, 0).x - 0.5;
+			const float shift = SampleTangentShift(uv);
 			T = ShiftTangent(T, N, shift);
 		}
 
@@ -292,7 +309,9 @@ namespace Hair
 
 	void GetHairDirectLight(out DirectLightingOutput lightingOutput, DirectContext context, MaterialProperties material, float3x3 tbnTr, float2 uv)
 	{
-		const float3 T = context.worldNormal * rsqrt(max(dot(context.worldNormal, context.worldNormal), EPSILON_LENGTH_SQ));
+		// TBN is stored transposed here: row 1 is Skyrim's authored bitangent,
+		// which Lighting.hlsl also uses as the hair-card strand axis.
+		const float3 T = ReorientTangent(tbnTr[1], context.vertexNormal);
 		const float3 V = context.viewDir * rsqrt(max(dot(context.viewDir, context.viewDir), EPSILON_LENGTH_SQ));
 		const float3 N = context.vertexNormal * rsqrt(max(dot(context.vertexNormal, context.vertexNormal), EPSILON_LENGTH_SQ));
 		const float3 VN = tbnTr[2] * rsqrt(max(dot(tbnTr[2], tbnTr[2]), EPSILON_LENGTH_SQ));
@@ -309,13 +328,13 @@ namespace Hair
 	{
 		lobeWeights = (IndirectLobeWeights)0;
 
-		float3 T = normalize(context.worldNormal);
+		float3 T = ReorientTangent(context.hairTangent, context.vertexNormal);
 		const float3 V = normalize(context.viewDir);
 		const float3 N = normalize(context.vertexNormal);
 
 		if (SharedData::strandShadingSettings.HairMode == 1) {
 			if (SharedData::strandShadingSettings.EnableTangentShift) {
-				const float shift = TexTangentShift.SampleLevel(SampColorSampler, uv, 0).x - 0.5;
+				const float shift = SampleTangentShift(uv);
 				T = ShiftTangent(T, N, shift);
 			}
 			float3 projectedV = V - T * dot(V, T);

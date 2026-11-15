@@ -303,19 +303,25 @@ RE::BSEventNotifyControl SceneSettingsManager::MenuOpenCloseEventHandler::Proces
 
 void SceneSettingsManager::Update()
 {
-	// Revert interior overrides on main/loading menu (same check as LinearLightCore)
-	if (isCurrentlyApplied) {
-		bool isMainOrLoading = globals::state->isMainMenuOpen || globals::state->isLoadingMenuOpen;
-		if (isMainOrLoading) {
+	const auto* state = globals::state;
+	const bool menuBlocked = state && (state->isMainMenuOpen || state->isLoadingMenuOpen);
+	if (menuBlocked) {
+		// The menu needs exterior/default values. Do not immediately reapply
+		// interior settings from a queued event while loading is still visible.
+		if (isCurrentlyApplied) {
 			RevertToExteriorSettings();
 			isCurrentlyApplied = false;
 		}
+		return;  // Keep queuedCellTransition until a world frame is ready.
 	}
 
-	if (queuedCellTransition) {
-		queuedCellTransition = false;
-		OnCellTransition();
-	}
+	if (!queuedCellTransition)
+		return;
+	if (!globals::game::sky)
+		return;  // Don't classify an unavailable sky as an interior.
+
+	queuedCellTransition = false;
+	OnCellTransition();
 }
 
 void SceneSettingsManager::OnCellTransition()

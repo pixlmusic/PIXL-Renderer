@@ -19,10 +19,43 @@ placements, weather records or placed lights.
 | Grass and tree replacers | Normally keep. PIXL supplies shading and interaction, not replacement vegetation assets. Distant LOD and static shrubs are different from terrain grass. |
 | Weather plugins | Normally keep one coherent weather setup and its required patches. PIXL reacts to game weather; it does not replace every weather plugin. |
 | Light placement and interior overhauls | Keep if desired, with their dependencies/patches. PIXL lighting does not reproduce their edits to placed lights or architecture. |
+| PGLite | The original runtime DLL does not recognize a PIXL-only installation. The FOMOD offers an optional PIXL-aware PGLite DLL, cubemap, and corresponding source that enable PIXL detection without Community Shaders. The Release build and package checks passed, and the Steam live log confirms PIXL detection and PGLite startup. No TruePBR config was installed in that run, so mesh appearance and hair-flow validation remain pending. See [PGLite compatibility](compatibility/PGLITE.md). |
 | Embers XD | Confirmed startup with BEES 1.2 on 1.5.97; see below. |
 | Community Shaders / ENB renderer | Cannot run alongside this PIXL release. |
 | ReShade | Experimental Camera-page bridge for an installed API 20 compatible add-on runtime; live rendering compatibility remains unvalidated. |
 | Duplicate shader/upscaler helpers | Follow PIXL's startup diagnostics. Existing conflicts include SkyrimUpscaler, EVLaS/AELAS, SSEReShadeHelper, TAASharpen and NVIDIA_Reflex. |
+
+### Skyrim Performance Solution (SPS)
+
+PIXL and SPS loaded together on the Steam **1.6.1170** test installation on
+2026-10-30, using PIXL **1.0.9.0** and SPS **1.0.70**. SPS installed its
+`GetRenderPasses_Occlusion` vfunc 0x2D and `Main::RenderDepth` detour after PIXL's
+SkyBounce hook; PIXL logged its SPS detection notice and completed renderer
+DataLoaded initialization. No plugin error entries appeared in either startup
+log. This verifies plugin co-load and hook installation through initialization;
+it does not certify visual quality in gameplay scenes.
+
+The bundled SPS reference source is v1.0.63, older than the installed build. The
+current [SPS 1.0.70 source release](https://github.com/dnai92/skyrimPerformanceSolution/tree/5f1de84)
+was checked for the shared occlusion hook; its wrapper calls the previously
+installed function before applying its filter. The installed runtime log
+corroborates that hook path. The SPS project supports Skyrim 1.5.97 and 1.6.317
+through 1.7.x, and reports testing on Steam 1.6.1170.
+
+There is one intentional visual interaction in the precipitation/skylighting
+occlusion map. PIXL SkyBounce submits eligible occluders larger than radius 32.
+SPS's `[SkylightingCulling]` option is enabled by default and filters that shared
+pass list below radius 128. This reduces SPS draw work but also removes smaller
+objects from PIXL SkyBounce's sky-visibility data. If SkyBounce occlusion detail
+looks weaker, set `bEnabled=false` under `[SkylightingCulling]` in `SPS.ini`;
+other SPS features can remain enabled. PIXL logs this interaction when it detects
+`SPS.dll`.
+
+The current SPS config has `[SkylightingCulling]` enabled at radius 128. This is
+an intentional quality/performance trade-off, not a plugin conflict. Other SPS
+culling options can also change shadow or geometry detail; compare them
+individually if a visual difference appears. Manual visual testing of interiors,
+exteriors, moving lights and weather remains outstanding.
 
 ### NAT
 

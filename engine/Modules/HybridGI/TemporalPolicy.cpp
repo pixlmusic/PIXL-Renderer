@@ -20,10 +20,15 @@ namespace PIXL::HybridGIInternal
 		float a_deltaSeconds,
 		float a_ticksPerSecond)
 	{
-		const float ticksPerSecond = std::isfinite(a_ticksPerSecond) ? std::max(a_ticksPerSecond, 0.0f) : 0.0f;
-		a_accumulator = std::max(a_accumulator, 0.0f) + SanitizeDeltaTime(a_deltaSeconds) * ticksPerSecond;
-		const auto elapsedTicks = static_cast<std::uint32_t>(a_accumulator);
-		a_accumulator -= static_cast<float>(elapsedTicks);
+		// External frame deltas and reloaded state must never turn a float-to-uint
+		// conversion into undefined behaviour. The production clock uses 8 Hz;
+		// clamp corrupted rate inputs without changing that normal path.
+		const float ticksPerSecond = std::isfinite(a_ticksPerSecond) ? std::clamp(a_ticksPerSecond, 0.0f, 1000000.0f) : 0.0f;
+		const float safeAccum = std::isfinite(a_accumulator) ? std::clamp(a_accumulator, 0.0f, 1000000.0f) : 0.0f;
+		const double accumulated = static_cast<double>(safeAccum) +
+			static_cast<double>(SanitizeDeltaTime(a_deltaSeconds)) * ticksPerSecond;
+		const auto elapsedTicks = static_cast<std::uint32_t>(accumulated);
+		a_accumulator = static_cast<float>(accumulated - elapsedTicks);
 		return a_clock + elapsedTicks;
 	}
 }

@@ -1,8 +1,13 @@
 #pragma once
 
+// These SDK-facing objects are embedded in ImageReconstruction's process-wide
+// static state. Normalize packing so includers cannot vary its layout.
+#pragma pack(push, 8)
+
 #include "../../Buffer.h"
 #include "../../State.h"
 
+#include <array>
 #include <cstdint>
 #include <d3d11_4.h>
 #include <d3d12.h>
@@ -28,8 +33,13 @@ public:
 	sl::RenderAPI renderAPI = sl::RenderAPI::eD3D11;
 	std::wstring pluginDir = PluginDir;
 	std::string instanceTag = "DX11";
+	// Streamline may retain path pointers after slInit; never pass stack storage.
+	std::wstring pluginPathStorage;
+	std::array<const wchar_t*, 1> pluginPathPointers{};
 
 	Streamline() = default;
+	Streamline(const Streamline&) = delete;
+	Streamline& operator=(const Streamline&) = delete;
 
 	/** @brief Returns the short identifier used for logging. */
 	inline std::string GetShortName() { return "Streamline"; }
@@ -182,3 +192,5 @@ public:
 	bool TagDX12Resources(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* depth, ID3D12Resource* mvec,
 		ID3D12Resource* uiColorAndAlpha, uint32_t width, uint32_t height);
 };
+
+#pragma pack(pop)

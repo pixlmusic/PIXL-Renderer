@@ -366,6 +366,8 @@ namespace SIE
 		void SetDump(bool value);
 		/** @brief Signals all compilation threads to stop and clears pending tasks. */
 		void StopCompilation();
+		/** Apply loaded foreground/background worker limits before startup compilation. */
+		void ApplyStartupCompilerThreadSettings();
 
 		/** Gets whether the persistent disk cache is enabled. */
 		bool IsDiskCache() const;
@@ -478,6 +480,7 @@ namespace SIE
 		uint64_t GetCachedHitTasks();
 		uint64_t GetCompletedTasks();
 		uint64_t GetFailedTasks();
+		void LogForegroundTaskProgress();
 		/**
 		 * @brief Count currently failed shader entries in the shader map.
 		 *
@@ -521,12 +524,11 @@ namespace SIE
 
 		static int32_t GetDefaultCompilationThreadCount()
 		{
-			// FXC's large Lighting permutations are memory-bandwidth/codegen bound.
-			// Measured on the 12 P-core target: 6 workers = 0.262 shaders/s,
-			// 10 workers = 0.250 shaders/s while making the machine much less
-			// responsive. Half the performance cores is the throughput sweet spot.
+			// Use roughly 83% of the fastest logical cores while the startup
+			// compilation screen is in the foreground. Leave at least one core
+			// available for the game, driver, and compiler coordinator.
 			const auto pCores = static_cast<int32_t>(Util::GetPerformanceCoreCount());
-			return std::clamp((pCores + 1) / 2, 1, 8);
+			return std::clamp((pCores * 5 + 5) / 6, 1, std::max(pCores - 1, 1));
 		}
 
 		// Reserve fewer threads on low-core systems to avoid overly slow startup compilation.
@@ -810,6 +812,8 @@ namespace SIE
 		std::mutex pixelShadersMutex;
 		std::mutex computeShadersMutex;
 		CompilationSet compilationSet;
+		std::mutex activeCompilationMutex;
+		ankerl::unordered_dense::map<uint32_t, std::pair<std::string, std::chrono::steady_clock::time_point>> activeCompilations;
 		ankerl::unordered_dense::map<std::string, ShaderCacheResult> shaderMap{};
 		std::mutex mapMutex;                                                                      // guard for shaderMap
 		std::condition_variable mapCV;                                                            // signalled when a Pending entry transitions to Completed/Failed

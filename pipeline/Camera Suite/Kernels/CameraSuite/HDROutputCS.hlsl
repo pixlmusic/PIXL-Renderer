@@ -497,6 +497,8 @@ float3 PixlReconstructFarBlur(float2 uv)
 	uint width, height;
 	DofFarBlurTex.GetDimensions(width, height);
 	float2 texel = 1.0f / max(float2(width, height), 1.0f.xx);
+	bool centerSky;
+	float centerDepth = PixlDofLinearDepth(uv, centerSky);
 	// Jimenez-style 3x3 tent resolve. CinematicDoF applies this to its
 	// half-resolution far layer before compositing; doing the equivalent here
 	// hides the half-res footprint and produces a softer, temporally stable edge.
@@ -513,13 +515,15 @@ float3 PixlReconstructFarBlur(float2 uv)
 		float2 sampleUV = saturate(uv + offsets[i] * texel);
 		float sampleCoC = DofCoCTex.SampleLevel(LinearClampSampler, sampleUV, 0.0f);
 		float tapWeight = tentWeights[i];
-		// Far reconstruction follows signed CoC rather than raw depth. Two distant,
-		// out-of-focus surfaces (for example a mountain against sky) must share the
-		// same blur footprint; rejecting them by depth leaves a sharp white cut-out.
-		// Focused and foreground samples have non-positive CoC and remain excluded.
+		// Keep foreground actor silhouettes from leaking through the reconstructed
+		// far layer, while allowing the distant background/sky pair to blend.
 		float farThreshold = max(0.35f, dofControlMaxCoCPixels * 0.0125f);
 		float sampleFarSupport = smoothstep(farThreshold, farThreshold * 2.5f, sampleCoC);
-		tapWeight *= sampleFarSupport;
+		bool sampleSky;
+		float sampleDepth = PixlDofLinearDepth(sampleUV, sampleSky);
+		float foregroundSeparation = max(centerDepth - sampleDepth, 0.0f) / max(centerDepth, 64.0f);
+		float foregroundEdgeWeight = 1.0f - smoothstep(0.015f, 0.12f, foregroundSeparation);
+		tapWeight *= sampleFarSupport * foregroundEdgeWeight;
 		result += DofFarBlurTex.SampleLevel(LinearClampSampler, sampleUV, 0.0f).rgb * tapWeight;
 		weight += tapWeight;
 	}

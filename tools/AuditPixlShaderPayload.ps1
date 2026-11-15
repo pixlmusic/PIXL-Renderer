@@ -49,6 +49,7 @@ function Get-PayloadConsumer([string]$relative, [string]$extension) {
     if ($path -like 'PIXL-Shaders/*/*' -and $extension -in @('.png','.dds')) { return (($path -split '/')[1] + ' module texture') }
     if ($path -like 'SKSE/Plugins/PIXL/Config/*') { return 'PIXL settings loader' }
     if ($path -like 'SKSE/Plugins/PIXL/Profiles/*') { return 'Quality profile loader' }
+    if ($path -like 'SKSE/Plugins/PIXLRenderer/Presets/*.pixlpreset.json') { return 'Renderer preset discovery loader' }
     if ($path -like 'SKSE/Plugins/PIXL/Interface/*') { return 'PIXL configuration interface' }
     if ($path -like 'SKSE/Plugins/PIXL/World/Water/*') { return 'Waterbody precache loader' }
     if ($path -like 'SKSE/Plugins/PIXL/Documentation/*' -or $path -like 'PIXL-Shaders/*LICENSE*' -or $path -like 'PIXL-Shaders/*license*' -or $path -like 'PIXL-Shaders/*PROVENANCE.md') { return 'Packaged documentation/license/provenance' }
@@ -133,7 +134,11 @@ foreach ($relative in ($shaderTexts.Keys | Sort-Object)) {
     $rootEntry = -not $relative.Contains('\') -and $file.Extension -eq '.hlsl'
     $nativeReference = $nativeText.IndexOf($file.Name, [StringComparison]::OrdinalIgnoreCase) -ge 0
     $consumer = if ($rootEntry) { 'Skyrim entry shader' } elseif ($incoming[$relative] -gt 0 -and $nativeReference) { 'Included and native compiled' } elseif ($incoming[$relative] -gt 0) { 'Included by shader graph' } elseif ($nativeReference) { 'Native runtime compile' } elseif ($relative -like 'PIXL\Modules\*') { 'Module descriptor' } else { 'No direct text consumer found' }
-    if ($file.Extension -eq '.hlsli' -and $incoming[$relative] -eq 0) { $errors.Add("Unreferenced staged shader include: $relative") }
+    # This helper is retained only for the retired FoliageOptimizer source
+    # kernels, which the release stager deliberately excludes.
+    $retiredSourceOnlyInclude = $relative -eq 'Common\PIXLVisibility.hlsli'
+    if ($retiredSourceOnlyInclude) { $consumer = 'Retired FoliageOptimizer source-only dependency' }
+    if ($file.Extension -eq '.hlsli' -and $incoming[$relative] -eq 0 -and -not $retiredSourceOnlyInclude) { $errors.Add("Unreferenced staged shader include: $relative") }
     if ($file.Extension -eq '.hlsl' -and -not $rootEntry -and $incoming[$relative] -eq 0 -and -not $nativeReference) {
         $errors.Add("Unreferenced staged shader program: $relative")
     }
@@ -150,7 +155,7 @@ foreach ($relative in ($shaderTexts.Keys | Sort-Object)) {
 }
 
 $shaderReport = [Collections.Generic.List[string]]::new()
-$shaderReport.Add('# Staged Shader Semantic Review — PIXL Renderer 1.0.9 / 12C')
+$shaderReport.Add('# Staged Shader Semantic Review — PIXL Renderer 1.1.0 / 12C')
 $shaderReport.Add('')
 $shaderReport.Add('Exact LIVE-TEST payload: `' + $packageDisplay + '`. Every staged HLSL/HLSLI file was opened, hashed, mapped to an include/native/game consumer, scanned for register declarations and reviewed for numerical-risk call sites. Risk counts identify locations requiring contextual review; they do not assert a bug. Duplicate bindings can be valid under mutually exclusive preprocessor branches.')
 $shaderReport.Add('')
@@ -170,7 +175,7 @@ foreach ($record in $shaderRecords) {
 $shaderReport | Set-Content -LiteralPath (Join-Path $reportRoot 'SHADER_REVIEW_MATRIX.md') -Encoding utf8
 
 $payloadReport = [Collections.Generic.List[string]]::new()
-$payloadReport.Add('# Staged Payload Review — PIXL Renderer 1.0.9 / 12C')
+$payloadReport.Add('# Staged Payload Review — PIXL Renderer 1.1.0 / 12C')
 $payloadReport.Add('')
 $payloadReport.Add('Every manifest entry was opened, assigned to its runtime/package consumer class, and SHA-256 checked. JSON was parsed; known binary formats were checked by magic; vendor DLL signatures were checked; text inputs were read. Source-to-stage identity is separately enforced by `AuditPixlRenderer.ps1 -PackageDirectory`.')
 $payloadReport.Add('')

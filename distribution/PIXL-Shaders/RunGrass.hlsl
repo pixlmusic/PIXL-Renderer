@@ -455,7 +455,10 @@ VS_OUTPUT main(VS_INPUT input, uint instanceID : SV_InstanceID)
 	}
 #		endif
 
-	const float2 absoluteAnchor = input.InstanceData1.xy + e0.xy;
+	// Optimized grass positions are camera-relative in this path. Restore the
+	// frame's world origin before evaluating travelling gusts so the wind field
+	// stays attached to the landscape as the camera moves.
+	const float2 absoluteAnchor = input.InstanceData1.xy + e0.xy + FrameBuffer::CameraPosAdjust.xy;
 	msPosition.xyz += CalculateOptimizedWindDisplacement(
 		input, e1.x, WindTimer, absoluteAnchor, false);
 	previousMsPosition.xyz += CalculateOptimizedWindDisplacement(
@@ -1449,14 +1452,19 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 				const bool isPointLightLinear = light.lightFlags & RadiantGrid::LightFlags::Linear;
 				float3 lightColor = Color::PointLight(light.color.xyz, isPointLightLinear) * intensityMultiplier * light.fade * localLightBoost;
 				float lightShadow = 1.0;
+				float3 normalizedLightDirection = lightDist > 1.0e-4f
+					? lightDirection * rcp(lightDist)
+					: float3(0.0f, 0.0f, 1.0f);
 
 				float shadowComponent = 1.0;
 				if (light.lightFlags & RadiantGrid::LightFlags::Shadow) {
 					shadowComponent = shadowColor[light.shadowLightIndex];
 					lightShadow *= shadowComponent;
 				}
-
-				float3 normalizedLightDirection = normalize(lightDirection);
+				if (light.lightFlags & RadiantGrid::LightFlags::LocalShadow) {
+					lightShadow *= RadiantGrid::GetLocalShadow(LinearSampler, light.localShadowIndex,
+						input.WorldPosition.xyz, FrameBuffer::CameraPosAdjust.xyz, normalizedLightDirection, false, screenNoise);
+				}
 
 				lightColor *= lightShadow;
 
@@ -1719,6 +1727,9 @@ PS_OUTPUT main(PS_INPUT input)
 
 				const bool isPointLightLinear = light.lightFlags & RadiantGrid::LightFlags::Linear;
 				float3 lightColor = Color::PointLight(light.color.xyz, isPointLightLinear) * intensityMultiplier * light.fade;
+				float3 normalizedLightDirection = lightDist > 1.0e-4f
+					? lightDirection * rcp(lightDist)
+					: float3(0.0f, 0.0f, 1.0f);
 
 				float lightShadow = 1.0;
 
@@ -1726,6 +1737,10 @@ PS_OUTPUT main(PS_INPUT input)
 				if (light.lightFlags & RadiantGrid::LightFlags::Shadow) {
 					shadowComponent = shadowColor[light.shadowLightIndex];
 					lightShadow *= shadowComponent;
+				}
+				if (light.lightFlags & RadiantGrid::LightFlags::LocalShadow) {
+					lightShadow *= RadiantGrid::GetLocalShadow(LinearSampler, light.localShadowIndex,
+						input.WorldPosition.xyz, FrameBuffer::CameraPosAdjust.xyz, normalizedLightDirection, false, screenNoise);
 				}
 
 				lightColor *= lightShadow;

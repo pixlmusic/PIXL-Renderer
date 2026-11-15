@@ -160,8 +160,74 @@ namespace VolumeOcclusion
 	{
 		if (any(positionLS.xy < 0.0f) || any(positionLS.xy > 1.0f))
 			return 1.0f;
-		float2 moments = SharedShadowMap.SampleLevel(LinearSampler, positionLS.xy, 1u - cascadeIndex);
-		return ComputeVSM(moments, positionLS.z);
+		const uint mip = 1u - cascadeIndex;
+		const float2 moments = SharedShadowMap.SampleLevel(LinearSampler, positionLS.xy, mip);
+		const float centerVisibility = ComputeVSM(moments, positionLS.z);
+
+		// Contact hardening for the sun: estimate nearby blockers from the filtered
+		// first moment, then widen only partially shadowed edges according to the
+		// physical solar angular radius. Fully lit areas and umbra cores stay on the
+		// single-sample path, keeping both cost and shadow contrast controlled.
+		if (!all(isfinite(moments)) || centerVisibility <= 0.015f || centerVisibility >= 0.985f ||
+			positionLS.z <= moments.x + 1.0e-4f)
+			return centerVisibility;
+
+		uint width = 512u;
+		uint height = 512u;
+		uint mipCount = 1u;
+		SharedShadowMap.GetDimensions(mip, width, height, mipCount);
+		const float2 texel = rcp(float2(max(width, 1u), max(height, 1u)));
+		const float searchRadius = 2.0f;
+		const float2 searchOffsets[4] = {
+			float2(-1.0f, -1.0f), float2(1.0f, -1.0f),
+			float2(-1.0f, 1.0f), float2(1.0f, 1.0f)
+		};
+		float blockerDepth = 0.0f;
+		float blockerWeight = 0.0f;
+		[unroll] for (uint blockerSampleIndex = 0u; blockerSampleIndex < 4u; ++blockerSampleIndex) {
+			const float2 probeUV = positionLS.xy + searchOffsets[blockerSampleIndex] * texel * searchRadius;
+			if (any(probeUV <= 0.0f) || any(probeUV >= 1.0f))
+				continue;
+			const float2 probeMoments = SharedShadowMap.SampleLevel(LinearSampler, probeUV, mip);
+			const float weight = smoothstep(1.0e-4f, 0.02f, positionLS.z - probeMoments.x);
+			blockerDepth += probeMoments.x * weight;
+			blockerWeight += weight;
+		}
+		if (blockerWeight <= 1.0e-4f)
+			return centerVisibility;
+
+		blockerDepth /= blockerWeight;
+		const DirectionalShadowLightData shadowData = DirectionalShadowLights[0];
+		float4 depthNearH = mul(shadowData.InvShadowProj[cascadeIndex], float4(0.5f, 0.5f, 0.0f, 1.0f));
+		float4 depthFarH = mul(shadowData.InvShadowProj[cascadeIndex], float4(0.5f, 0.5f, 1.0f, 1.0f));
+		float4 leftH = mul(shadowData.InvShadowProj[cascadeIndex], float4(0.0f, 0.5f, 0.5f, 1.0f));
+		float4 rightH = mul(shadowData.InvShadowProj[cascadeIndex], float4(1.0f, 0.5f, 0.5f, 1.0f));
+		float4 topH = mul(shadowData.InvShadowProj[cascadeIndex], float4(0.5f, 0.0f, 0.5f, 1.0f));
+		float4 bottomH = mul(shadowData.InvShadowProj[cascadeIndex], float4(0.5f, 1.0f, 0.5f, 1.0f));
+		const float3 depthNear = depthNearH.xyz / (abs(depthNearH.w) > 1.0e-6f ? depthNearH.w : 1.0f);
+		const float3 depthFar = depthFarH.xyz / (abs(depthFarH.w) > 1.0e-6f ? depthFarH.w : 1.0f);
+		const float3 left = leftH.xyz / (abs(leftH.w) > 1.0e-6f ? leftH.w : 1.0f);
+		const float3 right = rightH.xyz / (abs(rightH.w) > 1.0e-6f ? rightH.w : 1.0f);
+		const float3 top = topH.xyz / (abs(topH.w) > 1.0e-6f ? topH.w : 1.0f);
+		const float3 bottom = bottomH.xyz / (abs(bottomH.w) > 1.0e-6f ? bottomH.w : 1.0f);
+		const float depthRange = length(depthFar - depthNear);
+		const float shadowExtent = max(min(length(right - left), length(bottom - top)), 1.0e-3f);
+		const float receiverBlockerGap = max(positionLS.z - blockerDepth, 0.0f) * depthRange;
+		const float penumbraUV = clamp(receiverBlockerGap * 0.00465f / shadowExtent, 0.0f, 6.0f * max(texel.x, texel.y));
+		if (penumbraUV <= max(texel.x, texel.y) * 0.35f)
+			return centerVisibility;
+
+		const float2 filterOffsets[4] = {
+			float2(-0.7071f, -0.7071f), float2(0.7071f, -0.7071f),
+			float2(-0.7071f, 0.7071f), float2(0.7071f, 0.7071f)
+		};
+		float softenedVisibility = centerVisibility;
+		[unroll] for (uint penumbraSampleIndex = 0u; penumbraSampleIndex < 4u; ++penumbraSampleIndex) {
+			const float2 sampleUV = clamp(positionLS.xy + filterOffsets[penumbraSampleIndex] * penumbraUV, texel * 0.5f, 1.0f - texel * 0.5f);
+			softenedVisibility += ComputeVSM(SharedShadowMap.SampleLevel(LinearSampler, sampleUV, mip), positionLS.z);
+		}
+		softenedVisibility *= 0.2f;
+		return lerp(centerVisibility, softenedVisibility, saturate(penumbraUV / max(texel.x, texel.y)));
 	}
 
 	float GetVSMShadow2D(float3 position, out float detailedShadow)

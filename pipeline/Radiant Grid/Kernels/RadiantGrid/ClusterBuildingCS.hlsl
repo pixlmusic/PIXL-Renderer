@@ -10,7 +10,7 @@ cbuffer PerFrame : register(b0)
 	uint4 ClusterSize;
 }
 
-float3 GetPositionVS(float2 texcoord, float depth)
+bool TryGetPositionVS(float2 texcoord, float depth, out float3 positionVS)
 {
 	float4 clipSpaceLocation;
 	clipSpaceLocation.xy = texcoord * 2.0f - 1.0f;  // convert from [0,1] to [-1,1]
@@ -23,9 +23,12 @@ float3 GetPositionVS(float2 texcoord, float depth)
 	// frusta while the camera rotates, causing whole 64-pixel lighting cells to
 	// pop on and off.
 	float4 homogenousLocation = mul(FrameBuffer::CameraProjInverse, clipSpaceLocation);
-	if (!isfinite(homogenousLocation.w) || abs(homogenousLocation.w) < 1.0e-6f)
-		return 0.0f.xxx;
-	return homogenousLocation.xyz / homogenousLocation.w;
+	if (!all(isfinite(homogenousLocation)) || abs(homogenousLocation.w) < 1.0e-6f) {
+		positionVS = 0.0f.xxx;
+		return false;
+	}
+	positionVS = homogenousLocation.xyz / homogenousLocation.w;
+	return all(isfinite(positionVS));
 }
 
 //reference
@@ -35,17 +38,10 @@ RWStructuredBuffer<ClusterAABB> clusters : register(u0);
 
 float3 IntersectionZPlane(float3 B, float z_dist)
 {
-	//Because this is a Z based normal this is fixed
-	float3 normal = float3(0.0, 0.0, -1.0);
-	float3 d = B;
-	//Computing the intersection length for the line and the plane
-	float safeZ = abs(d.z) > 1.0e-6f ? d.z : (d.z < 0.0f ? -1.0e-6f : 1.0e-6f);
-	float t = z_dist / safeZ;  //dot(normal, d);
-
-	//Computing the actual xyz position of the point along the line
-	float3 result = t * d;
-
-	return result;
+	// Near/far are distance magnitudes. Preserve the inverse projection's
+	// forward direction: forcing a signed plane can put cells behind the
+	// camera and mirror XY, dropping lights at whole-cell boundaries.
+	return B * (z_dist / max(abs(B.z), 1.0e-6f));
 }
 
 [numthreads(1, 1, 1)] void main(uint3 groupId : SV_GroupID,
@@ -62,22 +58,51 @@ float3 IntersectionZPlane(float3 B, float z_dist)
 
 	float2 texcoordMax = (groupId.xy + 1) * clusterSize;
 	float2 texcoordMin = groupId.xy * clusterSize;
-	float3 maxPointVS = GetPositionVS(texcoordMax, 1.0f);
-	float3 minPointVS = GetPositionVS(texcoordMin, 1.0f);
+	// A jittered or asymmetric projection does not guarantee that the two
+	// diagonal corners bound the other two corners. Build the tile AABB from
+	// all four rays so lights cannot pop at 64-pixel cluster boundaries.
+	// Reconstruct at an interior D3D depth. Depth 1 can map to infinity for
+	// infinite-far projections and collapse the cluster bounds to the origin.
+	float3 corner00VS, corner10VS, corner01VS, corner11VS;
+	bool validCorners = TryGetPositionVS(float2(texcoordMin.x, texcoordMin.y), 0.5f, corner00VS);
+	validCorners = TryGetPositionVS(float2(texcoordMax.x, texcoordMin.y), 0.5f, corner10VS) && validCorners;
+	validCorners = TryGetPositionVS(float2(texcoordMin.x, texcoordMax.y), 0.5f, corner01VS) && validCorners;
+	validCorners = TryGetPositionVS(float2(texcoordMax.x, texcoordMax.y), 0.5f, corner11VS) && validCorners;
 
 	float safeNear = max(abs(LightsNear), 1.0e-4f);
 	float safeFar = max(abs(LightsFar), safeNear + 1.0e-3f);
+	if (!validCorners) {
+		// A failed projection must over-include lights rather than silently
+		// culling every light from a collapsed cluster.
+		clusters[clusterIndex].minPoint = float4(-safeFar, -safeFar, -safeFar, 0.0f);
+		clusters[clusterIndex].maxPoint = float4(safeFar, safeFar, safeFar, 0.0f);
+		return;
+	}
 	float layerExponent = log2(safeFar / safeNear) / float(ClusterSize.z);
 	float clusterNear = safeNear * exp2(layerExponent * groupId.z);
 	float clusterFar = safeNear * exp2(layerExponent * (groupId.z + 1u));
 
-	float3 minPointNear = IntersectionZPlane(minPointVS, clusterNear);
-	float3 minPointFar = IntersectionZPlane(minPointVS, clusterFar);
-	float3 maxPointNear = IntersectionZPlane(maxPointVS, clusterNear);
-	float3 maxPointFar = IntersectionZPlane(maxPointVS, clusterFar);
+	float3 near00 = IntersectionZPlane(corner00VS, clusterNear);
+	float3 near10 = IntersectionZPlane(corner10VS, clusterNear);
+	float3 near01 = IntersectionZPlane(corner01VS, clusterNear);
+	float3 near11 = IntersectionZPlane(corner11VS, clusterNear);
+	float3 far00 = IntersectionZPlane(corner00VS, clusterFar);
+	float3 far10 = IntersectionZPlane(corner10VS, clusterFar);
+	float3 far01 = IntersectionZPlane(corner01VS, clusterFar);
+	float3 far11 = IntersectionZPlane(corner11VS, clusterFar);
 
-	float3 minPointAABB = min(min(minPointNear, minPointFar), min(maxPointNear, maxPointFar));
-	float3 maxPointAABB = max(max(minPointNear, minPointFar), max(maxPointNear, maxPointFar));
+	float3 minPointAABB = min(min(min(near00, near10), min(near01, near11)),
+		min(min(far00, far10), min(far01, far11)));
+	float3 maxPointAABB = max(max(max(near00, near10), max(near01, near11)),
+		max(max(far00, far10), max(far01, far11)));
+	// Cluster coordinates are reconstructed independently in the lighting pass.
+	// Give adjacent cells a small shared overlap so FP rounding and projection
+	// jitter cannot make a local light vanish for a pixel exactly on a cell edge.
+	// The extra candidate is harmless: the light's own attenuation still limits
+	// its contribution, while a tiny overlap prevents visible 64-pixel popping.
+	float clusterGuard = max(0.5f, clusterFar * 1.0e-4f);
+	minPointAABB -= clusterGuard.xxx;
+	maxPointAABB += clusterGuard.xxx;
 
 	clusters[clusterIndex].minPoint = float4(minPointAABB, 0.0);
 	clusters[clusterIndex].maxPoint = float4(maxPointAABB, 0.0);

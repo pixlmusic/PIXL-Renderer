@@ -45,6 +45,9 @@ struct DistantLife : RenderModule
 	void SaveSettings(json&) override;
 	void RestoreDefaultSettings() override;
 	void ClearShaderCache() override;
+	// DistantLife compiles standalone shaders through Util::CompileShader; its
+	// module load state does not change Skyrim's persistent shader permutations.
+	bool HasNoPipelinePermutationDependencies() const override { return true; }
 
 	// Called only from established live-reference paths. The reference is copied
 	// immediately and is never retained beyond the call.

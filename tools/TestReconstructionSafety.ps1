@@ -32,7 +32,7 @@ Require 'pipeline/Terrain Occlusion/Kernels/TerrainOcclusion/ShadowUpdate.cs.hls
 Require 'engine/ShaderCache.cpp' 'if \(SUCCEEDED\(stripResult\) && strippedShaderBlob\)\s*\{\s*std::swap\(shaderBlob, strippedShaderBlob\);'
 Require 'engine/ShaderCache.cpp' 'if \(strippedShaderBlob\)\s*strippedShaderBlob->Release\(\);'
 Require 'engine/Modules/Waterbody/WaterCache.cpp' 'header\.dataCount < 0[\s\S]*payloadEnd - payloadStart\) / sizeof\(T\)[\s\S]*return false;[\s\S]*vec\.resize\(header\.dataCount\);'
-Require 'engine/Modules/ImageReconstruction/FidelityFX.cpp' 'evaluated = ffxFsr3ContextDispatchUpscale\([^;]+== FFX_OK;'
+Require 'engine/Modules/ImageReconstruction/FidelityFX.cpp' 'DispatchFsr3Safely\([\s\S]*?return ffxFsr3ContextDispatchUpscale\(context, parameters\) == FFX_OK;[\s\S]*?const bool evaluated = DispatchFsr3Safely\(&fsrContext\[0\], &dispatchParameters, &dispatchException\);'
 Require 'engine/Modules/ImageReconstruction/FidelityFX.cpp' 'return evaluated;'
 Require 'engine/Modules/ImageReconstruction/FidelityFX.cpp' 'FfxInterface fsrInterface\{\};'
 Require 'engine/Modules/ImageReconstruction/FidelityFX.cpp' 'FfxFsr3ContextDescription contextDescription\{\};'

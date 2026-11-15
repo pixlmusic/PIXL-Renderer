@@ -2,7 +2,7 @@
 param(
     [string]$ArchivePath = "",
     [string]$AllowedOutputRoot = "",
-    [string]$ProductVersion = "1.0.9",
+    [string]$ProductVersion = "1.1.0",
     [switch]$IncludeWorkingTree
 )
 

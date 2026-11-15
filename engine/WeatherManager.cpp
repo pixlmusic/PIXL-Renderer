@@ -425,7 +425,10 @@ void WeatherManager::UpdateFeatures()
 	// Semantic consumers may ask for context outside this function, but advancing it
 	// here guarantees normal renderer frames always refresh even if no consumer does.
 	UpdateWeatherContext();
-	const auto currentWeathers = GetCurrentWeathers();
+	// UpdateWeatherContext already sampled GetCurrentWeathers and stored its
+	// transition, including mid-frame weather changes. Reuse that coherent
+	// snapshot instead of reading the sky state a second time every draw.
+	const auto currentWeathers = context.transition;
 
 	const bool weatherChanged =
 		currentWeathers.currentWeather != lastKnownWeather.currentWeather ||

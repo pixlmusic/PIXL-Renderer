@@ -19,6 +19,8 @@ class WrappedResource
 public:
 	WrappedResource(D3D11_TEXTURE2D_DESC a_texDesc, ID3D11Device5* a_d3d11Device, ID3D12Device* a_d3d12Device);
 	~WrappedResource();
+	WrappedResource(const WrappedResource&) = delete;
+	WrappedResource& operator=(const WrappedResource&) = delete;
 
 	ID3D11Texture2D* resource11 = nullptr;
 	ID3D11ShaderResourceView* srv = nullptr;
@@ -64,6 +66,9 @@ public:
 class DX12SwapChain
 {
 public:
+	DX12SwapChain() = default;
+	DX12SwapChain(const DX12SwapChain&) = delete;
+	DX12SwapChain& operator=(const DX12SwapChain&) = delete;
 	enum class Presenter : std::uint8_t
 	{
 		kNone,
@@ -107,8 +112,9 @@ public:
 	// use the existing full-resource contract.
 	PIXL::Reconstruction::NeuralGuideFrame neuralGuides;
 
-	// Published only after the D3D12 queue has completed a successful neural
-	// frame and the D3D11 fence wait has been queued. Consumers use the serial to
+	// Published once the successful neural work has been submitted and a
+	// D3D11 fence wait has been queued. CPU readers must not treat this as a
+	// completed GPU fence: consume through the D3D11 context after its wait. Consumers use the serial to
 	// reject stale frames during deterministic Photo Finish accumulation.
 	std::atomic_uint64_t completedNeuralFrameSerial{ 0 };
 	std::atomic_uint32_t completedNeuralOutputIndex{ UINT32_MAX };

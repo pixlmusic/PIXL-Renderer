@@ -30,7 +30,8 @@ RWStructuredBuffer<uint4> results : register(u0);
     uint state = (index / 16u) % 16u;
     uint age = (index / 288u) % 6u;
     bool matching = ((index / 144u) & 1u) != 0u;
-    uint packed = PackWorldIntelligence(variance, 0.0f, index & 15u, state);
+    float lightChange = (index & 1u) != 0u ? (192.0f / 255.0f) : 0.0f;
+    uint packed = PackWorldIntelligence(variance, lightChange, index & 15u, state);
     uint resolved = WorldResolveEvidenceState(index & 15u, state, matching, age);
     results[index] = uint4(packed, asuint(WorldIntelligenceVariance(packed)), resolved,
         asuint(WorldIntelligenceReliability(packed)));
@@ -47,7 +48,8 @@ RWStructuredBuffer<uint4> results : register(u0);
     uint material = WorldObservedMaterial(float2((index & 2u) != 0u ? 0.5f : 0.0f,
         (index & 4u) != 0u ? 0.5f : 0.0f));
     results[index+8192] = uint4(WorldCacheExpired(metadata, packed, clock, 48u),
-        material, asuint(WorldMaterialResponse(material)), 0u);
+        material, asuint(WorldMaterialResponse(material)),
+        asuint(WorldCacheVarianceDampedResponse(0.09f, WorldIntelligenceVariance(packed))));
     uint scheduleWord = (state << 28);
     uint scheduleAge = (index / 256u) % 3u;
     uint scheduleClock = (index / 64u) & 3u;
@@ -64,6 +66,7 @@ RWStructuredBuffer<uint4> results : register(u0);
         mask |= 1u << WorldCacheRayIndex(ray, rays, maximum);
     results[index+16384] = uint4(rays, mask,
         WorldCacheRayBudget(maximum, 1.0f, 0.35f, index >> 4u, scheduleClock), maximum);
+    results[index+20480] = uint4(WorldCacheDecayLightChange(index & 255u), 0u, 0u, 0u);
 })";
         ComPtr<ID3DBlob> bytecode, errors;
         auto hr = D3DCompile(source.data(), source.size(), "production-cache-intelligence", nullptr, nullptr,
@@ -76,12 +79,12 @@ RWStructuredBuffer<uint4> results : register(u0);
         ComPtr<ID3D11ComputeShader> shader;
         Check(device->CreateComputeShader(bytecode->GetBufferPointer(), bytecode->GetBufferSize(), nullptr, &shader));
         D3D11_BUFFER_DESC desc{};
-        desc.ByteWidth = 20480 * 16; desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.ByteWidth = 24576 * 16; desc.Usage = D3D11_USAGE_DEFAULT;
         desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS; desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED; desc.StructureByteStride = 16;
         ComPtr<ID3D11Buffer> output, staging;
         Check(device->CreateBuffer(&desc,nullptr,&output));
         D3D11_UNORDERED_ACCESS_VIEW_DESC view{};
-        view.ViewDimension = D3D11_UAV_DIMENSION_BUFFER; view.Buffer.NumElements = 20480;
+        view.ViewDimension = D3D11_UAV_DIMENSION_BUFFER; view.Buffer.NumElements = 24576;
         ComPtr<ID3D11UnorderedAccessView> uav;
         Check(device->CreateUnorderedAccessView(output.Get(),&view,&uav));
         desc.Usage=D3D11_USAGE_STAGING; desc.BindFlags=0; desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ; desc.MiscFlags=0;
@@ -98,7 +101,11 @@ RWStructuredBuffer<uint4> results : register(u0);
             const double expected=std::exp2(double(i)*16/4095)-1;
             Require(std::abs((variance+1)/(expected+1)-1)<0.00010, "GPU quantization error");
             if (state==0 || state==1 || state>=6) Require(reliability==0, "Non-radiant state emitted confidence");
-            else Require(reliability>0 && std::isfinite(reliability), "Dark/occupied state lost reliability");
+            else {
+                const float lightChange=(i&1u)?(192.0f/255.0f):0.0f;
+                const float expectedReliability=(1.0f/(1.0f+variance))*(1.0f-0.35f*lightChange);
+                Require(std::abs(reliability-expectedReliability)<1.0e-6f, "Emitter invalidation removed stale fallback too aggressively");
+            }
             const auto bits=i&15;
             std::uint32_t resolved=0xffffffffu;
             if (!(matching && state>=2 && state<=5) && !(matching && age==0)) {
@@ -124,7 +131,10 @@ RWStructuredBuffer<uint4> results : register(u0);
             const auto material = (i&2) ? 2u : (i&4) ? 1u : 0u;
             Require(data[i+8192][1]==material, "Opaque material classification differs from producer semantics");
             float response{}; memcpy(&response,&data[i+8192][2],4);
-            Require(response == (material==1 ? 0.28f : material==2 ? 0.18f : 0.0f), "Neutral material altered response");
+            Require(response == (material==1 ? 0.12f : material==2 ? 0.09f : 0.0f), "Neutral material altered response");
+            float dampedResponse{}; memcpy(&dampedResponse,&data[i+8192][3],4);
+            Require(std::abs(dampedResponse - 0.09f / (1.0f + variance)) < 1.0e-6f,
+                "Uncertain-cell update response did not fall with measured variance");
             const bool scheduled = state!=2 && state!=4 || ((i/256)%3)>=2 || (((i&63)+((i/64)&3)*4)&15)<4;
             Require(data[i+12288][0]==std::uint32_t(scheduled), "World-space schedule differs from oracle");
             Require(data[i+12288][1]==1 && data[i+12288][2]==1 && data[i+12288][3]==1, "Changed/uncertain/full-budget priority lost");
@@ -135,6 +145,9 @@ RWStructuredBuffer<uint4> results : register(u0);
             unsigned mask=0;
             for(unsigned ray=0;ray<rays;++ray) mask|=1u<<((2*ray+1)*maximum/(2*rays));
             Require(data[i+16384][1]==mask, "Adaptive subset changed reference ray indexing");
+            const auto oldEvidence=i&255u;
+            Require(data[i+20480][0]==(oldEvidence>64u?oldEvidence-64u:0u),
+                "Emitter change evidence did not decay smoothly across cache publications");
         }
         context->Unmap(staging.Get(),0);
         std::cout << "PASS: 4096 WARP production-helper quantization, state, confidence, evidence, cascade and receiver-plane cases\n";

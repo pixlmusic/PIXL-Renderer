@@ -7,7 +7,11 @@ namespace PIXL::HybridGIInternal
 {
     inline std::uint32_t CacheMilliseconds(std::uint32_t clock, float fractionalTick) noexcept
     {
-        const float fraction = std::isfinite(fractionalTick) ? std::clamp(fractionalTick, 0.0f, 1.0f) : 0.0f;
+        // The accumulator is a fraction of the current 8 Hz tick, not an
+        // additional complete tick. Clamp malformed inputs without changing
+        // the expected modulo-2^32 millisecond time base.
+        const float fraction = std::isfinite(fractionalTick) ?
+            std::clamp(fractionalTick, 0.0f, std::nextafter(1.0f, 0.0f)) : 0.0f;
         return clock * 125u + static_cast<std::uint32_t>(fraction * 125.0f);
     }
     // Injection has its own measured domain. Invalid/dormant profiler data

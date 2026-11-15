@@ -77,7 +77,7 @@ public:
 		float volumetricDepthDistributionScale = 8.1f;
 		float volumetricSkyLightingIntensity = 1.49f;
 		float volumetricFogScatteringDistribution = 0.19f;
-		float volumetricHistoryWeight = 0.65f;
+		float volumetricHistoryWeight = 0.82f;
 		uint volumetricHistoryMissSampleCount = 4;
 		float volumetricSampleJitterMultiplier = 0.0f;
 		float volumetricUpsampleJitterMultiplier = 1.0f;

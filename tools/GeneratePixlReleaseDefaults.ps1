@@ -87,6 +87,15 @@ function Apply-QualityContract([object]$Config, [int]$Tier) {
     $Config.'Light Volumes'.ExteriorQuality = [Math]::Min($Tier, 2)
     $Config.'Light Volumes'.InteriorQuality = [Math]::Min($Tier, 2)
 
+    # Keep shadow caster promotion and cache scheduling active across tiers.
+    $grid = $Config.'Radiant Grid'
+    $grid | Add-Member -NotePropertyName EnableLocalShadows -NotePropertyValue $true -Force
+    $grid | Add-Member -NotePropertyName PromoteLocalLightsToShadowCasters -NotePropertyValue $true -Force
+    $grid | Add-Member -NotePropertyName LocalShadowSlots -NotePropertyValue 16 -Force
+    $grid | Add-Member -NotePropertyName LocalShadowResolution -NotePropertyValue 0 -Force
+    $grid | Add-Member -NotePropertyName LocalShadowSamples -NotePropertyValue 8 -Force
+    $grid | Add-Member -NotePropertyName LocalShadowFilterScale -NotePropertyValue 3.0 -Force
+
     $forge = $Config.'Material Forge'
     $forge.EnableSpecularAA = 1
     $forge.SpecularAAStrength = @(0.50, 0.75, 1.34, 1.50)[$Tier]

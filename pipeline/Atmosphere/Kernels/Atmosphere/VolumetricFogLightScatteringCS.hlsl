@@ -102,11 +102,10 @@ float2 FixupHistoryUV(float2 uv, float previousCellDepth, out bool validHistory)
 	float2 fullResOffset = fullResUV - screenCoord;
 	float2 gatherUV = (screenCoord + 1.0f) / size;
 
-	// The conservative depth texture stores farthest depth in red and nearest
-	// depth in green. Reprojection must validate against the nearest surface;
-	// accepting the farthest sample in a mixed sky/geometry froxel preserves old
-	// fog across silhouettes and produces the visible rotation trails.
-	float4 previousSceneDepths = PrevConservativeDepthTexture.GatherGreen(LinearSampler, gatherUV);
+	// Keep the prior conservative-depth acceptance so the fog history remains
+	// continuous across camera motion. The physical camera's post-process ghosting
+	// was addressed there; aggressively rejecting froxel history added noise here.
+	float4 previousSceneDepths = PrevConservativeDepthTexture.GatherRed(LinearSampler, gatherUV);
 	bool4 validSamples = previousSceneDepths >= previousCellDepth;
 
 	validHistory = true;
@@ -328,6 +327,15 @@ float3 AccumulateLocalLightScattering(
 
 		const bool isPointLightLinear = light.lightFlags & RadiantGrid::LightFlags::Linear;
 		float3 lightColor = Color::PointLight(light.color.xyz, isPointLightLinear) * attenuation * light.fade;
+		// Fog is an extended receiver. Reuse the cached Skyrim local shadow map,
+		// but cap it to one gather-filtered tap per froxel so shadowed practicals
+		// do not multiply the volumetric light loop by the material PCF setting.
+		if (VolumetricFogHasLocalShadows && (light.lightFlags & RadiantGrid::LightFlags::LocalShadow)) {
+			const float shadowVisibility = RadiantGrid::GetLocalShadow(
+				LinearSampler, light.localShadowIndex, positionWS,
+				FrameBuffer::CameraPosAdjust.xyz, L, false, 0.0f, 1u);
+			lightColor *= saturate(shadowVisibility);
+		}
 		localScattering += lightColor * phase;
 	}
 
@@ -347,53 +355,6 @@ float3 AccumulateLocalLightScattering(
 	return 0.0f.xxx;
 }
 #endif
-
-float4 ComputeLightScattering(uint3 coord, float3 cellOffset, float directionalShadow)
-{
-	float viewDepth;
-	float3 positionWS = Atmosphere::ComputeCellWorldPosition(coord, cellOffset, viewDepth);
-
-	float4 materialScatteringAndExtinction = VBufferA[coord];
-	float extinction = materialScatteringAndExtinction.w;
-
-	float3 viewDirection = Atmosphere::SafeNormalize(positionWS, float3(0.0f, 0.0f, 1.0f));
-	float phase = Atmosphere::PIXLPhaseFunction(
-		dot(Atmosphere::SafeNormalize(SharedData::DirLightDirection.xyz, float3(0.0f, 0.0f, 1.0f)), viewDirection),
-		SharedData::atmosphereSettings.volumetricFogScatteringDistribution);
-
-	float3 directionalScattering = 0.0f.xxx;
-	[branch] if (SharedData::HasDirectionalShadows && !SharedData::HideSky && !SharedData::InMapMenu)
-	{
-		float directionalMultiplier = SharedData::atmosphereSettings.volumetricDirectionalScatteringIntensity;
-		if (Atmosphere::IsMapAtmosphereActive())
-			directionalMultiplier *= max(SharedData::atmosphereSettings.mapDirectionalInscatteringMultiplier, 0.0f);
-		directionalScattering =
-			SharedData::DirLightColor.xyz *
-			directionalMultiplier *
-			directionalShadow *
-			phase *
-			materialScatteringAndExtinction.rgb;
-	}
-
-	float3 skyScattering = ComputeSkyLightScattering(positionWS) *
-	                       materialScatteringAndExtinction.rgb;
-
-	float3 localScattering = AccumulateLocalLightScattering(
-		coord,
-		cellOffset,
-		positionWS,
-		viewDepth,
-		viewDirection,
-		materialScatteringAndExtinction.rgb);
-
-	float3 emissive = SharedData::atmosphereSettings.volumetricFogEmissive.rgb *
-	                  SharedData::atmosphereSettings.volumetricFogEmissive.a *
-	                  extinction;
-
-	float3 multipleScatter = Atmosphere::PIXLMultipleScatteringCompensation(
-		SharedData::atmosphereSettings.volumetricFogAlbedo.rgb);
-	return float4(max((directionalScattering + skyScattering + localScattering) * multipleScatter + emissive, 0.0f.xxx), extinction);
-}
 
 // The integrated local-light variants exceed the preferred register budget at
 // 256 threads. Two Z slices preserve coverage while improving occupancy.
@@ -428,22 +389,9 @@ float4 ComputeLightScattering(uint3 coord, float3 cellOffset, float directionalS
 	{
 		historyAlpha = 0.0f;
 	}
-	else
-	{
-		// Scattering is view dependent. Reduce reuse in proportion to the
-		// reprojected screen-space travel so static fog remains smooth while camera
-		// rotation cannot drag an old sky-facing lobe over terrain silhouettes.
-		float2 currentVolumeUV = (float2(dispatchID.xy) + 0.5f.xx) * VolumetricFogInvGridSize.xy;
-		float motionInFroxels = length(
-			(historyUV.xy - currentVolumeUV) * float2(VolumetricFogGridSize.xy));
-		// Reduce reuse faster during camera motion so view-dependent scattering
-		// cannot leave a lingering shaft after the current froxel has moved away.
-		historyAlpha *= exp2(-8.0f * motionInFroxels);
-	}
-
-	// Partially rejected history needs the same stable current-frame estimate as a
-	// full miss; otherwise motion trades ghosting for visibly noisy fog.
-	uint sampleCount = historyAlpha < 0.25f ? VolumetricFogHistoryMissSampleCount : 1u;
+	uint sampleCount = historyAlpha < 0.001f ? VolumetricFogHistoryMissSampleCount : 1u;
+	float4 materialScatteringAndExtinction = VBufferA[dispatchID];
+	float extinction = materialScatteringAndExtinction.w;
 	// Shadow visibility varies slowly across the sub-voxel jitter pattern. Sample
 	// the center once and reuse it for all history-miss radiance samples instead
 	// of repeating cascaded shadow PCF and world-space cloud/terrain tests.
@@ -452,19 +400,44 @@ float4 ComputeLightScattering(uint3 coord, float3 cellOffset, float directionalS
 		directionalShadow = SampleDirectionalShadow(centerPositionWS) *
 		                    SampleDirectionalWorldShadow(centerPositionWS);
 	}
-	float4 scatteringAndExtinction = 0.0f.xxxx;
-	[loop] for (uint sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++)
-	{
-		// Per-voxel random noise matching UE's LightScatteringCS:
-		// Rand4DPCG32(int4(GridCoordinate.xyz, StateFrameIndexMod8 + 8 * SampleIndex))
-		// This decorrelates the jitter pattern across voxels, preventing coherent temporal artifacts
-		uint3 Rand32Bits = Rand4DPCG32(int4(dispatchID.xyz, VolumetricFogStateFrameIndexMod8 + 8 * sampleIndex)).xyz;
-		float3 Rand3D = (float3(Rand32Bits) / float(uint(0xffffffff))) * 2.0f - 1.0f;
-		float3 cellOffset = VolumetricFogFrameJitterOffsets[sampleIndex].xyz + VolumetricFogSampleJitterMultiplier * Rand3D;
-
-		scatteringAndExtinction += ComputeLightScattering(dispatchID, cellOffset, directionalShadow);
+	// The fog material is constant per froxel. Evaluate spatially smooth sky and
+	// practical-light irradiance once at its center; history-miss supersampling
+	// only needs to average the view-dependent sun phase. This keeps the authored
+	// local lights, shadows and SkyBounce while avoiding repeated probe and
+	// clustered-light gathers for every history-miss sample.
+	float3 centerViewDirection = Atmosphere::SafeNormalize(centerPositionWS, float3(0.0f, 0.0f, 1.0f));
+	float3 skyScattering = ComputeSkyLightScattering(centerPositionWS) * materialScatteringAndExtinction.rgb;
+	float3 localScattering = AccumulateLocalLightScattering(
+		dispatchID, 0.5f.xxx, centerPositionWS, viewDepth,
+		centerViewDirection, materialScatteringAndExtinction.rgb);
+	float3 directionalScattering = 0.0f.xxx;
+	[branch] if (SharedData::HasDirectionalShadows && !SharedData::HideSky && !SharedData::InMapMenu) {
+		float3 sunDirection = Atmosphere::SafeNormalize(SharedData::DirLightDirection.xyz, float3(0.0f, 0.0f, 1.0f));
+		float phaseSum = 0.0f;
+		[loop] for (uint sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++) {
+			uint3 randomBits = Rand4DPCG32(int4(dispatchID.xyz, VolumetricFogStateFrameIndexMod8 + 8 * sampleIndex)).xyz;
+			float3 randomOffset = (float3(randomBits) / float(uint(0xffffffff))) * 2.0f - 1.0f;
+			float3 cellOffset = VolumetricFogFrameJitterOffsets[sampleIndex].xyz + VolumetricFogSampleJitterMultiplier * randomOffset;
+			float sampleDepth;
+			float3 samplePositionWS = Atmosphere::ComputeCellWorldPosition(dispatchID, cellOffset, sampleDepth);
+			float3 viewDirection = Atmosphere::SafeNormalize(samplePositionWS, float3(0.0f, 0.0f, 1.0f));
+			phaseSum += Atmosphere::PIXLPhaseFunction(
+				dot(sunDirection, viewDirection),
+				SharedData::atmosphereSettings.volumetricFogScatteringDistribution);
+		}
+		float directionalMultiplier = SharedData::atmosphereSettings.volumetricDirectionalScatteringIntensity;
+		if (Atmosphere::IsMapAtmosphereActive())
+			directionalMultiplier *= max(SharedData::atmosphereSettings.mapDirectionalInscatteringMultiplier, 0.0f);
+		directionalScattering = SharedData::DirLightColor.xyz * directionalMultiplier *
+			directionalShadow * (phaseSum / float(sampleCount)) * materialScatteringAndExtinction.rgb;
 	}
-	scatteringAndExtinction *= rcp(float(sampleCount));
+	float3 emissive = SharedData::atmosphereSettings.volumetricFogEmissive.rgb *
+		SharedData::atmosphereSettings.volumetricFogEmissive.a * extinction;
+	float3 multipleScatter = Atmosphere::PIXLMultipleScatteringCompensation(
+		SharedData::atmosphereSettings.volumetricFogAlbedo.rgb);
+	float4 scatteringAndExtinction = float4(
+		max((directionalScattering + skyScattering + localScattering) * multipleScatter + emissive, 0.0f.xxx),
+		extinction);
 
 	[branch] if (historyAlpha > 0.0f)
 	{

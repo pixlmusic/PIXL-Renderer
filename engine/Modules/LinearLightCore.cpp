@@ -122,6 +122,7 @@ void LinearLightCore::RestoreDefaultSettings()
 void LinearLightCore::SetupResources()
 {
 	PerGeometryCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<PerGeometryData>());
+	perGeometryDataInitialized = false;
 }
 
 void LinearLightCore::Prepass()
@@ -234,7 +235,14 @@ void LinearLightCore::BSLightingShader_SetupGeometry(RE::BSRenderPass* a_pass)
 	const float authoredEmissive = lightProperty ? lightProperty->emissiveMult : 1.0f;
 	PerGeometryData perGeometryData{};
 	perGeometryData.emissiveMult = std::isfinite(authoredEmissive) ? std::max(authoredEmissive, 0.0f) : 1.0f;
-	PerGeometryCB->Update(perGeometryData);
+	// Most opaque geometry uses the same authored value. Re-discarding this
+	// 16-byte buffer for every draw consumes driver work and can stall behind
+	// earlier draws; the unchanged buffer remains valid until its value changes.
+	if (!perGeometryDataInitialized || lastPerGeometryEmissive != perGeometryData.emissiveMult) {
+		PerGeometryCB->Update(perGeometryData);
+		lastPerGeometryEmissive = perGeometryData.emissiveMult;
+		perGeometryDataInitialized = true;
+	}
 	ID3D11Buffer* buffer = PerGeometryCB->CB();
 	globals::d3d::context->PSSetConstantBuffers(8, 1, &buffer);
 }

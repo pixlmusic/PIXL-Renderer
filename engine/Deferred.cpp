@@ -386,7 +386,10 @@ void Deferred::DeferredPasses()
 	const auto sharedReflections = PIXL::Renderer::ReflectionContext::Get().Acquire();
 	if (sharedReflections.valid)
 		ssgi_gi_spec = sharedReflections.radianceConfidence.get();
-	bool ssgi_hq_spec = ssgi.settings.EnableExperimentalSpecularGI;
+	// A requested reflection mode can fail independently of diffuse GI (shader
+	// compilation or Hi-Z allocation). Only consume the specular texture when
+	// HybridGI published a valid result for this frame.
+	const bool ssgi_hq_spec = ssgi.settings.EnableExperimentalSpecularGI && sharedReflections.valid;
 	pixlGIDebugCB->Update(PixlGIDebugData{
 		globals::pipeline::materialLayers.showEffectsDepthDebug ? 100u : ssgi.settings.DebugView,
 		ssgi.settings.DebugGain,
@@ -418,7 +421,7 @@ void Deferred::DeferredPasses()
 			REX::W32::AsReal(normalRoughness.SRV),                                                          // t2  NormalRoughnessTexture
 			REX::W32::AsReal(masks.SRV),                                                                    // t3  MasksTexture
 			globals::pipeline::materialLayers.GetEffectsDepth(Util::GetCurrentSceneDepthSRV(false)), // t4 effects depth, raster fallback
-			worldProbes.loaded ? REX::W32::AsReal(reflectance.SRV) : nullptr,                            // t5  ReflectanceTexture
+			REX::W32::AsReal(reflectance.SRV),                                                       // t5  ReflectanceTexture (also used by SSR)
 			worldProbes.loaded && worldProbes.envTexture ? worldProbes.envTexture->srv.get() : nullptr,          // t6  EnvTexture
 			worldProbes.loaded && worldProbes.envReflectionsTexture ? worldProbes.envReflectionsTexture->srv.get() : nullptr, // t7 EnvReflectionsTexture
 			worldProbes.loaded && skyBounce.loaded && skyBounce.texProbeArray ? skyBounce.texProbeArray->srv.get() : nullptr, // t8 SkyBounceProbeArray
@@ -444,6 +447,16 @@ void Deferred::DeferredPasses()
 		context->CSSetUnorderedAccessViews(0, ARRAYSIZE(uavs), uavs, nullptr);
 
 		auto shader = interior ? GetComputeMainCompositeInterior() : GetComputeMainComposite();
+		static int lastLightingInputs = -1;
+		const int lightingInputs = (shader ? 1 : 0) | (ssgi_ao ? 2 : 0) |
+			(ssgi_y ? 4 : 0) | (ssgi_cocg ? 8 : 0) | (ssgi_bent_visibility ? 16 : 0) |
+			(interior ? 32 : 0);
+		if (lightingInputs != lastLightingInputs) {
+			logger::info("[Deferred] Final lighting inputs: composite={} AO={} diffuseY={} diffuseCoCg={} bentVisibility={} interior={}.",
+				shader != nullptr, ssgi_ao != nullptr, ssgi_y != nullptr, ssgi_cocg != nullptr,
+				ssgi_bent_visibility != nullptr, interior);
+			lastLightingInputs = lightingInputs;
+		}
 		context->CSSetShader(shader, nullptr, 0);
 		if (shader && dispatchCount.x > 0 && dispatchCount.y > 0) {
 			TracyD3D11Zone(globals::state->tracyCtx, "Deferred Composite - Dispatch");

@@ -79,10 +79,15 @@ namespace
 		// while the main/render threads continue presenting the progress overlay.
 		logger::info("Foreground shader compilation active; keeping the PIXL compiler panel live until the gate is released");
 		std::thread([shaderCache]() {
+			uint32_t progressTicks = 0;
 			while (shaderCache->IsCompiling() &&
 			       !shaderCache->backgroundCompilation.load(std::memory_order_acquire) &&
 			       !globals::game::quitGame.load(std::memory_order_acquire)) {
 				std::this_thread::sleep_for(100ms);
+				if (++progressTicks >= 100) {
+					progressTicks = 0;
+					shaderCache->LogForegroundTaskProgress();
+				}
 			}
 
 			if (globals::game::quitGame.load(std::memory_order_acquire)) {
@@ -292,6 +297,7 @@ bool Load()
 	I18n::GetSingleton()->Init();
 
 	state->Load();
+	globals::shaderCache->ApplyStartupCompilerThreadSettings();
 	state->LoadTheme();  // Load theme settings from SettingsTheme.json
 
 	// Initialize theme system - create default themes and discover existing ones

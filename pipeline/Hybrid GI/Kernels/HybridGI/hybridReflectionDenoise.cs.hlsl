@@ -32,8 +32,9 @@ void main(uint2 dtid : SV_DispatchThreadID)
 
     float2 uv = (dtid + 0.5f) * RCP_OUT_FRAME_DIM;
     float4 center = srcReflection[dtid];
+    center = all(isfinite(center)) ? float4(max(center.rgb, 0.0f), saturate(center.a)) : 0.0f;
     float centerDepth = READ_DEPTH(srcDepth, dtid);
-    if (centerDepth <= FP_Z || centerDepth >= DepthFadeRange.y) {
+    if (!isfinite(centerDepth) || centerDepth <= FP_Z || centerDepth >= DepthFadeRange.y) {
         outReflection[dtid] = 0.0f;
         return;
     }
@@ -65,6 +66,10 @@ void main(uint2 dtid : SV_DispatchThreadID)
 
         float4 sampleValue = srcReflection[qu];
         float sampleDepth = READ_DEPTH(srcDepth, qu);
+        if (!isfinite(sampleDepth) || sampleDepth <= FP_Z || sampleDepth >= DepthFadeRange.y)
+            continue;
+        sampleValue = all(isfinite(sampleValue)) ?
+            float4(max(sampleValue.rgb, 0.0f), saturate(sampleValue.a)) : 0.0f;
         float4 sampleNR = FULLRES_LOAD(srcNormalRoughness, qu, FullFrameTextureUV(quv), samplerLinearClamp);
         float3 sampleNormal = GBuffer::DecodeNormal(sampleNR.xy);
         float sampleRoughness = saturate(1.0f - sampleNR.z);
@@ -75,9 +80,9 @@ void main(uint2 dtid : SV_DispatchThreadID)
         normalWeight *= normalWeight;
         float roughnessWeight = exp2(-abs(sampleRoughness - centerRoughness) * 12.0f);
         float sampleConfidence = saturate(sampleValue.a);
-        // Near-empty samples must not drag a valid neighbourhood toward black.
-        // Square confidence so reliable observations dominate hole reconstruction.
-        float confidenceWeight = 0.05f + 0.95f * sampleConfidence * sampleConfidence;
+        // A zero-confidence sample contains no reflected observation. Giving
+        // it a baseline weight pulls valid neighbouring reflections to black.
+        float confidenceWeight = sampleConfidence * sampleConfidence;
         float w = PIXL_REFLECTION_SPATIAL[i] * depthWeight * normalWeight * roughnessWeight * confidenceWeight;
 
         // Keep a bright stochastic outlier from spreading through the filter,

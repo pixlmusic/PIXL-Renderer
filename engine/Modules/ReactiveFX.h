@@ -115,6 +115,9 @@ struct ReactiveFX : RenderModule
 	// alters the grass vertex path; impulses remain available to GPU particles.
 	bool HasShaderDefine(RE::BSShader::Type) override { return false; }
 	bool AffectsCachedShader(RE::BSShader::Type, std::uint32_t, CachedShaderStage) override { return false; }
+	// ReactiveFX is standalone compute work and does not participate in the
+	// persistent Skyrim shader permutation library.
+	bool HasNoPipelinePermutationDependencies() const override { return true; }
 	std::pair<std::string, std::vector<std::string>> GetModuleSummary() override;
 
 	void SetupResources() override;

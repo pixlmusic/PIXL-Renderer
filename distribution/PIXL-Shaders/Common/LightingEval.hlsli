@@ -65,7 +65,7 @@ IndirectContext CreateIndirectLightingContext(float3 worldNormal, float3 vertexN
 	return context;
 }
 
-/** PIXL's finite-emitter inverse-distance path before user blending. */
+/** PIXL's finite-emitter inverse-square path before user blending. */
 float GetPhysicalLocalLightAttenuation(float distance, float radius, float fadeZone, float sizeBias)
 {
 	distance = IsFiniteLightingScalar(distance) ? max(distance, 0.0f) : 0.0f;
@@ -73,11 +73,12 @@ float GetPhysicalLocalLightAttenuation(float distance, float radius, float fadeZ
 	fadeZone = IsFiniteLightingScalar(fadeZone) ? max(fadeZone, 0.0f) : 0.0f;
 	sizeBias = IsFiniteLightingScalar(sizeBias) ? max(sizeBias, 0.0f) : 0.0f;
 	float emitterRadius = max(SharedData::materialForgeSettings.LocalLightMinimumDistance, 1.0f);
-	float denominator = sqrt(max(distance * distance + max(sizeBias, emitterRadius * emitterRadius), 1.0f));
-	// Use inverse-distance (1/d) attenuation. The source intensity is already
+	float denominator = max(distance * distance + max(sizeBias, emitterRadius * emitterRadius), 1.0f);
+	// Use inverse-square (1/d^2) attenuation. The source intensity is already
 	// carried by the light colour/fade payload; the finite emitter radius keeps
 	// the near-field response bounded for authored practical lights.
-	float physicalAttenuation = saturate((0.8f * METRES_TO_UNITS) / denominator);
+	float referenceDistance = 0.8f * METRES_TO_UNITS;
+	float physicalAttenuation = saturate(referenceDistance * referenceDistance / denominator);
 
 	float effectiveFadeZone = fadeZone > 0.0f ? fadeZone : rcp(max(radius * 0.2f, 1.0f));
 	float cutoff = saturate((radius - distance) * effectiveFadeZone);
@@ -245,6 +246,15 @@ namespace PhysicalLighting
 		lightingOutput = (DirectLightingOutput)0;
 		legacyPhysicalDelta = 0.0.xxx;
 		legacyPhysicalApplied = 0.0;
+#	if defined(HAIR) && defined(STRAND_SHADING)
+		// Material Forge may be globally active while the current permutation is
+		// hair. Route those draws through the same authored strand model as legacy
+		// hair so Strand Shading controls remain effective on PBR-enabled setups.
+		[branch] if (allowEnhancedLighting && SharedData::strandShadingSettings.Enabled) {
+			Hair::GetHairDirectLight(lightingOutput, context, material, tbnTr, uv);
+			return;
+		}
+#	endif
 #if defined(MATERIAL_FORGE)
 		PBR::GetDirectLightInput(lightingOutput, context, material, tbnTr, uv);
 #else
@@ -257,12 +267,6 @@ namespace PhysicalLighting
 		// normalized GGX and configured local-light falloff remain active during gameplay.
 		if (!allowEnhancedLighting) {
 			EvaluateLegacyVanillaDirect(context, material, uv, uv_ddx, uv_ddy, lightingOutput);
-			return;
-		}
-#	endif
-#	if defined(HAIR) && defined(STRAND_SHADING)
-		if (SharedData::strandShadingSettings.Enabled) {
-			Hair::GetHairDirectLight(lightingOutput, context, material, tbnTr, uv);
 			return;
 		}
 #	endif
@@ -357,15 +361,15 @@ namespace PhysicalLighting
 	void EvaluateIndirect(out IndirectLobeWeights lobeWeights, IndirectContext context, MaterialProperties material, float2 uv)
 	{
 		lobeWeights = (IndirectLobeWeights)0;
-#if defined(MATERIAL_FORGE)
-		PBR::GetIndirectLobeWeights(lobeWeights, context, material);
-#else
 #	if defined(HAIR) && defined(STRAND_SHADING)
 		if (SharedData::strandShadingSettings.Enabled) {
 			Hair::GetHairIndirectLobeWeights(lobeWeights, context, material, uv);
 			return;
 		}
 #	endif
+#if defined(MATERIAL_FORGE)
+		PBR::GetIndirectLobeWeights(lobeWeights, context, material);
+#else
 #	if defined(SKIN) && defined(PIXL_SKIN)
 		if (SharedData::skinOpticsData.skinParams.w > 0.0f) {
 			SkinOptics::SkinIndirectLobeWeights(lobeWeights, material, context);

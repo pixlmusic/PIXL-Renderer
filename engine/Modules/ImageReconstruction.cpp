@@ -437,6 +437,20 @@ void ImageReconstruction::DrawSettings()
 				const bool configuredAtBoot = d3d12SwapChainActive && neuralRenderingProvisionedAtBoot;
 				if (settings.neuralRenderingEnabled && !configuredAtBoot)
 					Util::Text::Warning("Restart required to create the PIXL DX12 sidecar for Neural Rendering.");
+				if (settings.neuralRenderingEnabled && configuredAtBoot) {
+					const auto status = neuralRendering.GetStatus();
+					if (status == NeuralRendering::Status::Initialized) {
+						ImGui::TextColored(ImVec4(0.42f, 0.82f, 0.64f, 1.0f),
+							"ACTIVE — %llu neural frames", neuralRendering.GetSuccessfulFrames());
+					} else if (status == NeuralRendering::Status::NotProbed ||
+						status == NeuralRendering::Status::Ready) {
+						ImGui::TextColored(ImVec4(0.83f, 0.75f, 0.42f, 1.0f),
+							"Enabled — waiting for a supported DLSS frame");
+					} else {
+						Util::Text::Warning("Enabled in settings, but unavailable: %s",
+							neuralRendering.GetDetail().c_str());
+					}
+				}
 				if (settings.frameGenerationMode)
 					ImGui::TextWrapped("Frame Generation is scheduled after the neural presentation copy and uses dedicated raw depth/motion guides.");
 				if (globals::pipeline::cameraSuite.loaded && globals::pipeline::cameraSuite.settings.enableHDR)
@@ -926,7 +940,6 @@ struct BSImageSpace_Init_FXAA
 void ImageReconstruction::PostPostLoad()
 {
 	bool isGOG = !GetModuleHandle(L"steam_api64.dll");
-	stl::detour_thunk<MenuManagerDrawInterfaceStartHook>(REL::RelocationID(79947, 82084));
 
 	// The old AE call site is not a call boundary in Skyrim 1.7.104.
 	if (REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104) {
@@ -1255,6 +1268,16 @@ ID3D11PixelShader* ImageReconstruction::GetUnderwaterMaskUpscalePS()
 	return underwaterMaskUpscalePS.get();
 }
 
+ID3D11PixelShader* ImageReconstruction::GetSpatialFallbackPS()
+{
+	if (!spatialFallbackPS) {
+		logger::debug("Compiling SpatialFallbackPS.hlsl");
+		spatialFallbackPS.attach((ID3D11PixelShader*)Util::CompileShader(
+			L"Data/PIXL-Shaders/ImageReconstruction/SpatialFallbackPS.hlsl", { { "PSHADER", "" } }, "ps_5_0"));
+	}
+	return spatialFallbackPS.get();
+}
+
 ID3D11VertexShader* ImageReconstruction::GetUpscaleVS()
 {
 	if (!upscaleVS) {
@@ -1420,6 +1443,29 @@ void ImageReconstruction::ConfigureTAA()
 void ImageReconstruction::ConfigureUpscaling(RE::BSGraphics::State* a_viewport)
 {
 	auto upscaleMethod = GetUpscaleMethod();
+	const auto configuredMethod = static_cast<std::uint32_t>(upscaleMethod);
+	const auto configuredQuality = settings.qualityMode;
+	if (lastConfiguredUpscaleMethod == UINT32_MAX ||
+		lastConfiguredUpscaleMethod != configuredMethod ||
+		lastConfiguredQualityMode != configuredQuality) {
+		const bool changed = lastConfiguredUpscaleMethod != UINT32_MAX &&
+			(lastConfiguredUpscaleMethod != configuredMethod || lastConfiguredQualityMode != configuredQuality);
+		lastConfiguredUpscaleMethod = configuredMethod;
+		lastConfiguredQualityMode = configuredQuality;
+		if (reconstructionHistoryId != 0) {
+			PIXL::Renderer::TemporalContext::Get().InvalidateHistory(
+				reconstructionHistoryId, PIXL::Renderer::TemporalInvalidationReason::SettingsChange);
+		} else {
+			pendingDLSSReset.store(true, std::memory_order_release);
+			pendingNeuralRenderingReset.store(true, std::memory_order_release);
+			FidelityFX::needsReset.store(true, std::memory_order_release);
+		}
+		if (changed) {
+			logger::info(
+				"[ImageReconstruction] Backend/input mode changed: method={} quality={}; temporal histories reset.",
+				configuredMethod, configuredQuality);
+		}
+	}
 
 	// Delete or create resources as necessary
 	CheckResources(upscaleMethod);
@@ -1615,6 +1661,7 @@ void ImageReconstruction::ClearShaderCache()
 	dx12SwapChain.neuralGuides = {};
 	depthRefractionUpscalePS = nullptr;  // com_ptr automatically releases
 	underwaterMaskUpscalePS = nullptr;   // com_ptr automatically releases
+	spatialFallbackPS = nullptr;         // com_ptr automatically releases
 	upscaleVS = nullptr;                 // com_ptr automatically releases
 }
 
@@ -2535,6 +2582,13 @@ void ImageReconstruction::PerformUpscaling()
 	ZoneScoped;
 	TracyD3D11Zone(globals::state->tracyCtx, "ImageReconstruction");
 	Upscale();
+	// A failed DLSS evaluation leaves the scene at its reduced render extent.
+	// Resolve it before full-resolution image-space processing; otherwise Skyrim
+	// 1.7.104 can present the input-sized rectangle in the upper-left of the view.
+	if (GetUpscaleMethod() == UpscaleMethod::kDLSS && !HasCurrentDLSSFrame() &&
+		std::min(resolutionScale.x, resolutionScale.y) < 0.99f) {
+		ApplySpatialFallback();
+	}
 	UpscaleDepth();
 
 	auto& runtimeData = globals::game::graphicsState->GetRuntimeData();
@@ -2552,6 +2606,91 @@ void ImageReconstruction::PerformUpscaling()
 
 	// Updates the PerFrame constant buffer so that dynamic resolution settings are disabled
 	UpdateCameraData();
+	if (REL::Module::get().version() == SKSE::RUNTIME_SSE_1_7_104) {
+		// UpscaleDepth leaves its last pass at half display resolution. The engine's
+		// UpdateViewPort may retain a cached viewport even after the ratios change,
+		// so establish the actual D3D state consumed by the next image-space draw.
+		const auto outputWidth = globals::game::graphicsState->screenWidth;
+		const auto outputHeight = globals::game::graphicsState->screenHeight;
+		const D3D11_VIEWPORT outputViewport{
+			0.0f, 0.0f, static_cast<float>(outputWidth), static_cast<float>(outputHeight), 0.0f, 1.0f
+		};
+		const D3D11_RECT outputScissor{
+			0, 0, static_cast<LONG>(outputWidth), static_cast<LONG>(outputHeight)
+		};
+		globals::d3d::context->RSSetViewports(1, &outputViewport);
+		globals::d3d::context->RSSetScissorRects(1, &outputScissor);
+	}
+}
+
+void ImageReconstruction::ApplySpatialFallback()
+{
+	static bool fallbackWarningLogged = false;
+	auto* context = globals::d3d::context;
+	auto* renderer = globals::game::renderer;
+	auto* deferred = globals::deferred;
+	if (!context || !renderer || !deferred || !deferred->linearSampler || !sharpenerTexture ||
+		!sharpenerTexture->resource || !sharpenerTexture->srv || !upscaleBlendState || !upscaleRasterizerState || !upscalingDataCB)
+		return;
+
+	auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+	if (!main.texture || !main.RTV)
+		return;
+	auto* fullscreenVS = GetUpscaleVS();
+	auto* fallbackPS = GetSpatialFallbackPS();
+	if (!fullscreenVS || !fallbackPS)
+		return;
+
+	const float outputWidth = static_cast<float>(globals::game::graphicsState->screenWidth);
+	const float outputHeight = static_cast<float>(globals::game::graphicsState->screenHeight);
+	if (!(outputWidth > 0.0f && outputHeight > 0.0f))
+		return;
+	const auto inputSize = Util::ConvertToDynamic(float2{ outputWidth, outputHeight });
+	UpscalingDataCB fallbackData{};
+	fallbackData.trueSamplingDim = { std::clamp(inputSize.x, 1.0f, outputWidth), std::clamp(inputSize.y, 1.0f, outputHeight) };
+	upscalingDataCB->Update(fallbackData);
+
+	// Copy to the separate full-size allocation so the fallback draw never reads
+	// from the same resource it is writing.
+	context->OMSetRenderTargets(0, nullptr, nullptr);
+	context->CopyResource(sharpenerTexture->resource.get(), REX::W32::AsReal(main.texture));
+	context->IASetInputLayout(nullptr);
+	context->IASetVertexBuffers(0, 0, nullptr, nullptr, nullptr);
+	context->IASetIndexBuffer(nullptr, DXGI_FORMAT_UNKNOWN, 0);
+	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	const D3D11_VIEWPORT viewport{ 0.0f, 0.0f, outputWidth, outputHeight, 0.0f, 1.0f };
+	context->RSSetViewports(1, &viewport);
+	const D3D11_RECT scissor{ 0, 0, static_cast<LONG>(outputWidth), static_cast<LONG>(outputHeight) };
+	context->RSSetScissorRects(1, &scissor);
+	context->RSSetState(upscaleRasterizerState.get());
+	context->OMSetBlendState(upscaleBlendState.get(), nullptr, 0xffffffff);
+	context->OMSetDepthStencilState(nullptr, 0);
+	ID3D11RenderTargetView* target = REX::W32::AsReal(main.RTV);
+	context->OMSetRenderTargets(1, &target, nullptr);
+	ID3D11ShaderResourceView* source = sharpenerTexture->srv.get();
+	context->PSSetShaderResources(0, 1, &source);
+	ID3D11SamplerState* sampler = deferred->linearSampler;
+	context->PSSetSamplers(0, 1, &sampler);
+	ID3D11Buffer* fallbackConstants = upscalingDataCB->CB();
+	context->PSSetConstantBuffers(0, 1, &fallbackConstants);
+	context->VSSetShader(fullscreenVS, nullptr, 0);
+	context->PSSetShader(fallbackPS, nullptr, 0);
+	context->Draw(3, 0);
+
+	ID3D11ShaderResourceView* nullSRV = nullptr;
+	context->PSSetShaderResources(0, 1, &nullSRV);
+	ID3D11SamplerState* nullSampler = nullptr;
+	context->PSSetSamplers(0, 1, &nullSampler);
+	ID3D11Buffer* nullBuffer = nullptr;
+	context->PSSetConstantBuffers(0, 1, &nullBuffer);
+	context->OMSetRenderTargets(0, nullptr, nullptr);
+	context->PSSetShader(nullptr, nullptr, 0);
+	context->VSSetShader(nullptr, nullptr, 0);
+	if (!fallbackWarningLogged) {
+		fallbackWarningLogged = true;
+		logger::warn("[ImageReconstruction] DLSS did not produce this frame; spatial fallback is active at {}x{}.",
+			static_cast<std::uint32_t>(outputWidth), static_cast<std::uint32_t>(outputHeight));
+	}
 }
 
 void ImageReconstruction::UpscaleDepth()
@@ -2712,6 +2851,16 @@ void ImageReconstruction::UpscaleDepth()
 
 	ID3D11ShaderResourceView* nullPSResources[3] = { nullptr, nullptr, nullptr };
 	context->PSSetShaderResources(0, ARRAYSIZE(nullPSResources), nullPSResources);
+	// The underwater mask is half resolution. Return the rasterizer to the
+	// display dimensions before any subsequent image-space or UI draw; the
+	// engine may skip its own viewport update when its cached size is unchanged.
+	viewport.Width = screenSize.x;
+	viewport.Height = screenSize.y;
+	context->RSSetViewports(1, &viewport);
+	const D3D11_RECT displayScissor{
+		0, 0, static_cast<LONG>(screenSize.x), static_cast<LONG>(screenSize.y)
+	};
+	context->RSSetScissorRects(1, &displayScissor);
 
 	state->EndPerfEvent();
 }
@@ -2736,7 +2885,9 @@ void ImageReconstruction::ApplySharpening()
 	context->OMSetRenderTargets(0, nullptr, nullptr);
 
 	bool sharpened = false;
-	if (settings.sharpnessEnabledDLSS && settings.sharpnessDLSS > 0.0f && main.UAV) {
+	const bool dlssIsActuallyUpscaling =
+		std::min(resolutionScale.x, resolutionScale.y) < 0.99f;
+	if (dlssIsActuallyUpscaling && settings.sharpnessEnabledDLSS && settings.sharpnessDLSS > 0.0f && main.UAV) {
 		// Match FSR3's slider->RCAS conversion exactly (ffx_fsr3upscaler.cpp + FsrRcasCon):
 		//   sharpenessRemapped = -2*slider + 2   (sharpness in stops)
 		//   rcasAttenuation    = exp2(-sharpenessRemapped) = exp2(2*slider - 2)
@@ -2748,7 +2899,15 @@ void ImageReconstruction::ApplySharpening()
 			static_cast<float>(globals::game::graphicsState->screenWidth),
 			static_cast<float>(globals::game::graphicsState->screenHeight)
 		};
-		const float2 inputDimensions = Util::ConvertToDynamic(outputDimensions);
+		// PerformUpscaling has already locked dynamic resolution and restored the
+		// display viewport. ConvertToDynamic now returns display dimensions, but
+		// reactive, transparency and motion guides still occupy the scene's
+		// reduced input rectangle. Use the retained render scale for RCAS's
+		// output-to-guide coordinate mapping.
+		const float2 inputDimensions{
+			std::max(1.0f, std::floor(outputDimensions.x * resolutionScale.x)),
+			std::max(1.0f, std::floor(outputDimensions.y * resolutionScale.y))
+		};
 		const auto annotations = PIXL::Renderer::PixelAnnotations::Get().Acquire();
 		sharpened = rcas.ApplySharpen(
 			sharpenerTexture->srv.get(),
@@ -2773,21 +2932,6 @@ void ImageReconstruction::Main_UpdateJitter::thunk(RE::BSGraphics::State* a_stat
 	globals::pipeline::imageReconstruction.ConfigureTAA();
 	func(a_state);
 	globals::pipeline::imageReconstruction.ConfigureUpscaling(a_state);
-}
-
-void ImageReconstruction::MenuManagerDrawInterfaceStartHook::thunk(int64_t a1)
-{
-	globals::pipeline::imageReconstruction.PostDisplay();
-
-	// For non-Frame Gen HDR: redirect kFRAMEBUFFER.RTV to UI texture before vanilla UI renders
-	// When FG is active, its SetUIBuffer redirects to uiBufferWrapped instead
-	// When Camera Suite is not loaded, skip entirely so vanilla UI renders to kFRAMEBUFFER
-	auto& imageReconstruction = globals::pipeline::imageReconstruction;
-	if (!imageReconstruction.d3d12SwapChainActive && globals::pipeline::cameraSuite.loaded) {
-		globals::pipeline::cameraSuite.SetUIBuffer();
-	}
-
-	func(a1);
 }
 
 void ImageReconstruction::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_this, uint32_t a3, RE::RENDER_TARGET a_target, void* a_4, bool a_5)
@@ -2828,8 +2972,29 @@ void ImageReconstruction::Main_PostProcessing::thunk(RE::ImageSpaceManager* a_th
 	bool hdrLoaded = globals::pipeline::cameraSuite.loaded;
 	if (hdrLoaded)
 		globals::pipeline::cameraSuite.RedirectFramebuffer();
+	static bool loggedDLSSImageSpaceViewport = false;
+	const bool inspectDLSSImageSpaceViewport = !loggedDLSSImageSpaceViewport &&
+		imageReconstruction.HasCurrentDLSSFrame() && globals::d3d::context;
+	D3D11_VIEWPORT viewportBefore{};
+	UINT viewportCountBefore = 1;
+	if (inspectDLSSImageSpaceViewport)
+		globals::d3d::context->RSGetViewports(&viewportCountBefore, &viewportBefore);
 
 	func(a_this, a3, a_target, a_4, a_5);
+	if (inspectDLSSImageSpaceViewport) {
+		D3D11_VIEWPORT viewportAfter{};
+		UINT viewportCountAfter = 1;
+		globals::d3d::context->RSGetViewports(&viewportCountAfter, &viewportAfter);
+		const auto& resolution = globals::game::graphicsState->GetRuntimeData();
+		logger::info(
+			"[ImageReconstruction] DLSS image-space viewport: before={}x{}, after={}x{}, current ratio={:.3f}x{:.3f}, previous ratio={:.3f}x{:.3f}, lock={}, target={}.",
+			viewportCountBefore ? viewportBefore.Width : 0.0f, viewportCountBefore ? viewportBefore.Height : 0.0f,
+			viewportCountAfter ? viewportAfter.Width : 0.0f, viewportCountAfter ? viewportAfter.Height : 0.0f,
+			resolution.dynamicResolutionWidthRatio, resolution.dynamicResolutionHeightRatio,
+			resolution.dynamicResolutionPreviousWidthRatio, resolution.dynamicResolutionPreviousHeightRatio,
+			resolution.dynamicResolutionLock, static_cast<unsigned>(a_target));
+		loggedDLSSImageSpaceViewport = true;
+	}
 
 	// Restore kFRAMEBUFFER after ISHDR — hdrTexture now has the HDR scene
 	if (hdrLoaded)
@@ -2842,7 +3007,6 @@ void ImageReconstruction::SetScissorRect::thunk(RE::BSGraphics::Renderer* This, 
 {
 	auto viewport = globals::game::graphicsState;
 	auto& runtimeData = viewport->GetRuntimeData();
-
 	if (!runtimeData.dynamicResolutionLock) {
 		a_left = static_cast<int>(a_left * runtimeData.dynamicResolutionWidthRatio);
 		a_right = static_cast<int>(a_right * runtimeData.dynamicResolutionWidthRatio);

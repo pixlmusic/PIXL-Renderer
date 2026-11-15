@@ -98,6 +98,8 @@ struct LinearLightCore : RenderModule
 	};
 
 	std::unique_ptr<ConstantBuffer> PerGeometryCB;
+	bool perGeometryDataInitialized = false;
+	float lastPerGeometryEmissive = 1.0f;
 
 	uint isDirLightLinear = false;
 	float dirLightMult = 1.0f;

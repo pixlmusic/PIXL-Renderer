@@ -76,14 +76,16 @@ cbuffer PerFrame : register(b1)
 	parameters.FalloffStart = clamp((half)FalloffStart, 0.0h, 65500.0h);
 	parameters.FalloffEnd = clamp((half)FalloffEnd, parameters.FalloffStart + 0.25h, 65504.0h);
 
-	// Broad, flat interior floors still produced dark stepped blotches whenever
-	// repeated depth discontinuities were classified as edge casters. Prefer
-	// stability in PIXL's default screen-space shadow build.
-	parameters.IgnoreEdgePixels = true;
+	// Excluding every edge pixel removes thin/foliage casters and leaves
+	// dashed silhouettes. The Bend edge threshold + modest bridge below
+	// handle discontinuities without discarding the whole caster.
+	parameters.IgnoreEdgePixels = false;
 
 	parameters.DynamicRes = clamp(abs(DynamicRes), 1.0f / 16.0f, 16.0f);
 
-	parameters.UsePrecisionOffset = true;
+	// Precision offset biases receivers behind very thin surfaces, creating
+	// detached contact silhouettes. Depth comparison already has thickness.
+	parameters.UsePrecisionOffset = false;
 
 	WriteScreenSpaceShadow(parameters, groupID, groupThreadID);
 }

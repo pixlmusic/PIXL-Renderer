@@ -2619,10 +2619,20 @@ void PixelCapture::StartPhotoFinishCapture()
 	PhotoFinishBurst burst;
 	burst.addPixlWatermark = photoWatermarkEnabled;
 	burst.useNeuralSource = useNeuralSource;
+	const auto& ssgiSettings = globals::pipeline::hybridGI.settings;
+	const std::uint32_t ssgiWarmupFrames =
+		globals::pipeline::hybridGI.loaded && ssgiSettings.Enabled && ssgiSettings.EnableGI &&
+		ssgiSettings.EnableTemporalDenoiser
+			? std::clamp(ssgiSettings.MaxAccumFrames, 1u, 64u)
+			: 0u;
 	burst.warmupFramesTotal =
 		photoFinishLightingWarmupFrames >= 16u ? 16u :
 		photoFinishLightingWarmupFrames >= 8u ? 8u :
 		photoFinishLightingWarmupFrames >= 4u ? 4u : 0u;
+	// The SSGI temporal target is reset when the Photo Finish render override
+	// starts. Wait through its configured history convergence before jittered
+	// presentation samples begin, so every offline sample contains settled GI.
+	burst.warmupFramesTotal = std::max(burst.warmupFramesTotal, ssgiWarmupFrames);
 	burst.warmupFramesRemaining = burst.warmupFramesTotal;
 	if (useNeuralSource && burst.warmupFramesTotal < 4u) {
 		burst.warmupFramesTotal = 4u;
@@ -2876,8 +2886,9 @@ void PixelCapture::StartPhotoFinishCapture()
 		0.02f);
 
 	logger::info(
-		"Photo Finish transaction started: {} lighting/post warmup frame(s), {} actual sample(s), {:.0f}% render scale, {}x output, neural convergence tier {}, detail {:.2f}, motion {}, projection jitter {}, neural source {}.",
+		"Photo Finish transaction started: {} lighting/post warmup frame(s) (SSGI history target {}), {} actual sample(s), {:.0f}% render scale, {}x output, neural convergence tier {}, detail {:.2f}, motion {}, projection jitter {}, neural source {}.",
 		photoFinishBurst->warmupFramesTotal,
+		ssgiWarmupFrames,
 		photoFinishSamplesTarget.load(
 			std::memory_order_acquire),
 		photoFinishBurst->minimumRenderScale > 0.0f

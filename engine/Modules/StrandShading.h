@@ -11,6 +11,14 @@ public:
 	virtual inline std::string GetShortName() override { return "StrandShading"; }
 	virtual inline std::string_view GetShaderDefineName() override { return "STRAND_SHADING"; }
 	virtual std::string_view GetCategory() const override { return ModuleGroups::kCharacters; }
+	virtual bool AffectsCachedShader(RE::BSShader::Type a_type, std::uint32_t a_descriptor, CachedShaderStage a_stage) override
+	{
+		if (a_type != RE::BSShader::Type::Lighting || a_stage != CachedShaderStage::Pixel)
+			return false;
+		constexpr std::uint32_t kTechniqueMask = 0x3Fu << 24u;
+		constexpr std::uint32_t kHairTechnique = 6u << 24u;
+		return (a_descriptor & kTechniqueMask) == kHairTechnique;
+	}
 	virtual std::pair<std::string, std::vector<std::string>> GetModuleSummary() override
 	{
 		return { T("feature.strand_shading.description", "Provides better hair shading with realistic specular highlights and tangent-based light interaction for more lifelike hair appearance."),

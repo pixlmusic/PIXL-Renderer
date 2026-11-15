@@ -25,12 +25,6 @@ cbuffer JitterCB : register(b0)
 	float pad0;
 };
 
-float SampleMinDepth2x2(float2 uv)
-{
-	float4 depthQuad = DepthTex.GatherRed(LinearSampler, uv);
-	return min(min(depthQuad.x, depthQuad.y), min(depthQuad.z, depthQuad.w));
-}
-
 float Min4(float4 v)
 {
 	return min(min(v.x, v.y), min(v.z, v.w));
@@ -61,6 +55,14 @@ float SampleEdgeAwareDepth(float2 uv)
 	const bool containsSky = maximumDepth >= 0.999998f;
 	const bool containsGeometry = minimumDepth > 1.0e-6f && minimumDepth < 0.999998f;
 	bool discontinuity = containsSky && containsGeometry;
+	// Wide mode widens *detection*, but the selected depth remains local to
+	// the destination pixel. Borrowing far-away minimum depth would grow edges.
+	if (!discontinuity && useWideKernel > 0.5f) {
+		const float wideMin = SampleMinDepthWideGather(uv);
+		if (isfinite(wideMin) && wideMin >= 0.0f && wideMin < 1.0f) {
+			discontinuity = maximumDepth - wideMin > 0.08f;
+		}
+	}
 	if (!discontinuity && containsGeometry) {
 		float nearLinear = SharedData::GetScreenDepth(minimumDepth);
 		float farLinear = SharedData::GetScreenDepth(maximumDepth);
@@ -79,8 +81,21 @@ float SampleEdgeAwareDepth(float2 uv)
 	DepthTex.GetDimensions(width, height);
 	if (width == 0u || height == 0u)
 		return saturate(filteredDepth);
-	uint2 nearestPixel = min(uint2(saturate(uv) * float2(width, height)), uint2(width, height) - 1u);
-	return DepthTex.Load(int3(nearestPixel, 0));
+	// Gather footprint is centered around uv*dimensions - 0.5. Sample that
+	// exact 2x2 footprint and select nearest *valid* geometry (standard Z).
+	const uint2 maxPixel = uint2(width, height) - 1u;
+	const float2 footprint = clamp(floor(uv * float2(width, height) - 0.5f), 0.0f.xx, float2(maxPixel));
+	const uint2 origin = uint2(footprint);
+	float nearest = 1.0f;
+	[unroll] for (uint y = 0u; y < 2u; ++y) {
+		[unroll] for (uint x = 0u; x < 2u; ++x) {
+			const uint2 p = min(origin + uint2(x, y), maxPixel);
+			const float depth = DepthTex.Load(int3(p, 0));
+			if (isfinite(depth) && depth >= 0.0f)
+				nearest = min(nearest, depth);
+		}
+	}
+	return saturate(nearest);
 }
 
 PS_OUTPUT main(PS_INPUT input)
@@ -100,7 +115,8 @@ PS_OUTPUT main(PS_INPUT input)
 	// edge-aware reconstruction so DLSS/FSR silhouettes remain categorical.
 	psout.RefractionNormals = RefractionNormals.SampleLevel(LinearSampler, uv, 0);
 	psout.RefractionNormals = all(isfinite(psout.RefractionNormals)) ? psout.RefractionNormals : float4(0.5f, 0.5f, 0.0f, 0.0f);
-	psout.Depth = saturate(SampleEdgeAwareDepth(uv));
+	const float sampledDepth = SampleEdgeAwareDepth(uv);
+	psout.Depth = isfinite(sampledDepth) ? saturate(sampledDepth) : 1.0f;
 
 	psout.SAOCameraZ = psout.Depth;
 

@@ -636,11 +636,13 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 			{
 				uint clusteredLightIndex = RadiantGrid::lightList[lightOffset + i];
 				RadiantGrid::Light light = RadiantGrid::lights[clusteredLightIndex];
-				if (RadiantGrid::IsLightIgnored(light) || light.lightFlags & RadiantGrid::LightFlags::Shadow) {
+				if (RadiantGrid::IsLightIgnored(light) ||
+					((light.lightFlags & RadiantGrid::LightFlags::Shadow) && !(light.lightFlags & RadiantGrid::LightFlags::LocalShadow))) {
 					continue;
 				}
 				float3 lightDirection = light.positionWS.xyz - positionWS.xyz;
 				float lightDist = length(lightDirection);
+				lightDirection /= max(lightDist, 1e-5f);
 
 #		if defined(NATURAL_LIGHTING)
 				float intensityMultiplier = NaturalLighting::GetAttenuation(lightDist, light);
@@ -650,6 +652,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		endif
 
 				float3 lightColor = light.color.xyz * intensityMultiplier;
+			if (light.lightFlags & RadiantGrid::LightFlags::LocalShadow)
+				lightColor *= RadiantGrid::GetLocalShadow(LinearSampler, light.localShadowIndex,
+					positionWS.xyz, FrameBuffer::CameraPosAdjust.xyz, lightDirection, false, 0.0f);
 #		if defined(ENVCUBE) && !defined(RAIN) && defined(RAIN_RESPONSE)
 				// Compress the complete local-light sum once below. Per-light
 				// compression allowed overlapping carried/character/incandescent

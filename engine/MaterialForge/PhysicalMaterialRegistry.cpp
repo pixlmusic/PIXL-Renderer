@@ -139,7 +139,10 @@ namespace
 
 		// Use only the local material and draw names for automatic creature fallback.
 		// Do not inherit species or body cues from the rest of an actor hierarchy.
-		const std::string localNames = std::string(textureLeaf) + "\\" + std::string(meshLeaf);
+		// Species fallback must come from the actual draw's geometry name. Texture
+		// names/folders are shared widely (including architecture atlases) and a
+		// coincidental animal token there is not evidence that this draw is fur.
+		const std::string localNames(meshLeaf);
 		// Automatic classification is deliberately limited to familiar fur-bearing
 		// animals. Do not infer fur from humanoid races (including Khajiit), generic
 		// mammals, or broad actor names: those cues can include clothing and hard

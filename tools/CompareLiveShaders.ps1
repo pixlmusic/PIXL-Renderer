@@ -84,7 +84,13 @@ Get-ChildItem -LiteralPath (Join-Path $sourceRootPath 'pipeline') -Directory | S
         # Packaging copies reviewable Git-indexed kernels only. This deliberately
         # excludes machine-local SDK runtimes such as nvngx_dlssnr.dll.
         $relativeKernelRoot = Get-RelativePath $sourceRootPath $kernelRoot
+        # Include RC working-tree kernels as StagePixlRendererStandalone.ps1 does
+        # for LIVE-TEST. New release-candidate shaders are intentionally not
+        # committed before validation, but they still must reconcile with the
+        # deployed package.
         $trackedKernels = @(& git -C $sourceRootPath ls-files -- ($relativeKernelRoot + '/'))
+        $trackedKernels += @(& git -C $sourceRootPath ls-files --others --exclude-standard -- ($relativeKernelRoot + '/'))
+        $trackedKernels = @($trackedKernels | Sort-Object -Unique)
         if ($LASTEXITCODE -ne 0) {
             throw "Unable to enumerate tracked shader kernels below $relativeKernelRoot"
         }

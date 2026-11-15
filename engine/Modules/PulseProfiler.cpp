@@ -248,6 +248,22 @@ std::filesystem::path PulseProfiler::WriteFrameDump() const
 	output << "Summary:\n";
 	for (const auto& row : summaryRows)
 		output << std::format("  {:10.4f} ms | {:7.3f}% | {}\n", row.frameTime, row.percent, row.label);
+	// The inner/native counter may be recorded by another lighting hook and is
+	// nested inside the chain; these fields must never be summed to frame time.
+	const auto& perf = *globals::state;
+	output << "\nPIXL CPU hook wall-time diagnostics (smoothed ms/frame):\n";
+	output << std::format("  Dirty-state native:      {:.4f}\n", perf.smoothNativeDirtyStateMs);
+	output << std::format("  Dirty-state PIXL:        {:.4f}\n", perf.smoothPixlDirtyStateMs);
+	output << std::format("  Begin technique:         {:.4f}\n", perf.smoothBeginTechniqueMs);
+	output << std::format("  Lighting pre-chain:      {:.4f}\n", perf.smoothLightingSetupBeforeMs);
+	output << std::format("  Lighting chain total:    {:.4f}\n", perf.smoothLightingSetupChainMs);
+	output << std::format("  Lighting inner/native:   {:.4f}\n", perf.smoothNativeLightingSetupMs);
+	output << std::format("  Lighting post-chain:     {:.4f}\n", perf.smoothLightingSetupAfterMs);
+	output << std::format("  Longest flush gap EMA:   {:.4f} ms (EMA of each frame maximum)\n", perf.smoothMaxStateFlushIntervalMs);
+	output << std::format("  Flush gaps >= {:.2f} ms: {:.2f} / frame (EMA)\n",
+		::State::kLongStateFlushIntervalMs, perf.smoothLongStateFlushIntervals);
+	output << "  Note: CPU wall-time regions can nest, GPU time can overlap CPU time, and\n"
+		"        between-flush shader-class attribution is not exclusive shader execution.\n";
 	return path;
 }
 void PulseProfiler::SaveSettings(json& j)
@@ -624,15 +640,48 @@ void PulseProfiler::DrawOverlay()
 		}
 
 		if (this->settings.ShowDrawCalls) {
-			PIXLUI::SectionBanner("SHADER SUBMISSION (CPU ESTIMATE)");
+			PIXLUI::SectionBanner("STATE FLUSH WALL TIME");
+			const float nativeMs = globals::state->smoothNativeDirtyStateMs;
+			const float pixlMs = globals::state->smoothPixlDirtyStateMs;
+			const float intervalMs = globals::state->smoothFrameTimePerType[
+				magic_enum::enum_integer(RE::BSShader::Type::Total)];
+			const float otherMs = std::max(0.0f, intervalMs - nativeMs - pixlMs);
+			const float measuredMax = std::max({ nativeMs, pixlMs, otherMs, 0.001f });
+			drawSignalRow("Native dirty-state call", nativeMs, measuredMax, "ms");
+			drawSignalRow("PIXL state update", pixlMs, measuredMax, "ms");
+			drawSignalRow("Other interval", otherMs, measuredMax, "ms est.");
+			ImGui::TextDisabled("Hook timings are nested; other includes CPU work and waits.");
+			const float worstGap = globals::state->smoothMaxStateFlushIntervalMs;
+			const float longGaps = globals::state->smoothLongStateFlushIntervals;
+			const float gapMax = std::max({ worstGap, ::State::kLongStateFlushIntervalMs, 0.001f });
+			drawSignalRow("Longest interval", worstGap, gapMax, "ms avg max");
+			ImGui::TextDisabled("Over %.2f ms: %.1f intervals/frame (EMA)",
+				::State::kLongStateFlushIntervalMs, longGaps);
+			PIXLUI::SectionBanner("WORLD DRAW SETUP");
+			const float setupMax = std::max({ globals::state->smoothBeginTechniqueMs,
+				globals::state->smoothLightingSetupBeforeMs,
+				globals::state->smoothLightingSetupChainMs,
+				globals::state->smoothNativeLightingSetupMs,
+				globals::state->smoothLightingSetupAfterMs, 0.001f });
+			drawSignalRow("Begin technique", globals::state->smoothBeginTechniqueMs, setupMax, "ms");
+			drawSignalRow("Lighting setup prep", globals::state->smoothLightingSetupBeforeMs, setupMax, "ms");
+			drawSignalRow("Lighting setup chain", globals::state->smoothLightingSetupChainMs, setupMax, "ms");
+			drawSignalRow("Inner native reported", globals::state->smoothNativeLightingSetupMs, setupMax, "ms");
+			drawSignalRow("Unattributed chain", std::max(0.0f,
+				globals::state->smoothLightingSetupChainMs - globals::state->smoothNativeLightingSetupMs), setupMax, "ms est.");
+			drawSignalRow("Lighting setup finish", globals::state->smoothLightingSetupAfterMs, setupMax, "ms");
+			ImGui::TextDisabled("CPU wall time; inner timing may include nested PIXL hooks.");
+			PIXLUI::SectionBanner("TIME BETWEEN STATE FLUSHES");
+			ImGui::TextDisabled("Since prior flush; assigned to current class, not exclusive GPU time.");
 			const float maxFrame = mainRows.empty() ? 1.0f : std::max(mainRows.front().frameTime, 0.001f);
 			const size_t visibleRows = std::min<size_t>(4, mainRows.size());
 			for (size_t i = 0; i < visibleRows; ++i) {
 				const auto& row = mainRows[i];
-				drawSignalRow(row.label.c_str(), row.frameTime, maxFrame, "ms");
+				const std::string intervalLabel = "At " + row.label;
+				drawSignalRow(intervalLabel.c_str(), row.frameTime, maxFrame, "ms");
 				if (ImGui::IsItemHovered()) {
 					if (auto _tt = Util::HoverTooltipWrapper())
-					ImGui::Text("%d state flushes   %.1f%% estimated CPU interval", row.drawCalls, row.percent);
+						ImGui::Text("%d state flushes   %.1f%% of attributed between-flush time", row.drawCalls, row.percent);
 				}
 			}
 		}
@@ -1841,10 +1890,13 @@ std::pair<std::vector<DrawCallRow>, std::vector<DrawCallRow>> PulseProfiler::Bui
 	if (std::abs(otherFrameTime) < 1e-4f)
 		otherFrameTime = 0.0f;
 
-	float csPassesTime = globals::profiler->GetTotalTimeMs();
-	float csPercent = smoothedFrameTime > 0.0f ? (csPassesTime / smoothedFrameTime) * 100.0f : 0.0f;
-	float remainingOtherTime = std::max(0.0f, otherFrameTime - csPassesTime);
-	float remainingOtherPercent = smoothedFrameTime > 0.0f ? (remainingOtherTime / smoothedFrameTime) * 100.0f : 0.0f;
+	// PIXL GPU-pass time is a separate timing domain and can overlap render-
+	// thread CPU wall time. Never subtract GPU time from the CPU/wall remainder:
+	// doing so double-accounts asynchronous work and underreports unexplained stalls.
+	const float csPassesTime = globals::profiler ? globals::profiler->GetTotalTimeMs() : 0.0f;
+	const float csPercent = smoothedFrameTime > 0.0f ? (csPassesTime / smoothedFrameTime) * 100.0f : 0.0f;
+	const float remainingOtherTime = std::max(0.0f, otherFrameTime);
+	const float remainingOtherPercent = smoothedFrameTime > 0.0f ? (remainingOtherTime / smoothedFrameTime) * 100.0f : 0.0f;
 
 	std::optional<float> otherTestFrameTime, otherTestCostPerCall, totalTestFrameTime, totalTestCostPerCall;
 	auto itOther = this->testData.find(magic_enum::enum_integer(SpecialShaderType::Other));
@@ -1860,13 +1912,13 @@ std::pair<std::vector<DrawCallRow>, std::vector<DrawCallRow>> PulseProfiler::Bui
 	DrawCallRow csPassesRow = {
 		"CS Passes:", magic_enum::enum_integer(SpecialShaderType::CSPasses), kDrawCallsNotApplicable, csPassesTime, csPercent,
 		0.0f,
-		std::string("GPU time spent in PIXL Renderer compute passes (profiled)."),
+		std::string("GPU time for profiled PIXL passes. May overlap CPU/wall time; do not add to CPU rows."),
 		true, std::nullopt, std::nullopt
 	};
 	DrawCallRow otherRow = {
 		"Other:", magic_enum::enum_integer(SpecialShaderType::Other), kDrawCallsNotApplicable, remainingOtherTime, remainingOtherPercent,
 		0.0f,
-		std::string("Frame time not attributed to any measured shader type or CS compute pass. This includes UI, post-processing, engine work, and any GPU activity not directly measured."),
+		std::string("Frame time not attributed to shader-class state-flush intervals. GPU pass timings are reported separately and are NOT subtracted from this CPU/wall remainder; both domains can overlap."),
 		true, otherTestFrameTime, otherTestCostPerCall
 	};
 	float totalFrameTime = smoothedFrameTime;

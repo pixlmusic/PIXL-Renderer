@@ -1,0 +1,136 @@
+diff --git a/_REFERENCE/PGPatcher-main/PGPatcher-main/PGLite/include/ShaderFrameworks.hpp b/_REFERENCE/PGPatcher-main/PGPatcher-main/PGLite/include/ShaderFrameworks.hpp
+index 150d6703..02d5be70 100644
+--- a/_REFERENCE/PGPatcher-main/PGPatcher-main/PGLite/include/ShaderFrameworks.hpp
++++ b/_REFERENCE/PGPatcher-main/PGPatcher-main/PGLite/include/ShaderFrameworks.hpp
+@@ -5,18 +5,19 @@
+ namespace PGLite {
+ 
+ /**
+- * @brief The shader frameworks that render what PGLite patches (DESIGN.md section 4.9): Community Shaders, found
+- * through its SKSE plugin module, and ENB, found through the ENBGetSDKVersion export of the loaded modules, the way
+- * TerrainHelper finds it. Without either PGLite disables itself; with one of them, the patchers only the other one
+- * renders stay off (TruePBR and the hair flow map need Community Shaders, Fix Mesh Lighting needs ENB).
++ * @brief The shader frameworks that render what PGLite patches: Community Shaders and PIXL Renderer are detected by
++ * their SKSE plugin modules; ENB is detected through ENBGetSDKVersion. TruePBR and hair flow maps can use either
++ * supported PBR renderer, while Fix Mesh Lighting requires ENB.
+  */
+ class ShaderFrameworks {
+ public:
+     struct Detected {
+         bool hasCommunityShaders = false;
++        bool hasPIXLRenderer = false;
+         bool hasENB = false;
+ 
+-        [[nodiscard]] bool hasAny() const { return hasCommunityShaders || hasENB; }
++        [[nodiscard]] bool hasPBRRenderer() const { return hasCommunityShaders || hasPIXLRenderer; }
++        [[nodiscard]] bool hasAny() const { return hasPBRRenderer() || hasENB; }
+     };
+ 
+     /// @brief Looks at the loaded modules; meaningful once the SKSE plugins are loaded, so at data load or later.
+@@ -28,7 +29,7 @@ public:
+ 
+     /**
+      * @brief The parameters of a first start, when there is no settings.json yet: the offline defaults with parallax,
+-     * complex material and the pre-patched material reset on, TruePBR on with Community Shaders and Fix Mesh
++     * complex material and the pre-patched material reset on, TruePBR on with a PBR renderer and Fix Mesh
+      * Lighting on with ENB.
+      */
+     [[nodiscard]] static PGParams firstStartParams(const Detected& detected);
+diff --git a/_REFERENCE/PGPatcher-main/PGPatcher-main/PGLite/src/ShaderFrameworks.cpp b/_REFERENCE/PGPatcher-main/PGPatcher-main/PGLite/src/ShaderFrameworks.cpp
+index a0027bae..0b544b51 100644
+--- a/_REFERENCE/PGPatcher-main/PGPatcher-main/PGLite/src/ShaderFrameworks.cpp
++++ b/_REFERENCE/PGPatcher-main/PGPatcher-main/PGLite/src/ShaderFrameworks.cpp
+@@ -15,6 +15,7 @@ namespace PGLite {
+ namespace {
+ 
+ constexpr const wchar_t* communityShadersDLL = L"CommunityShaders.dll";
++constexpr const wchar_t* pixlRendererDLL = L"PIXLRenderer.dll";
+ constexpr const char* enbExport = "ENBGetSDKVersion";
+ 
+ /// @brief Whether a loaded module exports the ENB SDK entry point. ENB's proxy is d3d11.dll as a rule, but the export
+@@ -46,19 +47,23 @@ bool isENBLoaded()
+ 
+ ShaderFrameworks::Detected ShaderFrameworks::detect()
+ {
+-    return { .hasCommunityShaders = GetModuleHandleW(communityShadersDLL) != nullptr, .hasENB = isENBLoaded() };
++    return {
++        .hasCommunityShaders = GetModuleHandleW(communityShadersDLL) != nullptr,
++        .hasPIXLRenderer = GetModuleHandleW(pixlRendererDLL) != nullptr,
++        .hasENB = isENBLoaded()
++    };
+ }
+ 
+ void ShaderFrameworks::limitPatchers(PGParams& params,
+                                      const Detected& detected)
+ {
+-    if (!detected.hasCommunityShaders) {
++    if (!detected.hasPBRRenderer()) {
+         if (params.shaderPatcher.isTruePBREnabled) {
+-            Logger::warn("TruePBR is off: it needs Community Shaders");
++            Logger::warn("TruePBR is off: it needs Community Shaders or PIXL Renderer");
+             params.shaderPatcher.isTruePBREnabled = false;
+         }
+         if (params.postPatcher.isHairFlowMapEnabled) {
+-            Logger::warn("The hair flow map is off: it needs Community Shaders");
++            Logger::warn("The hair flow map is off: it needs Community Shaders or PIXL Renderer");
+             params.postPatcher.isHairFlowMapEnabled = false;
+         }
+     }
+@@ -75,7 +80,7 @@ PGParams ShaderFrameworks::firstStartParams(const Detected& detected)
+     params.prePatcher.isFixMeshLightingEnabled = detected.hasENB;
+     params.shaderPatcher.isParallaxEnabled = true;
+     params.shaderPatcher.isComplexMaterialEnabled = true;
+-    params.shaderPatcher.isTruePBREnabled = detected.hasCommunityShaders;
++    params.shaderPatcher.isTruePBREnabled = detected.hasPBRRenderer();
+     params.shaderTransforms.isParallaxToCMEnabled = false;
+     params.postPatcher.disablePrePatchedMaterials = true;
+     params.postPatcher.isFixSSSEnabled = false;
+diff --git a/_REFERENCE/PGPatcher-main/PGPatcher-main/PGLite/src/Runtime.cpp b/_REFERENCE/PGPatcher-main/PGPatcher-main/PGLite/src/Runtime.cpp
+index 3d273613..9f032b62 100644
+--- a/_REFERENCE/PGPatcher-main/PGPatcher-main/PGLite/src/Runtime.cpp
++++ b/_REFERENCE/PGPatcher-main/PGPatcher-main/PGLite/src/Runtime.cpp
+@@ -277,8 +277,9 @@ void Runtime::detectShaderFrameworks()
+ 
+     m_didDetectShaderFrameworks = true;
+     m_shaderFrameworks = ShaderFrameworks::detect();
+-    Logger::info("Shader frameworks: Community Shaders {}, ENB {}",
++    Logger::info("Shader frameworks: Community Shaders {}, PIXL Renderer {}, ENB {}",
+                  m_shaderFrameworks.hasCommunityShaders ? "yes" : "no",
++                 m_shaderFrameworks.hasPIXLRenderer ? "yes" : "no",
+                  m_shaderFrameworks.hasENB ? "yes" : "no");
+ }
+ 
+diff --git a/_REFERENCE/PGPatcher-main/PGPatcher-main/PGLite/src/Menu.cpp b/_REFERENCE/PGPatcher-main/PGPatcher-main/PGLite/src/Menu.cpp
+index 5b7c9e5b..80b20fe8 100644
+--- a/_REFERENCE/PGPatcher-main/PGPatcher-main/PGLite/src/Menu.cpp
++++ b/_REFERENCE/PGPatcher-main/PGPatcher-main/PGLite/src/Menu.cpp
+@@ -1386,6 +1386,11 @@ void Menu::drawStatus()
+             .c_str());
+     const auto& frameworks = m_runtime->shaderFrameworks();
+     const auto frameworkName = [&frameworks] {
++        if (frameworks.hasPIXLRenderer && !frameworks.hasCommunityShaders)
++            return frameworks.hasENB ? std::string("PIXL Renderer + ENB") : std::string("PIXL Renderer");
++        if (frameworks.hasPIXLRenderer && frameworks.hasCommunityShaders)
++            return frameworks.hasENB ? std::string("Community Shaders + PIXL Renderer + ENB")
++                                     : std::string("Community Shaders + PIXL Renderer");
+         if (frameworks.hasCommunityShaders && frameworks.hasENB)
+             return tr("pglite.status.frameworkBoth");
+         if (frameworks.hasCommunityShaders)
+@@ -1422,7 +1427,7 @@ void Menu::drawPatchers()
+     ImGui::Checkbox(tr("launcher.shaderPatchers.parallax.label").c_str(), &m_params.shaderPatcher.isParallaxEnabled);
+     ImGui::Checkbox(tr("launcher.shaderPatchers.complexMaterial.label").c_str(),
+                     &m_params.shaderPatcher.isComplexMaterialEnabled);
+-    ImGui::BeginDisabled(!frameworks.hasCommunityShaders);
++    ImGui::BeginDisabled(!frameworks.hasPBRRenderer());
+     ImGui::Checkbox(tr("launcher.shaderPatchers.truePBR.label").c_str(), &m_params.shaderPatcher.isTruePBREnabled);
+     ImGui::EndDisabled();
+ 
+@@ -1434,7 +1439,7 @@ void Menu::drawPatchers()
+     ImGui::Checkbox(tr("launcher.postPatchers.disablePrePatchedMaterials.label").c_str(),
+                     &m_params.postPatcher.disablePrePatchedMaterials);
+     ImGui::Checkbox(tr("launcher.postPatchers.fixSSS.label").c_str(), &m_params.postPatcher.isFixSSSEnabled);
+-    ImGui::BeginDisabled(!frameworks.hasCommunityShaders);
++    ImGui::BeginDisabled(!frameworks.hasPBRRenderer());
+     ImGui::Checkbox(tr("launcher.postPatchers.hairFlowMap.label").c_str(), &m_params.postPatcher.isHairFlowMapEnabled);
+     ImGui::EndDisabled();
+ }

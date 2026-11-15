@@ -22,6 +22,16 @@ Texture2D<float2> srcReflectionHiZ : register(t11);
 // Geometry-validated GI history length, reduced locally when direct lighting
 // changes. Reflection history follows the same responsiveness at those pixels.
 Texture2D<unorm float> srcGIHistoryLength : register(t12);
+Texture3D<uint> srcSceneVoxelOccupancy : register(t14);
+
+cbuffer SceneVoxelCB : register(b3)
+{
+	float3 SceneVoxelWorldMin;
+	float SceneVoxelSize;
+	uint SceneVoxelDimension;
+	uint SceneVoxelValid;
+	float2 SceneVoxelPadding;
+};
 
 RWTexture2D<float4> outReflection : register(u0);
 
@@ -35,6 +45,50 @@ float3 SafeNormalizeReflection(float3 v, float3 fallback)
     return finiteVector && finiteLength && l2 > 1e-8f && l2 < 1e30f
         ? v * rsqrt(l2)
         : fallback;
+}
+
+bool SceneVoxelOccupied(float3 worldPosition)
+{
+	if (SceneVoxelValid == 0u || SceneVoxelDimension == 0u || !(SceneVoxelSize > 0.0f))
+		return false;
+	int3 cell = int3(floor((worldPosition - SceneVoxelWorldMin) / SceneVoxelSize));
+	if (any(cell < 0) || any(cell >= int(SceneVoxelDimension)))
+		return false;
+	return srcSceneVoxelOccupancy.Load(int4(cell, 0)) != 0u;
+}
+
+bool SceneVoxelSegmentOccluded(float3 startWS, float3 endWS)
+{
+	if (SceneVoxelValid == 0u || SceneVoxelDimension == 0u || !(SceneVoxelSize > 0.0f))
+		return false;
+	float3 startGrid = (startWS - SceneVoxelWorldMin) / SceneVoxelSize;
+	float3 endGrid = (endWS - SceneVoxelWorldMin) / SceneVoxelSize;
+	if (!all(isfinite(startGrid)) || !all(isfinite(endGrid)))
+		return false;
+	float3 delta = endGrid - startGrid;
+	int3 cell = int3(floor(startGrid));
+	int3 endCell = int3(floor(endGrid));
+	int3 stepDirection = int3(delta.x >= 0.0f ? 1 : -1, delta.y >= 0.0f ? 1 : -1, delta.z >= 0.0f ? 1 : -1);
+	float3 tDelta = float3(abs(delta.x) > 1.0e-6f ? abs(rcp(delta.x)) : 1.0e20f,
+		abs(delta.y) > 1.0e-6f ? abs(rcp(delta.y)) : 1.0e20f,
+		abs(delta.z) > 1.0e-6f ? abs(rcp(delta.z)) : 1.0e20f);
+	float3 nextBoundary = float3(cell) + float3(stepDirection.x > 0 ? 1.0f : 0.0f,
+		stepDirection.y > 0 ? 1.0f : 0.0f, stepDirection.z > 0 ? 1.0f : 0.0f);
+	float3 tMax = float3(abs(delta.x) > 1.0e-6f ? (nextBoundary.x - startGrid.x) / delta.x : 1.0e20f,
+		abs(delta.y) > 1.0e-6f ? (nextBoundary.y - startGrid.y) / delta.y : 1.0e20f,
+		abs(delta.z) > 1.0e-6f ? (nextBoundary.z - startGrid.z) / delta.z : 1.0e20f);
+	[loop] for (uint step = 0u; step < 64u; ++step) {
+		if (any(cell < 0) || any(cell >= int(SceneVoxelDimension)))
+			return false;
+		if (srcSceneVoxelOccupancy.Load(int4(cell, 0)) != 0u)
+			return true;
+		if (all(cell == endCell))
+			return false;
+		if (tMax.x <= tMax.y && tMax.x <= tMax.z) { cell.x += stepDirection.x; tMax.x += tDelta.x; }
+		else if (tMax.y <= tMax.z) { cell.y += stepDirection.y; tMax.y += tDelta.y; }
+		else { cell.z += stepDirection.z; tMax.z += tDelta.z; }
+	}
+	return false;
 }
 
 void BuildBasis(float3 n, out float3 t, out float3 b)
@@ -230,9 +284,16 @@ inline float3 TraceWorldFallback(float3 positionWS, float3 directionWS, float3 c
         float baseStep = WorldCacheCellSize(receiverCascade);
         float weightSum = 0.0f;
         float transmittance = 1.0f;
+		float previousDistance = SceneVoxelSize * 1.25f;
         uint steps = clamp(WorldCacheTraceSteps, 2u, 6u);
         [loop] for (uint i = 0u; i < steps; ++i) {
             float distance = min(WorldCacheRadius, baseStep * (exp2((float)i) + 1.0f) * lerp(1.0f, 1.8f, roughness));
+			if (SceneVoxelValid != 0u && distance > previousDistance) {
+				if (SceneVoxelSegmentOccluded(positionWS + directionWS * previousDistance,
+					positionWS + directionWS * distance))
+					break; // captured mesh geometry blocks off-screen cache radiance
+			}
+			previousDistance = distance;
             float3 sampleRadiance = 0.0f;
             float occupancy = 0.0f;
             float3 query = positionWS + directionWS * distance;
@@ -367,8 +428,8 @@ inline bool TraceScreenReflection(float3 originVS, float3 directionVS, float rou
             float finalDelta = abs(ReflectionRayDepth(inverseDepth, hitS) - sceneZ);
 			// Point sampling keeps silhouettes from interpolating foreground and
 			// background normals into a false grazing hit.
-			float3 hitNormal = GBuffer::DecodeNormal(srcNormalRoughness.SampleLevel(
-				samplerPointClamp, FullFrameTextureUV(uv), 0.0f).xy);
+			float3 hitNormal = ToTraceView(GBuffer::DecodeNormal(srcNormalRoughness.SampleLevel(
+				samplerPointClamp, FullFrameTextureUV(uv), 0.0f).xy));
             float facing = saturate(dot(hitNormal, -directionVS));
             // Grazing rays run almost parallel to the hit surface, where a
             // broad depth tolerance can accept a distant terrain layer as a
@@ -451,7 +512,7 @@ void main(uint2 dtid : SV_DispatchThreadID)
     }
 
     float4 nr = FULLRES_LOAD(srcNormalRoughness, dtid, FullFrameTextureUV(uv), samplerLinearClamp);
-    float3 N = GBuffer::DecodeNormal(nr.xy);
+    float3 N = ToTraceView(GBuffer::DecodeNormal(nr.xy));
     float roughness = saturate(1.0f - nr.z);
     float3 materialReflectance = max(FULLRES_LOAD(srcReflectance, dtid, FullFrameTextureUV(uv), samplerLinearClamp), 0.0f);
     float reflectanceEnergy = max(materialReflectance.x, max(materialReflectance.y, materialReflectance.z));
@@ -524,9 +585,9 @@ void main(uint2 dtid : SV_DispatchThreadID)
 	float worldConfidence = 0.0f;
 	float3 worldRadiance = 0.0f;
 	[branch] if (fallbackPotential > 1e-3f && WorldCacheEnabled != 0u && WorldCacheReflectionEnabled != 0u) {
-        float3 positionWS = ViewToWorldPosition(P, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
-        float3 cameraWS = ViewToWorldPosition(0.0f, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
-        float3 directionWS = SafeNormalizeReflection(ViewToWorldVector(L, FrameBuffer::CameraViewInverse), float3(0, 0, 1));
+        float3 positionWS = TraceViewToWorldPosition(P, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
+        float3 cameraWS = TraceViewToWorldPosition(0.0f, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
+        float3 directionWS = SafeNormalizeReflection(TraceViewToWorldVector(L, FrameBuffer::CameraViewInverse), float3(0, 0, 1));
         worldRadiance = TraceWorldFallback(positionWS, directionWS, cameraWS, roughness, worldConfidence);
     }
     float worldBlend = fallbackPotential * worldConfidence;
@@ -548,29 +609,23 @@ void main(uint2 dtid : SV_DispatchThreadID)
     // BRDF and was the main cause of the nearly-black Hybrid Reflections dump.
     float3 current = reflectedRadiance * max(ReflectionIntensity, 0.0f);
     current = SoftFireflyClamp(filterInf(filterNaN(current)), ReflectionFireflyClamp);
+    // The confidence factors are already bounded; saturate also maps infinities
+    // to a finite endpoint. Preserve a NaN-only guard without triggering FXC's
+    // redundant isfinite warning for this bounded expression.
+    confidence = confidence == confidence ? saturate(confidence) : 0.0f;
 
 #ifdef TEMPORAL_DENOISER
     float4 history = srcHistory[dtid];
+    // A corrupt/infinite history entry must never feed recurrent reflections.
+    // Keep its validity tied to alpha, rather than manufacturing a new hit.
+    history = all(isfinite(history)) ?
+        float4(max(history.rgb, 0.0f), saturate(history.a)) : 0.0f;
     if (history.a > 1e-3f) {
-        float3 receiverPositionWS =
-            ViewToWorldPosition(P, FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
-        float2 receiverMotion = MotionBlur::GetSSMotionVector(
-            float4(receiverPositionWS, 1.0f), float4(receiverPositionWS, 1.0f));
-        float cameraMotionPixels = length(receiverMotion * float2(OUT_FRAME_DIM));
-        cameraMotionPixels = isfinite(cameraMotionPixels) ? cameraMotionPixels : 0.0f;
-
         float response = saturate(ReflectionTemporalResponse);
-        // Rough reflections need more temporal integration; glossy hits stay
-        // more responsive to camera/surface motion. Camera reprojection motion
-        // raises the current-frame response so stale screen-space hits cannot
-        // drag behind a moving view.
-        // The receiver is reprojected correctly, but the reflected *source* may
-        // have moved independently in screen space. A slow camera pan can
-        // therefore leave a broad, camera-following reflection footprint even
-        // when receiver depth and normal still match. Raise current-frame
-        // authority earlier than the old 4 px ramp so moving views shed stale
-        // screen-space hits before they form a visible band.
-        response = max(response, 0.72f * saturate(cameraMotionPixels / 3.0f));
+		// Receiver reprojection validates the surface; screen-hit confidence and
+		// radiance change validate the reflected source. Do not substitute camera
+		// motion for source motion: that makes otherwise stable world reflections
+		// decay unevenly as the player pans.
 		// The GI reprojection stage cuts its local accumulation budget when the
 		// receiver's direct lighting changes. Mirror that signal here so indirect
 		// reflections shed stale local-light/shadow contributions as well.
@@ -600,24 +655,13 @@ void main(uint2 dtid : SV_DispatchThreadID)
         if (confidence > 1e-3f) {
             // Low-confidence hits are useful observations but should not replace
             // a validated history sample as aggressively as a solid screen hit.
-            float observationResponse = lerp(response * 0.55f, response, confidence);
-            // During camera motion, a weak screen-space hit can be a stale
-            // grazing-angle terrain sample. Shed that history faster; retain
-            // the slower accumulation for stationary, well-supported pixels.
-            float uncertainMotion = saturate(cameraMotionPixels / 2.0f) *
-                (1.0f - saturate(confidence));
-            observationResponse = max(observationResponse, 0.55f * uncertainMotion);
+            float observationResponse = lerp(response * 0.30f, response, confidence);
             current = lerp(historySafe, current, observationResponse);
             confidence = max(confidence, history.a * (1.0f - observationResponse));
         } else {
-            // Geometry-valid history can still describe a screen-space hit that
-            // has just left the view. Retain only a short fallback tail, and
-            // shed it faster as the camera moves to avoid bright bands trailing
-            // across distant terrain.
-            // Keep a useful miss tail while stationary to bridge stochastic
-            // sampling gaps, but reject it quickly during motion: unlike the
-            // receiver, an off-screen reflection hit has no reliable reprojection.
-            float retain = lerp(0.28f, 0.48f, roughness) * exp2(-0.55f * cameraMotionPixels);
+			// Bridge isolated stochastic misses with a bounded roughness response;
+			// invalid receiver history is already rejected by depth/normal reprojection.
+			float retain = lerp(0.28f, 0.48f, roughness);
             current = historySafe * retain;
             confidence = history.a * retain;
         }

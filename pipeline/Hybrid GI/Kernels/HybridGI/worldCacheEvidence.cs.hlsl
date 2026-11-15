@@ -49,7 +49,7 @@ void main(uint2 thread : SV_DispatchThreadID)
     float depth = ScreenToViewDepth(rawDepth);
     if (!isfinite(depth) || depth <= FP_Z || depth >= DepthFadeRange.y) return;
     float3 camera = EvidenceCameraWS();
-    float3 hit = ViewToWorldPosition(ScreenToViewPosition(uv, depth), FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
+    float3 hit = TraceViewToWorldPosition(ScreenToViewPosition(uv, depth), FrameBuffer::CameraViewInverse) + FrameBuffer::CameraPosAdjust.xyz;
     float3 segment = hit - camera;
     float lengthWS = length(segment);
     if (!isfinite(lengthWS) || lengthWS <= 1e-3f) return;

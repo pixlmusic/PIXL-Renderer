@@ -65,6 +65,19 @@ void main(const uint2 dtid : SV_DispatchThreadID)
     if (any(dtid >= uint2(FrameDim)))
         return;
 
+    // A full-resolution receiver without geometry must not inherit low-res
+    // AO/GI/specular from a neighbouring foreground pixel at a silhouette.
+    // This also prevents NaN depth from entering reciprocal edge weights.
+    float receiverDepth = srcDepth.Load(int3(dtid, 0));
+    if (!isfinite(receiverDepth) || receiverDepth <= FP_Z || receiverDepth >= DepthFadeRange.y) {
+        outAo[dtid] = 0.0f;
+        outIlY[dtid] = 0.0f;
+        outIlCoCg[dtid] = 0.0f;
+        outGiSpecular[dtid] = 0.0f;
+        outBentVisibility[dtid] = 0.0f;
+        return;
+    }
+
 #ifdef HALF_RES
     int2 px00 = (dtid >> 1) + (dtid & 1) - 1;
 #else
@@ -116,8 +129,7 @@ void main(const uint2 dtid : SV_DispatchThreadID)
         // At a depth discontinuity choose the low-res samples whose depth most
         // closely matches the full-resolution receiver.  This avoids bleeding
         // reflected radiance or a bent normal from the opposite side of an edge.
-        float bgDepth = srcDepth.Load(int3(dtid, 0));
-        float4 dd = abs(d - bgDepth);
+        float4 dd = abs(d - receiverDepth);
         // Retain a small floor so a receiver near a heavily downsampled normal
         // still has a deterministic fallback instead of producing zero weight.
         float4 normalWeight = 0.01f.xxxx + pow(normalSimilarity, 8.0f);

@@ -37,11 +37,13 @@ void main(uint3 dtid : SV_DispatchThreadID)
 
     float previous = Exposure[uint2(0, 0)];
     previous = PixlCameraFinite(previous) && previous > 0.0f ? previous : 1.0f;
-    // Compensation is an intentional user adjustment, not scene adaptation.
-    if (cameraAutoExposure > 0.5f)
-        previous = exp2(clamp(log2(previous) + safeCompensationDeltaEV, safeMinExposureEV, safeMaxExposureEV));
-    if (freezeMetering > 0.5f && cameraAutoExposure > 0.5f) {
-        Exposure[uint2(0, 0)] = previous;
+    // Director locks the current exposure for both automatic and manual camera
+    // modes. The only allowed change while locked is a relative EV edit from its
+    // Photo/Video mini panel; never re-meter or snap to a profile's absolute EV.
+    if (freezeMetering > 0.5f) {
+        float lockedEV = clamp(log2(previous) + safeCompensationDeltaEV,
+            safeMinExposureEV, safeMaxExposureEV);
+        Exposure[uint2(0, 0)] = exp2(lockedEV);
         return;
     }
     float target = exp2(safeExposureCompensationEV);

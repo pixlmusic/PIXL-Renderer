@@ -111,15 +111,27 @@ float DepthMIPFilter(float depth0, float depth1, float depth2, float depth3)
 		if (all(coord < uint2(TexDim))) outDepth0[coord] = z;
 	}
 #else
-	float4 depths4 = srcNDCDepth.GatherRed(samplerPointClamp, FullFrameTextureUV(uv));
-	float depth0 = ClampDepth(depths4.w);
-	float depth1 = ClampDepth(depths4.z);
-	float depth2 = ClampDepth(depths4.x);
-	float depth3 = ClampDepth(depths4.y);
-	outDepth0[pixCoord + uint2(0, 0)] = depth0;
-	outDepth0[pixCoord + uint2(1, 0)] = depth1;
-	outDepth0[pixCoord + uint2(0, 1)] = depth2;
-	outDepth0[pixCoord + uint2(1, 1)] = depth3;
+	float depth0, depth1, depth2, depth3;
+	if (all(pixCoord + uint2(1, 1) < uint2(FrameDim))) {
+		// Retain the fast Gather path for fully covered interior quads.
+		float4 depths4 = srcNDCDepth.GatherRed(samplerPointClamp, FullFrameTextureUV(uv));
+		depth0 = ClampDepth(depths4.w);
+		depth1 = ClampDepth(depths4.z);
+		depth2 = ClampDepth(depths4.x);
+		depth3 = ClampDepth(depths4.y);
+	} else {
+		// Dispatch padding and odd viewport sizes have to replicate the last
+		// valid depth rather than mix old backing texels into the pyramid.
+		uint2 edge = max(uint2(FrameDim), uint2(1, 1)) - 1u;
+		depth0 = ClampDepth(srcNDCDepth.Load(int3(min(pixCoord, edge), 0)));
+		depth1 = ClampDepth(srcNDCDepth.Load(int3(min(pixCoord + uint2(1, 0), edge), 0)));
+		depth2 = ClampDepth(srcNDCDepth.Load(int3(min(pixCoord + uint2(0, 1), edge), 0)));
+		depth3 = ClampDepth(srcNDCDepth.Load(int3(min(pixCoord + uint2(1, 1), edge), 0)));
+	}
+	if (all(pixCoord + uint2(0, 0) < uint2(FrameDim))) outDepth0[pixCoord + uint2(0, 0)] = depth0;
+	if (all(pixCoord + uint2(1, 0) < uint2(FrameDim))) outDepth0[pixCoord + uint2(1, 0)] = depth1;
+	if (all(pixCoord + uint2(0, 1) < uint2(FrameDim))) outDepth0[pixCoord + uint2(0, 1)] = depth2;
+	if (all(pixCoord + uint2(1, 1) < uint2(FrameDim))) outDepth0[pixCoord + uint2(1, 1)] = depth3;
 #endif
 
 	// MIP 1
