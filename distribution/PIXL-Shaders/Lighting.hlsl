@@ -2654,6 +2654,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #	if defined(BACK_LIGHTING)
 	float4 backLightColor = TexBackLightSampler.Sample(SampBackLightSampler, uv);
+#		if defined(HAIR) && !defined(STRAND_SHADING)
+	// PGLite stores optional hair-flow direction maps in Skyrim's back-light slot
+	// and marks those meshes BACK_LIGHTING. The ordinary hair path has no code to
+	// decode that vector map, so treating it as RGB back-light color paints the
+	// cards with the map's channel colors (often cyan). Keep native hair texture
+	// and actor tint; only discard this unsupported secondary back-light input.
+	backLightColor = 0.0f.xxxx;
+#		endif
 #		if defined(HAIR) && defined(STRAND_SHADING)
 	if (useHairFlowMap) {
 		backLightColor = 0.0f;

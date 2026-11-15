@@ -22,6 +22,7 @@ function Add-Case([string]$name, [string]$file, [string]$profile, [string[]]$def
 $lighting = 'Lighting.hlsl'
 $pixel = @('WINPC', 'DX11', 'PSHADER')
 Add-Case 'SkinOptics.Actor' $lighting 'ps_5_0' ($pixel + @('SKINNED', 'SKIN', 'PIXL_SKIN'))
+Add-Case 'Hair.NormalPGLiteFlowMapFallback' $lighting 'ps_5_0' ($pixel + @('HAIR', 'SKINNED', 'BACK_LIGHTING'))
 Add-Case 'StrandShading.Hair' $lighting 'ps_5_0' ($pixel + @('HAIR', 'STRAND_SHADING'))
 Add-Case 'Lighting.LocalContact.PBR' $lighting 'ps_5_0' ($pixel + @('MATERIAL_FORGE', 'DEFERRED', 'CONTACT_SHADOWS', 'RADIANT_GRID'))
 Add-Case 'Lighting.LocalContact.MaterialForgeIndependent' $lighting 'ps_5_0' ($pixel + @('MATERIAL_FORGE', 'DEFERRED', 'RADIANT_GRID'))
