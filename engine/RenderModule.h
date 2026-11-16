@@ -70,6 +70,10 @@ virtual const void* GetSettingsBlob() const { return nullptr; }
 
 	virtual std::string GetName() = 0;
 	virtual std::string GetShortName() = 0;
+	// Cache identity can remain available for installed modules disabled at boot.
+	// Most modules use the version read during Load(); overrides may provide their
+	// compiled descriptor version without enabling the module's shader define.
+	virtual std::string GetCacheVersion() const { return version; }
 	virtual std::string GetDisplayName() { return GetName(); }
 	std::string GetDisplayCategory() const;
 	virtual std::string GetModuleSupportLink() { return ""; }

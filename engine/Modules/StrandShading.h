@@ -9,6 +9,13 @@ public:
 	virtual inline std::string GetName() override { return "Strand Shading"; }
 	virtual std::string GetDisplayName() override { return T("feature.strand_shading.name", "Strand Shading"); }
 	virtual inline std::string GetShortName() override { return "StrandShading"; }
+	// The module is intentionally disabled at boot in the public defaults. Keep
+	// its cache version visible anyway so a version bump can invalidate only Hair
+	// pixel permutations without enabling strand shading or Hair Reconstruction.
+	virtual std::string GetCacheVersion() const override
+	{
+		return installed ? RenderModule::GetModuleRequiredVersion("StrandShading") : version;
+	}
 	virtual inline std::string_view GetShaderDefineName() override { return "STRAND_SHADING"; }
 	virtual std::string_view GetCategory() const override { return ModuleGroups::kCharacters; }
 	virtual bool AffectsCachedShader(RE::BSShader::Type a_type, std::uint32_t a_descriptor, CachedShaderStage a_stage) override

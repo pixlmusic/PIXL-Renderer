@@ -217,10 +217,11 @@ bool RenderModule::ValidateCache(CSimpleIniA& a_ini)
 		return false;
 	}
 
-	if (loaded) {
+	const auto cacheVersion = GetCacheVersion();
+	if (!cacheVersion.empty()) {
 		auto versionInCache = a_ini.GetValue(ini_name.c_str(), "Version");
-		if (!versionInCache || strcmp(versionInCache, version.c_str()) != 0) {
-			logger::info("Change in version detected. Installed {} but {} in Disk Cache", version, versionInCache ? versionInCache : "(missing)");
+		if (!versionInCache || strcmp(versionInCache, cacheVersion.c_str()) != 0) {
+			logger::info("Change in version detected. Installed {} but {} in Disk Cache", cacheVersion, versionInCache ? versionInCache : "(missing)");
 			return false;
 		} else {
 			logger::info("Installed version and cached version match.");
@@ -235,7 +236,8 @@ void RenderModule::WriteDiskCacheInfo(CSimpleIniA& a_ini)
 {
 	auto ini_name = GetShortName();
 	a_ini.SetBoolValue(ini_name.c_str(), "Enabled", loaded);
-	a_ini.SetValue(ini_name.c_str(), "Version", version.c_str());
+	const auto cacheVersion = GetCacheVersion();
+	a_ini.SetValue(ini_name.c_str(), "Version", cacheVersion.c_str());
 }
 
 /**

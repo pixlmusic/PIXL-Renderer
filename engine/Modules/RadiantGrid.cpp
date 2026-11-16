@@ -279,7 +279,8 @@ namespace
 		return true;
 	}
 
-	bool IsSphereInCameraFrustum(const RE::NiCamera* a_camera, const RE::NiPoint3& a_position, float a_radius)
+	bool IsSphereInCameraFrustum(const RE::NiCamera* a_camera, const RE::NiPoint3& a_position, float a_radius,
+		float a_sideExpansion = 0.0f)
 	{
 		if (!a_camera)
 			return true;
@@ -297,10 +298,10 @@ namespace
 			signedDistance(forward * -1.0f, origin + forward * frustum.fFar) < -a_radius)
 			return false;
 		if (frustum.bOrtho) {
-			if (signedDistance(right, origin + right * frustum.fLeft) < -a_radius ||
-				signedDistance(right * -1.0f, origin + right * frustum.fRight) < -a_radius ||
-				signedDistance(up, origin + up * frustum.fTop) < -a_radius ||
-				signedDistance(up * -1.0f, origin + up * frustum.fBottom) < -a_radius)
+			if (signedDistance(right, origin + right * (frustum.fLeft - a_sideExpansion)) < -a_radius ||
+				signedDistance(right * -1.0f, origin + right * (frustum.fRight + a_sideExpansion)) < -a_radius ||
+				signedDistance(up, origin + up * (frustum.fTop + a_sideExpansion)) < -a_radius ||
+				signedDistance(up * -1.0f, origin + up * (frustum.fBottom - a_sideExpansion)) < -a_radius)
 				return false;
 		} else {
 			const auto sidePlane = [&](RE::NiPoint3 axis, float slope, float forwardSign, float axisSign) {
@@ -308,10 +309,10 @@ namespace
 				const auto normal = forward * (forwardSign * slope * invLength) + axis * (axisSign * invLength);
 				return signedDistance(normal, origin);
 			};
-			if (sidePlane(right, frustum.fLeft, -1.0f, +1.0f) < -a_radius ||
-				sidePlane(right, frustum.fRight, +1.0f, -1.0f) < -a_radius ||
-				sidePlane(up, frustum.fTop, +1.0f, -1.0f) < -a_radius ||
-				sidePlane(up, frustum.fBottom, -1.0f, +1.0f) < -a_radius)
+			if (sidePlane(right, frustum.fLeft - a_sideExpansion, -1.0f, +1.0f) < -a_radius ||
+				sidePlane(right, frustum.fRight + a_sideExpansion, +1.0f, -1.0f) < -a_radius ||
+				sidePlane(up, frustum.fTop + a_sideExpansion, +1.0f, -1.0f) < -a_radius ||
+				sidePlane(up, frustum.fBottom - a_sideExpansion, -1.0f, +1.0f) < -a_radius)
 				return false;
 		}
 		return true;
@@ -753,7 +754,7 @@ void RadiantGrid::BSLightingShader_SetupGeometry_GeometrySetupConstantPointLight
 			if (maskIndex < kShadowMaskChannelCount && light.lightFlags.any(LightFlags::Shadow))
 				strictLightDataTemp.ShadowBitMask |= (1u << maskIndex);
 			light.lightFlags.set(LightFlags::ShadowCaster);
-			if (localShadowCache && localShadowBuffer) {
+			if (inWorld && localShadowCache && localShadowBuffer) {
 				if (auto* caster = FindLocalShadowCaster(shadowLight); caster && caster->slice >= 0 &&
 					(caster->shadowParams.x != LOCAL_SHADOW_TYPE_OMNI || caster->secondarySlice == caster->slice + 1) &&
 					caster->lastRenderedFrame != 0 && caster->lastSeenFrame == localShadowFrame) {
@@ -1161,7 +1162,10 @@ void RadiantGrid::CopyLocalShadowMaps()
 	auto renderer = globals::game::renderer;
 	if (!smState || !renderer || !globals::d3d::context)
 		return;
-	auto* shadowSceneNode = GetActiveShadowSceneNode();
+	// Inventory and other UI passes use separate shadow scene nodes. Keeping the
+	// world cache tied to sceneNode[0] prevents their temporary light selection
+	// from evicting or replacing world shadow residency.
+	auto* shadowSceneNode = smState->shadowSceneNode[0];
 	if (!shadowSceneNode)
 		return;
 	auto& depthStencil = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS];
@@ -1815,7 +1819,9 @@ void RadiantGrid::ScheduleLocalShadowCasters()
 	localShadowLastSchedulerFrame = globals::state ? globals::state->GetFrameCount() : 0u;
 	if (!IsLocalShadowCacheActive() || !globals::game::smState)
 		return;
-	auto* scene = GetActiveShadowSceneNode();
+	// Only schedule world-space lights. UI shadow scenes have a separate, short-
+	// lived light list and must not advance or overwrite the world cache state.
+	auto* scene = globals::game::smState->shadowSceneNode[0];
 	if (!scene)
 		return;
 	const uint32_t frame = ++localShadowFrame;
@@ -1904,11 +1910,37 @@ void RadiantGrid::ScheduleLocalShadowCasters()
 	localShadowStatOwnedLights = static_cast<uint32_t>(sceneRuntime.activeLights.size());
 	localShadowStatActiveShadowRefs = static_cast<uint32_t>(sceneRuntime.activeShadowLights.size());
 	localShadowStatMissingNiLight = 0;
+	// This scheduler runs immediately before Skyrim consumes the scene node's
+	// light queues. A newly streamed/attached point light can therefore be in
+	// lightQueueAdd without appearing in either active list yet. Snapshot the
+	// owning NiPointers under the queue lock so candidate tracking cannot race a
+	// removal; never keep these temporary owners beyond this call.
+	eastl::vector<RE::NiPointer<RE::BSLight>> queuedLightAdds;
+	std::unordered_set<RE::BSLight*> queuedLightRemovals;
+	{
+		RE::BSSpinLockGuard queueGuard(sceneRuntime.lightQueueLock);
+		queuedLightAdds.reserve(sceneRuntime.lightQueueAdd.size());
+		queuedLightRemovals.reserve(sceneRuntime.lightQueueRemove.size());
+		for (const auto& entry : sceneRuntime.lightQueueAdd)
+			if (entry)
+				queuedLightAdds.push_back(entry);
+		for (const auto& entry : sceneRuntime.lightQueueRemove)
+			if (auto* light = entry.get())
+				queuedLightRemovals.insert(light);
+	}
 	for (auto& shadowEntry : sceneRuntime.activeShadowLights)
-		trackShadowLight(shadowEntry.get());
+		if (auto* light = shadowEntry.get(); light && !queuedLightRemovals.contains(light))
+			trackShadowLight(light);
 	for (auto& lightEntry : sceneRuntime.activeLights) {
 		auto* baseLight = lightEntry.get();
-		if (!baseLight || !baseLight->IsShadowLight())
+		if (!baseLight || queuedLightRemovals.contains(baseLight) || !baseLight->IsShadowLight())
+			continue;
+		if (auto* shadowLight = skyrim_cast<RE::BSShadowLight*>(baseLight))
+			trackShadowLight(shadowLight);
+	}
+	for (const auto& entry : queuedLightAdds) {
+		auto* baseLight = entry.get();
+		if (!baseLight || queuedLightRemovals.contains(baseLight) || !baseLight->IsShadowLight())
 			continue;
 		if (auto* shadowLight = skyrim_cast<RE::BSShadowLight*>(baseLight))
 			trackShadowLight(shadowLight);
@@ -1962,13 +1994,16 @@ void RadiantGrid::ScheduleLocalShadowCasters()
 		// receivers. The grace check covers short camera/cell-list gaps only.
 		const float viewRadius = caster.radius + std::max(LOCAL_SHADOW_VIEW_CULL_MARGIN, caster.radius * 0.1f);
 		const bool influenceInView = IsSphereInCameraFrustum(camera, caster.position, viewRadius);
+		const float prefetchRadius = caster.radius + std::max(LOCAL_SHADOW_PREFETCH_DISTANCE, caster.radius * 0.25f);
+		const bool prefetchInView = !influenceInView && IsSphereInCameraFrustum(camera, caster.position,
+			prefetchRadius, LOCAL_SHADOW_PREFETCH_ANGLE_SLOPE);
 		const bool onScreen = influenceInView || IsLocalShadowCasterOnScreen(caster, frame);
-		if (!influenceInView && !IsLocalShadowCasterInView(caster, frame))
+		if (!influenceInView && !prefetchInView && !IsLocalShadowCasterInView(caster, frame))
 			continue;
 		// Keep resident maps eligible while the light source is outside the view.
 		// The source can still illuminate an on-screen receiver; tying its cached
 		// shadow to camera visibility made shadows pop as the player turned.
-		if (!onScreen && caster.lastRenderedFrame == 0 && localShadowSliceOwner.size() != 0)
+		if (!onScreen && !prefetchInView && caster.lastRenderedFrame == 0 && localShadowSliceOwner.size() != 0)
 			continue;
 		float score = caster.radius / std::max(caster.position.GetDistance(localShadowCameraPosition), caster.radius);
 		if (caster.lastRenderedFrame == 0) {
@@ -2020,6 +2055,11 @@ void RadiantGrid::ScheduleLocalShadowCasters()
 		}
 		if (frame < caster.rejectUntilFrame)
 			score *= 0.5f;
+		// Spend otherwise-unused shadow updates on lights just beyond the current
+		// view. Their maps are then ready as the camera turns, while visible and
+		// moving lights retain clear priority under the same bounded channel budget.
+		if (prefetchInView)
+			score *= LOCAL_SHADOW_PREFETCH_SCORE_SCALE;
 		caster.importance = score;
 		candidates.push_back({ &caster, score });
 	}
@@ -2042,15 +2082,12 @@ void RadiantGrid::ScheduleLocalShadowCasters()
 		return a.caster->position.z < b.caster->position.z;
 	});
 	localShadowEngineBudget = std::min<uint32_t>(GetEngineLocalShadowBudget(), SHADOW_MASK_CHANNEL_COUNT);
-	auto* sunLight = static_cast<RE::BSShadowLight*>(sceneRuntime.sunShadowDirLight);
-	uint32_t nativeShadowChannels = 0;
-	for (const auto& entry : sceneRuntime.activeShadowLights) {
-		auto* light = entry.get();
-		if (light && light != sunLight && !IsPromotedShadowLight(light))
-			++nativeShadowChannels;
-	}
-	const uint32_t freeShadowChannels = localShadowEngineBudget > nativeShadowChannels ?
-		localShadowEngineBudget - nativeShadowChannels : 0u;
+	// activeShadowLights is Skyrim's candidate list, not the number of maps
+	// rendered this frame. It can exceed the four mask channels; subtracting its
+	// full size left no slots for relevance-ranked selection in busy interiors.
+	// Budget candidates against the actual channel capacity and enforce that set
+	// in FilterLocalShadowCaster for native and promoted lights alike.
+	const uint32_t freeShadowChannels = localShadowEngineBudget;
 	const uint32_t promotedCandidateCount = static_cast<uint32_t>(std::count_if(candidates.begin(), candidates.end(),
 		[](const Candidate& candidate) { return candidate.caster->promoted; }));
 	// Skyrim remains authoritative over native shadow-map capacity. The former
@@ -2174,12 +2211,45 @@ bool RadiantGrid::FilterLocalShadowCaster(RE::BSShadowLight* a_light, const RE::
 	if (a_camera)
 		localShadowCameraPosition = a_camera->world.translate;
 	auto* caster = FindLocalShadowCaster(a_light);
-	if (!caster)
+	auto* niLight = a_light->light.get();
+	if (!niLight)
 		return a_result;
+	// Skyrim evaluates candidates before they necessarily appear in the owning
+	// active-light lists sampled by the scheduler. Observe the live engine object
+	// here so a newly encountered source is retained and can be prioritized next
+	// frame instead of waiting for an inventory/cell-list refresh.
+	if (!caster) {
+		localShadowCasterLookup[a_light] = static_cast<uint32_t>(localShadowCasters.size());
+		caster = &localShadowCasters.emplace_back();
+		caster->light = a_light;
+	}
+	const float radius = niLight->GetLightRuntimeData().radius.x;
+	const float teleport = std::max(LOCAL_SHADOW_TELEPORT_DISTANCE, radius * LOCAL_SHADOW_TELEPORT_RADIUS_FRACTION);
+	if (caster->niLight != niLight || (caster->lastRenderedFrame != 0 &&
+		caster->renderedPosition.GetSquaredDistance(niLight->world.translate) > teleport * teleport)) {
+		const int32_t slice = caster->slice;
+		const int32_t secondarySlice = caster->secondarySlice;
+		*caster = LocalShadowCaster{};
+		caster->light = a_light;
+		caster->slice = slice;
+		caster->secondarySlice = secondarySlice;
+	}
+	caster->niLight = niLight;
+	caster->promoted = IsPromotedShadowLight(a_light);
+	caster->lastSeenFrame = localShadowFrame;
+	caster->position = niLight->world.translate;
+	caster->rotation = niLight->world.rotate;
+	caster->radius = radius;
+	caster->hidden = niLight->GetFlags().any(RE::NiAVObject::Flag::kHidden);
 	caster->lastEvaluatedFrame = localShadowFrame;
 	const float viewRadius = caster->radius + std::max(LOCAL_SHADOW_VIEW_CULL_MARGIN, caster->radius * 0.1f);
 	const bool influenceInView = a_camera && std::isfinite(caster->radius) && caster->radius > 0.0f &&
 		IsSphereInCameraFrustum(a_camera, caster->position, viewRadius);
+	const float prefetchRadius = caster->radius + std::max(LOCAL_SHADOW_PREFETCH_DISTANCE, caster->radius * 0.25f);
+	const bool prefetchInView = !influenceInView && a_camera && std::isfinite(caster->radius) && caster->radius > 0.0f &&
+		IsSphereInCameraFrustum(a_camera, caster->position, prefetchRadius, LOCAL_SHADOW_PREFETCH_ANGLE_SLOPE);
+	if (influenceInView)
+		caster->lastOnScreenFrame = localShadowFrame;
 	if (a_result || influenceInView)
 		caster->lastEligibleFrame = localShadowFrame;
 	const bool selected = std::find(localShadowAllowed.begin(), localShadowAllowed.end(), a_light) != localShadowAllowed.end();
@@ -2193,20 +2263,13 @@ bool RadiantGrid::FilterLocalShadowCaster(RE::BSShadowLight* a_light, const RE::
 	// caster is behind the player even though the light volume still intersects
 	// the view. Keep that selected light in the active shadow-light set in this
 	// bounded case; the normal engine update still owns its shadow camera setup.
-	// Never remove a light Skyrim already accepted. The local cache is a sampled
-	// copy of native shadow maps, so an unselected cache candidate must retain its
-	// native shadow path instead of disappearing when the cache is enabled.
-	if (a_result) {
-		// Native lights accepted by Skyrim render independently of PIXL's spare
-		// promotion budget. Record that acceptance even when the torch consumes
-		// the last channel, so CopyLocalShadowMaps can refresh their cache entries.
-		caster->lastSelectedFrame = localShadowFrame;
-		return true;
-	}
-	if (!(selected && influenceInView))
+	// Apply relevance-ranked channel selection to native casters too. Skyrim's
+	// candidate list can exceed its map-mask capacity; accepting every native
+	// camera result lets the earliest nearby lights starve newly relevant ones.
+	// Their already-cached maps remain resident while another source is selected.
+	if (!selected || !(influenceInView || prefetchInView))
 		return false;
-	if (selected)
-		caster->lastSelectedFrame = localShadowFrame;
+	caster->lastSelectedFrame = localShadowFrame;
 	return true;
 }
 
@@ -2231,6 +2294,7 @@ void RadiantGrid::UpdateLights()
 		particleLightBufferCount = 0;
 		return;
 	}
+	const bool worldShadowScene = shadowSceneNode == smState->shadowSceneNode[0];
 
 	// Cache camera position from the FrameBuffer snapshot; shadowState::posAdjust can be stale in first-person
 
@@ -2338,7 +2402,7 @@ void RadiantGrid::UpdateLights()
 						auto* shadowLight = static_cast<RE::BSShadowLight*>(bsLight);
 						TryAssignShadowMask(light, shadowLight, shadowSceneNode);
 						light.lightFlags.set(LightFlags::ShadowCaster);
-						if (localShadowCache && localShadowBuffer) {
+						if (worldShadowScene && localShadowCache && localShadowBuffer) {
 							if (auto* caster = FindLocalShadowCaster(shadowLight); caster && caster->slice >= 0 &&
 								(caster->shadowParams.x != LOCAL_SHADOW_TYPE_OMNI || caster->secondarySlice == caster->slice + 1) &&
 								caster->lastRenderedFrame != 0 && caster->lastSeenFrame == localShadowFrame) {
@@ -3261,6 +3325,9 @@ void RadiantGrid::AddParticleLightsToBuffer(eastl::vector<LightData>& a_lightsDa
 		}
 	}
 
+	auto* accumulatorAddress = globals::game::currentAccumulator.get();
+	const bool worldShadowScene = globals::game::smState && accumulatorAddress && *accumulatorAddress &&
+		(*accumulatorAddress)->GetRuntimeData().activeShadowSceneNode == globals::game::smState->shadowSceneNode[0];
 	for (const auto& frameLight : frameLights) {
 		if (a_lightsData.size() >= MAX_LIGHTS)
 			break;
@@ -3295,7 +3362,7 @@ void RadiantGrid::AddParticleLightsToBuffer(eastl::vector<LightData>& a_lightsDa
 		// reuse that caster's rendered native shadow map for this contribution.
 		// The narrow radius-scaled match avoids borrowing shadows from unrelated
 		// lights elsewhere in a densely lit interior.
-		if (IsLocalShadowCacheActive()) {
+		if (worldShadowScene && IsLocalShadowCacheActive()) {
 			const float matchRadius = std::clamp(pl.radius * 0.1f, 12.0f, 48.0f);
 			float bestDistanceSq = matchRadius * matchRadius;
 			const LocalShadowCaster* matchedCaster = nullptr;

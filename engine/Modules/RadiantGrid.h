@@ -203,9 +203,16 @@ public:
 	static constexpr uint32_t LOCAL_SHADOW_REJECT_MAX_FRAMES = 120;
 	static constexpr uint32_t LOCAL_SHADOW_CAMERA_HOLD_FRAMES = 60;
 	static constexpr uint32_t LOCAL_SHADOW_SCREEN_HOLD_FRAMES = 30;
-	static constexpr uint32_t LOCAL_SHADOW_SELECTION_HOLD_FRAMES = 120;
+	static constexpr uint32_t LOCAL_SHADOW_SELECTION_HOLD_FRAMES = 30;
 	static constexpr uint32_t LOCAL_SHADOW_FIRST_MAP_RETRY_FRAMES = 30;
+	// Keep visible influence classification close to the authored light radius.
 	static constexpr float LOCAL_SHADOW_VIEW_CULL_MARGIN = 24.0f;
+	// Separately prefetch lights whose influence is within this extra world-space
+	// range, without treating them as already visible or giving them top priority.
+	static constexpr float LOCAL_SHADOW_PREFETCH_DISTANCE = 256.0f;
+	// Expand the horizontal/vertical view cone by about 24 degrees for prefetch.
+	static constexpr float LOCAL_SHADOW_PREFETCH_ANGLE_SLOPE = 0.45f;
+	static constexpr float LOCAL_SHADOW_PREFETCH_SCORE_SCALE = 0.1f;
 	static constexpr float LOCAL_SHADOW_FADE_IN_FRAMES = 10.0f;
 	static constexpr uint32_t LOCAL_SHADOW_STATIC_STARVE_FRAMES = 60;
 	static constexpr float LOCAL_SHADOW_AGE_URGENCY = 64.0f;

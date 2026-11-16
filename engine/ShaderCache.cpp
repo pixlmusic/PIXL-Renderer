@@ -2755,6 +2755,23 @@ namespace SIE
 									++removedFiles;
 									removedBytes += file.file_size();
 									std::filesystem::remove(file.path());
+					// These are integrity/index sidecars for the exact payload above.
+					// Leaving them behind makes an intentionally invalidated stage look
+					// partially cached and needlessly retries its fast artifact lookup.
+					for (const auto* suffix : { L".identity", L".fast" }) {
+						auto sidecarPath = file.path();
+						sidecarPath += suffix;
+						std::error_code sidecarError;
+						const auto sidecarSize = std::filesystem::file_size(sidecarPath, sidecarError);
+						if (sidecarError == std::errc::no_such_file_or_directory)
+							continue;
+						if (sidecarError)
+							throw std::filesystem::filesystem_error("failed to inspect shader cache sidecar", sidecarPath, sidecarError);
+						if (std::filesystem::remove(sidecarPath, sidecarError))
+							removedBytes += sidecarSize;
+						if (sidecarError)
+							throw std::filesystem::filesystem_error("failed to remove shader cache sidecar", sidecarPath, sidecarError);
+					}
 								} else {
 									++preservedFiles;
 									// A changed module may share a top-level .hlsl file with unrelated
